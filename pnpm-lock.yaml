@@ -883,6 +883,9 @@ importers:
       '@use-brian/core':
         specifier: workspace:*
         version: link:../core
+      '@use-brian/shared':
+        specifier: workspace:*
+        version: link:../shared
       prosemirror-model:
         specifier: ^1.25.2
         version: 1.25.9

@@ -32,8 +32,9 @@ function base(eventKind: string, payload: unknown) {
 }
 
 describe('[COMP:brain/decision-event-schema] typed decision event registry', () => {
-  it('keeps the initial event-kind registry closed and versioned', () => {
+  it('keeps the event-kind registry closed and versioned', () => {
     expect(DECISION_EVENT_KINDS).toEqual([
+      'feed.draft_revised', 'feed.proposal_decided', 'feed.post_confirmed', 'feed.confirmation_revoked',
       'approval.decided',
       'email.draft_revised',
       'crm.entities_merged',
@@ -53,6 +54,19 @@ describe('[COMP:brain/decision-event-schema] typed decision event registry', () 
       }),
       schemaVersion: 2,
     })).toThrow()
+  })
+
+  it.each([
+    ['feed.draft_revised', { previousRevision: 1, revision: 2, mutationId: UUID.source }],
+    ['feed.proposal_decided', { suggestionId: UUID.source, revision: 2, outcome: 'accepted' }],
+    ['feed.post_confirmed', { confirmationId: UUID.source, revision: 2 }],
+    ['feed.confirmation_revoked', { confirmationId: UUID.source, revision: 2 }],
+  ])('admits bounded Feed references and rejects copied source content: %s', (kind, payload) => {
+    const event = base(kind as string, payload)
+    expect(parseDecisionEventWrite(event).eventKind).toBe(kind)
+    for (const forbidden of ['body', 'transcript', 'prompt', 'composition']) {
+      expect(() => parseDecisionEventWrite({ ...event, payload: { ...(payload as object), [forbidden]: 'private content' } })).toThrow()
+    }
   })
 
   it('validates scope and trims/caps the direct member reason', () => {

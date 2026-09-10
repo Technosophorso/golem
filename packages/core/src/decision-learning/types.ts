@@ -189,7 +189,28 @@ const playbookRuleDecidedSchema = z.object({
   }).strict(),
 }).strict()
 
+const feedDraftRevisedSchema = z.object({
+  ...baseDecisionEventShape, eventKind: z.literal('feed.draft_revised'),
+  payload: z.object({ previousRevision: z.number().int().min(0), revision: z.number().int().positive(), mutationId: z.string().uuid(), reasonThreadId: z.string().uuid().optional() }).strict(),
+}).strict()
+
+const feedProposalDecidedSchema = z.object({
+  ...baseDecisionEventShape, eventKind: z.literal('feed.proposal_decided'),
+  payload: z.object({ suggestionId: z.string().uuid(), revision: z.number().int().positive(), outcome: z.enum(['accepted','rejected','deferred','undone']), reasonThreadId: z.string().uuid().optional() }).strict(),
+}).strict()
+
+const feedPostConfirmedSchema = z.object({
+  ...baseDecisionEventShape, eventKind: z.literal('feed.post_confirmed'),
+  payload: z.object({ confirmationId: z.string().uuid(), revision: z.number().int().positive(), priorConfirmationId: z.string().uuid().nullable().optional() }).strict(),
+}).strict()
+
+const feedConfirmationRevokedSchema = z.object({
+  ...baseDecisionEventShape, eventKind: z.literal('feed.confirmation_revoked'),
+  payload: z.object({ confirmationId: z.string().uuid(), revision: z.number().int().positive() }).strict(),
+}).strict()
+
 export const decisionEventWriteSchema = z.discriminatedUnion('eventKind', [
+  feedDraftRevisedSchema, feedProposalDecidedSchema, feedPostConfirmedSchema, feedConfirmationRevokedSchema,
   approvalDecidedSchema,
   emailDraftRevisedSchema,
   entitiesMergedSchema,
@@ -208,6 +229,7 @@ export type DecisionEvent = z.output<typeof decisionEventWriteSchema>
 export type DecisionEventKind = DecisionEvent['eventKind']
 
 export const DECISION_EVENT_KINDS = [
+  'feed.draft_revised', 'feed.proposal_decided', 'feed.post_confirmed', 'feed.confirmation_revoked',
   'approval.decided',
   'email.draft_revised',
   'crm.entities_merged',
