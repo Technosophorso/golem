@@ -5,6 +5,22 @@ import { query } from '../db/client.js'
 import { executeFeedCommands, getFeedCollaboration, FeedCollaborationError, type FeedActor } from '../db/feed-collaboration-store.js'
 import { resolvePlanningAccess } from '../routes/content-planning.js'
 import { notifyWorkspaceChange } from '../brain-stream/notify.js'
+import { getFeedRun } from '../db/feed-editorial-runs-store.js'
+import { loadFeedReviewContext } from './review-context.js'
+import type { FeedReviewContext } from '@use-brian/shared'
+/** Source edits can invalidate a completed Review without changing post text. */
+export async function readReviewedFeedCollaboration(actor: FeedActor) {
+  const snapshot = await getFeedCollaboration(actor)
+  const latest = snapshot.runs.find(run => run.kind === 'review' && run.status === 'succeeded')
+  if (!latest) return snapshot
+  const run = await getFeedRun(actor, latest.id); const frozen = run.context as FeedReviewContext
+  // A reader without draft permission may still inspect the existing result;
+  // freshness is unknown until an authorized editor can revalidate sources.
+  const access = await resolvePlanningAccess(actor.userId, actor.assistantId)
+  if (!access?.canDraft) return { ...snapshot, runs: snapshot.runs.map(item => ({ ...item, stale: true })) }
+  const current = await loadFeedReviewContext(actor, { month: frozen.month, historyCursor: frozen.historyCursor })
+  return { ...snapshot, runs: snapshot.runs.map(item => ({ ...item, stale: item.revision !== current.revision || (item.id === latest.id && current.contextHash !== frozen.contextHash) })) }
+}
 export async function feedCommand(actor: FeedActor, input: FeedCommandRequest) {
   const access = await resolvePlanningAccess(actor.userId, actor.assistantId)
   if (!access?.canDraft) throw new FeedCollaborationError(403, 'draft_access_required')

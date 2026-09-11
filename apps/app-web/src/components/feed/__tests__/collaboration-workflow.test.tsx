@@ -8,12 +8,13 @@ import type { FeedCommand, FeedEdit, FeedTarget } from '@use-brian/shared';
 import { applyFeedEdits, createFeedAnchor, importLegacyFeed, projectFeed, proposeFeedReplacement } from '@use-brian/doc-model';
 import { en } from '@/lib/i18n/dictionaries/en';
 const state = vi.hoisted(() => ({ messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
-vi.mock('@/lib/i18n/client', () => ({ useT: () => en }));
+vi.mock('@/lib/i18n/client', () => ({ useT: () => en, useLocale: () => 'en' }));
 vi.mock('@/lib/surface-cache', () => ({ useCachedResource: () => state.messages }));
-vi.mock('@/lib/surface-prefetch', () => ({ feedCollaborationCacheKey: () => 'fixture-collaboration' }));
+vi.mock('@/lib/surface-prefetch', () => ({ feedCollaborationCacheKey: () => 'fixture-collaboration', goalsCacheKey: () => 'fixture-goals' }));
 vi.mock('../tuning-chat-panel', () => ({ TuningChatPanel: (props: { sessionId: string }) => <div data-chat-session={props.sessionId} /> }));
 import { CompositionEditor } from '../composition-editor';
 import { DraftCommentPanel, type FeedCommentPanelProps } from '../draft-comment-panel';
+import { FeedReview, type FeedReviewActions } from '../feed-review';
 let host: HTMLDivElement; let root: Root;
 const viewProps = vi.spyOn(EditorView.prototype, 'setProps');
 function editorView(node: HTMLElement): EditorView { return (viewProps.mock.contexts as EditorView[]).find(view => view.dom === node)!; }
@@ -21,6 +22,37 @@ beforeEach(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REA
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.clearAllMocks(); });
 const text = en.feedCollaboration;
 const composition = () => importLegacyFeed({ text: 'First paragraph.\n\nThe same phrase.\n\nThe same phrase.', postFormat: 'post', threadSegments: [], media: [] });
+function reviewActions(): FeedReviewActions { return { model: 'standard', setModel: vi.fn(), busy: false, error: false, start: vi.fn(async () => {}), action: vi.fn(async () => {}) }; }
+describe('[COMP:app-web/feed-review] five-check controls', () => {
+  it('scenario 16: Review requests checks without issuing any content command', async () => {
+    const actions = reviewActions(); const onCommand = vi.fn();
+    act(() => root.render(<FeedReview workspaceId="fixture" revision={2} actions={actions} onCommand={onCommand} onThread={vi.fn()} disabled={false} offline={false} />));
+    expect(host.textContent).toContain(en.feedReview.notReviewed);
+    await click(en.feedCollaboration.review);
+    expect(actions.start).toHaveBeenCalledOnce(); expect(onCommand).not.toHaveBeenCalled();
+  });
+  it('scenarios 19-20: shows all five coverage states, old revisions, summary navigation and history continuation', async () => {
+    const actions = reviewActions(); const onThread = vi.fn();
+    const covered = { eligible: 55, retrieved: 50, reviewed: 50, limits: ['older_limit'] };
+    const snapshot = { copy: null, threads: [], suggestions: [], runs: [{ id: 'run', kind: 'review' as const, revision: 2, status: 'succeeded' as const, attempts: 1, error: null, createdAt: '', model: 'standard', summaryThreadId: 'summary', coverage: { monthly_plan: { ...covered, state: 'checked' as const }, post_history: { ...covered, state: 'partial' as const, nextCursor: 20 }, post_goal: { ...covered, state: 'unavailable' as const }, memory: { ...covered, state: 'failed' as const }, content: { ...covered, state: 'checked' as const } } }] };
+    act(() => root.render(<FeedReview workspaceId="fixture" revision={3} actions={actions} onCommand={vi.fn()} onThread={onThread} disabled={false} offline={false} snapshot={snapshot} />));
+    for (const dimension of ['monthly_plan', 'post_history', 'post_goal', 'memory', 'content'] as const) expect(host.textContent).toContain(en.feedReview[dimension]);
+    expect(host.textContent).toContain(en.feedReview.stale);
+    await click(en.feedReview.openSummary); expect(onThread).toHaveBeenCalledWith('summary');
+    expect(button(en.feedReview.continueHistory).disabled).toBe(true);
+    act(() => root.render(<FeedReview workspaceId="fixture" revision={2} actions={actions} onCommand={vi.fn()} onThread={onThread} disabled={false} offline={false} snapshot={snapshot} />));
+    await click(en.feedReview.continueHistory); expect(actions.start).toHaveBeenCalledWith('run');
+  });
+  it('scenario 19: offline, unsynced and unknown-outcome states never silently launch or retry checks', async () => {
+    const actions = reviewActions();
+    act(() => root.render(<FeedReview workspaceId="fixture" revision={2} actions={actions} onCommand={vi.fn()} onThread={vi.fn()} disabled offline />));
+    expect(button(en.feedCollaboration.review).disabled).toBe(true); expect(host.textContent).toContain(en.feedReview.offline);
+    act(() => root.render(<FeedReview workspaceId="fixture" revision={2} actions={actions} onCommand={vi.fn()} onThread={vi.fn()} disabled={false} offline={false} snapshot={{ copy: null, threads: [], suggestions: [], runs: [{ id: 'uncertain', kind: 'review', revision: 2, status: 'unknown_outcome', attempts: 1, error: 'provider_outcome_unknown', createdAt: '', coverage: {}, model: 'standard', summaryThreadId: null }] }} />));
+    expect(host.textContent).toContain(en.feedReview.unknownExplanation);
+    expect([...host.querySelectorAll('button')].some(node => node.textContent === en.feedCollaboration.retry)).toBe(false);
+    expect(actions.start).not.toHaveBeenCalled(); expect(actions.action).not.toHaveBeenCalled();
+  });
+});
 function button(label: string) { const found = [...host.querySelectorAll('button')].find(node => node.textContent === label); expect(found, label).toBeDefined(); return found!; }
 async function click(label: string) { await act(async () => button(label).click()); }
 function panel(overrides: Partial<FeedCommentPanelProps> = {}) {

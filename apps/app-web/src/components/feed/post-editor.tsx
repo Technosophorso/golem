@@ -101,6 +101,7 @@ import {
 
 import { CompositionEditor, type FeedEditorSelection } from './composition-editor';
 import { DraftCommentPanel, type FeedCommentComposer } from './draft-comment-panel';
+import { FeedReview, useFeedReviewActions } from './feed-review';
 import { useFeedCollaboration } from '@/lib/feed-collaboration';
 import { createFeedAnchor } from '@use-brian/doc-model';
 import type { FeedCommand, FeedEdit } from '@use-brian/shared';
@@ -454,6 +455,7 @@ function PostPane({
   const mainChatRef = useRef<TuningChatPanelHandle>(null);
   const structured = localPost?.content.schemaVersion === 2 && !!localPost.content.composition;
   const collaboration = useFeedCollaboration(workspaceId, assistantId, sessionId, structured && !localPost?.newSession);
+  const review = useFeedReviewActions(assistantId, sessionId, localPost?.revision ?? 0, () => void collaboration.refresh());
 
   const [localSaving, setLocalSaving] = useState(0);
   const persist = useCallback(async (patch: Partial<FeedWorkingContent>) => {
@@ -987,6 +989,7 @@ function PostPane({
                   </button>
                 ))}
               </div>
+              {structured ? <Button type="button" variant="outline" size="sm" disabled={readOnly || !localPost || localPost.dirty || localSaving > 0 || offline || review.busy || collaboration.data?.runs?.some(run => run.status === 'pending' || run.status === 'running')} onClick={() => { setPanelView('review'); setRefineOpen(true); void review.start(); }}>{tc.review}</Button> : null}
               <StatusLabel status={status} label={t.posts.status[status]} />
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {status === "drafting" ? (
@@ -1281,8 +1284,8 @@ function PostPane({
             {selection?.quote ? <div className="border-b p-3 text-sm"><p className="font-medium">{tc.selection}</p><blockquote className="max-h-24 overflow-y-auto whitespace-pre-wrap">{selection.quote}</blockquote><button type="button" className="min-h-11 rounded-md border px-3" onClick={() => setSelection(null)}>{tc.post}</button></div> : null}
             <div className="min-h-0 flex-1 relative">{conversationPanel}</div>
           </div></div>
-          <div hidden={panelView !== 'review'} className="min-h-0 flex-1">
-            <DraftCommentPanel workspaceId={workspaceId} assistantId={assistantId} assistantName={assistantName} sessionId={sessionId}
+          <div hidden={panelView !== 'review'} className="min-h-0 flex-1 overflow-y-auto">
+            <DraftCommentPanel reviewHeader={<FeedReview workspaceId={workspaceId} revision={localPost.revision} snapshot={collaboration.data} disabled={readOnly || localPost.dirty || localSaving > 0} offline={offline} goalId={localPost.content.goalId} month={localPost.content.reviewMonth} actions={review} onCommand={runCommands} onThread={openThread} />} workspaceId={workspaceId} assistantId={assistantId} assistantName={assistantName} sessionId={sessionId}
               composition={localPost.content.composition} revision={localPost.revision} snapshot={collaboration.data} loading={collaboration.loading} error={collaboration.error}
               pending={localPost.dirty || localSaving > 0} offline={offline} readOnly={readOnly} composer={composer} onComposer={setComposer}
               selectedThread={selectedThread} onThread={openThread} selection={selection?.target} onCommand={runCommands} onRefresh={() => void collaboration.refresh()} />

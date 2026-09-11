@@ -84,6 +84,7 @@ export function staleMarksFor(event: string, workspaceId: string): string[] {
         `brain-entity:${workspaceId}:`,
         `brain-entry:${workspaceId}:`,
         `brain-blueprint:${workspaceId}:`,
+        `feed-collaboration:${workspaceId}`,
       ];
     case APPROVALS_REFRESH_EVENT:
       // The home dock's "needs you" counts move with every approval created
@@ -133,7 +134,7 @@ export function staleMarksFor(event: string, workspaceId: string): string[] {
       // Feed shell's record carries (name, role, canDraft) - report E's
       // "Feed gate" row names this as its one stale trigger. The Settings
       // detail row (name, icon, purpose, roster) rides the same signal.
-      return [`feed-workspace:${workspaceId}`, `workspace-detail:${workspaceId}`];
+      return [`feed-workspace:${workspaceId}`, `workspace-detail:${workspaceId}`, `feed-collaboration:${workspaceId}`];
     case SKILL_REFRESH_EVENT:
       // `brain-skill:<wid>:` is the skill editor's row. Mark-stale only: the
       // editor body is an editable draft, and the page adopts a revalidated
@@ -167,7 +168,7 @@ export function staleMarksFor(event: string, workspaceId: string): string[] {
       // full page). The panels used to rely on a local refetch tick only
       // the acting tab could bump; the same-tab `requestGoalRefresh` now
       // lands here too, so one path serves both legs.
-      return [`goals:${workspaceId}`, `triage:${workspaceId}`, `goal:${workspaceId}:`];
+      return [`goals:${workspaceId}`, `triage:${workspaceId}`, `goal:${workspaceId}:`, `feed-collaboration:${workspaceId}`];
     default:
       return [];
   }

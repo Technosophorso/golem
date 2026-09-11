@@ -1,9 +1,11 @@
 /** Authenticated shared Feed collaboration routes. [COMP:feed/draft-comments] */
 import { Router } from 'express'
 import { z } from 'zod'
-import { feedCommandRequestSchema } from '@use-brian/shared'
-import { feedCommand } from '../content-planning/collaboration-service.js'
-import { getFeedCollaboration, getFeedThreadMessages, FeedCollaborationError, withFeedTransaction, type FeedActor } from '../db/feed-collaboration-store.js'
+import { feedCommandRequestSchema, feedReviewRequestSchema } from '@use-brian/shared'
+import { feedCommand, readReviewedFeedCollaboration } from '../content-planning/collaboration-service.js'
+import { getFeedThreadMessages, FeedCollaborationError, withFeedTransaction, type FeedActor } from '../db/feed-collaboration-store.js'
+import { requestFeedReview } from '../content-planning/review.js'
+import { getFeedRun, summarizeFeedRun, cancelFeedRun, retryFeedRun } from '../db/feed-editorial-runs-store.js'
 const uuid = z.string().uuid()
 export function feedCollaborationRoutes(): Router {
   const router = Router(); const base = '/:assistantId/draft-sessions/:sessionId'
@@ -13,7 +15,7 @@ export function feedCollaborationRoutes(): Router {
     next()
   })
   router.get(`${base}/collaboration`, async (req, res) => {
-    try { res.json(await getFeedCollaboration({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' })) }
+    try { res.json(await readReviewedFeedCollaboration({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' })) }
     catch (error) { replyError(res, error) }
   })
   router.post(`${base}/commands`, async (req, res) => {
@@ -32,6 +34,21 @@ export function feedCollaborationRoutes(): Router {
       const before = z.coerce.number().int().positive().max(2_000_000_000).parse(req.query.before ?? 2_000_000_000)
       const revisions = await withFeedTransaction(actor, async client => (await client.query(`SELECT revision,actor_user_id AS "actorUserId",actor_kind AS "actorKind",content,forward_commands AS commands,created_at AS "createdAt" FROM feed_post_revisions WHERE session_id=$1 AND revision<$2 ORDER BY revision DESC LIMIT 30`, [actor.sessionId, before])).rows, false)
       res.json({ revisions, nextBefore: revisions.length === 30 ? revisions.at(-1)!.revision : null })
+    } catch (error) { replyError(res, error) }
+  })
+  router.post(`${base}/reviews`, async (req, res) => {
+    try { res.json({ run: summarizeFeedRun(await requestFeedReview({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedReviewRequestSchema.parse(req.body))) }) }
+    catch (error) { replyError(res, error) }
+  })
+  router.get(`${base}/runs/:runId`, async (req, res) => {
+    try { res.json({ run: summarizeFeedRun(await getFeedRun({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, uuid.parse(req.params.runId))) }) }
+    catch (error) { replyError(res, error) }
+  })
+  router.post(`${base}/runs/:runId/:action`, async (req, res) => {
+    try {
+      const action = z.enum(['cancel', 'retry']).parse(req.params.action)
+      const actor: FeedActor = { userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }
+      res.json({ run: summarizeFeedRun(await (action === 'cancel' ? cancelFeedRun : retryFeedRun)(actor, uuid.parse(req.params.runId))) })
     } catch (error) { replyError(res, error) }
   })
   return router

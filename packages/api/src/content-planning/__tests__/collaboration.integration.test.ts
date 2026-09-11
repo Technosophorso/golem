@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { FeedCommand, FeedCommandRequest, FeedEdit } from '@use-brian/shared'
 import { feedParagraph, projectFeed, sliceFeedInline } from '@use-brian/doc-model'
-import { getPool } from '../../db/client.js'
+import { getPool, queryWithRLS } from '../../db/client.js'
 import { executeFeedCommands, getFeedCollaboration, getFeedThreadMessages, type FeedActor, type StructuredFeedContent } from '../../db/feed-collaboration-store.js'
 import { postWorkingCopiesStore, type PostWorkingContent } from '../../db/post-working-copies.js'
 
@@ -40,6 +40,167 @@ function replace(content: StructuredFeedContent, block: number, text: string): F
   const length = (node.content ?? []).reduce((n, item) => n + (item.type === 'text' ? item.text.length : 1), 0)
   return { kind: 'replaceText', spans: [{ segmentId: segment.id, blockId: node.attrs.id, from: 0, to: length }], preimage: [sliceFeedInline(node.content ?? [], 0, length)], replacement: [[{ type: 'text', text }]] }
 }
+
+import { loadFeedReviewContext } from '../review-context.js'
+import { createFeedReviewHandler, requestFeedReview } from '../review.js'
+import { claimFeedRun, getFeedRun, retryFeedRun, failFeedRun, cancelFeedRun } from '../../db/feed-editorial-runs-store.js'
+import { createMemory } from '../../db/memories.js'
+import { FEED_REVIEW_DIMENSIONS } from '@use-brian/shared'
+import { readReviewedFeedCollaboration } from '../collaboration-service.js'
+async function reviewFixture() {
+  const f = await fixture('Orchard irrigation saves water.'); await f.upgrade()
+  const goal = (await pool.query(`INSERT INTO goals(workspace_id,outcome,done_when,created_by_user_id) VALUES($1,'Explain water savings','{"kind":"subtasks"}',$2) RETURNING id`, [f.workspaceId, f.actor.userId])).rows[0].id
+  await f.command([{ kind: 'context', goalId: goal, reviewMonth: '2026-10' }])
+  await pool.query(`INSERT INTO content_plan_briefs(assistant_id,month_start,brief,themes) VALUES($1,'2026-10-01','Explain orchard irrigation',ARRAY['water savings'])`, [f.actor.assistantId])
+  await pool.query(`INSERT INTO assistant_playbook_rules(assistant_id,rule,status,created_by) VALUES($1,'Use specific orchard examples.','active','owner')`, [f.actor.assistantId])
+  await createMemory({ assistantId: f.actor.assistantId, workspaceId: f.workspaceId, userId: f.actor.userId, createdByUserId: f.actor.userId, scope: 'shared', sensitivity: 'internal', summary: 'Secret personal preference.', source: 'manual', tags: ['voice'] })
+  const historySession = randomUUID()
+  await pool.query(`INSERT INTO sessions(id,assistant_id,user_id,workspace_id,channel_type,channel_id,mode,title) VALUES($1::uuid,$2,$3,$4,'web',$1::text,'draft','History fixture')`, [historySession, f.actor.assistantId, f.actor.userId, f.workspaceId])
+  for (let i = 0; i < 55; i++) await pool.query(`INSERT INTO content_planning_drafts(assistant_id,session_id,platform,draft_text,final_text,status,created_at,resolved_at) VALUES($1,$4,'threads',$2,$2,'posted',now()-($3::int*interval '1 day'),now()-($3::int*interval '1 day'))`, [f.actor.assistantId, i === 54 ? 'Older orchard irrigation uses less water than the current unsupported claim.' : 'Orchard irrigation example '+i, i, historySession])
+  return f
+}
+describe('[COMP:feed/draft-review] real database review lifecycle', () => {
+  it('scenarios 16-19: freezes the explicit Goal/month, reads older full bodies, excludes private sources and persists five comments-only checks', async () => {
+    const f = await reviewFixture(); const before = (await getFeedCollaboration(f.actor)).copy!
+    const context = await loadFeedReviewContext(f.actor)
+    expect(context.month).toBe('2026-10'); expect(context.goalId).toBe(before.content.goalId)
+    expect(context.dimensions.memory.sources.some(item => item.body.includes('Secret'))).toBe(false)
+    expect(context.dimensions.post_history.sources).toHaveLength(50)
+    expect(context.dimensions.post_history.coverage).toMatchObject({ state: 'partial', eligible: 55, nextCursor: 20 })
+    const call = vi.fn(async ({ prompt }: { prompt: string }) => {
+      const input = JSON.parse(prompt); const source = input.sources[0]
+      return { text: JSON.stringify({ findings: [{ issueKey: input.dimension+'_fixture', dimensions: [input.dimension], priority: 'medium', target: { kind: 'post' }, issue: 'Use a supported example.', nextStep: 'Add the measured water saving.', evidence: [{ sourceId: source.id, quote: source.body.slice(0, 160) }] }] }) }
+    })
+    const request = { mutationId: randomUUID(), expectedRevision: before.revision, model: 'standard' as const, locale: 'en' as const }
+    const queued = await requestFeedReview(f.actor, request); const active = await claimFeedRun(['review']); expect(active?.id).toBe(queued.id)
+    await createFeedReviewHandler(async () => ({ model: 'fixture', tier: 'standard', inputCharacters: 160_000, maxTokens: 6000, call }))(active!, new AbortController().signal)
+    expect(call).toHaveBeenCalledTimes(5)
+    expect(call.mock.calls.map(([input]) => JSON.parse(input.prompt).dimension)).toEqual(FEED_REVIEW_DIMENSIONS)
+    const complete = await getFeedRun(f.actor, queued.id); expect(complete.status).toBe('succeeded')
+    expect(Object.keys(complete.result.parts)).toHaveLength(5)
+    const snapshot = await getFeedCollaboration(f.actor)
+    expect(snapshot.copy!.content).toEqual(before.content); expect(snapshot.copy!.revision).toBe(before.revision)
+    expect(snapshot.threads).toHaveLength(6); expect(snapshot.suggestions).toHaveLength(0)
+    expect((await pool.query('SELECT id FROM decision_events WHERE session_id=$1', [f.actor.sessionId])).rows).toHaveLength(0)
+    expect((await requestFeedReview(f.actor, request)).id).toBe(queued.id)
+    expect((await retryFeedRun(f.actor, queued.id)).status).toBe('succeeded')
+    const reused = await requestFeedReview(f.actor, { ...request, mutationId: randomUUID() })
+    expect(reused.status).toBe('succeeded'); expect(reused.summaryThreadId).toBe(complete.summaryThreadId)
+    expect(call).toHaveBeenCalledTimes(5); expect((await getFeedCollaboration(f.actor)).threads).toHaveLength(6)
+    // Completed provider receipts also survive a worker restart between
+    // persistence and acknowledgement. Reapplication does not repeat calls.
+    await pool.query("UPDATE feed_editorial_runs SET status='pending' WHERE id=$1", [queued.id])
+    const recovered = (await claimFeedRun(['review']))!
+    const removedProvider = vi.fn(async () => { throw new Error('Provider is no longer configured') })
+    await createFeedReviewHandler(removedProvider)(recovered, new AbortController().signal)
+    expect(removedProvider).not.toHaveBeenCalled()
+    expect(call).toHaveBeenCalledTimes(5); expect((await getFeedCollaboration(f.actor)).threads).toHaveLength(6)
+    await pool.query("UPDATE goals SET outcome='Explain a different outcome',updated_at=now() WHERE id=$1", [context.goalId])
+    const revalidated = await readReviewedFeedCollaboration(f.actor)
+    expect(revalidated.runs.find(run => run.id === reused.id)?.stale).toBe(true)
+    await expect(requestFeedReview(f.actor, { ...request, mutationId: randomUUID(), continuationRunId: queued.id })).rejects.toMatchObject({ code: 'review_context_changed_start_new' })
+    const continued = await loadFeedReviewContext(f.actor, { historyCursor: context.dimensions.post_history.coverage.nextCursor! })
+    expect(continued.dimensions.post_history.sources.some(item => item.body.includes('Older orchard'))).toBe(true)
+    expect(continued.dimensions.post_history.sources.every(item => !context.dimensions.post_history.sources.some(old => old.id === item.id))).toBe(true)
+  })
+  it('scenario 19: an uncertain provider call cannot be resent by retry or cancellation', async () => {
+    const f = await fixture(); await f.upgrade(); const revision = (await getFeedCollaboration(f.actor)).copy!.revision
+    const queued = await requestFeedReview(f.actor, { mutationId: randomUUID(), expectedRevision: revision, model: 'standard', locale: 'en' })
+    const active = (await claimFeedRun(['review']))!; expect(active.id).toBe(queued.id)
+    const call = vi.fn(async () => { throw new Error('Transport lost after dispatch') })
+    await expect(createFeedReviewHandler(async () => ({ model: 'fixture', tier: 'standard', inputCharacters: 160_000, maxTokens: 6000, call }))(active, new AbortController().signal)).rejects.toThrow()
+    await failFeedRun(active, 'provider_outcome_unknown')
+    expect((await getFeedRun(f.actor, active.id)).status).toBe('unknown_outcome')
+    await expect(retryFeedRun(f.actor, active.id)).rejects.toMatchObject({ code: 'fresh_explicit_attempt_required' })
+    await cancelFeedRun(f.actor, active.id)
+    await expect(retryFeedRun(f.actor, active.id)).rejects.toMatchObject({ code: 'fresh_explicit_attempt_required' })
+    expect(call).toHaveBeenCalledTimes(1)
+    const partial = await getFeedRun(f.actor, active.id)
+    expect(partial.summaryThreadId).toBeTruthy(); expect(Object.keys(partial.coverage)).toHaveLength(5)
+  })
+  it('scenario 20: concurrent duplicate requests return one durable run without exhausting the source-read pool', async () => {
+    const f = await fixture(); await f.upgrade()
+    const request = { mutationId: randomUUID(), expectedRevision: 2, model: 'standard' as const, locale: 'en' as const }
+    const results = await Promise.all(Array.from({ length: 10 }, () => requestFeedReview(f.actor, request)))
+    expect(new Set(results.map(run => run.id)).size).toBe(1)
+    await cancelFeedRun(f.actor, results[0]!.id)
+  })
+  it('scenarios 7 and 19: revoking draft access invalidates queued worker authority before any model call', async () => {
+    const f = await fixture(); await f.upgrade()
+    const queued = await requestFeedReview(f.other, { mutationId: randomUUID(), expectedRevision: 2, model: 'standard', locale: 'en' })
+    await pool.query('UPDATE workspace_members SET can_draft=false WHERE workspace_id=$1 AND user_id=$2', [f.workspaceId, f.other.userId])
+    const active = (await claimFeedRun(['review']))!; expect(active.id).toBe(queued.id)
+    const resolve = vi.fn(async () => ({ model: 'fixture', tier: 'standard', inputCharacters: 160_000, maxTokens: 6000, call: vi.fn(async () => ({ text: '{"findings":[]}' })) }))
+    await expect(createFeedReviewHandler(resolve)(active, new AbortController().signal)).rejects.toMatchObject({ status: 403 })
+    expect(resolve).not.toHaveBeenCalled(); await failFeedRun(active, 'draft_access_required')
+    await expect(retryFeedRun(f.other, active.id)).rejects.toMatchObject({ status: 403 })
+  })
+  it('scenario 19: a deleted target stays detached in the completed review, with its original quote and source revision', async () => {
+    const f = await fixture('Keep this paragraph.\n\nRemove this paragraph.'); const content = await f.upgrade(); const segment = content.composition.segments[0]!; const node = segment.content[1]!
+    const queued = await requestFeedReview(f.actor, { mutationId: randomUUID(), expectedRevision: 2, model: 'standard', locale: 'en' })
+    const active = (await claimFeedRun(['review']))!; expect(active.id).toBe(queued.id)
+    const call = vi.fn(async () => {
+      await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: segment.id, blockId: node.attrs.id, preimage: node, replacement: [] }] }])
+      return { text: JSON.stringify({ findings: [{ issueKey: 'remove_unsupported_claim', dimensions: ['content'], priority: 'high', target: { kind: 'block', segmentId: segment.id, blockId: node.attrs.id }, issue: 'The old claim needs evidence.', nextStep: 'Provide evidence.', evidence: [] }] }) }
+    })
+    await createFeedReviewHandler(async () => ({ model: 'fixture', tier: 'standard', inputCharacters: 160_000, maxTokens: 6000, call }))(active, new AbortController().signal)
+    const snapshot = await getFeedCollaboration(f.actor)
+    expect(snapshot.threads.find(thread => thread.anchor.target.kind === 'block')?.anchor).toMatchObject({ quote: 'Remove this paragraph.', sourceRevision: 2, state: 'detached' })
+    expect((await getFeedRun(f.actor, active.id)).coverage.content?.limits).toContain('draft_changed_since_review')
+    expect(snapshot.copy?.content.text).toBe('Keep this paragraph.')
+  })
+  it('scenario 20: later checks reuse resolved discussions; changed evidence adds an explanation before reopening', async () => {
+    const f = await reviewFixture(); const revision = (await getFeedCollaboration(f.actor)).copy!.revision
+    const call = vi.fn(async ({ prompt }: { prompt: string }) => {
+      const input = JSON.parse(prompt)
+      return { text: JSON.stringify({ findings: input.dimension === 'memory' ? [{ issueKey: 'voice_example', dimensions: ['memory'], priority: 'medium', target: { kind: 'post' }, issue: 'Add a concrete example.', nextStep: 'Use the approved voice preference.', evidence: [{ sourceId: input.sources[0].id }] }] : [] }) }
+    })
+    async function run(model: 'standard' | 'pro') {
+      const queued = await requestFeedReview(f.actor, { mutationId: randomUUID(), expectedRevision: revision, model, locale: 'en' })
+      const active = (await claimFeedRun(['review']))!; expect(active.id).toBe(queued.id)
+      await createFeedReviewHandler(async () => ({ model: 'fixture', tier: model, inputCharacters: 160_000, maxTokens: 6000, call }))(active, new AbortController().signal)
+      return getFeedCollaboration(f.actor)
+    }
+    const first = await run('standard'); const thread = first.reviewFindings[0]!.threadId
+    await f.command([{ kind: 'reply', threadId: thread, text: 'Keep this discussion.' }, { kind: 'resolve', threadId: thread, resolved: true }])
+    const second = await run('pro')
+    expect(second.threads).toHaveLength(3); expect(second.threads.find(item => item.id === thread)?.resolved).toBe(true)
+    expect(await getFeedThreadMessages(f.actor, thread)).toHaveLength(2)
+    await pool.query("UPDATE assistant_playbook_rules SET rule='Use concrete orchard measurements.' WHERE assistant_id=$1", [f.actor.assistantId])
+    const third = await run('standard')
+    expect(third.threads).toHaveLength(4); expect(third.threads.find(item => item.id === thread)?.resolved).toBe(false)
+    const messages = await getFeedThreadMessages(f.actor, thread)
+    expect(messages).toHaveLength(3); expect(JSON.stringify(messages.at(-1)?.content)).toContain('source evidence changed')
+  })
+  it('scenario 20: separate Review runs retain exact rule applications and acceptance links only to the owning draft', async () => {
+    const f = await fixture(); const content = await f.upgrade()
+    await pool.query('DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2', [f.workspaceId, f.other.userId])
+    const ruleId = (await pool.query(`INSERT INTO assistant_playbook_rules(assistant_id,rule,status,created_by,applies_to_user_id) VALUES($1,'Use concrete introductions.','active','decision_reflection',$2) RETURNING id`, [f.actor.assistantId, f.actor.userId])).rows[0].id
+    const source = vi.fn(async () => ({ text: '{"findings":[]}' }))
+    const runIds: string[] = []
+    for (const model of ['standard', 'pro'] as const) {
+      const queued = await requestFeedReview(f.actor, { mutationId: randomUUID(), expectedRevision: 2, model, locale: 'en' }); runIds.push(queued.id)
+      const active = (await claimFeedRun(['review']))!
+      await createFeedReviewHandler(async () => ({ model: 'fixture', tier: model, inputCharacters: 160_000, maxTokens: 6000, call: source }))(active, new AbortController().signal)
+    }
+    const applications = (await pool.query("SELECT id,operation_id,artifact_refs FROM decision_applications WHERE assistant_id=$1 AND operation_kind='feed_review' ORDER BY created_at", [f.actor.assistantId])).rows
+    expect(applications.map(row => row.operation_id)).toEqual(runIds)
+    expect(applications.map(row => row.artifact_refs)).toEqual([[{ kind: 'assistant_playbook_rule', id: ruleId }], [{ kind: 'assistant_playbook_rule', id: ruleId }]])
+    const suggestionId = randomUUID()
+    await f.command([{ kind: 'propose', suggestionId, edits: [replace(content, 0, 'A concrete example.')], rationale: 'Use the reviewed preference.', applicationId: applications[1].id }])
+    await expect(pool.query('UPDATE feed_draft_suggestions SET application_id=$2 WHERE id=$1', [suggestionId, applications[0].id])).rejects.toThrow('immutable')
+    await f.command([{ kind: 'decide', suggestionId, outcome: 'accepted' }])
+    const event = (await pool.query("SELECT caused_by_application_id FROM decision_events WHERE session_id=$1 AND event_kind='feed.proposal_decided'", [f.actor.sessionId])).rows[0]
+    expect(event.caused_by_application_id).toBe(applications[1].id)
+    await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role,can_draft) VALUES($1,$2,'member',true)", [f.workspaceId, f.other.userId])
+    await expect(queryWithRLS(f.other.userId, 'UPDATE feed_draft_suggestions SET application_id=NULL WHERE id=$1', [suggestionId])).rejects.toThrow('immutable')
+    const other = await fixture(); const otherContent = await other.upgrade()
+    await expect(other.command([{ kind: 'propose', suggestionId: randomUUID(), edits: [replace(otherContent, 0, 'Wrong source.')], rationale: 'Must not link.', applicationId: applications[1].id }])).rejects.toMatchObject({ code: 'application_scope_mismatch' })
+    await pool.query('DELETE FROM workspaces WHERE id=$1', [f.workspaceId])
+    expect((await pool.query('SELECT id FROM feed_editorial_runs WHERE session_id=$1', [f.actor.sessionId])).rowCount).toBe(0)
+    expect((await pool.query('SELECT id FROM feed_comment_threads WHERE session_id=$1', [f.actor.sessionId])).rowCount).toBe(0)
+  })
+})
 describe('[COMP:feed/draft-comments] PostgreSQL command and anchor barrier', () => {
   it('scenarios 2 and 9: upgrades losslessly and stores the legacy snapshot without stripping old-client retries', async () => {
     const f = await fixture('  **Bold** 中文\n\n[unfinished gap]\n'); const structured = await f.upgrade()
@@ -225,6 +386,11 @@ describe('[COMP:feed/draft-comments] authenticated HTTP command boundary', () =>
       const threadId = randomUUID(); expect((await send({ mutationId: randomUUID(), expectedRevision: 3, commands: [{ kind: 'comment', threadId, target: { kind: 'post' }, text: 'Stored HTTP discussion' }] })).status).toBe(200)
       const messages = await (await fetch(`${base}/threads/${threadId}/messages`, { headers: { 'x-fixture-user': f.other.userId } })).json()
       expect((messages as { messages: Array<{ senderUserId: string; senderName: string }> }).messages[0]).toMatchObject({ senderUserId: f.actor.userId, senderName: 'Author fixture' })
+      const reviewResponse = await fetch(`${base}/reviews`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-fixture-user': f.actor.userId }, body: JSON.stringify({ mutationId: randomUUID(), expectedRevision: 3 }) })
+      expect(reviewResponse.status).toBe(200)
+      const queuedReview = await reviewResponse.json() as { run: { id: string; status: string } }
+      expect(queuedReview.run.status).toBe('pending')
+      await cancelFeedRun(f.actor, queuedReview.run.id)
       await pool.query('DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2', [f.workspaceId, f.actor.userId])
       expect((await send(request)).status).toBe(403)
     } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) }

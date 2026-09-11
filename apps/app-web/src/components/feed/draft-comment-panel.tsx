@@ -1,6 +1,6 @@
 "use client";
 /** Anchored discussion and reviewed edits share the composition command path. [COMP:app-web/feed-composition-editor] */
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import type { FeedAnchor, FeedCommand, FeedComposition, FeedEdit, FeedTarget } from '@use-brian/shared';
 import { feedText, inlineText, proposeFeedReplacement } from '@use-brian/doc-model';
 import { useT } from '@/lib/i18n/client';
@@ -18,11 +18,11 @@ export type FeedCommentPanelProps = {
   composer: FeedCommentComposer | null; onComposer: (value: FeedCommentComposer | null) => void;
   selectedThread: string | null; onThread: (id: string) => void; selection?: FeedTarget;
   onCommand: (commands: FeedCommand[], optimisticEdits?: FeedEdit[]) => Promise<boolean>;
-  onRefresh: () => void;
+  onRefresh: () => void; reviewHeader?: ReactNode;
 };
 const control = 'min-h-11 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50';
 export function DraftCommentPanel(props: FeedCommentPanelProps) {
-  const t = useT().feedCollaboration;
+  const t = useT().feedCollaboration; const tr = useT().feedReview;
   const [filter, setFilter] = useState<'open' | 'resolved' | 'all'>('open');
   const [brianThreads, setBrianThreads] = useState<string[]>([]);
   const threads = props.snapshot?.threads ?? [];
@@ -31,6 +31,7 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
   useEffect(() => { if (active?.resolved) setFilter('all'); }, [active?.id, active?.resolved]);
   const visible = threads.filter(thread => filter === 'all' || thread.resolved === (filter === 'resolved'));
   return <section aria-label={t.review} className="h-full overflow-y-auto overscroll-contain p-4 space-y-4" data-feed-review-panel>
+    {props.reviewHeader}
     <div className="flex flex-wrap gap-2" role="group" aria-label={t.review}>
       {(['open', 'resolved', 'all'] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} className={control} onClick={() => setFilter(value)}>{t[value]}</button>)}
       <button className={control} disabled={!canWrite} onClick={() => props.onComposer({ kind: 'comment', anchor: { target: { kind: 'post' }, quote: '', sourceRevision: props.revision, state: 'attached' } })}>{t.comment}</button>
@@ -45,6 +46,7 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
         <span className="font-medium">{thread.authorKind === 'assistant' ? t.brian : (thread.authorName ?? `${t.author} ${thread.authorUserId.slice(0, 8)}`)}</span>
         <blockquote className="mt-2 line-clamp-3 whitespace-pre-wrap border-l-2 pl-2">{thread.anchor.quote || t.post}</blockquote>
       </button>
+      {props.snapshot?.reviewFindings?.filter(item => item.threadId === thread.id).map(item => <div className="text-xs text-muted-foreground space-y-1" key={item.runId}><p>{tr[item.finding.priority]} · {item.finding.dimensions.map(dimension => tr[dimension]).join(', ')}</p>{item.finding.sources?.map(source => <p key={source.id}>{source.link && /^https?:\/\//i.test(source.link) ? <a href={source.link} target="_blank" rel="noopener noreferrer" className="underline">{source.title}</a> : source.title}{source.date ? ` (${source.date.slice(0, 10)})` : ''}</p>)}</div>)}
       {thread.anchor.state !== 'attached' ? <p className="text-sm text-amber-700 dark:text-amber-400">{thread.anchor.state === 'detached' ? t.detached : t.stale}</p> : null}
       {active?.id === thread.id ? <>
         <ThreadMessages {...props} thread={thread} />

@@ -173,6 +173,9 @@ import {
 import { contentPlanRoutes } from './routes/content-plan.js'
 import { contentIdeasRoutes } from './routes/content-ideas.js'
 import { postWorkingCopiesRoutes } from './routes/post-working-copies.js'
+import { createFeedEditorialModelResolver } from './content-planning/editorial-model.js'
+import { createFeedReviewHandler } from './content-planning/review.js'
+import { createFeedEditorialWorker } from './workers/feed-editorial-worker.js'
 import { feedCollaborationRoutes } from './routes/feed-collaboration.js'
 import {
   selfHostFeedCloudRoutes,
@@ -7306,6 +7309,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // ── Decision reflection worker (human-decision learning Phase 4) ──
   // Daily user-scoped projection from minimized, deliberate decision evidence.
   // The store independently enforces thresholds and prohibited output.
+  const feedEditorialWorker = createFeedEditorialWorker({ handlers: {
+    review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget })),
+  } })
+  if (runWorkers) feedEditorialWorker.start()
+
   const decisionReflectionWorker = createDecisionReflectionWorker({
     modelCall: async ({ systemPrompt, prompt, maxTokens, attribution }) => {
       const workspaceId = await workspaceForAssistant(attribution.assistantId)
@@ -8458,6 +8466,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     skillReviewWorker.stop()
     playbookReflectionWorker.stop()
     decisionReflectionWorker.stop()
+    feedEditorialWorker.stop()
     embeddingWorker.stop()
     pollWorker.stop()
     programmaticBatchWorker?.stop()

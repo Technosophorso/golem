@@ -109,11 +109,11 @@ export type FeedEdit = z.infer<typeof feedEditSchema>
 export const feedCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('upgrade'), seed: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('edit'), edits: z.array(feedEditSchema).min(1).max(100), reasonThreadId: feedIdSchema.optional(), applicationId: feedIdSchema.optional() }).strict(),
-  z.object({ kind: z.literal('comment'), threadId: feedIdSchema, target: feedTargetSchema, text: z.string().trim().min(1).max(20_000) }).strict(),
+  z.object({ kind: z.literal('comment'), sourceRevision: revision.optional(), threadId: feedIdSchema, target: feedTargetSchema, text: z.string().trim().min(1).max(20_000) }).strict(),
   z.object({ kind: z.literal('reply'), threadId: feedIdSchema, text: z.string().trim().min(1).max(20_000) }).strict(),
   z.object({ kind: z.literal('resolve'), threadId: feedIdSchema, resolved: z.boolean() }).strict(),
   z.object({ kind: z.literal('reattach'), threadId: feedIdSchema, target: feedTargetSchema }).strict(),
-  z.object({ kind: z.literal('propose'), suggestionId: feedIdSchema, threadId: feedIdSchema.optional(), parentId: feedIdSchema.optional(),
+  z.object({ kind: z.literal('propose'), sourceRevision: revision.optional(), suggestionId: feedIdSchema, threadId: feedIdSchema.optional(), parentId: feedIdSchema.optional(),
     edits: z.array(feedEditSchema).min(1).max(100), rationale: z.string().max(20_000), sourceMessageId: feedIdSchema.optional(),
     sourceProposal: z.object({ threadSegments: z.array(z.string().max(FEED_CONTENT_LIMIT)).min(1).max(100).optional(), index: z.number().int().min(1).max(99), text: z.string().max(FEED_CONTENT_LIMIT), label: z.string().max(30).optional(), imageBrief: z.string().max(2000).optional() }).strict().optional(),
     sourceToolCallId: z.string().max(512).optional(), applicationId: feedIdSchema.optional() }).strict(),
@@ -133,3 +133,51 @@ export const feedChatTargetSchema = z.object({
   sessionId: feedIdSchema, revision, target: feedTargetSchema.optional(), threadId: feedIdSchema.optional(),
 }).strict()
 export type FeedChatTarget = z.infer<typeof feedChatTargetSchema>
+
+/** One bounded vocabulary shared by Review's UI, tools, queue and model port. */
+export const FEED_REVIEW_DIMENSIONS = ['monthly_plan', 'post_history', 'post_goal', 'memory', 'content'] as const
+export const feedReviewDimensionSchema = z.enum(FEED_REVIEW_DIMENSIONS)
+export type FeedReviewDimension = z.infer<typeof feedReviewDimensionSchema>
+export const FEED_EDITORIAL_LIMITS = {
+  version: 1, recentPosts: 30, olderPosts: 20, sourcesPerCheck: 80,
+  inputCharacters: 160_000, sourceCharacters: 40_000, outputTokens: 6_000,
+  findingsPerCheck: 12, attempts: 3, leaseMs: 120_000, callTimeoutMs: 90_000,
+} as const
+export const feedEditorialStatusSchema = z.enum(['pending', 'running', 'succeeded', 'failed', 'cancelled', 'unknown_outcome'])
+export type FeedEditorialStatus = z.infer<typeof feedEditorialStatusSchema>
+export const feedReviewCoverageSchema = z.object({
+  state: z.enum(['checked', 'partial', 'unavailable', 'not_applicable', 'failed']),
+  eligible: z.number().int().nonnegative(), retrieved: z.number().int().nonnegative(), reviewed: z.number().int().nonnegative(),
+  limits: z.array(z.string().max(500)).max(30), oldest: z.string().nullable().optional(), newest: z.string().nullable().optional(),
+  nextCursor: z.number().int().nonnegative().nullable().optional(),
+}).strict()
+export type FeedReviewCoverage = z.infer<typeof feedReviewCoverageSchema>
+export const feedReviewFindingSchema = z.object({
+  issueKey: z.string().regex(/^[a-z][a-z0-9_]{1,79}$/), dimensions: z.array(feedReviewDimensionSchema).min(1).max(5),
+  priority: z.enum(['high', 'medium', 'low']), target: feedTargetSchema,
+  issue: z.string().trim().min(1).max(2000), nextStep: z.string().trim().min(1).max(2000),
+  evidence: z.array(z.object({ sourceId: z.string().max(160), quote: z.string().max(2000).optional() }).strict()).max(12),
+  suggestion: z.object({ edits: z.array(feedEditSchema).min(1).max(100), rationale: z.string().max(2000) }).strict().optional(),
+}).strict()
+export type FeedReviewFinding = z.infer<typeof feedReviewFindingSchema>
+export const feedReviewOutputSchema = z.object({ findings: z.array(feedReviewFindingSchema).max(FEED_EDITORIAL_LIMITS.findingsPerCheck) }).strict()
+export const feedReviewRequestSchema = z.object({
+  mutationId: feedIdSchema, expectedRevision: revision, model: z.enum(['standard', 'pro', 'max']).default('standard'),
+  locale: z.enum(['en', 'ja', 'zh', 'zh-cn']).default('en'), continuationRunId: feedIdSchema.optional(),
+}).strict()
+export type FeedReviewRequest = z.infer<typeof feedReviewRequestSchema>
+export type FeedReviewSource = {
+  id: string; kind: 'plan' | 'goal' | 'post' | 'memory' | 'playbook' | 'brand' | 'composition';
+  title: string; hash: string; body: string; link?: string; date?: string; state?: 'planned' | 'published'; applicationId?: string;
+}
+export type FeedReviewContext = {
+  version: 1; revision: number; composition: FeedComposition; platform: string; month: string; goalId: string | null;
+  historyCursor?: number; brandId: string | null; historyAssistantIds: string[]; contextHash: string;
+  dimensions: Record<FeedReviewDimension, { sources: FeedReviewSource[]; coverage: FeedReviewCoverage }>;
+}
+export type FeedEditorialRunSummary = {
+  id: string; kind: 'review' | 'text_generation' | 'image_generation' | 'confirmation_learning' | 'reconcile';
+  revision: number; status: FeedEditorialStatus; attempts: number; error: string | null; createdAt: string;
+  coverage: Partial<Record<FeedReviewDimension, FeedReviewCoverage>>; summaryThreadId: string | null;
+  stale?: boolean; model: string; month?: string; goalTitle?: string;
+}

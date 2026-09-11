@@ -96,6 +96,10 @@ export async function loadDecisionPlaybookContext(params: {
   externalPrincipal: boolean
   operationKind: string
   operationId: string
+  /** Feed shared review intersects the current draft audience before selection. */
+  allowedRuleIds?: readonly string[]
+  /** Source preview must not count as model application. Defaults to true. */
+  recordApplication?: boolean
   applicability?: DecisionPlaybookApplicability
   sourceKind?: string | null
   sourceId?: string | null
@@ -131,6 +135,7 @@ export async function loadDecisionPlaybookContext(params: {
   }
 
   const ordered = loaded
+    .filter(rule => !params.allowedRuleIds || params.allowedRuleIds.includes(rule.id))
     .filter((rule) => rule.appliesToUserId === null || (
       !params.externalPrincipal
       && params.actorUserId !== null
@@ -147,7 +152,7 @@ export async function loadDecisionPlaybookContext(params: {
     rule.createdBy === 'decision_reflection' && rule.appliesToUserId !== null)
 
   let decisionApplicationId: string | null = null
-  if (decisionRules.length > 0 && params.actorUserId && !params.externalPrincipal) {
+  if (params.recordApplication !== false && decisionRules.length > 0 && params.actorUserId && !params.externalPrincipal) {
     try {
       const application = await appendDecisionApplication({
         workspaceId: params.workspaceId,

@@ -42,7 +42,8 @@ export async function withFeedTransaction<T>(actor: FeedActor, work: (client: pg
   finally { client.release() }
 }
 const COPY_COLUMNS = 'revision,mutation_id AS "mutationId",content,discussion_sequence::int AS sequence'
-export async function readFeedCopy(client: pg.PoolClient, sessionId: string): Promise<(PostWorkingCopy & { sequence: number }) | null> {
+export type FeedReader = { query: typeof import('./client.js').query }
+export async function readFeedCopy(client: FeedReader, sessionId: string): Promise<(PostWorkingCopy & { sequence: number }) | null> {
   return (await client.query<PostWorkingCopy & { sequence: number }>(`SELECT ${COPY_COLUMNS} FROM feed_post_working_copies WHERE session_id=$1`, [sessionId])).rows[0] ?? null
 }
 export function requireFeedComposition(content: PostWorkingContent): StructuredFeedContent {
@@ -72,7 +73,7 @@ async function assertSameReference(client: pg.PoolClient, table: 'feed_comment_t
   if (ref && !(await client.query(`SELECT id FROM ${table} WHERE session_id=$1 AND id=$2`, [sessionId, ref])).rows.length) throw new FeedCollaborationError(404, 'reference_not_found')
 }
 async function assertApplication(client: pg.PoolClient, actor: FeedActor, scope: FeedScope, applicationId?: string): Promise<void> {
-  if (applicationId && !(await client.query(`SELECT id FROM decision_applications WHERE id=$1 AND workspace_id=$2 AND assistant_id=$3 AND actor_user_id=$4 AND operation_id=$5`, [applicationId, scope.workspaceId, actor.assistantId, actor.userId, actor.sessionId])).rows.length) throw new FeedCollaborationError(403, 'application_scope_mismatch')
+  if (applicationId && !(await client.query(`SELECT id FROM decision_applications WHERE id=$1 AND workspace_id=$2 AND assistant_id=$3 AND actor_user_id=$4 AND (operation_id=$5 OR (operation_kind='feed_review' AND EXISTS(SELECT 1 FROM feed_editorial_runs r WHERE r.id::text=decision_applications.operation_id AND r.session_id=$5::uuid AND r.actor_user_id=$4)))`, [applicationId, scope.workspaceId, actor.assistantId, actor.userId, actor.sessionId])).rows.length) throw new FeedCollaborationError(403, 'application_scope_mismatch')
 }
 async function assertUnchangedProposalTargets(client: pg.PoolClient, sessionId: string, sourceRevision: number, current: FeedComposition, edits: FeedEdit[]): Promise<void> {
   const source = (await client.query<{ content: PostWorkingContent }>('SELECT content FROM feed_post_revisions WHERE session_id=$1 AND revision=$2', [sessionId, sourceRevision])).rows[0]
@@ -86,10 +87,10 @@ async function assertUnchangedProposalTargets(client: pg.PoolClient, sessionId: 
     }
   }
 }
-export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequest): Promise<FeedCollaborationReceipt> {
+export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequest, transaction?: { client: pg.PoolClient; scope: FeedScope }): Promise<FeedCollaborationReceipt> {
   const input = feedCommandRequestSchema.parse(raw)
   const fingerprint = createHash('sha256').update(canonicalFeedValue(input)).digest('hex')
-  return withFeedTransaction(actor, async (client, scope) => {
+  const execute = async (client: pg.PoolClient, scope: FeedScope) => {
     const prior = (await client.query<{ fingerprint: string; actorUserId: string; actorKind: string; receipt: FeedCollaborationReceipt }>(
       `SELECT fingerprint,actor_user_id AS "actorUserId",actor_kind AS "actorKind",receipt FROM feed_collaboration_mutations WHERE session_id=$1 AND mutation_id=$2`, [actor.sessionId, input.mutationId],
     )).rows[0]
@@ -138,7 +139,9 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
       const structured = requireFeedComposition(content)
       if (command.kind === 'edit') await editContent(command.edits, command.reasonThreadId, command.applicationId)
       else if (command.kind === 'comment') {
-        const anchor = createFeedAnchor(structured.composition, command.target, currentRevision); const transcript = randomUUID()
+        const sourceRevision = command.sourceRevision ?? currentRevision
+        const source = await historicalFeedContent(client, actor.sessionId, sourceRevision, currentRevision, structured)
+        const anchor = await mapFeedHistoricalAnchor(client, actor.sessionId, createFeedAnchor(source.composition, command.target, sourceRevision), currentRevision, source.composition); const transcript = randomUUID()
         await client.query(`INSERT INTO sessions(id,assistant_id,user_id,channel_type,channel_id,workspace_id,visibility,title) VALUES($1,$2,$3,'feed_thread',$4,$5,'workspace','Draft discussion')`, [transcript, actor.assistantId, actor.userId, `feed-thread:${command.threadId}`, scope.workspaceId])
         await client.query(`INSERT INTO feed_comment_threads(id,session_id,workspace_id,assistant_id,transcript_session_id,anchor,author_user_id,author_kind) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, [command.threadId, actor.sessionId, scope.workspaceId, actor.assistantId, transcript, JSON.stringify(anchor), actor.userId, actor.kind])
         await client.query(`INSERT INTO session_messages(session_id,role,content,sequence_num,sender_user_id) VALUES($1,$2,$3,1,$4)`, [transcript, actor.kind === 'user' ? 'user' : 'assistant', JSON.stringify([{ type: 'text', text: command.text }]), actor.kind === 'user' ? actor.userId : null])
@@ -155,9 +158,11 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
         await assertSameReference(client, 'feed_draft_suggestions', actor.sessionId, command.parentId)
         await assertApplication(client, actor, scope, command.applicationId)
         if (command.sourceMessageId && !(await client.query(`SELECT id FROM session_messages WHERE id=$1 AND (session_id=$2 OR session_id IN (SELECT transcript_session_id FROM feed_comment_threads WHERE session_id=$2))`, [command.sourceMessageId, actor.sessionId])).rows.length) throw new FeedCollaborationError(403, 'message_scope_mismatch')
-        const candidate = applyFeedEdits(structured.composition, command.edits).composition
+        const sourceRevision = command.sourceRevision ?? currentRevision
+        const source = await historicalFeedContent(client, actor.sessionId, sourceRevision, currentRevision, structured)
+        const candidate = applyFeedEdits(source.composition, command.edits).composition
         await assertFeedFiles(client, actor, scope, candidate)
-        await client.query(`INSERT INTO feed_draft_suggestions(id,session_id,workspace_id,assistant_id,author_user_id,author_kind,source_revision,edits,rationale,thread_id,parent_id,source_message_id,source_tool_call_id,application_id,source_proposal) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [command.suggestionId, actor.sessionId, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, currentRevision, JSON.stringify(command.edits), command.rationale, command.threadId, command.parentId, command.sourceMessageId, command.sourceToolCallId, command.applicationId, command.sourceProposal ? JSON.stringify(command.sourceProposal) : null])
+        await client.query(`INSERT INTO feed_draft_suggestions(id,session_id,workspace_id,assistant_id,author_user_id,author_kind,source_revision,edits,rationale,thread_id,parent_id,source_message_id,source_tool_call_id,application_id,source_proposal) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [command.suggestionId, actor.sessionId, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, sourceRevision, JSON.stringify(command.edits), command.rationale, command.threadId, command.parentId, command.sourceMessageId, command.sourceToolCallId, command.applicationId, command.sourceProposal ? JSON.stringify(command.sourceProposal) : null])
         receipt.suggestionIds.push(command.suggestionId); sequence++
       } else if (command.kind === 'decide') {
         const suggestion = (await client.query<FeedSuggestion>(`SELECT ${SUGGESTION_COLUMNS} FROM feed_draft_suggestions WHERE session_id=$1 AND id=$2`, [actor.sessionId, command.suggestionId])).rows[0]
@@ -190,10 +195,12 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
     if (content.title !== copy.content.title) await client.query(`UPDATE sessions SET title=regexp_replace(title,'^(\\[[^]]+\\]).*$',E'\\1 ' || $2),title_manually_set=true WHERE id=$1`, [actor.sessionId, content.title])
     await client.query(`INSERT INTO feed_collaboration_mutations(session_id,mutation_id,workspace_id,assistant_id,actor_user_id,actor_kind,fingerprint,command_kind,receipt) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [actor.sessionId, input.mutationId, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, fingerprint, input.commands.map(c => c.kind).join(','), JSON.stringify(receipt)])
     return receipt
-  })
+  }
+  return transaction ? execute(transaction.client, transaction.scope) : withFeedTransaction(actor, execute)
 }
+
 export async function getFeedCollaboration(actor: FeedActor) {
-  return withFeedTransaction(actor, async client => ({ copy: await readFeedCopy(client, actor.sessionId), threads: await threads(client, actor.sessionId), suggestions: (await client.query<FeedSuggestion>(`SELECT ${SUGGESTION_COLUMNS} FROM feed_draft_suggestions WHERE session_id=$1 ORDER BY created_at,id`, [actor.sessionId])).rows }), false)
+  return withFeedTransaction(actor, async client => ({ runs: (await client.query(`SELECT id,kind,context->>'month' AS month,context#>>'{dimensions,post_goal,sources,0,title}' AS \"goalTitle\",source_revision AS revision,status,attempts,last_error AS error,created_at AS \"createdAt\",coverage,summary_thread_id AS \"summaryThreadId\",model FROM feed_editorial_runs WHERE session_id=$1 ORDER BY created_at DESC LIMIT 30`, [actor.sessionId])).rows, reviewFindings: (await client.query(`SELECT DISTINCT ON(thread_id) thread_id AS \"threadId\",run_id AS \"runId\",finding FROM feed_review_findings WHERE session_id=$1 ORDER BY thread_id,created_at DESC`, [actor.sessionId])).rows, copy: await readFeedCopy(client, actor.sessionId), threads: await threads(client, actor.sessionId), suggestions: (await client.query<FeedSuggestion>(`SELECT ${SUGGESTION_COLUMNS} FROM feed_draft_suggestions WHERE session_id=$1 ORDER BY created_at,id`, [actor.sessionId])).rows }), false)
 }
 export async function getFeedThreadMessages(actor: FeedActor, threadId: string, beforeSequence = 2_000_000_000) {
   return withFeedTransaction(actor, async client => {
@@ -201,4 +208,23 @@ export async function getFeedThreadMessages(actor: FeedActor, threadId: string, 
     if (!thread) throw new FeedCollaborationError(404, 'thread_not_found')
     return (await client.query(`SELECT (SELECT name FROM users WHERE id=sender_user_id) AS "senderName",id,role,content,sequence_num AS sequence,sender_user_id AS "senderUserId",created_at AS "createdAt" FROM session_messages WHERE session_id=$1 AND sequence_num<$2 ORDER BY sequence_num DESC LIMIT 50`, [thread.transcriptSessionId, beforeSequence])).rows.reverse()
   }, false)
+}
+
+async function historicalFeedContent(client: pg.PoolClient, sessionId: string, revision: number, currentRevision: number, current: StructuredFeedContent): Promise<StructuredFeedContent> {
+  if (revision > currentRevision) throw new FeedCollaborationError(409, 'revision_conflict')
+  if (revision === currentRevision) return current
+  const row = (await client.query<{ content: PostWorkingContent }>('SELECT content FROM feed_post_revisions WHERE session_id=$1 AND revision=$2', [sessionId, revision])).rows[0]
+  if (!row) throw new FeedCollaborationError(409, 'source_revision_unavailable')
+  return requireFeedComposition(row.content)
+}
+async function mapFeedHistoricalAnchor(client: pg.PoolClient, sessionId: string, anchor: FeedAnchor, currentRevision: number, source: FeedComposition): Promise<FeedAnchor> {
+  const rows = (await client.query<{ revision: number; edits: FeedEdit[]; content: StructuredFeedContent }>('SELECT revision,forward_commands AS edits,content FROM feed_post_revisions WHERE session_id=$1 AND revision>$2 AND revision<=$3 ORDER BY revision', [sessionId, anchor.sourceRevision, currentRevision])).rows
+  let mapped = anchor; let composition = source; let expected = anchor.sourceRevision
+  for (const row of rows) {
+    if (row.revision !== ++expected) throw new FeedCollaborationError(409, 'source_history_incomplete')
+    if (row.edits.length) mapped = applyFeedEdits(composition, row.edits, [mapped]).anchors[0]!
+    composition = row.content.composition
+  }
+  if (expected !== currentRevision) throw new FeedCollaborationError(409, 'source_history_incomplete')
+  return mapped
 }
