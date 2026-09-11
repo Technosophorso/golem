@@ -7,7 +7,7 @@ import { ProviderEntitlementEventSchema, ProviderReceiptStateSchema } from './pr
 import { WORKSPACE_MODULE_ACTIONS } from '@use-brian/shared'
 import { CrmOperationsActorSchema, CrmOperationsAuthoritySchema } from '../crm/operations-types.js'
 import {
-  AssociationTicketInputSchema, AssociationOrderCreateSchema, AssociationProviderEventInputSchema, AssociationProviderBindingInputSchema,
+  AssociationTicketInputSchema, AssociationOrderCreateSchema, AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema, AssociationProviderBindingInputSchema,
   AssociationRegistrationUpdateSchema, AssociationOrderStatusSchema, AssociationRegistrationStatusSchema,
   AssociationListPageSchema,
 } from './domain.js'
@@ -39,6 +39,7 @@ export const AssociationCommandSchema = z.union([
   z.object({ kind: z.literal('confirm_free_order'), orderId: Id }).strict(),
   z.object({ kind: z.literal('bind_order_provider'), orderId: Id, binding: AssociationProviderBindingInputSchema }).strict(),
   z.object({ kind: z.literal('reconcile_provider_event'), orderId: Id, event: AssociationProviderEventInputSchema }).strict(),
+  z.object({ kind: z.literal('reconcile_provider_financial_event'), orderId: Id, event: AssociationProviderFinancialEventInputSchema }).strict(),
   z.object({ kind: z.literal('reconcile_provider_entitlement'), event: ProviderEntitlementEventSchema }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_provider_receipts'), orderId: Id.optional(), entitlementId: Id.optional(), state: ProviderReceiptStateSchema.optional() }).strict(),
   z.object({ kind: z.literal('retry_provider_receipt'), receiptId: Id }).strict(),

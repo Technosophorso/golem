@@ -21,6 +21,7 @@ function fixture() {
     resolveProviderReceipt: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'manual', eventId }),
     updateRegistration: vi.fn(), reconcileProviderEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
+    reconcileProviderFinancialEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
     expireDueOrder: vi.fn(),
     cancelOrder: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }), confirmFreeOrder: vi.fn(),
   }
@@ -117,6 +118,17 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     expect(f.store.reconcileProviderEvent).not.toHaveBeenCalled()
     await f.service.execute({ ...member, actor: { kind: 'brain_key', credentialId }, authority: { ...member.authority, canReconcileProvider: true } }, input)
     expect(f.store.reconcileProviderEvent).toHaveBeenCalledTimes(1)
+  })
+  it('keeps refund and dispute evidence behind the same verified backend authority', async () => {
+    const f = fixture(), event = { provider: 'fixture', providerReference: 'fixture-object', adjustmentReference: 'refund-1',
+      eventId: 'event-2', kind: 'refund' as const, status: 'succeeded' as const, amountMinor: 400, currency: 'USD',
+      occurredAt: '2026-09-08T01:00:00Z', metadata: {} }
+    const input = command({ kind: 'reconcile_provider_financial_event', orderId, event })
+    await expect(f.service.execute({ ...member, authority: { ...member.authority, canReconcileProvider: true } }, input)).rejects.toMatchObject({ code: 'not_authorized' })
+    expect(f.store.reconcileProviderFinancialEvent).not.toHaveBeenCalled()
+    await f.service.execute({ ...member, actor: { kind: 'brain_key', credentialId }, authority: { ...member.authority, canReconcileProvider: true } }, input)
+    expect(f.store.reconcileProviderFinancialEvent).toHaveBeenCalledWith(workspaceId, orderId, event,
+      { credentialKind: 'brain_key', credentialId })
   })
   it('restricts provider bindings to backend payment authority', async () => {
     const f = fixture(), input = command({ kind: 'bind_order_provider', orderId, binding: { provider: 'fixture', providerReference: 'fictional-object', amountMinor: 1000, currency: 'USD' } })

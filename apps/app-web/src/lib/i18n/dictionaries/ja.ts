@@ -116,6 +116,26 @@ export const ja: Dictionary = {
       "cancelled": "キャンセル済み",
       "refunded": "返金済み"
     },
+    "total": "合計",
+    "refund": "返金",
+    "refundedAmount": "返金額",
+    "refundStates": {
+      "none": "なし",
+      "pending": "保留中",
+      "partial": "一部返金",
+      "partial_pending": "一部返金済み・追加返金待ち",
+      "partial_failed": "一部返金済み・追加返金失敗",
+      "full": "全額返金",
+      "failed": "失敗またはキャンセル"
+    },
+    "dispute": "異議申し立て",
+    "disputeStates": {
+      "none": "なし",
+      "open": "対応中",
+      "won": "勝訴または防止済み",
+      "lost": "敗訴",
+      "mixed": "複数の結果"
+    },
     "reservedUntil": "予約期限",
     "providerReference": "プロバイダー参照",
     "openContact": "連絡先を開く",

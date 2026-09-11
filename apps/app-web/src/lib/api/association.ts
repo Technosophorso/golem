@@ -33,6 +33,8 @@ export function changeAssociationModule(workspaceId: string, action: WorkspaceMo
 export type AssociationOrder = {
   id: string; contactId: string; status: "pending" | "paid" | "failed" | "cancelled" | "refunded";
   currency: string; totalMinor: string; reservationExpiresAt: string | null;
+  refundedMinor: string; refundState: "none" | "pending" | "partial" | "partial_pending" | "partial_failed" | "full" | "failed";
+  disputeState: "none" | "open" | "won" | "lost" | "mixed";
   provider: string | null; providerReference: string | null; createdAt: string;
 };
 export type AssociationOrdersPage = { orders: AssociationOrder[]; nextCursor: string | null };

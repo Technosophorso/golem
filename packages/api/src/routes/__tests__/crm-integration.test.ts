@@ -44,6 +44,19 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(page.body).toMatchObject({ receipts: [{ id: credentialId }], nextCursor: 'next-page' })
     expect(f.association.execute).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ kind: 'list_provider_receipts', limit: 10, state: 'retry' }))
   })
+  it('exposes the closed order financial-evidence command to the scoped backend adapter', async () => {
+    const f = fixture(), event = { provider: 'stripe', providerReference: 'cs_fixture', adjustmentReference: 're_fixture',
+      eventId: 'evt_financial', kind: 'refund', status: 'succeeded', amountMinor: 400, currency: 'USD',
+      occurredAt: '2026-09-09T00:00:00Z', metadata: {} }
+    f.association.execute.mockResolvedValueOnce({ command: 'reconcile_provider_financial_event', record: { id: eventId, refundState: 'partial' },
+      created: true, receipt: { id: credentialId, state: 'applied' } } as never)
+    const accepted = await request(f.app).post(`/api/crm/integration/association/orders/${eventId}/provider-financial-events`)
+      .set('Authorization', `Bearer ${token}`).send(event)
+    expect(accepted.status).toBe(201)
+    expect(accepted.body).toMatchObject({ order: { id: eventId, refundState: 'partial' }, created: true, receipt: { state: 'applied' } })
+    expect(f.association.execute).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'integration_key', credentialId } }),
+      { kind: 'reconcile_provider_financial_event', orderId: eventId, event })
+  })
   it('runs before JWT-only guards, derives context from the CRM credential and exposes no secret', async () => {
     const f = fixture()
     const result = await request(f.app).get('/api/crm/integration/catalog').set('Authorization', `Bearer ${token}`)

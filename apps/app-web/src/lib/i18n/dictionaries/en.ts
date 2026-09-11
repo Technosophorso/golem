@@ -129,6 +129,26 @@ export const en = {
       "cancelled": "Cancelled",
       "refunded": "Refunded"
     },
+    "total": "Total",
+    "refund": "Refund",
+    "refundedAmount": "Refunded amount",
+    "refundStates": {
+      "none": "None",
+      "pending": "Pending",
+      "partial": "Partial",
+      "partial_pending": "Partial, with another refund pending",
+      "partial_failed": "Partial, with another refund failed",
+      "full": "Full",
+      "failed": "Failed or cancelled"
+    },
+    "dispute": "Dispute",
+    "disputeStates": {
+      "none": "None",
+      "open": "Open",
+      "won": "Won or prevented",
+      "lost": "Lost",
+      "mixed": "Mixed outcomes"
+    },
     "reservedUntil": "Reserved until",
     "providerReference": "Provider reference",
     "openContact": "Open contact",

@@ -32,6 +32,8 @@ export {
   type AssociationOrderStatus as OrderStatus,
   AssociationProviderEventInputSchema as ProviderEventInputSchema,
   type AssociationProviderEventInput as ProviderEventInput,
+  AssociationProviderFinancialEventInputSchema as ProviderFinancialEventInputSchema,
+  type AssociationProviderFinancialEventInput as ProviderFinancialEventInput,
   AssociationRegistrationStatusSchema as RegistrationStatusSchema,
   type AssociationRegistrationStatus as RegistrationStatus,
   AssociationRegistrationUpdateSchema as RegistrationUpdateSchema,

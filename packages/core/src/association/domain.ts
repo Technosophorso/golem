@@ -240,6 +240,25 @@ export const AssociationProviderEventInputSchema = AssociationProviderBindingInp
 })
 export type AssociationProviderEventInput = z.infer<typeof AssociationProviderEventInputSchema>
 
+export const AssociationProviderFinancialEventInputSchema = z.object({
+  provider: ProviderKey,
+  providerReference: z.string().trim().min(1).max(500),
+  adjustmentReference: z.string().trim().min(1).max(500),
+  eventId: z.string().trim().min(1).max(500),
+  kind: z.enum(['refund', 'dispute']),
+  status: z.enum(['pending', 'succeeded', 'failed', 'cancelled', 'open', 'won', 'lost', 'prevented']),
+  amountMinor: z.number().int().positive().safe(),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  occurredAt: Instant,
+  metadata: boundedObject(8_000).default({}),
+}).strict().superRefine((value, ctx) => {
+  const allowed = value.kind === 'refund'
+    ? ['pending', 'succeeded', 'failed', 'cancelled']
+    : ['open', 'won', 'lost', 'prevented']
+  if (!allowed.includes(value.status)) ctx.addIssue({ code: 'custom', path: ['status'], message: 'Financial status does not match its kind.' })
+})
+export type AssociationProviderFinancialEventInput = z.infer<typeof AssociationProviderFinancialEventInputSchema>
+
 export const AssociationRegistrationStatusSchema = z.enum([
   'reserved', 'confirmed', 'cancelled', 'refunded', 'checked_in',
 ])

@@ -37,7 +37,7 @@ export function createAssociationService(options: {
       if (context.actor.kind === 'integration_key' && integration?.credentialId !== context.actor.credentialId) throw new CrmIntegrationScopeError('association.read')
       const operation: CrmIntegrationOperation = read ? 'association.read'
         : command.kind === 'save_ticket' ? 'crm.catalog.configure'
-        : ['reconcile_provider_event', 'reconcile_provider_entitlement', 'bind_order_provider'].includes(command.kind) ? 'association.provider_events.write' : 'association.orders.write'
+        : ['reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider'].includes(command.kind) ? 'association.provider_events.write' : 'association.orders.write'
       if (integration) {
         if (command.kind === 'module_action') throw new CrmOperationsError('not_authorized', 'A member owner or admin is required for module actions.')
         requireCrmIntegrationOperation(integration, operation)
@@ -46,7 +46,7 @@ export function createAssociationService(options: {
       if(command.kind==='expire_due_order' && !(context.actor.kind==='system_job' && context.actor.job==='association_expiry'))
         throw new CrmOperationsError('not_authorized','Due reservation expiry requires its dedicated system job.')
       if (context.actor.kind === 'system_job' && !(
-        (context.actor.job === 'association_reconciliation' && command.kind === 'reconcile_provider_event')
+        (context.actor.job === 'association_reconciliation' && ['reconcile_provider_event', 'reconcile_provider_financial_event'].includes(command.kind))
         || (context.actor.job === 'association_expiry' && command.kind === 'expire_due_order')
         || (context.actor.job === 'entitlement_reconciliation' && command.kind === 'reconcile_provider_entitlement')
       )) throw new CrmOperationsError('not_authorized', 'This system job cannot perform the requested Association command.')
@@ -111,6 +111,7 @@ export function createAssociationService(options: {
         case 'confirm_free_order': return { ...output, ...(await store.confirmFreeOrder(workspaceId, command.orderId, dbActor)) }
         case 'bind_order_provider':
         case 'reconcile_provider_entitlement':
+        case 'reconcile_provider_financial_event':
         case 'reconcile_provider_event': {
           if (!authority.canReconcileProvider || !['brain_key', 'oauth_token', 'integration_key', 'provider', 'system_job'].includes(context.actor.kind)) {
             throw new CrmOperationsError('not_authorized', 'Verified backend payment evidence is required; member and assistant commands cannot mark a checkout paid.')
@@ -121,6 +122,7 @@ export function createAssociationService(options: {
           return { ...output, ...(command.kind === 'bind_order_provider'
             ? await store.bindOrderProvider(workspaceId, command.orderId, command.binding, dbActor)
             : command.kind === 'reconcile_provider_entitlement' ? await store.reconcileProviderEntitlement(workspaceId, command.event, dbActor)
+            : command.kind === 'reconcile_provider_financial_event' ? await store.reconcileProviderFinancialEvent(workspaceId, command.orderId, command.event, dbActor)
             : await store.reconcileProviderEvent(workspaceId, command.orderId, command.event, dbActor)) }
         }
         case 'list_registrations': return { ...output, ...(await store.listEventRegistrations(workspaceId, command.eventId, { ...pagination(), status: command.status })) }

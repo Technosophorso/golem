@@ -91,7 +91,8 @@ describe("[COMP:app-web/association] Independent module controls", () => {
   });
 });
 
-const orderRow = (id = "order-one", status = "pending", totalMinor = "0") => ({ id, status, totalMinor, currency: "USD", contactId: "contact-one", reservationExpiresAt: null, provider: null, providerReference: null });
+const orderRow = (id = "order-one", status = "pending", totalMinor = "0") => ({ id, status, totalMinor, currency: "USD", contactId: "contact-one", reservationExpiresAt: null,
+  provider: null, providerReference: null, refundedMinor: "0", refundState: "none", disputeState: "none" });
 async function renderOrders() {
   await act(async () => root.render(<I18nProvider locale="en" dict={en}><AssociationOrdersPanel workspaceId="w1" /></I18nProvider>));
 }
@@ -123,6 +124,15 @@ describe("[COMP:app-web/association] Order history and recovery", () => {
     await renderOrders();
     expect([...host.querySelectorAll("button")].filter(button => button.textContent === t.confirmFree)).toHaveLength(0);
     expect([...host.querySelectorAll("button")].filter(button => button.textContent === t.cancelOrder)).toHaveLength(1);
+  });
+  it("shows normalized partial refund and dispute evidence without offering a financial mutation", async () => {
+    api.orders.mockResolvedValue({ orders: [{ ...orderRow("financial", "paid", "1000"), refundedMinor: "400",
+      refundState: "partial", disputeState: "open" }], nextCursor: null });
+    await renderOrders();
+    expect(host.querySelector("[data-order-refund]")?.textContent).toContain(t.refundStates.partial);
+    expect(host.querySelector("[data-order-refund]")?.textContent).toContain("$4.00");
+    expect(host.querySelector("[data-order-dispute]")?.textContent).toContain(t.disputeStates.open);
+    expect(api.orderChange).not.toHaveBeenCalled();
   });
   it("does not auto-retry an uncertain mutation or send a cancelled confirmation", async () => {
     api.orders.mockResolvedValue({ orders: [orderRow()], nextCursor: null });

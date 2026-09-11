@@ -116,6 +116,26 @@ export const zh: Dictionary = {
       "cancelled": "已取消",
       "refunded": "已退款"
     },
+    "total": "總額",
+    "refund": "退款",
+    "refundedAmount": "已退款金額",
+    "refundStates": {
+      "none": "沒有",
+      "pending": "待處理",
+      "partial": "部分退款",
+      "partial_pending": "已部分退款，另有退款待處理",
+      "partial_failed": "已部分退款，另有退款失敗",
+      "full": "全額退款",
+      "failed": "失敗或已取消"
+    },
+    "dispute": "爭議",
+    "disputeStates": {
+      "none": "沒有",
+      "open": "處理中",
+      "won": "勝訴或已防止",
+      "lost": "敗訴",
+      "mixed": "多種結果"
+    },
     "reservedUntil": "預訂期限",
     "providerReference": "供應商參照",
     "openContact": "開啟聯絡人",

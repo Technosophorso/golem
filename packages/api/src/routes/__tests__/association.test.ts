@@ -56,6 +56,7 @@ function fakeStore(): AssociationStore {
     cancelOrder: vi.fn(),
     confirmFreeOrder: vi.fn(),
     reconcileProviderEvent: vi.fn(),
+    reconcileProviderFinancialEvent: vi.fn(),
     bindOrderProvider: vi.fn(),
     reconcileProviderEntitlement: vi.fn(),
     retryProviderEventReceipt: vi.fn(),
@@ -109,6 +110,22 @@ describe('[COMP:api/association-route] credential and workspace authority', () =
     const rejected = await request(makeApp(store)).post(`/api/association/orders/${RECORD_ID}/provider-events`).send({ provider: 'fixture', eventId: 'fictional-event', targetStatus: 'paid', occurredAt: '2026-09-01T00:00:00Z' })
     expect(rejected.status).toBe(400)
     expect(store.reconcileProviderEvent).not.toHaveBeenCalled()
+  })
+  it('accepts only a closed normalized financial event at the backend route', async () => {
+    const store = fakeStore(), event = { provider: 'stripe', providerReference: 'cs_fixture', adjustmentReference: 're_fixture',
+      eventId: 'evt_fixture', kind: 'refund' as const, status: 'succeeded' as const, amountMinor: 400,
+      currency: 'USD', occurredAt: '2026-09-01T01:00:00Z', metadata: {} }
+    vi.mocked(store.reconcileProviderFinancialEvent).mockResolvedValue({ record: { id: RECORD_ID, refundState: 'partial' }, created: true,
+      receipt: { id: CONTACT_ID, state: 'applied' } })
+    const accepted = await request(makeApp(store)).post(`/api/association/orders/${RECORD_ID}/provider-financial-events`).send(event)
+    expect(accepted.status).toBe(201)
+    expect(accepted.body).toMatchObject({ order: { id: RECORD_ID, refundState: 'partial' }, reconciled: true,
+      receipt: { id: CONTACT_ID, state: 'applied' } })
+    expect(store.reconcileProviderFinancialEvent).toHaveBeenCalledWith(WID, RECORD_ID, event, expect.objectContaining({ credentialKind: 'brain_key' }))
+    const rejected = await request(makeApp(store)).post(`/api/association/orders/${RECORD_ID}/provider-financial-events`)
+      .send({ ...event, status: 'open' })
+    expect(rejected.status).toBe(400)
+    expect(store.reconcileProviderFinancialEvent).toHaveBeenCalledTimes(1)
   })
   it('adapts paginated waitlist reads and explicit offers through the shared command service', async () => {
     const store = fakeStore()

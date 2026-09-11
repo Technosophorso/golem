@@ -345,6 +345,9 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "subtotal_minor",
       "discount_minor",
       "total_minor",
+      "refunded_minor",
+      "refund_state",
+      "dispute_state",
       "reservation_expires_at",
       "provider",
       "provider_reference",
@@ -379,7 +382,12 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "occurred_at",
       "metadata",
       "created_at",
-      "request_fingerprint"
+      "request_fingerprint",
+      "event_kind",
+      "provider_adjustment_reference",
+      "financial_status",
+      "financial_amount_minor",
+      "financial_currency"
     ],
     "excludedColumns": [],
     "orderBy": "t.id",
@@ -389,6 +397,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "metadata": "'{}'::jsonb",
       "provider_reference": "NULL",
       "provider_event_id": "NULL",
+      "provider_adjustment_reference": "NULL",
       "request_fingerprint": "NULL"
     },
     "transforms": {},

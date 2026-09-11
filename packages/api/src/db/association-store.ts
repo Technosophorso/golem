@@ -13,8 +13,8 @@ import type { Pool, PoolClient, QueryResultRow } from 'pg'
 import { receiveProviderInbox, type ProviderInboxHandlers, type ProviderInboxRow } from '../association/provider-inbox.js'
 import { createProviderEntitlementInbox } from '../association/provider-entitlements.js'
 import type { ProviderEntitlementEvent, ProviderReceiptState } from '@use-brian/core'
-import { AssociationProviderBindingInputSchema, AssociationProviderEventInputSchema, crmOperationsSha256, type AssociationProviderBindingInput } from '@use-brian/core'
-import { requireAssociationProviderActor, requireBoundProviderOrder, requireProviderOrderMoney, type ProviderOrderIdentity } from '../association/provider.js'
+import { AssociationProviderBindingInputSchema, AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema, crmOperationsSha256, type AssociationProviderBindingInput } from '@use-brian/core'
+import { requireAssociationProviderActor, requireBoundProviderOrder, requireBoundProviderOrderIdentity, requireProviderOrderMoney, type ProviderOrderIdentity } from '../association/provider.js'
 import { CrmOperationsError, CrmEffectiveEntitlementQuerySchema, type CrmEffectiveEntitlementQuery, type CrmPageQuery, CrmIntegrationScopeError, requireCrmIntegrationResources, type CrmIntegrationOperation } from '@use-brian/core'
 import { listAssociationWaitlist, offerAssociationWaitlist, type WaitlistListInput } from '../association/waitlist.js'
 import type { AssociationWaitlistOfferInput } from '@use-brian/core'
@@ -44,6 +44,7 @@ import {
   type OrderStatus,
   type PlanInput,
   type ProviderEventInput,
+  type ProviderFinancialEventInput,
   mayTransitionRegistration,
   type RegistrationStatus,
   type RegistrationUpdateInput,
@@ -92,6 +93,7 @@ export type AssociationStore = {
   reconcileProviderEntitlement(workspaceId: string, input: ProviderEntitlementEvent, actor: AssociationActor): Promise<MutationResult>
   listProviderReceipts(workspaceId: string, input: AssociationListInput & { orderId?: string; entitlementId?: string; state?: ProviderReceiptState; allowedEventIds?: readonly string[]; allowedPlanIds?: readonly string[] }): Promise<AssociationPage>
   reconcileProviderEvent(workspaceId: string, orderId: string, input: ProviderEventInput, actor: AssociationActor): Promise<MutationResult>
+  reconcileProviderFinancialEvent(workspaceId: string, orderId: string, input: ProviderFinancialEventInput, actor: AssociationActor): Promise<MutationResult>
   listEventRegistrations(workspaceId: string, eventId: string, input: AssociationListInput & { status?: RegistrationStatus }): Promise<AssociationPage>
   getRegistrationManagement(workspaceId: string, id: string): Promise<{ sourceKind: string; eventId?: string } | null>
   updateRegistration(workspaceId: string, id: string, input: RegistrationUpdateInput, actor: AssociationActor): Promise<AssociationRecord>
@@ -219,7 +221,8 @@ const ORDER_SELECT = `
   idempotency_key AS "idempotencyKey", status, currency,
   subtotal_minor::text AS "subtotalMinor", discount_minor::text AS "discountMinor",
   total_minor::text AS "totalMinor", reservation_expires_at AS "reservationExpiresAt",
-  provider, provider_reference AS "providerReference", metadata,
+  provider, provider_reference AS "providerReference", refunded_minor::text AS "refundedMinor",
+  refund_state AS "refundState", dispute_state AS "disputeState", metadata,
   created_at AS "createdAt", updated_at AS "updatedAt"`
 const REGISTRATION_SELECT = `
   id, workspace_id AS "workspaceId", order_id AS "orderId",
@@ -404,7 +407,7 @@ async function applyProviderOrderEvent(client: PoolClient, workspaceId: string, 
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended('association-provider-event:'||$1::text||':'||$2||':'||$3,0))", [workspaceId, input.provider, input.eventId])
         const inventoryEvents=await lockAssociationInventory(client,workspaceId,{orderId})
         const order = (await client.query<ProviderOrderIdentity>(
-          'SELECT status,provider,provider_reference,currency,total_minor::text FROM association_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE',
+          'SELECT status,provider,provider_reference,currency,total_minor::text,refunded_minor::text FROM association_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE',
           [workspaceId, orderId],
         )).rows[0]
         if (!order) throw new AssociationError('not_found', 'order not found')
@@ -445,6 +448,8 @@ async function applyProviderOrderEvent(client: PoolClient, workspaceId: string, 
         await client.query(
           `UPDATE association_orders SET status = $3, provider = $4,
                   provider_reference = COALESCE($5, provider_reference),
+                  refunded_minor = CASE WHEN $3 = 'refunded' THEN total_minor ELSE refunded_minor END,
+                  refund_state = CASE WHEN $3 = 'refunded' THEN 'full' ELSE refund_state END,
                   reservation_expires_at = CASE WHEN $3 = 'pending' THEN reservation_expires_at ELSE NULL END
             WHERE workspace_id = $1 AND id = $2`,
           [workspaceId, orderId, input.targetStatus, input.provider,
@@ -487,6 +492,115 @@ async function applyProviderOrderEvent(client: PoolClient, workspaceId: string, 
 
 }
 
+async function applyProviderOrderFinancialEvent(client: PoolClient, workspaceId: string, orderId: string,
+  raw: ProviderFinancialEventInput, actor: AssociationActor): Promise<MutationResult> {
+  const input = AssociationProviderFinancialEventInputSchema.parse(raw)
+  const fingerprint = crmOperationsSha256({ orderId, ...input, occurredAt: crmPageInstant(input.occurredAt) })
+  const integration = await lockIntegrationActor(client, workspaceId, actor)
+  await lockAssociationModule(client, workspaceId)
+  await authorizeOrderIntegration(client, workspaceId, orderId, actor, 'association.provider_events.write', input.provider, integration)
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended('association-provider-event:'||$1::text||':'||$2||':'||$3,0))",
+    [workspaceId, input.provider, input.eventId])
+  const inventoryEvents = await lockAssociationInventory(client, workspaceId, { orderId })
+  const order = (await client.query<ProviderOrderIdentity>(
+    'SELECT status,provider,provider_reference,currency,total_minor::text,refunded_minor::text FROM association_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE',
+    [workspaceId, orderId],
+  )).rows[0]
+  if (!order) throw new AssociationError('not_found', 'order not found')
+  requireBoundProviderOrderIdentity(order, input)
+  const total = Number(order.total_minor)
+  if (!Number.isSafeInteger(total) || input.currency !== order.currency || input.amountMinor > total) {
+    throw new AssociationError('conflict', 'Financial evidence currency and amount must fit the bound Brian order.')
+  }
+  if (!['paid', 'refunded'].includes(order.status)) {
+    throw new AssociationError('invalid_transition', 'Refund or dispute evidence requires a paid or refunded order.')
+  }
+  const replay = (await client.query<{ request_fingerprint: string | null }>(
+    'SELECT request_fingerprint FROM association_provider_events WHERE workspace_id=$1 AND provider=$2 AND provider_event_id=$3',
+    [workspaceId, input.provider, input.eventId],
+  )).rows[0]
+  if (replay) {
+    if (replay.request_fingerprint !== fingerprint) {
+      throw new AssociationError('conflict', 'Provider event identity was already used for different normalized evidence.')
+    }
+    return { record: (await getOrderRecord(client, workspaceId, orderId))!, created: false }
+  }
+  const previous = (await client.query<{
+    financial_status: string; financial_amount_minor: string; financial_currency: string; incoming_not_older: boolean;
+  }>(`SELECT financial_status,financial_amount_minor::text,financial_currency,$5::timestamptz>=occurred_at incoming_not_older
+      FROM association_provider_events
+      WHERE workspace_id=$1 AND order_id=$2 AND event_kind=$3 AND provider_adjustment_reference=$4
+      ORDER BY occurred_at DESC,created_at DESC,id DESC LIMIT 1`,
+    [workspaceId, orderId, input.kind, input.adjustmentReference, input.occurredAt])).rows[0]
+  if (previous && (previous.financial_amount_minor !== String(input.amountMinor) || previous.financial_currency !== input.currency)) {
+    throw new AssociationError('conflict', 'A provider financial object cannot change amount or currency.')
+  }
+  const terminal = input.kind === 'refund' ? ['succeeded', 'failed', 'cancelled'] : ['won', 'lost', 'prevented']
+  if (previous && terminal.includes(previous.financial_status) && previous.financial_status !== input.status
+    && previous.incoming_not_older) {
+    throw new AssociationError('conflict', 'A terminal provider financial object cannot change state.')
+  }
+  await client.query(
+    `INSERT INTO association_provider_events
+       (workspace_id,order_id,provider,provider_event_id,target_status,provider_reference,occurred_at,metadata,request_fingerprint,
+        event_kind,provider_adjustment_reference,financial_status,financial_amount_minor,financial_currency)
+     VALUES($1,$2,$3,$4,NULL,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+    [workspaceId, orderId, input.provider, input.eventId, input.providerReference, input.occurredAt, input.metadata, fingerprint,
+      input.kind, input.adjustmentReference, input.status, input.amountMinor, input.currency],
+  )
+  const summary = (await client.query<{
+    refunded_minor: string; refund_pending: boolean; refund_failed: boolean;
+    dispute_open: number; dispute_won: number; dispute_lost: number;
+  }>(`WITH latest AS (
+      SELECT DISTINCT ON(event_kind,provider_adjustment_reference)
+        event_kind,financial_status,financial_amount_minor
+      FROM association_provider_events
+      WHERE workspace_id=$1 AND order_id=$2 AND event_kind IN('refund','dispute')
+      ORDER BY event_kind,provider_adjustment_reference,occurred_at DESC,created_at DESC,id DESC
+    ) SELECT
+      COALESCE(sum(financial_amount_minor) FILTER(WHERE event_kind='refund' AND financial_status='succeeded'),0)::text refunded_minor,
+      COALESCE(bool_or(financial_status='pending') FILTER(WHERE event_kind='refund'),false) refund_pending,
+      COALESCE(bool_or(financial_status IN('failed','cancelled')) FILTER(WHERE event_kind='refund'),false) refund_failed,
+      count(*) FILTER(WHERE event_kind='dispute' AND financial_status='open')::int dispute_open,
+      count(*) FILTER(WHERE event_kind='dispute' AND financial_status IN('won','prevented'))::int dispute_won,
+      count(*) FILTER(WHERE event_kind='dispute' AND financial_status='lost')::int dispute_lost
+    FROM latest`, [workspaceId, orderId])).rows[0]
+  const aggregateRefunded = Number(summary.refunded_minor)
+  const priorRefunded = Number(order.refunded_minor)
+  if (!Number.isSafeInteger(aggregateRefunded) || !Number.isSafeInteger(priorRefunded) || aggregateRefunded > total
+    || (order.status === 'refunded' && aggregateRefunded > 0 && aggregateRefunded !== total)) {
+    throw new AssociationError('conflict', 'Financial evidence contradicts the order refund total.')
+  }
+  const refunded = Math.max(aggregateRefunded, priorRefunded)
+  const refundState = refunded === total ? 'full'
+    : refunded > 0 && summary.refund_pending ? 'partial_pending'
+      : refunded > 0 && summary.refund_failed ? 'partial_failed'
+      : refunded > 0 ? 'partial'
+        : summary.refund_pending ? 'pending'
+          : summary.refund_failed ? 'failed' : 'none'
+  const disputeState = summary.dispute_open > 0 ? 'open'
+    : summary.dispute_won > 0 && summary.dispute_lost > 0 ? 'mixed'
+      : summary.dispute_lost > 0 ? 'lost'
+        : summary.dispute_won > 0 ? 'won' : 'none'
+  const fullRefund = order.status === 'paid' && refunded === total
+  await client.query(`UPDATE association_orders SET refunded_minor=$3,refund_state=$4,dispute_state=$5,
+    status=CASE WHEN $6 THEN 'refunded' ELSE status END WHERE workspace_id=$1 AND id=$2`,
+    [workspaceId, orderId, refunded, refundState, disputeState, fullRefund])
+  if (fullRefund) {
+    await client.query(`UPDATE association_registrations SET status='refunded',reservation_expires_at=NULL
+      WHERE workspace_id=$1 AND order_id=$2 AND status IN('reserved','confirmed','checked_in')`, [workspaceId, orderId])
+    await refreshAssociationInventory(client, workspaceId, inventoryEvents, actor.credentialKind)
+  }
+  await audit(client, workspaceId, 'order.financial_evidence', 'order', orderId, actor, {
+    provider: input.provider, providerEventId: input.eventId, kind: input.kind, status: input.status,
+    amountMinor: input.amountMinor, currency: input.currency,
+  })
+  if (fullRefund) await audit(client, workspaceId, 'order.refunded', 'order', orderId, actor, {
+    provider: input.provider, providerEventId: input.eventId, from: order.status, to: 'refunded',
+  })
+  return { record: (await getOrderRecord(client, workspaceId, orderId))!, created: true }
+}
+
 export function createAssociationStore(pool: Pool = getPool(), transactionClient?: PoolClient): AssociationStore {
   // A waitlist promotion shares this exact order implementation and outer commit.
   const transact = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> => transactionClient ? fn(transactionClient) : transaction(pool, fn)
@@ -504,7 +618,9 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
     },
     async apply(client, envelope, actor) {
       if (envelope.target !== 'order') throw new CrmOperationsError('invalid_input', 'Order evidence is required.')
-      return applyProviderOrderEvent(client, workspaceId, envelope.orderId, envelope.event, actor)
+      return 'targetStatus' in envelope.event
+        ? applyProviderOrderEvent(client, workspaceId, envelope.orderId, envelope.event, actor)
+        : applyProviderOrderFinancialEvent(client, workspaceId, envelope.orderId, envelope.event, actor)
     },
     async read(client, row) {
       const order = await getOrderRecord(client, workspaceId, row.order_id!)
@@ -1176,6 +1292,9 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         const subtotal = pricedLines.reduce((sum, line) => sum + line.publicPrice * line.input.quantity, 0)
         const total = pricedLines.reduce((sum, line) => sum + line.unitPrice * line.input.quantity, 0)
         const discount = subtotal - total
+        if (![subtotal, total, discount].every(Number.isSafeInteger)) {
+          throw new AssociationError('conflict', 'Order money exceeds the supported exact integer range.')
+        }
         const reservationExpiresAt=(await client.query<{deadline:string}>(
           "SELECT ($1::timestamptz+$2::integer*interval '1 minute')::text deadline",[admittedAt,input.reservationMinutes])).rows[0].deadline
         const orderResult = await client.query<{ id: string }>(
@@ -1271,7 +1390,7 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         const module = await lockAssociationModule(client, workspaceId)
         await authorizeOrderIntegration(client, workspaceId, orderId, actor, 'association.provider_events.write', input.provider, integration)
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended('association-provider-object:'||$1::text||':'||$2||':'||$3,0))", [workspaceId, input.provider, input.providerReference])
-        const order = (await client.query<ProviderOrderIdentity>('SELECT status,provider,provider_reference,currency,total_minor::text FROM association_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [workspaceId, orderId])).rows[0]
+        const order = (await client.query<ProviderOrderIdentity>('SELECT status,provider,provider_reference,currency,total_minor::text,refunded_minor::text FROM association_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [workspaceId, orderId])).rows[0]
         if (!order) throw new AssociationError('not_found', 'order not found')
         requireProviderOrderMoney(order, input)
         if (order.provider_reference) {
@@ -1290,6 +1409,7 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
     },
 
     reconcileProviderEvent: (workspaceId, orderId, event, actor) => receiveProviderInbox(pool, { target: 'order', orderId, event }, actor, workspaceId, providerHandlers(workspaceId)),
+    reconcileProviderFinancialEvent: (workspaceId, orderId, event, actor) => receiveProviderInbox(pool, { target: 'order', orderId, event }, actor, workspaceId, providerHandlers(workspaceId)),
     reconcileProviderEntitlement: (workspaceId, input, actor) => createProviderEntitlementInbox(pool).submit(workspaceId, input, actor),
     async retryProviderEventReceipt(workspaceId, receiptId) {
       const row = (await pool.query<ProviderInboxRow>('SELECT * FROM association_integration_events WHERE workspace_id=$1 AND id=$2', [workspaceId, receiptId])).rows[0]

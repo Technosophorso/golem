@@ -12,6 +12,12 @@ import { Button } from "@/components/ui/button";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { ListSurfaceSkeleton } from "@/components/chrome/surface-skeleton";
 
+function formatMinor(amount: string, currency: string): string {
+  const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency });
+  const fractionDigits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
+  return formatter.format(Number(amount) / 10 ** fractionDigits);
+}
+
 export function AssociationOrdersPanel({ workspaceId }: { workspaceId: string }) {
   const t = useT().associationPage;
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
@@ -48,6 +54,11 @@ export function AssociationOrdersPanel({ workspaceId }: { workspaceId: string })
         <div className="min-w-0 space-y-1">
           <h3 className="break-all font-mono text-sm" title={order.id}>{t.order} {order.id.slice(0, 8)}</h3>
           <p className="text-sm">{t.orderStates[order.status]}</p>
+          <p className="text-xs text-muted-foreground">{t.total}: {formatMinor(order.totalMinor, order.currency)}</p>
+          {order.refundState !== "none" && <p className="text-xs text-muted-foreground" data-order-refund>
+            {t.refund}: {t.refundStates[order.refundState]}{order.refundedMinor !== "0" ? ` · ${t.refundedAmount}: ${formatMinor(order.refundedMinor, order.currency)}` : ""}
+          </p>}
+          {order.disputeState !== "none" && <p className="text-xs text-muted-foreground" data-order-dispute>{t.dispute}: {t.disputeStates[order.disputeState]}</p>}
           {order.reservationExpiresAt && order.status === "pending" && <p className="text-xs text-muted-foreground">{t.reservedUntil} {new Date(order.reservationExpiresAt).toLocaleString()}</p>}
           {order.providerReference && <p className="break-all text-xs text-muted-foreground">{t.providerReference}: {order.provider} / {order.providerReference}</p>}
           <Link className="inline-flex min-h-11 items-center text-sm text-primary underline" href={crmRecordHref(workspaceId, "contact", order.contactId)}>{t.openContact}</Link>

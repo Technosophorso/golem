@@ -1,6 +1,6 @@
 /** Closed normalized provider inbox contracts. [COMP:crm/provider-inbox] */
 import { z } from 'zod'
-import { AssociationProviderEventInputSchema } from './domain.js'
+import { AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema } from './domain.js'
 import { GrantCrmEntitlementCommandSchema, UpdateCrmEntitlementCommandSchema } from '../crm/operations-types.js'
 
 export const ProviderEntitlementEventSchema = z.object({
@@ -19,7 +19,8 @@ export const ProviderEntitlementEventSchema = z.object({
 })
 export type ProviderEntitlementEvent = z.infer<typeof ProviderEntitlementEventSchema>
 export const ProviderInboxEnvelopeSchema = z.discriminatedUnion('target', [
-  z.object({ target: z.literal('order'), orderId: z.string().uuid(), event: AssociationProviderEventInputSchema }).strict(),
+  z.object({ target: z.literal('order'), orderId: z.string().uuid(),
+    event: z.union([AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema]) }).strict(),
   z.object({ target: z.literal('entitlement'), event: ProviderEntitlementEventSchema }).strict(),
 ])
 export type ProviderInboxEnvelope = z.infer<typeof ProviderInboxEnvelopeSchema>

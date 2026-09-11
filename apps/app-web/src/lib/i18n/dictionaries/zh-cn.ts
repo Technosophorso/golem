@@ -127,6 +127,26 @@ export const zhCN: Dictionary = {
       "cancelled": "已取消",
       "refunded": "已退款"
     },
+    "total": "总额",
+    "refund": "退款",
+    "refundedAmount": "已退款金额",
+    "refundStates": {
+      "none": "没有",
+      "pending": "待处理",
+      "partial": "部分退款",
+      "partial_pending": "已部分退款，另有退款待处理",
+      "partial_failed": "已部分退款，另有退款失败",
+      "full": "全额退款",
+      "failed": "失败或已取消"
+    },
+    "dispute": "争议",
+    "disputeStates": {
+      "none": "没有",
+      "open": "处理中",
+      "won": "胜诉或已防止",
+      "lost": "败诉",
+      "mixed": "多种结果"
+    },
     "reservedUntil": "预订期限",
     "providerReference": "供应商参考编号",
     "openContact": "打开联系人",

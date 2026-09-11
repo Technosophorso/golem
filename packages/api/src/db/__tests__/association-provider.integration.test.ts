@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
-import { type AssociationActor, type AssociationProviderEventInput } from '@use-brian/core'
+import { type AssociationActor, type AssociationProviderEventInput, type AssociationProviderFinancialEventInput } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
 import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
 import { createAssociationStore } from '../association-store.js'
@@ -25,7 +25,13 @@ async function fixture() {
   const bind = (id = orderId, patch = {}, a = actor) => store.bindOrderProvider(workspaceId, id, { ...binding, ...patch }, a)
   const evidence: AssociationProviderEventInput = { ...binding, eventId: randomUUID(), targetStatus: 'paid', occurredAt: '2026-09-01T12:00:00.000001Z', metadata: {} }
   const apply = (patch: Partial<AssociationProviderEventInput> = {}, id = orderId, a = actor) => store.reconcileProviderEvent(workspaceId, id, { ...evidence, ...patch }, a)
-  return { workspaceId, userId, human, actor, eventId, orderId, binding, evidence, order, bind, apply }
+  const financialEvidence: AssociationProviderFinancialEventInput = { provider: binding.provider,
+    providerReference: binding.providerReference, adjustmentReference: randomUUID(), eventId: randomUUID(),
+    kind: 'refund', status: 'succeeded', amountMinor: 400, currency: 'USD',
+    occurredAt: '2026-09-01T13:00:00.000001Z', metadata: {} }
+  const applyFinancial = (patch: Partial<AssociationProviderFinancialEventInput> = {}, id = orderId, a = actor) =>
+    store.reconcileProviderFinancialEvent(workspaceId, id, { ...financialEvidence, ...patch }, a)
+  return { workspaceId, userId, human, actor, eventId, orderId, binding, evidence, financialEvidence, order, bind, apply, applyFinancial }
 }
 async function counts(ws: string) {
   return (await pool.query(`SELECT
@@ -72,10 +78,69 @@ describe('[COMP:crm/association-provider] Actual provider object and money admis
     const registration = (await pool.query('SELECT id FROM association_registrations WHERE order_id=$1', [f.orderId])).rows[0].id
     await store.updateRegistration(f.workspaceId, registration, { status: 'checked_in' }, f.human)
     const refund = { eventId: randomUUID(), targetStatus: 'refunded' as const }
-    await f.apply(refund); await f.apply(refund)
+    expect((await f.apply(refund)).record).toMatchObject({ status: 'refunded', refundedMinor: '1000', refundState: 'full' })
+    await f.apply(refund)
     expect((await pool.query('SELECT status FROM association_registrations WHERE id=$1', [registration])).rows[0].status).toBe('refunded')
-    expect(await counts(f.workspaceId)).toEqual({ evidence: 2, transitions: 2, notifications: 2 })
+    expect((await f.applyFinancial({ kind: 'dispute', status: 'open', amountMinor: 1000, eventId: randomUUID() })).record)
+      .toMatchObject({ status: 'refunded', refundedMinor: '1000', refundState: 'full', disputeState: 'open' })
+    expect(await counts(f.workspaceId)).toEqual({ evidence: 3, transitions: 2, notifications: 2 })
     await expect(f.apply({ eventId: randomUUID() })).rejects.toMatchObject({ code: 'invalid_transition' })
+  })
+  it('summarizes partial refund state and releases attendance only at the exact full total', async () => {
+    const f = await fixture(); await f.bind(); await f.apply()
+    const registration = (await pool.query('SELECT id FROM association_registrations WHERE order_id=$1', [f.orderId])).rows[0].id
+    await store.updateRegistration(f.workspaceId, registration, { status: 'checked_in' }, f.human)
+    const partial = await f.applyFinancial()
+    expect(partial.record).toMatchObject({ status: 'paid', refundedMinor: '400', refundState: 'partial', disputeState: 'none' })
+    expect((await pool.query('SELECT status FROM association_registrations WHERE id=$1', [registration])).rows[0].status).toBe('checked_in')
+    await expect(f.applyFinancial({ eventId: randomUUID(), status: 'failed',
+      occurredAt: '2026-09-01T13:30:00.000001Z' })).rejects.toMatchObject({ code: 'conflict', details: { receiptState: 'needs_reconciliation' } })
+    expect(await store.getOrder(f.workspaceId, f.orderId)).toMatchObject({ refundedMinor: '400', refundState: 'partial' })
+    const failed = await f.applyFinancial({ eventId: randomUUID(), adjustmentReference: randomUUID(), status: 'failed', amountMinor: 100,
+      occurredAt: '2026-09-01T13:45:00.000001Z' })
+    expect(failed.record).toMatchObject({ status: 'paid', refundedMinor: '400', refundState: 'partial_failed' })
+    const remainder = randomUUID()
+    const pending = await f.applyFinancial({ eventId: randomUUID(), adjustmentReference: remainder, status: 'pending', amountMinor: 600,
+      occurredAt: '2026-09-01T14:00:00.000001Z' })
+    expect(pending.record).toMatchObject({ status: 'paid', refundedMinor: '400', refundState: 'partial_pending' })
+    const completedEventId = randomUUID()
+    const completed = await f.applyFinancial({ eventId: completedEventId, adjustmentReference: remainder, status: 'succeeded', amountMinor: 600,
+      occurredAt: '2026-09-01T15:00:00.000001Z' })
+    expect(completed.record).toMatchObject({ status: 'refunded', refundedMinor: '1000', refundState: 'full' })
+    expect((await pool.query('SELECT status FROM association_registrations WHERE id=$1', [registration])).rows[0].status).toBe('refunded')
+    expect((await store.listTickets(f.workspaceId, f.eventId))[0]).toMatchObject({ reservedCount: 0, available: 10 })
+    expect((await f.applyFinancial({ eventId: completedEventId, adjustmentReference: remainder, status: 'succeeded', amountMinor: 600,
+      occurredAt: '2026-09-01T15:00:00.000001Z' })).created).toBe(false)
+    await expect(f.applyFinancial({ eventId: completedEventId, adjustmentReference: remainder, status: 'failed', amountMinor: 600,
+      occurredAt: '2026-09-01T15:00:00.000001Z' })).rejects.toMatchObject({ code: 'idempotency_conflict' })
+  })
+  it('records dispute outcomes without inferring attendance or order transitions', async () => {
+    const f = await fixture(); await f.bind(); await f.apply()
+    const dispute = randomUUID()
+    const opened = await f.applyFinancial({ kind: 'dispute', status: 'open', adjustmentReference: dispute,
+      eventId: randomUUID(), amountMinor: 1000 })
+    expect(opened.record).toMatchObject({ status: 'paid', refundState: 'none', disputeState: 'open' })
+    const won = await f.applyFinancial({ kind: 'dispute', status: 'won', adjustmentReference: dispute,
+      eventId: randomUUID(), amountMinor: 1000, occurredAt: '2026-09-01T14:00:00.000001Z' })
+    expect(won.record).toMatchObject({ status: 'paid', refundState: 'none', disputeState: 'won' })
+    const staleOpen = await f.applyFinancial({ kind: 'dispute', status: 'open', adjustmentReference: dispute,
+      eventId: randomUUID(), amountMinor: 1000, occurredAt: '2026-09-01T13:30:00.000001Z' })
+    expect(staleOpen.record).toMatchObject({ status: 'paid', refundState: 'none', disputeState: 'won' })
+    expect((await pool.query('SELECT status FROM association_registrations WHERE order_id=$1', [f.orderId])).rows[0].status).toBe('confirmed')
+    await expect(f.applyFinancial({ kind: 'dispute', status: 'lost', adjustmentReference: dispute,
+      eventId: randomUUID(), amountMinor: 1000, occurredAt: '2026-09-01T15:00:00.000001Z' }))
+      .rejects.toMatchObject({ code: 'conflict', details: { receiptState: 'needs_reconciliation' } })
+    await expect(f.applyFinancial({ kind: 'dispute', status: 'lost', adjustmentReference: dispute,
+      eventId: randomUUID(), amountMinor: 1000 }, undefined, f.human)).rejects.toMatchObject({ code: 'not_authorized' })
+  })
+  it('parks contradictory cumulative refund evidence for exact receipt reconciliation', async () => {
+    const f = await fixture(); await f.bind(); await f.apply(); await f.applyFinancial()
+    const eventId = randomUUID()
+    await expect(f.applyFinancial({ adjustmentReference: randomUUID(), eventId, amountMinor: 700,
+      occurredAt: '2026-09-01T14:00:00.000001Z' })).rejects.toMatchObject({ code: 'conflict', details: { receiptState: 'needs_reconciliation' } })
+    expect(await store.getOrder(f.workspaceId, f.orderId)).toMatchObject({ status: 'paid', refundedMinor: '400', refundState: 'partial' })
+    expect((await pool.query('SELECT state,last_error_code FROM association_integration_events WHERE workspace_id=$1 AND provider_event_id=$2',
+      [f.workspaceId, eventId])).rows[0]).toEqual({ state: 'needs_reconciliation', last_error_code: 'conflict' })
   })
   it('refuses late success, new expired bindings and human payment assertions', async () => {
     const f = await fixture(); await f.bind()
