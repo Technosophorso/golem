@@ -46,8 +46,8 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
     {props.loading && !props.snapshot ? <Skeleton className="h-36 w-full" /> : null}
     {props.composer ? <CommentComposer key={`${props.composer.parentId ?? ''}:${props.composer.kind}`} {...props} composer={props.composer} /> : null}
     {!visible.length && props.snapshot ? <p className="text-sm text-muted-foreground">{t.noComments}</p> : null}
-    {visible.map(thread => <article key={thread.id} data-feed-comment-id={thread.id} className={`rounded-xl border bg-background p-3 space-y-3 shadow-xs ${active?.id === thread.id ? 'border-ring' : 'border-border'}`}>
-      <button type="button" className="w-full min-h-11 rounded-md text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => props.onThread(thread.id)}>
+    {visible.map(thread => <article key={thread.id} data-feed-comment-id={thread.id} className={`space-y-3 ${props.focused ? '' : 'border-b border-border pb-4'}`}>
+      <button type="button" aria-expanded={active?.id === thread.id} className="w-full min-h-11 rounded-md text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => props.onThread(thread.id)}>
         <span className="font-medium">{thread.authorKind === 'assistant' ? t.brian : (thread.authorName ?? `${t.author} ${thread.authorUserId.slice(0, 8)}`)}</span>
         <blockquote className="mt-2 line-clamp-3 whitespace-pre-wrap border-l-2 pl-2">{thread.anchor.quote || t.post}</blockquote>
       </button>
@@ -79,7 +79,7 @@ function CommentComposer(props: FeedCommentPanelProps & { composer: FeedCommentC
       if (await props.onCommand(commands)) { props.onComposer(null); if (composer.kind === 'comment') props.onThread(identity); } else setError(true);
     } catch { setError(true); }
   }
-  return <form className="space-y-3 rounded-lg border border-ring p-3" onSubmit={event => { event.preventDefault(); void submit(); }}>
+  return <form className="space-y-3" onSubmit={event => { event.preventDefault(); void submit(); }}>
     <p className="text-sm font-medium">{composer.kind === 'comment' ? t.comment : t.suggest}</p>
     <blockquote className="max-h-32 overflow-y-auto whitespace-pre-wrap border-l-2 pl-2 text-sm" aria-label={t.selection}>{composer.anchor.quote || t.post}</blockquote>
     <textarea autoFocus className="w-full min-h-28 rounded-md border bg-background p-2 text-base" aria-label={composer.kind === 'comment' ? t.commentPlaceholder : t.replacementPlaceholder} placeholder={composer.kind === 'comment' ? t.commentPlaceholder : t.replacementPlaceholder} value={text} onChange={event => setText(event.target.value)} />

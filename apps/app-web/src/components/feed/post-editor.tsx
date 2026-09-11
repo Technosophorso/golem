@@ -1162,7 +1162,7 @@ function PostPane({
 
                 {!structured && !readOnly ? <Button type="button" variant="outline" disabled={busy || offline || Boolean(localPost?.error)} onClick={() => void upgradeComposition()}>{tc.upgrade}</Button> : null}
                 {structured && localPost?.content.composition ? (
-                  <CompositionEditor generation={{ workspaceId, assistantId, sessionId, revision: localPost.revision, offline, pending: Boolean(remoteBlocked), readOnly, article: postFormat === "article", snapshot: collaboration.data, onCommand: runCommands, onRefresh: () => void collaboration.refresh() }} composition={localPost.content.composition} readOnly={readOnly} threads={collaboration.data?.threads ?? []} draftAnchor={composer?.anchor}
+                  <CompositionEditor generation={{ workspaceId, assistantId, sessionId, revision: localPost.revision, offline, pending: Boolean(remoteBlocked), readOnly, article: postFormat === "article", snapshot: collaboration.data, onCommand: runCommands, onRefresh: () => void collaboration.refresh() }} composition={localPost.content.composition} pendingLocalSave={localSaving > 0 || localSaveError} readOnly={readOnly} threads={collaboration.data?.threads ?? []} draftAnchor={composer?.anchor}
                     onEdit={edits => { void runCommands([{ kind: 'edit', edits }]); }} onSelection={next => setSelection(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)}
                     onAction={selectionAction} onOpenThread={openThread} />
                 ) : postFormat === "thread" ? (

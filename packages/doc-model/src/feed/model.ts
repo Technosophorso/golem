@@ -312,6 +312,19 @@ function feedLeaves(nodes: FeedNode[]): FeedNode[] { return nodes.flatMap(node =
 
 function isFeedTextBlock(node: FeedNode): node is Extract<FeedNode, { type: 'paragraph' | 'heading' }> { return node.type === 'paragraph' || node.type === 'heading' }
 
+/** Minimal leaf edits before a container reshape keep existing ranges mappable. */
+function diffFeedLeaf(segmentId: string, prior: FeedNode, node: FeedNode): FeedEdit {
+  if ((node.type === 'paragraph' || node.type === 'heading') && node.type === prior.type && equal(node.attrs, prior.attrs) && (prior.type === 'paragraph' || prior.type === 'heading')) {
+    const a = prior.content ?? []; const b = node.content ?? []; const at = inlineText(a); const bt = inlineText(b)
+    let from = 0; let suffix = 0
+    while (from < Math.min(at.length, bt.length) && at[from] === bt[from]) from++
+    while (suffix < Math.min(at.length, bt.length) - from && at[at.length - suffix - 1] === bt[bt.length - suffix - 1]) suffix++
+    if (!equal(sliceFeedInline(a, 0, from), sliceFeedInline(b, 0, from))) from = 0
+    if (!equal(sliceFeedInline(a, at.length - suffix, at.length), sliceFeedInline(b, bt.length - suffix, bt.length))) suffix = 0
+    return { kind: 'replaceText', spans: [{ segmentId, blockId: node.attrs.id, from, to: at.length - suffix }], preimage: [sliceFeedInline(a, from, at.length - suffix)], replacement: [sliceFeedInline(b, from, bt.length - suffix)] }
+  }
+  return { kind: 'replaceBlock', segmentId, blockId: node.attrs.id, preimage: prior, replacement: [node] }
+}
 /** Convert an editor snapshot into ordered, preimage-checked operations. */
 export function diffFeedComposition(before: FeedComposition, after: FeedComposition): FeedEdit[] {
   validateFeedComposition(after); const edits: FeedEdit[] = []
@@ -337,7 +350,14 @@ export function diffFeedComposition(before: FeedComposition, after: FeedComposit
   for (let s = 0; s < after.segments.length; s++) {
     const next = after.segments[s]!; const old = before.segments.find(p => p.id === next.id)
     if (!old) { edits.push({ kind: 'insertSegment', afterId: s ? after.segments[s - 1]!.id : null, segment: { id: next.id, content: next.content } }); continue }
-    if (!equal(old.content, next.content) && equal(feedLeaves(old.content), feedLeaves(next.content))) { edits.push({ kind: 'reshapeSegment', segmentId: old.id, preimage: old.content, replacement: next.content }); continue }
+    const oldLeaves = feedLeaves(old.content); const nextLeaves = feedLeaves(next.content)
+    if (!equal(old.content, next.content) && oldLeaves.length === nextLeaves.length && oldLeaves.every((node, index) => node.attrs.id === nextLeaves[index]!.attrs.id)) {
+      const leafEdits = oldLeaves.flatMap((prior, index) => equal(prior, nextLeaves[index]) ? [] : [diffFeedLeaf(old.id, prior, nextLeaves[index]!)])
+      const intermediate = applyFeedEdits({ version: 1, segments: [old] }, leafEdits).composition.segments[0]!
+      edits.push(...leafEdits)
+      if (!equal(intermediate.content, next.content)) edits.push({ kind: 'reshapeSegment', segmentId: old.id, preimage: intermediate.content, replacement: next.content })
+      continue
+    }
     const order = old.content.map(n => n.attrs.id)
     for (const node of [...old.content].reverse()) if (!next.content.some(n => n.attrs.id === node.attrs.id)) {
       edits.push({ kind: 'replaceBlock', segmentId: old.id, blockId: node.attrs.id, preimage: node, replacement: [] }); order.splice(order.indexOf(node.attrs.id), 1)
@@ -347,15 +367,7 @@ export function diffFeedComposition(before: FeedComposition, after: FeedComposit
       if (!prior) { edits.push({ kind: 'insertBlock', segmentId: old.id, afterId, node }); order.splice(i, 0, node.attrs.id); continue }
       if (order[i] !== node.attrs.id) { edits.push({ kind: 'moveBlock', segmentId: old.id, blockId: node.attrs.id, afterId }); order.splice(order.indexOf(node.attrs.id), 1); order.splice(i, 0, node.attrs.id) }
       if (equal(prior, node)) continue
-      if ((node.type === 'paragraph' || node.type === 'heading') && node.type === prior.type && equal(node.attrs, prior.attrs) && (prior.type === 'paragraph' || prior.type === 'heading')) {
-        const a = prior.content ?? []; const b = node.content ?? []; const at = inlineText(a); const bt = inlineText(b)
-        let from = 0; let suffix = 0
-        while (from < Math.min(at.length, bt.length) && at[from] === bt[from]) from++
-        while (suffix < Math.min(at.length, bt.length) - from && at[at.length - suffix - 1] === bt[bt.length - suffix - 1]) suffix++
-        if (!equal(sliceFeedInline(a, 0, from), sliceFeedInline(b, 0, from))) from = 0
-        if (!equal(sliceFeedInline(a, at.length - suffix, at.length), sliceFeedInline(b, bt.length - suffix, bt.length))) suffix = 0
-        edits.push({ kind: 'replaceText', spans: [{ segmentId: old.id, blockId: node.attrs.id, from, to: at.length - suffix }], preimage: [sliceFeedInline(a, from, at.length - suffix)], replacement: [sliceFeedInline(b, from, bt.length - suffix)] })
-      } else edits.push({ kind: 'replaceBlock', segmentId: old.id, blockId: node.attrs.id, preimage: prior, replacement: [node] })
+      edits.push(diffFeedLeaf(old.id, prior, node))
     }
   }
   return edits
