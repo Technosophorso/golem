@@ -149,6 +149,7 @@ export function staleMarksFor(event: string, workspaceId: string): string[] {
         `live:${workspaceId}`,
         `chat-sessions:${workspaceId}`,
         `chat-shared:${workspaceId}`,
+        `feed-collaboration:${workspaceId}`,
       ];
     case INBOX_REFRESH_EVENT:
       return [`inbox:${workspaceId}`];

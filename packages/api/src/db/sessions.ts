@@ -176,7 +176,8 @@ export function isMultiParticipantSession(s: SessionShape): boolean {
   return (
     isSharedChatSession(s) ||
     s.mode === 'draft' ||
-    s.channelType === 'doc_thread'
+    s.channelType === 'doc_thread' ||
+    s.channelType === 'feed_thread'
   )
 }
 

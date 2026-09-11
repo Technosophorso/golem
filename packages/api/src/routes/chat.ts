@@ -1,3 +1,5 @@
+import { resolveFeedTurnContext, formatFeedTurnContext } from '../content-planning/collaboration-service.js'
+import { buildFeedCollaborationTools } from '../content-planning/collaboration-tools.js'
 import { createHash } from 'node:crypto'
 import { renderSystemContext } from '@use-brian/core'
 import { Router } from 'express'
@@ -2950,6 +2952,14 @@ export function chatRoutes(options: WebChatOptions): Router {
         return
       }
 
+      let feedTurnContext: Awaited<ReturnType<typeof resolveFeedTurnContext>> = null
+      try {
+        feedTurnContext = await resolveFeedTurnContext(user.id, assistant.id, session, (req.body as { feedTarget?: unknown }).feedTarget)
+      } catch (error) {
+        sendEvent('error', { code: 'feed_context_invalid', error: error instanceof Error ? error.message : 'Invalid draft context' })
+        res.end(); return
+      }
+
       // Resolve the one trusted scope before this entry point performs any
       // persistent semantic write or enters the normal model path.
       const turnScope = await resolveTurnScopeSystem({
@@ -4718,6 +4728,7 @@ export function chatRoutes(options: WebChatOptions): Router {
         : []
       const activeWorkspaceContext = formatActiveWorkspaceContext(turnScope)
       if (activeWorkspaceContext) privateRuntimeContextParts.push(activeWorkspaceContext)
+      if (feedTurnContext) privateRuntimeContextParts.push(formatFeedTurnContext(feedTurnContext))
       const userVisibleContextParts: string[] = splitPrompt.userVisibleContext
         ? [splitPrompt.userVisibleContext]
         : []
@@ -5388,6 +5399,8 @@ export function chatRoutes(options: WebChatOptions): Router {
           console.error('[chat] extra tool injection failed:', err)
         }
       }
+
+      if (feedTurnContext) for (const tool of buildFeedCollaborationTools(feedTurnContext, storedUserMsg.id)) allTools.set(tool.name, tool)
 
       // Pages the AI wrote this turn (filled by the doc tools' onEvent
       // below). Drives the post-turn auto-title pass (migration 218).

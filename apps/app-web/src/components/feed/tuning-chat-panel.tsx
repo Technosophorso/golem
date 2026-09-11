@@ -233,6 +233,7 @@ export const TuningChatPanel = forwardRef<
      * sticky channel (feed-revamp.md D15).
      */
     sessionId?: string;
+    feedTarget?: import('@use-brian/shared').FeedChatTarget;
     /** Fired when a turn finishes, so a host can re-read what it produced. */
     onTurnComplete?: () => void;
     /** Mirror safe live activity into the collapsed floating launcher. */
@@ -521,6 +522,7 @@ export const TuningChatPanel = forwardRef<
         authFetch: (input, init) => authFetch(input.toString(), init),
         body: {
           message: trimmed,
+          ...(props.feedTarget ? { feedTarget: props.feedTarget } : {}),
           assistantId,
           sessionId: fixedSessionId ?? sessionIdRef.current ?? undefined,
           // A fixed session is addressed by id; sending a channel too would
@@ -695,7 +697,7 @@ export const TuningChatPanel = forwardRef<
       });
       return true;
     },
-    [assistantId, session, stream, model, researchMode, workspaceId, t, tChat.toolNarration, applyQueuedInput, flushQueuedInputs, ready],
+    [assistantId, session, stream, model, researchMode, workspaceId, t, tChat.toolNarration, applyQueuedInput, flushQueuedInputs, ready, props.feedTarget, fixedSessionId, channelId, onTurnComplete],
   );
 
   useEffect(() => {

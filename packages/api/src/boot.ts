@@ -173,6 +173,7 @@ import {
 import { contentPlanRoutes } from './routes/content-plan.js'
 import { contentIdeasRoutes } from './routes/content-ideas.js'
 import { postWorkingCopiesRoutes } from './routes/post-working-copies.js'
+import { feedCollaborationRoutes } from './routes/feed-collaboration.js'
 import {
   selfHostFeedCloudRoutes,
   selfHostFeedManagedDistributionRoutes,
@@ -5036,6 +5037,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // and developing an idea must never require a credential in either edition.
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
+  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes())
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its

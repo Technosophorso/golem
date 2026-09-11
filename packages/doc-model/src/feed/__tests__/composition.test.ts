@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { FeedComposition, FeedEdit, FeedInline, FeedNode } from '@use-brian/shared'
-import { applyFeedEdits, createFeedAnchor, duplicateFeedNode, feedParagraph, feedSchema, feedTargetQuote, feedText, importLegacyFeed, projectFeed, sliceFeedInline, validateFeedComposition, walkFeed } from '../model.js'
+import { applyFeedEdits, diffFeedComposition, proposeFeedReplacement, createFeedAnchor, duplicateFeedNode, feedParagraph, feedSchema, feedTargetQuote, feedText, importLegacyFeed, projectFeed, sliceFeedInline, validateFeedComposition, walkFeed } from '../model.js'
 const inline = (text: string): FeedInline[] => text ? [{ type: 'text', text }] : []
 const imported = (text = 'A first paragraph.\n\nThe same phrase.\n\nThe same phrase.') => importLegacyFeed({ text, postFormat: 'post', threadSegments: [], media: [] })
 function replace(composition: FeedComposition, block: number, from: number, to: number, text: string): FeedEdit {
@@ -80,5 +80,63 @@ describe('[COMP:feed/composition-model] canonical conversion and transaction ope
     const edit: FeedEdit = { kind: 'replaceText', spans: [{ segmentId: row.segmentId, blockId: node.attrs.id, from, to: from + 4 }], preimage: [inline('work')], replacement: [inline('write')] }
     const result = applyFeedEdits(composition, [edit]); const restored = applyFeedEdits(result.composition, result.inverse)
     expect(restored.composition).toEqual(composition)
+  })
+})
+
+describe('[COMP:feed/composition-model] editor identity and proposal mapping', () => {
+  it('scenario 2: splits and rejoins a highlighted passage without changing its quote or target identity', () => {
+    const composition = imported('Before selected passage after.'); const segment = composition.segments[0]!; const block = segment.content[0]!;
+    const anchor = createFeedAnchor(composition, { kind: 'range', spans: [{ segmentId: segment.id, blockId: block.attrs.id, from: 7, to: 23 }] }, 2)
+    const after = structuredClone(composition); after.segments[0]!.content = [feedParagraph('Before selected ', block.attrs.id), feedParagraph('passage after.')]
+    const edits = diffFeedComposition(composition, after)
+    expect(edits[0]!.kind).toBe('splitBlock')
+    const split = applyFeedEdits(composition, edits, [anchor])
+    expect(split.anchors[0]!.target).toMatchObject({ kind: 'range', spans: [{ from: 7, to: 16 }, { from: 0, to: 7 }] })
+    expect(split.anchors[0]!.state).toBe('attached')
+    const joined = applyFeedEdits(split.composition, diffFeedComposition(split.composition, composition), split.anchors)
+    expect(joined.anchors).toEqual([anchor]); expect(joined.composition).toEqual(composition)
+  })
+  it('scenario 2: whole-block comments retain the original text through a split and join', () => {
+    const composition = imported('one two'); const segment = composition.segments[0]!; const node = segment.content[0]!
+    const anchor = createFeedAnchor(composition, { kind: 'block', segmentId: segment.id, blockId: node.attrs.id }, 2)
+    const after = structuredClone(composition); after.segments[0]!.content = [feedParagraph('one ', node.attrs.id), feedParagraph('two')]
+    const split = applyFeedEdits(composition, diffFeedComposition(composition, after), [anchor])
+    expect(split.anchors[0]!.target).toMatchObject({ kind: 'range', spans: [{ from: 0, to: 4 }, { from: 0, to: 3 }] })
+    expect(feedTargetQuote(split.composition, split.anchors[0]!.target)).toBe('one \ntwo')
+  })
+  it('scenario 1: proposal construction changes a multi-block selection and retains unselected formatting', () => {
+    const composition = imported('First **bold** ending.\n\nSecond start and ending.'); const segment = composition.segments[0]!
+    const target = { kind: 'range' as const, spans: [{ segmentId: segment.id, blockId: segment.content[0]!.attrs.id, from: 11, to: 18 }, { segmentId: segment.id, blockId: segment.content[1]!.attrs.id, from: 0, to: 12 }] }
+    const edits = proposeFeedReplacement(composition, target, 'revised')
+    const applied = applyFeedEdits(composition, edits)
+    expect(projectFeed(applied.composition).text).toBe('First **bold** revised\n\n and ending.')
+    expect(applyFeedEdits(applied.composition, applied.inverse).composition).toEqual(composition)
+  })
+  it('scenario 11: a whole-body alternative preserves image and intentional placeholder objects', () => {
+    const composition = imported('Original body.'); const segment = composition.segments[0]!
+    const image: FeedNode = { type: 'image', attrs: { id: randomUUID(), fileId: randomUUID(), mimeType: 'image/png', placement: 'inline', alt: 'Existing diagram' } }
+    const slot: FeedNode = { type: 'generationPlaceholder', attrs: { id: randomUUID(), kind: 'text', brief: 'A missing example', briefRevision: 0, references: [] } }
+    segment.content.push(image, slot)
+    const applied = applyFeedEdits(composition, proposeFeedReplacement(composition, { kind: 'post' }, 'New body.'))
+    expect(applied.composition.segments[0]!.content.slice(1)).toEqual([image, slot])
+    expect(projectFeed(applied.composition).text).toBe('New body.')
+  })
+  it('scenario 9: the explicit import seed gives both sides the same IDs without changing legacy bytes', () => {
+    const source = { text: '**Legacy** 中文\n\n', postFormat: 'post' as const, threadSegments: [], media: [] }; const seed = randomUUID()
+    expect(importLegacyFeed(source, seed)).toEqual(importLegacyFeed(source, seed))
+    expect(importLegacyFeed(source, randomUUID()).segments[0]!.id).not.toBe(importLegacyFeed(source, seed).segments[0]!.id)
+    expect(projectFeed(importLegacyFeed(source, seed)).text).toBe(source.text)
+  })
+})
+
+describe('[COMP:feed/composition-model] retained object identity in alternatives', () => {
+  it('scenario 11: a whole-body rewrite moves nested media without detaching its discussion', () => {
+    const image: FeedNode = { type: 'image', attrs: { id: randomUUID(), fileId: randomUUID(), mimeType: 'image/png', placement: 'inline' } }
+    const composition: FeedComposition = { version: 1, segments: [{ id: randomUUID(), content: [{ type: 'blockquote', attrs: { id: randomUUID() }, content: [image] }, feedParagraph('Previous body')] }] }
+    const anchor = createFeedAnchor(composition, { kind: 'block', segmentId: composition.segments[0]!.id, blockId: image.attrs.id }, 2)
+    const applied = applyFeedEdits(composition, proposeFeedReplacement(composition, { kind: 'post' }, 'Replacement body'), [anchor])
+    expect(applied.anchors).toEqual([anchor]); expect(projectFeed(applied.composition).media).toHaveLength(1)
+    expect(projectFeed(applied.composition).text).toBe('Replacement body')
+    expect(applyFeedEdits(applied.composition, applied.inverse).composition).toEqual(composition)
   })
 })

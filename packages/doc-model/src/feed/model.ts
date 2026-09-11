@@ -14,13 +14,13 @@ export const feedSchema = new Schema({
     doc: { content: 'block+' },
     paragraph: { group: 'block', content: 'inline*', attrs: { id: { default: null } }, toDOM: n => ['p', { 'data-block-id': n.attrs.id }, 0] },
     heading: { group: 'block', content: 'inline*', attrs: { id: { default: null }, level: { default: 2 } }, toDOM: n => [`h${n.attrs.level}`, { 'data-block-id': n.attrs.id }, 0] },
-    bulletList: { group: 'block', content: 'listItem+', attrs: { id: { default: null } }, toDOM: () => ['ul', 0] },
-    orderedList: { group: 'block', content: 'listItem+', attrs: { id: { default: null }, start: { default: 1 } }, toDOM: n => ['ol', { start: n.attrs.start }, 0] },
-    listItem: { content: 'block+', attrs: { id: { default: null } }, toDOM: () => ['li', 0] },
-    blockquote: { group: 'block', content: 'block+', attrs: { id: { default: null } }, toDOM: () => ['blockquote', 0] },
+    bulletList: { group: 'block', content: 'listItem+', attrs: { id: { default: null } }, toDOM: n => ['ul', { 'data-block-id': n.attrs.id }, 0] },
+    orderedList: { group: 'block', content: 'listItem+', attrs: { id: { default: null }, start: { default: 1 } }, toDOM: n => ['ol', { start: n.attrs.start, 'data-block-id': n.attrs.id }, 0] },
+    listItem: { content: 'block+', attrs: { id: { default: null } }, toDOM: n => ['li', { 'data-block-id': n.attrs.id }, 0] },
+    blockquote: { group: 'block', content: 'block+', attrs: { id: { default: null } }, toDOM: n => ['blockquote', { 'data-block-id': n.attrs.id }, 0] },
     text: { group: 'inline' }, hardBreak: { group: 'inline', inline: true, toDOM: () => ['br'] },
-    image: { group: 'block', atom: true, attrs: { id: { default: null }, fileId: {}, mimeType: {}, alt: { default: '' }, placement: { default: 'inline' } }, toDOM: n => ['figure', { 'data-file-id': n.attrs.fileId }, ['figcaption', n.attrs.alt]] },
-    generationPlaceholder: { group: 'block', atom: true, attrs: { id: { default: null }, kind: {}, brief: {}, briefRevision: { default: 0 }, references: { default: [] }, intent: { default: null }, length: { default: null }, aspectRatio: { default: null }, style: { default: null }, altIntent: { default: null } }, toDOM: n => ['aside', { 'data-placeholder-id': n.attrs.id }, n.attrs.brief] },
+    image: { group: 'block', atom: true, attrs: { id: { default: null }, fileId: {}, mimeType: {}, alt: { default: '' }, placement: { default: 'inline' } }, toDOM: n => ['figure', { 'data-file-id': n.attrs.fileId, 'data-block-id': n.attrs.id }, ['figcaption', n.attrs.alt]] },
+    generationPlaceholder: { group: 'block', atom: true, attrs: { id: { default: null }, kind: {}, brief: {}, briefRevision: { default: 0 }, references: { default: [] }, intent: { default: null }, length: { default: null }, aspectRatio: { default: null }, style: { default: null }, altIntent: { default: null } }, toDOM: n => ['aside', { 'data-placeholder-id': n.attrs.id, 'data-block-id': n.attrs.id }, n.attrs.brief] },
   },
   marks: { bold: { toDOM: () => ['strong', 0] }, italic: { toDOM: () => ['em', 0] }, link: { attrs: { href: {} }, toDOM: m => ['a', { href: m.attrs.href, rel: 'noopener noreferrer' }, 0] } },
 })
@@ -48,7 +48,7 @@ export function feedText(node: FeedNode): string {
   return ''
 }
 export function inlineText(content: FeedInline[]): string { return content.map(n => n.type === 'text' ? n.text : '\n').join('') }
-export function feedParagraph(text: string, blockId = id()): FeedNode { return { type: 'paragraph', attrs: { id: blockId }, content: text ? [{ type: 'text', text }] : [] } }
+export function feedParagraph(text: string, blockId: string = id()): FeedNode { return { type: 'paragraph', attrs: { id: blockId }, content: text ? [{ type: 'text', text }] : [] } }
 export function parseFeedInline(text: string): FeedInline[] {
   // Parse only known syntax; unmatched/unsupported syntax remains literal text.
   const result: FeedInline[] = []; const re = /\*\*([^*\n]+)\*\*|\*([^*\n]+)\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\n/g
@@ -62,36 +62,38 @@ export function parseFeedInline(text: string): FeedInline[] {
   if (pos < text.length) result.push({ type: 'text', text: text.slice(pos) })
   return result
 }
-export function importFeedMarkdown(markdown: string): FeedNode[] {
-  if (!markdown) return [feedParagraph('')]
+export function importFeedMarkdown(markdown: string, nextId: () => string = id): FeedNode[] {
+  if (!markdown) return [feedParagraph('', nextId())]
   const lines = markdown.replace(/\r\n/g, '\n').split('\n'); const blocks: FeedNode[] = []
   for (let i = 0; i < lines.length;) {
     const line = lines[i]!; const heading = /^(#{1,6}) (.*)$/.exec(line)
-    if (heading) { blocks.push({ type: 'heading', attrs: { id: id(), level: heading[1]!.length }, content: parseFeedInline(heading[2]!) }); i++; continue }
+    if (heading) { blocks.push({ type: 'heading', attrs: { id: nextId(), level: heading[1]!.length }, content: parseFeedInline(heading[2]!) }); i++; continue }
     const list = /^([-*]) (.*)$|^(\d+)\. (.*)$/.exec(line)
     if (list) {
       const ordered = !!list[3]; const items: FeedNode[] = []; const pattern = ordered ? /^\d+\. (.*)$/ : /^[-*] (.*)$/
       while (i < lines.length) {
         const m = pattern.exec(lines[i]!); if (!m) break
-        items.push({ type: 'listItem', attrs: { id: id() }, content: [{ type: 'paragraph', attrs: { id: id() }, content: parseFeedInline(m[1]!) }] }); i++
+        items.push({ type: 'listItem', attrs: { id: nextId() }, content: [{ type: 'paragraph', attrs: { id: nextId() }, content: parseFeedInline(m[1]!) }] }); i++
       }
-      blocks.push(ordered ? { type: 'orderedList', attrs: { id: id(), start: Number(list[3]) }, content: items } : { type: 'bulletList', attrs: { id: id() }, content: items }); continue
+      blocks.push(ordered ? { type: 'orderedList', attrs: { id: nextId(), start: Number(list[3]) }, content: items } : { type: 'bulletList', attrs: { id: nextId() }, content: items }); continue
     }
     if (/^> ?/.test(line)) {
       const quote: string[] = []; while (i < lines.length && /^> ?/.test(lines[i]!)) quote.push(lines[i++]!.replace(/^> ?/, ''))
-      blocks.push({ type: 'blockquote', attrs: { id: id() }, content: importFeedMarkdown(quote.join('\n')) }); continue
+      blocks.push({ type: 'blockquote', attrs: { id: nextId() }, content: importFeedMarkdown(quote.join('\n'), nextId) }); continue
     }
     const paragraph: string[] = [line]; i++
     while (i < lines.length && lines[i] !== '' && !/^(#{1,6} |[-*] |\d+\. |>)/.test(lines[i]!)) paragraph.push(lines[i++]!)
-    blocks.push({ type: 'paragraph', attrs: { id: id() }, content: parseFeedInline(paragraph.join('\n')) })
+    blocks.push({ type: 'paragraph', attrs: { id: nextId() }, content: parseFeedInline(paragraph.join('\n')) })
     if (i < lines.length && lines[i] === '') i++
   }
-  return blocks.length ? blocks : [feedParagraph('')]
+  return blocks.length ? blocks : [feedParagraph('', nextId())]
 }
-export function importLegacyFeed(input: { text: string; postFormat: 'post' | 'thread' | 'article'; threadSegments: string[]; media: FeedMedia[] }): FeedComposition {
+export function importLegacyFeed(input: { text: string; postFormat: 'post' | 'thread' | 'article'; threadSegments: string[]; media: FeedMedia[] }, seed?: string): FeedComposition {
+  let serial = 0
+  const nextId = seed ? () => seed.slice(0, 24) + (++serial).toString(16).padStart(12, '0') : id
   const sources = input.postFormat === 'thread' && input.threadSegments.length ? input.threadSegments : [input.text]
-  const segments = sources.map(markdown => { const content = importFeedMarkdown(markdown); return { id: id(), content, legacy: { markdown, canonical: canonicalFeedValue(content) } } })
-  for (const media of input.media) segments[0]!.content.push({ type: 'image', attrs: { ...media, id: id(), placement: 'attachment' } })
+  const segments = sources.map(markdown => { const content = importFeedMarkdown(markdown, nextId); return { id: nextId(), content, legacy: { markdown, canonical: canonicalFeedValue(content) } } })
+  for (const media of input.media) segments[0]!.content.push({ type: 'image', attrs: { ...media, id: nextId(), placement: 'attachment' } })
   // Attachment media did not belong to the caption. Include it in the baseline
   // so untouched legacy captions retain their original exact bytes.
   segments[0]!.legacy.canonical = canonicalFeedValue(segments[0]!.content)
@@ -184,8 +186,24 @@ function mapAnchor(anchor: FeedAnchor, edit: FeedEdit, before: FeedComposition, 
   if (anchor.state === 'detached' || anchor.target.kind === 'post') return anchor
   const out = structuredClone(anchor); const ids = targetIds(anchor.target)
   const live = new Set(walkFeed(after).map(r => r.node.attrs.id))
-  if (ids.some(blockId => !live.has(blockId))) { out.state = 'detached'; return out }
-  if (edit.kind === 'replaceText') {
+  if (ids.some(blockId => !live.has(blockId) && !(edit.kind === 'joinBlocks' && blockId === edit.secondId))) { out.state = 'detached'; return out }
+  if (edit.kind === 'splitBlock' && out.target.kind === 'block' && out.target.blockId === edit.blockId) out.target = { kind: 'range', spans: [{ segmentId: edit.segmentId, blockId: edit.blockId, from: 0, to: feedText(edit.preimage).length }] }
+  if (edit.kind === 'splitBlock' && out.target.kind === 'range') {
+    const cut = feedText(edit.first).length
+    out.target.spans = out.target.spans.flatMap(span => {
+      if (span.blockId !== edit.blockId) return [span]
+      if (span.from >= cut) return [{ ...span, blockId: edit.second.attrs.id, from: span.from - cut, to: span.to - cut }]
+      if (span.to > cut) return [{ ...span, to: cut }, { ...span, blockId: edit.second.attrs.id, from: 0, to: span.to - cut }]
+      return [span]
+    })
+  } else if (edit.kind === 'joinBlocks') {
+    const cut = feedText(edit.preimage[0]).length
+    if (out.target.kind === 'block' && [edit.blockId, edit.secondId].includes(out.target.blockId)) out.target = { kind: 'range', spans: [{ segmentId: edit.segmentId, blockId: edit.blockId, from: out.target.blockId === edit.secondId ? cut : 0, to: out.target.blockId === edit.secondId ? cut + feedText(edit.preimage[1]).length : cut }] }
+    if (out.target.kind === 'range') {
+      for (const span of out.target.spans) if (span.blockId === edit.secondId) { span.blockId = edit.blockId; span.from += cut; span.to += cut }
+      out.target.spans = out.target.spans.reduce<FeedSpan[]>((all, span) => { const previous = all.at(-1); if (previous?.blockId === span.blockId && previous.to === span.from) previous.to = span.to; else all.push(span); return all }, [])
+    }
+  } else if (edit.kind === 'replaceText') {
     for (let i = 0; i < edit.spans.length; i++) {
       const edited = edit.spans[i]!; const length = inlineText(edit.replacement[i]!).length; const delta = length - (edited.to - edited.from)
       if (out.target.kind === 'range') for (const span of out.target.spans) {
@@ -218,7 +236,22 @@ export function applyFeedEdits(input: FeedComposition, edits: FeedEdit[], anchor
   let composition = structuredClone(validateFeedComposition(input)); let mapped = structuredClone(anchors); let inverse: FeedEdit[] = []
   for (const edit of edits) {
     const before = structuredClone(composition); const undo: FeedEdit[] = []
-    if (edit.kind === 'replaceText') {
+    if (edit.kind === 'reshapeSegment') {
+      const segment = composition.segments.find(s => s.id === edit.segmentId)
+      if (!segment || !equal(segment.content, edit.preimage) || !equal(feedLeaves(edit.preimage), feedLeaves(edit.replacement))) throw new FeedCompositionError('preimage_conflict')
+      segment.content = structuredClone(edit.replacement)
+      undo.push({ ...edit, preimage: edit.replacement, replacement: edit.preimage })
+    } else if (edit.kind === 'splitBlock') {
+      const { node, siblings, index } = locateFeedNode(composition, edit.segmentId, edit.blockId)
+      if (!equal(node, edit.preimage) || edit.first.attrs.id !== edit.blockId || !isFeedTextBlock(node) || !isFeedTextBlock(edit.first) || !isFeedTextBlock(edit.second) || !equal(normalizeFeedInline([...(edit.first.content ?? []), ...(edit.second.content ?? [])]), node.content ?? [])) throw new FeedCompositionError('preimage_conflict')
+      siblings.splice(index, 1, structuredClone(edit.first), structuredClone(edit.second))
+      undo.push({ kind: 'joinBlocks', segmentId: edit.segmentId, blockId: edit.blockId, secondId: edit.second.attrs.id, preimage: [edit.first, edit.second], replacement: node })
+    } else if (edit.kind === 'joinBlocks') {
+      const { node, siblings, index } = locateFeedNode(composition, edit.segmentId, edit.blockId); const second = siblings[index + 1]
+      if (!second || second.attrs.id !== edit.secondId || !equal([node, second], edit.preimage) || !isFeedTextBlock(node) || !isFeedTextBlock(second) || !isFeedTextBlock(edit.replacement) || edit.replacement.attrs.id !== edit.blockId || !equal(normalizeFeedInline([...(node.content ?? []), ...(second.content ?? [])]), edit.replacement.content ?? [])) throw new FeedCompositionError('preimage_conflict')
+      siblings.splice(index, 2, structuredClone(edit.replacement))
+      undo.push({ kind: 'splitBlock', segmentId: edit.segmentId, blockId: edit.blockId, preimage: edit.replacement, first: node, second })
+    } else if (edit.kind === 'replaceText') {
       validateSpans(composition, edit.spans)
       if (edit.preimage.length !== edit.spans.length || edit.replacement.length !== edit.spans.length) throw new FeedCompositionError('invalid_target')
       const backSpans: FeedSpan[] = []
@@ -273,4 +306,88 @@ export function duplicateFeedNode(node: FeedNode): FeedNode {
   const cloned = structuredClone(node)
   const fresh = (n: FeedNode) => { n.attrs.id = id(); if ('content' in n && n.type !== 'paragraph' && n.type !== 'heading') n.content.forEach(fresh) }
   fresh(cloned); return cloned
+}
+
+function feedLeaves(nodes: FeedNode[]): FeedNode[] { return nodes.flatMap(node => 'content' in node && node.type !== 'paragraph' && node.type !== 'heading' ? feedLeaves(node.content) : [node]) }
+
+function isFeedTextBlock(node: FeedNode): node is Extract<FeedNode, { type: 'paragraph' | 'heading' }> { return node.type === 'paragraph' || node.type === 'heading' }
+
+/** Convert an editor snapshot into ordered, preimage-checked operations. */
+export function diffFeedComposition(before: FeedComposition, after: FeedComposition): FeedEdit[] {
+  validateFeedComposition(after); const edits: FeedEdit[] = []
+  // Prove Enter/Backspace text relocation before falling back to replacements.
+  // This preserves range identity through a paragraph split or join.
+  for (const row of walkFeed(before)) {
+    const node = row.node; if (!isFeedTextBlock(node)) continue
+    const old = locateFeedNode(before, row.segmentId, node.attrs.id)
+    let next: ReturnType<typeof locateFeedNode>
+    try { next = locateFeedNode(after, row.segmentId, node.attrs.id) } catch { continue }
+    const first = next.node; const second = next.siblings[next.index + 1]
+    if (second && isFeedTextBlock(first) && isFeedTextBlock(second) && !walkFeed(before).some(r => r.node.attrs.id === second.attrs.id) && equal(normalizeFeedInline([...(first.content ?? []), ...(second.content ?? [])]), node.content ?? [])) {
+      const split: FeedEdit = { kind: 'splitBlock', segmentId: row.segmentId, blockId: node.attrs.id, preimage: node, first, second }
+      const changed = applyFeedEdits(before, [split]).composition; return [split, ...diffFeedComposition(changed, after)]
+    }
+    const oldSecond = old.siblings[old.index + 1]
+    if (oldSecond && isFeedTextBlock(first) && isFeedTextBlock(oldSecond) && !walkFeed(after).some(r => r.node.attrs.id === oldSecond.attrs.id) && equal(normalizeFeedInline([...(node.content ?? []), ...(oldSecond.content ?? [])]), first.content ?? [])) {
+      const join: FeedEdit = { kind: 'joinBlocks', segmentId: row.segmentId, blockId: node.attrs.id, secondId: oldSecond.attrs.id, preimage: [node, oldSecond], replacement: first }
+      const changed = applyFeedEdits(before, [join]).composition; return [join, ...diffFeedComposition(changed, after)]
+    }
+  }
+  for (const old of [...before.segments].reverse()) if (!after.segments.some(s => s.id === old.id)) edits.push({ kind: 'removeSegment', segmentId: old.id, preimage: old })
+  for (let s = 0; s < after.segments.length; s++) {
+    const next = after.segments[s]!; const old = before.segments.find(p => p.id === next.id)
+    if (!old) { edits.push({ kind: 'insertSegment', afterId: s ? after.segments[s - 1]!.id : null, segment: { id: next.id, content: next.content } }); continue }
+    if (!equal(old.content, next.content) && equal(feedLeaves(old.content), feedLeaves(next.content))) { edits.push({ kind: 'reshapeSegment', segmentId: old.id, preimage: old.content, replacement: next.content }); continue }
+    const order = old.content.map(n => n.attrs.id)
+    for (const node of [...old.content].reverse()) if (!next.content.some(n => n.attrs.id === node.attrs.id)) {
+      edits.push({ kind: 'replaceBlock', segmentId: old.id, blockId: node.attrs.id, preimage: node, replacement: [] }); order.splice(order.indexOf(node.attrs.id), 1)
+    }
+    for (let i = 0; i < next.content.length; i++) {
+      const node = next.content[i]!; const prior = old.content.find(n => n.attrs.id === node.attrs.id); const afterId = i ? next.content[i - 1]!.attrs.id : null
+      if (!prior) { edits.push({ kind: 'insertBlock', segmentId: old.id, afterId, node }); order.splice(i, 0, node.attrs.id); continue }
+      if (order[i] !== node.attrs.id) { edits.push({ kind: 'moveBlock', segmentId: old.id, blockId: node.attrs.id, afterId }); order.splice(order.indexOf(node.attrs.id), 1); order.splice(i, 0, node.attrs.id) }
+      if (equal(prior, node)) continue
+      if ((node.type === 'paragraph' || node.type === 'heading') && node.type === prior.type && equal(node.attrs, prior.attrs) && (prior.type === 'paragraph' || prior.type === 'heading')) {
+        const a = prior.content ?? []; const b = node.content ?? []; const at = inlineText(a); const bt = inlineText(b)
+        let from = 0; let suffix = 0
+        while (from < Math.min(at.length, bt.length) && at[from] === bt[from]) from++
+        while (suffix < Math.min(at.length, bt.length) - from && at[at.length - suffix - 1] === bt[bt.length - suffix - 1]) suffix++
+        if (!equal(sliceFeedInline(a, 0, from), sliceFeedInline(b, 0, from))) from = 0
+        if (!equal(sliceFeedInline(a, at.length - suffix, at.length), sliceFeedInline(b, bt.length - suffix, bt.length))) suffix = 0
+        edits.push({ kind: 'replaceText', spans: [{ segmentId: old.id, blockId: node.attrs.id, from, to: at.length - suffix }], preimage: [sliceFeedInline(a, from, at.length - suffix)], replacement: [sliceFeedInline(b, from, bt.length - suffix)] })
+      } else edits.push({ kind: 'replaceBlock', segmentId: old.id, blockId: node.attrs.id, preimage: prior, replacement: [node] })
+    }
+  }
+  return edits
+}
+
+/** Replacement UI and Brian share selection-preserving proposal construction. */
+export function proposeFeedReplacement(composition: FeedComposition, target: FeedTarget, replacement: string): FeedEdit[] {
+  if (target.kind === 'range') return [{ kind: 'replaceText', spans: target.spans,
+    preimage: target.spans.map(span => { const node = locateFeedNode(composition, span.segmentId, span.blockId).node; if (!isFeedTextBlock(node)) throw new FeedCompositionError('invalid_target'); return sliceFeedInline(node.content ?? [], span.from, span.to) }),
+    replacement: target.spans.map((_, index) => index === 0 ? parseFeedInline(replacement) : []),
+  }]
+  if (target.kind === 'block') {
+    const node = locateFeedNode(composition, target.segmentId, target.blockId).node
+    const content = importFeedMarkdown(replacement); content[0]!.attrs.id = node.attrs.id
+    return [{ kind: 'replaceBlock', segmentId: target.segmentId, blockId: target.blockId, preimage: node, replacement: content }]
+  }
+  const clone = structuredClone(composition); const first = clone.segments[0]!; const moves: FeedEdit[] = []
+  // Retain non-text intent before replacing a whole body, including objects
+  // nested inside a quote/list. A move preserves their existing comment anchors.
+  for (const row of walkFeed(clone).filter(row => row.segmentId === first.id && row.parentId && (row.node.type === 'image' || row.node.type === 'generationPlaceholder'))) {
+    const found = locateFeedNode(clone, first.id, row.node.attrs.id)
+    moves.push({ kind: 'moveBlock', segmentId: first.id, blockId: row.node.attrs.id, afterId: first.content.at(-1)!.attrs.id })
+    found.siblings.splice(found.index, 1); first.content.push(found.node)
+    if (!found.siblings.length && found.parentId) { const empty = feedParagraph(''); found.siblings.push(empty); moves.push({ kind: 'insertBlock', segmentId: first.id, parentId: found.parentId, afterId: null, node: empty }) }
+  }
+  const textNodes = first.content.filter(node => node.type !== 'image' && node.type !== 'generationPlaceholder')
+  const content = importFeedMarkdown(replacement)
+  if (!textNodes.length) return [...moves, ...content.map((node, index) => ({ kind: 'insertBlock' as const, segmentId: first.id, afterId: index ? content[index - 1]!.attrs.id : null, node }))]
+  content[0]!.attrs.id = textNodes[0]!.attrs.id
+  return [
+    ...moves,
+    ...textNodes.slice(1).reverse().map(node => ({ kind: 'replaceBlock' as const, segmentId: first.id, blockId: node.attrs.id, preimage: node, replacement: [] })),
+    { kind: 'replaceBlock', segmentId: first.id, blockId: textNodes[0]!.attrs.id, preimage: textNodes[0]!, replacement: content },
+  ]
 }

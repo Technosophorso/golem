@@ -152,3 +152,81 @@ describe('[COMP:feed/editorial-decisions] Immutable editorial lineage', () => {
     expect((await pool.query('SELECT id FROM decision_events WHERE session_id=$1', [f.actor.sessionId])).rowCount).toBe(0)
   })
 })
+
+import { resolveFeedTurnContext } from '../collaboration-service.js'
+import { buildFeedCollaborationTools } from '../collaboration-tools.js'
+import type { ToolContext } from '@use-brian/core'
+describe('[COMP:feed/draft-suggestions] live selection and proposal lineage', () => {
+  it('scenario 11: every reused whole-draft index retains a distinct complete immutable source', async () => {
+    const f = await fixture('Original body.'); await f.upgrade()
+    const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 2 })
+    const tool = buildFeedCollaborationTools(context!).find(item => item.name === 'proposeDrafts')!
+    const first = { index: 1, text: 'First alternative', label: 'concise', imageBrief: 'A fictional diagram' }
+    const second = { index: 1, text: 'Revised alternative', label: 'warm', imageBrief: 'A second diagram' }
+    await tool.execute({ rationale: 'Compare two choices', drafts: [first] }, {} as ToolContext)
+    await tool.execute({ rationale: 'Refine the choice', drafts: [second] }, {} as ToolContext)
+    const rows = (await pool.query('SELECT id,source_proposal FROM feed_draft_suggestions WHERE session_id=$1 ORDER BY created_at,id', [f.actor.sessionId])).rows
+    expect(rows.map(row => row.source_proposal)).toEqual([first, second]); expect(rows[0].id).not.toBe(rows[1].id)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.text).toBe('Original body.')
+    await expect(pool.query(`UPDATE feed_draft_suggestions SET source_proposal='{}' WHERE id=$1`, [rows[0].id])).rejects.toThrow('immutable')
+  })
+  it('scenario 11: a whole-thread alternative replaces every explicit segment and preserves their identities', async () => {
+    const f = await fixture('First segment.'); const content = await f.upgrade(); const secondId = randomUUID()
+    await f.command([{ kind: 'context', postFormat: 'thread' }, { kind: 'edit', edits: [{ kind: 'insertSegment', afterId: content.composition.segments[0]!.id, segment: { id: secondId, content: [feedParagraph('Second segment.')] } }] }], 2)
+    const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 4 })
+    const tool = buildFeedCollaborationTools(context!).find(item => item.name === 'proposeDrafts')!
+    await expect(tool.execute({ rationale: 'Ambiguous thread', drafts: [{ index: 1, text: 'Only one body' }] }, {} as ToolContext)).rejects.toMatchObject({ code: 'matching_thread_segments_required' })
+    await tool.execute({ rationale: 'Two-part argument', drafts: [{ index: 1, text: 'New first. New second.', threadSegments: ['New first.', 'New second.'] }] }, {} as ToolContext)
+    const proposal = (await getFeedCollaboration(f.actor)).suggestions[0]!
+    await f.command([{ kind: 'decide', suggestionId: proposal.id, outcome: 'accepted' }], 4)
+    const accepted = (await getFeedCollaboration(f.actor)).copy!.content
+    expect(accepted.threadSegments).toEqual(['New first.', 'New second.'])
+    expect(accepted.composition!.segments.map(segment => segment.id)).toEqual([content.composition.segments[0]!.id, secondId])
+  })
+  it('scenarios 1 and 7: thread tools keep their source transcript and reject foreign, stale and unselected targets', async () => {
+    const f = await fixture(); const content = await f.upgrade(); const segment = content.composition.segments[0]!
+    const threadId = randomUUID(); const target = { kind: 'range' as const, spans: [{ segmentId: segment.id, blockId: segment.content[2]!.attrs.id, from: 4, to: 15 }] }
+    await f.command([{ kind: 'comment', threadId, target, text: 'Discuss the second phrase.' }], 2)
+    const snapshot = await getFeedCollaboration(f.actor); const transcriptId = snapshot.threads[0]!.transcriptSessionId
+    const sourceMessageId = (await getFeedThreadMessages(f.actor, threadId))[0]!.id
+    const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: transcriptId, mode: null, channelType: 'feed_thread' }, { sessionId: f.actor.sessionId, revision: 2, threadId })
+    expect(context!.selectedQuote).toBe('same phrase'); expect(context!.reference.target).toEqual(target)
+    const tools = buildFeedCollaborationTools(context!, sourceMessageId)
+    await tools.find(tool => tool.name === 'commentOnFeedDraft')!.execute({ mutationId: randomUUID(), text: 'A precise alternative would help.' }, {} as ToolContext)
+    expect((await getFeedThreadMessages(f.actor, threadId)).at(-1)).toMatchObject({ role: 'assistant' })
+    await tools.find(tool => tool.name === 'proposeDrafts')!.execute({ rationale: 'Target only the selected phrase.', drafts: [{ index: 1, text: 'concrete example' }] }, {} as ToolContext)
+    const proposal = (await getFeedCollaboration(f.actor)).suggestions[0]!
+    expect(proposal.edits).toMatchObject([{ kind: 'replaceText', spans: target.spans }])
+    await expect(tools.find(tool => tool.name === 'suggestFeedDraftChange')!.execute({ mutationId: randomUUID(), edits: [replace(content, 0, 'Unselected')], rationale: 'Wrong target' }, {} as ToolContext)).rejects.toMatchObject({ status: 403 })
+    await expect(resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 2, threadId })).rejects.toMatchObject({ code: 'thread_scope_mismatch' })
+    await f.command([{ kind: 'edit', edits: [replace(content, 0, 'New surrounding copy')] }], 2)
+    await expect(tools.find(tool => tool.name === 'readFeedDraft')!.execute({}, {} as ToolContext)).rejects.toMatchObject({ code: 'draft_context_changed' })
+  })
+})
+
+import express from 'express'
+import { feedCollaborationRoutes } from '../../routes/feed-collaboration.js'
+describe('[COMP:feed/draft-comments] authenticated HTTP command boundary', () => {
+  it('scenarios 3 and 7: HTTP commands share real receipts, authority, conflicts and transcript storage', async () => {
+    const f = await fixture(); const content = await f.upgrade(); const foreign = await fixture(); await foreign.upgrade()
+    const app = express(); app.use(express.json()); app.use((req, _res, next) => { req.userId = req.get('x-fixture-user') || undefined; next() }); app.use('/api/distribution', feedCollaborationRoutes())
+    const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve))
+    const address = server.address(); if (!address || typeof address === 'string') throw new Error('Loopback HTTP required')
+    const base = `http://127.0.0.1:${address.port}/api/distribution/${f.actor.assistantId}/draft-sessions/${f.actor.sessionId}`
+    const mutationId = randomUUID(); const request = { mutationId, expectedRevision: 2, commands: [{ kind: 'edit', edits: [replace(content, 0, 'Saved through HTTP')] }] }
+    const send = (body: unknown, user = f.actor.userId) => fetch(`${base}/commands`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-fixture-user': user }, body: JSON.stringify(body) })
+    try {
+      expect((await fetch(`${base}/collaboration`)).status).toBe(401)
+      expect((await fetch(`${base}/collaboration`, { headers: { 'x-fixture-user': foreign.actor.userId } })).status).toBe(403)
+      const first = await send(request); expect(first.status).toBe(200); const receipt = await first.json()
+      expect(await (await send(request)).json()).toEqual(receipt)
+      expect((await send({ ...request, mutationId: randomUUID() })).status).toBe(409)
+      expect((await send({ ...request, mutationId: randomUUID(), expectedRevision: 3, commands: [{ kind: 'comment', threadId: randomUUID(), target: { kind: 'block', segmentId: randomUUID(), blockId: randomUUID() }, text: 'Foreign target' }] })).status).toBe(409)
+      const threadId = randomUUID(); expect((await send({ mutationId: randomUUID(), expectedRevision: 3, commands: [{ kind: 'comment', threadId, target: { kind: 'post' }, text: 'Stored HTTP discussion' }] })).status).toBe(200)
+      const messages = await (await fetch(`${base}/threads/${threadId}/messages`, { headers: { 'x-fixture-user': f.other.userId } })).json()
+      expect((messages as { messages: Array<{ senderUserId: string; senderName: string }> }).messages[0]).toMatchObject({ senderUserId: f.actor.userId, senderName: 'Author fixture' })
+      await pool.query('DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2', [f.workspaceId, f.actor.userId])
+      expect((await send(request)).status).toBe(403)
+    } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) }
+  })
+})

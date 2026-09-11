@@ -185,6 +185,10 @@ export function feedWorkspaceCacheKey(workspaceId: string): string {
   return `feed-workspace:${workspaceId}${viewerSuffix()}`;
 }
 
+export function feedCollaborationCacheKey(workspaceId: string, assistantId: string, sessionId: string, threadId?: string): string {
+  return `feed-collaboration:${workspaceId}${viewerSuffix()}:${assistantId}:${sessionId}${threadId ? `:thread:${threadId}` : ''}`;
+}
+
 export function feedSessionsCacheKey(workspaceId: string, platform: string): string {
   return `feed-sessions:${workspaceId}${viewerSuffix()}:${platform}`;
 }

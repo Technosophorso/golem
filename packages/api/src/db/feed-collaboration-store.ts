@@ -17,8 +17,8 @@ export class FeedCollaborationError extends Error {
 }
 export type FeedActor = { userId: string; assistantId: string; sessionId: string; kind: 'user' | 'assistant' }
 export type StructuredFeedContent = PostWorkingContent & { schemaVersion: 2; composition: FeedComposition }
-export type FeedThread = { id: string; transcriptSessionId: string; anchor: FeedAnchor; resolved: boolean; authorUserId: string; authorKind: 'user' | 'assistant'; createdAt: Date }
-export type FeedSuggestion = { id: string; sourceRevision: number; edits: FeedEdit[]; rationale: string; status: string; threadId: string | null; parentId: string | null; authorUserId: string; authorKind: 'user' | 'assistant'; acceptanceReceipt: FeedCollaborationReceipt | null; applicationId: string | null }
+export type FeedThread = { id: string; transcriptSessionId: string; anchor: FeedAnchor; resolved: boolean; authorUserId: string; authorName?: string | null; authorKind: 'user' | 'assistant'; createdAt: Date }
+export type FeedSuggestion = { id: string; sourceRevision: number; edits: FeedEdit[]; rationale: string; status: string; threadId: string | null; parentId: string | null; authorUserId: string; authorName?: string | null; authorKind: 'user' | 'assistant'; acceptanceReceipt: FeedCollaborationReceipt | null; applicationId: string | null }
 export type FeedScope = { workspaceId: string; clearance: string; compartments: string[] | null; role: 'owner' | 'admin' | 'member'; canDraft: boolean; memberClearance: string }
 export async function lockFeedAccess(client: pg.PoolClient, actor: FeedActor, write = true): Promise<FeedScope> {
   const row = (await client.query<FeedScope>(
@@ -50,9 +50,9 @@ export function requireFeedComposition(content: PostWorkingContent): StructuredF
   validateFeedComposition(content.composition); return content as StructuredFeedContent
 }
 async function threads(client: pg.PoolClient, sessionId: string): Promise<FeedThread[]> {
-  return (await client.query<FeedThread>(`SELECT id,transcript_session_id AS "transcriptSessionId",anchor,resolved,author_user_id AS "authorUserId",author_kind AS "authorKind",created_at AS "createdAt" FROM feed_comment_threads WHERE session_id=$1 ORDER BY created_at,id`, [sessionId])).rows
+  return (await client.query<FeedThread>(`SELECT (SELECT name FROM users WHERE id=author_user_id) AS "authorName",id,transcript_session_id AS "transcriptSessionId",anchor,resolved,author_user_id AS "authorUserId",author_kind AS "authorKind",created_at AS "createdAt" FROM feed_comment_threads WHERE session_id=$1 ORDER BY created_at,id`, [sessionId])).rows
 }
-const SUGGESTION_COLUMNS = 'id,source_revision AS "sourceRevision",edits,rationale,status,thread_id AS "threadId",parent_id AS "parentId",author_user_id AS "authorUserId",author_kind AS "authorKind",acceptance_receipt AS "acceptanceReceipt",application_id AS "applicationId"'
+const SUGGESTION_COLUMNS = 'id,source_proposal AS "sourceProposal",source_revision AS "sourceRevision",edits,rationale,status,thread_id AS "threadId",parent_id AS "parentId",author_user_id AS "authorUserId",author_kind AS "authorKind",acceptance_receipt AS "acceptanceReceipt",application_id AS "applicationId"'
 export async function assertFeedFiles(client: pg.PoolClient, actor: FeedActor, scope: FeedScope, composition: FeedComposition): Promise<void> {
   const ids = new Map<string, string | null>()
   for (const { node } of walkFeed(composition)) {
@@ -132,7 +132,7 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
         if (content.schemaVersion === 2) continue
         // Preserve the pre-upgrade revision as well as the imported snapshot.
         await client.query(`INSERT INTO feed_post_revisions(session_id,revision,workspace_id,assistant_id,actor_user_id,actor_kind,content,forward_commands,inverse_commands) VALUES($1,$2,$3,$4,$5,$6,$7,'[]','[]') ON CONFLICT (session_id,revision) DO NOTHING`, [actor.sessionId, currentRevision, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, JSON.stringify(content)])
-        content = { ...content, schemaVersion: 2, composition: importLegacyFeed({ ...content, media: content.media.map(item => feedMediaSchema.parse(item)) }) }; await recordRevision([], [], false)
+        content = { ...content, schemaVersion: 2, composition: importLegacyFeed({ ...content, media: content.media.map(item => feedMediaSchema.parse(item)) }, command.seed) }; await recordRevision([], [], false)
         continue
       }
       const structured = requireFeedComposition(content)
@@ -154,10 +154,10 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
         await assertSameReference(client, 'feed_comment_threads', actor.sessionId, command.threadId)
         await assertSameReference(client, 'feed_draft_suggestions', actor.sessionId, command.parentId)
         await assertApplication(client, actor, scope, command.applicationId)
-        if (command.sourceMessageId && !(await client.query('SELECT id FROM session_messages WHERE id=$1 AND session_id=$2', [command.sourceMessageId, actor.sessionId])).rows.length) throw new FeedCollaborationError(403, 'message_scope_mismatch')
+        if (command.sourceMessageId && !(await client.query(`SELECT id FROM session_messages WHERE id=$1 AND (session_id=$2 OR session_id IN (SELECT transcript_session_id FROM feed_comment_threads WHERE session_id=$2))`, [command.sourceMessageId, actor.sessionId])).rows.length) throw new FeedCollaborationError(403, 'message_scope_mismatch')
         const candidate = applyFeedEdits(structured.composition, command.edits).composition
         await assertFeedFiles(client, actor, scope, candidate)
-        await client.query(`INSERT INTO feed_draft_suggestions(id,session_id,workspace_id,assistant_id,author_user_id,author_kind,source_revision,edits,rationale,thread_id,parent_id,source_message_id,source_tool_call_id,application_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`, [command.suggestionId, actor.sessionId, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, currentRevision, JSON.stringify(command.edits), command.rationale, command.threadId, command.parentId, command.sourceMessageId, command.sourceToolCallId, command.applicationId])
+        await client.query(`INSERT INTO feed_draft_suggestions(id,session_id,workspace_id,assistant_id,author_user_id,author_kind,source_revision,edits,rationale,thread_id,parent_id,source_message_id,source_tool_call_id,application_id,source_proposal) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`, [command.suggestionId, actor.sessionId, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, currentRevision, JSON.stringify(command.edits), command.rationale, command.threadId, command.parentId, command.sourceMessageId, command.sourceToolCallId, command.applicationId, command.sourceProposal ? JSON.stringify(command.sourceProposal) : null])
         receipt.suggestionIds.push(command.suggestionId); sequence++
       } else if (command.kind === 'decide') {
         const suggestion = (await client.query<FeedSuggestion>(`SELECT ${SUGGESTION_COLUMNS} FROM feed_draft_suggestions WHERE session_id=$1 AND id=$2`, [actor.sessionId, command.suggestionId])).rows[0]
@@ -199,6 +199,6 @@ export async function getFeedThreadMessages(actor: FeedActor, threadId: string, 
   return withFeedTransaction(actor, async client => {
     const thread = (await threads(client, actor.sessionId)).find(t => t.id === threadId)
     if (!thread) throw new FeedCollaborationError(404, 'thread_not_found')
-    return (await client.query(`SELECT id,role,content,sequence_num AS sequence,sender_user_id AS "senderUserId",created_at AS "createdAt" FROM session_messages WHERE session_id=$1 AND sequence_num<$2 ORDER BY sequence_num DESC LIMIT 50`, [thread.transcriptSessionId, beforeSequence])).rows.reverse()
+    return (await client.query(`SELECT (SELECT name FROM users WHERE id=sender_user_id) AS "senderName",id,role,content,sequence_num AS sequence,sender_user_id AS "senderUserId",created_at AS "createdAt" FROM session_messages WHERE session_id=$1 AND sequence_num<$2 ORDER BY sequence_num DESC LIMIT 50`, [thread.transcriptSessionId, beforeSequence])).rows.reverse()
   }, false)
 }

@@ -80,6 +80,7 @@ describe("[COMP:app-web/surface-cache-invalidation] routing table", () => {
       "live:w1",
       "chat-sessions:w1",
       "chat-shared:w1",
+      "feed-collaboration:w1",
     ]);
   });
 

@@ -93,6 +93,9 @@ export const feedAnchorSchema = z.object({
 }).strict()
 export type FeedAnchor = z.infer<typeof feedAnchorSchema>
 export const feedEditSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('reshapeSegment'), segmentId: feedIdSchema, preimage: z.array(feedNodeSchema).min(1).max(10_000), replacement: z.array(feedNodeSchema).min(1).max(10_000) }).strict(),
+  z.object({ kind: z.literal('splitBlock'), segmentId: feedIdSchema, blockId: feedIdSchema, preimage: feedNodeSchema, first: feedNodeSchema, second: feedNodeSchema }).strict(),
+  z.object({ kind: z.literal('joinBlocks'), segmentId: feedIdSchema, blockId: feedIdSchema, secondId: feedIdSchema, preimage: z.tuple([feedNodeSchema, feedNodeSchema]), replacement: feedNodeSchema }).strict(),
   z.object({ kind: z.literal('replaceText'), spans: z.array(feedSpanSchema).min(1).max(100),
     preimage: z.array(z.array(feedInlineSchema)).min(1).max(100), replacement: z.array(z.array(feedInlineSchema)).min(1).max(100) }).strict(),
   z.object({ kind: z.literal('replaceBlock'), segmentId: feedIdSchema, blockId: feedIdSchema,
@@ -104,7 +107,7 @@ export const feedEditSchema = z.discriminatedUnion('kind', [
 ])
 export type FeedEdit = z.infer<typeof feedEditSchema>
 export const feedCommandSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('upgrade') }).strict(),
+  z.object({ kind: z.literal('upgrade'), seed: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('edit'), edits: z.array(feedEditSchema).min(1).max(100), reasonThreadId: feedIdSchema.optional(), applicationId: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('comment'), threadId: feedIdSchema, target: feedTargetSchema, text: z.string().trim().min(1).max(20_000) }).strict(),
   z.object({ kind: z.literal('reply'), threadId: feedIdSchema, text: z.string().trim().min(1).max(20_000) }).strict(),
@@ -112,13 +115,21 @@ export const feedCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('reattach'), threadId: feedIdSchema, target: feedTargetSchema }).strict(),
   z.object({ kind: z.literal('propose'), suggestionId: feedIdSchema, threadId: feedIdSchema.optional(), parentId: feedIdSchema.optional(),
     edits: z.array(feedEditSchema).min(1).max(100), rationale: z.string().max(20_000), sourceMessageId: feedIdSchema.optional(),
+    sourceProposal: z.object({ threadSegments: z.array(z.string().max(FEED_CONTENT_LIMIT)).min(1).max(100).optional(), index: z.number().int().min(1).max(99), text: z.string().max(FEED_CONTENT_LIMIT), label: z.string().max(30).optional(), imageBrief: z.string().max(2000).optional() }).strict().optional(),
     sourceToolCallId: z.string().max(512).optional(), applicationId: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('decide'), suggestionId: feedIdSchema, outcome: z.enum(['accepted', 'rejected', 'deferred']), reasonThreadId: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('undo'), revision: revision }).strict(),
   z.object({ kind: z.literal('context'), goalId: feedIdSchema.nullable().optional(), reviewMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
-    title: z.string().max(200).optional(), privateBrief: z.string().max(20_000).optional() }).strict(),
+    title: z.string().max(200).optional(), privateBrief: z.string().max(20_000).optional(),
+    postFormat: z.enum(['post', 'thread', 'article']).optional(),
+    article: z.object({ sourceUrl: z.string().max(2048), title: z.string().max(2000), description: z.string().max(20_000) }).strict().optional() }).strict(),
 ])
 export type FeedCommand = z.infer<typeof feedCommandSchema>
 export const feedCommandRequestSchema = z.object({ mutationId: feedIdSchema, expectedRevision: revision, commands: z.array(feedCommandSchema).min(1).max(100) }).strict()
 export type FeedCommandRequest = z.infer<typeof feedCommandRequestSchema>
 export type FeedCollaborationReceipt = { mutationId: string; revision: number; sequence: number; threadIds: string[]; suggestionIds: string[] }
+
+export const feedChatTargetSchema = z.object({
+  sessionId: feedIdSchema, revision, target: feedTargetSchema.optional(), threadId: feedIdSchema.optional(),
+}).strict()
+export type FeedChatTarget = z.infer<typeof feedChatTargetSchema>

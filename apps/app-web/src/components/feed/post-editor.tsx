@@ -46,7 +46,7 @@ import { CaptionEditor } from "@/components/feed/caption-editor";
 import { BrandCheck } from "@/components/feed/brand-check";
 import { PostMediaTray } from "@/components/feed/post-media-tray";
 import type { PostMedia } from "@/lib/feed-media";
-import { TuningChatPanel } from "@/components/feed/tuning-chat-panel";
+import { TuningChatPanel, type TuningChatPanelHandle } from "@/components/feed/tuning-chat-panel";
 import { PlanMobileSheet } from "@/components/feed/plan-mobile-sheet";
 import { useLgViewport } from "@/components/feed/use-lg-viewport";
 import { Skeleton } from "@/components/skeleton";
@@ -98,6 +98,13 @@ import {
   readFeedNewPostForm, writeFeedNewPostForm,
   type FeedWorkingContent, type LocalFeedPost,
 } from "@/lib/offline/feed-offline";
+
+import { CompositionEditor, type FeedEditorSelection } from './composition-editor';
+import { DraftCommentPanel, type FeedCommentComposer } from './draft-comment-panel';
+import { useFeedCollaboration } from '@/lib/feed-collaboration';
+import { createFeedAnchor } from '@use-brian/doc-model';
+import type { FeedCommand, FeedEdit } from '@use-brian/shared';
+import { queueFeedCommands, flushFeedWorkingCopies } from '@/lib/offline/feed-offline';
 
 const PROPOSE_DRAFTS_TOOL = "proposeDrafts";
 
@@ -401,6 +408,7 @@ function PostPane({
   const workspace = useFeedWorkspace();
   const t = useT().feedPage;
   const te = t.postEditor;
+  const tc = useT().feedCollaboration;
   const router = useRouter();
   const dockRecorder = useGlobalDockRecorder();
   // Below `lg` the refine chat is a FAB -> bottom sheet instead of the
@@ -439,6 +447,14 @@ function PostPane({
   const offline = useIsOffline();
   const [localPost, setLocalPost] = useState<LocalFeedPost | null>(null);
   const [localSaveError, setLocalSaveError] = useState(false);
+  const [panelView, setPanelView] = useState<'conversation' | 'review'>('conversation');
+  const [selection, setSelection] = useState<FeedEditorSelection | null>(null);
+  const [composer, setComposer] = useState<FeedCommentComposer | null>(null);
+  const [selectedThread, setSelectedThread] = useState<string | null>(null);
+  const mainChatRef = useRef<TuningChatPanelHandle>(null);
+  const structured = localPost?.content.schemaVersion === 2 && !!localPost.content.composition;
+  const collaboration = useFeedCollaboration(workspaceId, assistantId, sessionId, structured && !localPost?.newSession);
+
   const [localSaving, setLocalSaving] = useState(0);
   const persist = useCallback(async (patch: Partial<FeedWorkingContent>) => {
     setLocalSaving(n => n + 1);
@@ -572,6 +588,52 @@ function PostPane({
   // rewrites formatData wholesale from postFormat, so a Post<->Thread switch
   // would silently erase it.
   const [media, setMedia] = useState<PostMedia[]>([]);
+  useEffect(() => {
+    if (!structured || !localPost) return;
+    const content = localPost.content;
+    setOwnText(content.text); setSelectedId('mine'); setPostFormat(content.postFormat);
+    setThreadSegments(content.threadSegments); setArticle(content.article); setMedia(content.media); setPrivateBrief(content.privateBrief);
+  }, [structured, localPost]);
+  const runCommands = useCallback(async (commands: FeedCommand[], optimisticEdits?: FeedEdit[]) => {
+    setLocalSaving(n => n + 1);
+    try {
+      const next = await queueFeedCommands(assistantId, sessionId, commands, optimisticEdits);
+      setLocalPost(next); setLocalSaveError(false);
+      await flushFeedWorkingCopies();
+      const current = await readLocalFeedPost(assistantId, sessionId);
+      if (current?.error) { setError(te.syncConflict); return false; }
+      if (current && !current.dirty) void collaboration.refresh();
+      return true;
+    } catch { setLocalSaveError(true); return false; }
+    finally { setLocalSaving(n => n - 1); }
+  }, [assistantId, sessionId, collaboration.refresh, te.syncConflict]);
+  async function upgradeComposition() {
+    if (readOnly || offline || !localPost) return;
+    setBusy(true);
+    try {
+      // A restored legacy draft can have no working-copy row yet.
+      if (!localPost.revision && !localPost.dirty) await patchFeedWorkingCopy(assistantId, sessionId, { text: selected?.text ?? localPost.content.text, textEdited: true });
+      await flushFeedWorkingCopies();
+      const current = await readLocalFeedPost(assistantId, sessionId);
+      if (!current || current.dirty || !current.revision) { setError(tc.syncFirst); return; }
+      await runCommands([{ kind: 'upgrade', seed: crypto.randomUUID() }]);
+    } finally { setBusy(false); }
+  }
+  function openThread(threadId: string) {
+    setPanelView('review'); setRefineOpen(true); setSelectedThread(threadId);
+    const thread = collaboration.data?.threads.find(item => item.id === threadId);
+    const target = thread?.anchor.target;
+    const blockId = target?.kind === 'block' ? target.blockId : target?.kind === 'range' ? target.spans[0]?.blockId : null;
+    if (blockId) document.querySelector(`[data-block-id="${blockId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  function selectionAction(action: 'comment' | 'suggest' | 'ask') {
+    if (!localPost?.content.composition) return;
+    const target = selection?.target ?? { kind: 'post' as const };
+    setRefineOpen(true);
+    if (action === 'ask') { setPanelView('conversation'); mainChatRef.current?.insertPrompt(''); return; }
+    setPanelView('review'); setComposer({ kind: action, anchor: createFeedAnchor(localPost.content.composition, target, localPost.revision) });
+  }
+
 
   useEffect(() => {
     if (
@@ -1042,7 +1104,7 @@ function PostPane({
                   ) : null}
                 </div>
 
-                {versions.length > 1 && postFormat !== "thread" ? (
+                {!structured && versions.length > 1 && postFormat !== "thread" ? (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="mr-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
                       {te.versionsLabel}
@@ -1071,7 +1133,12 @@ function PostPane({
                   </div>
                 ) : null}
 
-                {postFormat === "thread" ? (
+                {!structured && !readOnly ? <Button type="button" variant="outline" disabled={busy || offline || Boolean(localPost?.error)} onClick={() => void upgradeComposition()}>{tc.upgrade}</Button> : null}
+                {structured && localPost?.content.composition ? (
+                  <CompositionEditor composition={localPost.content.composition} readOnly={readOnly} threads={collaboration.data?.threads ?? []} draftAnchor={composer?.anchor}
+                    onEdit={edits => { void runCommands([{ kind: 'edit', edits }]); }} onSelection={next => setSelection(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)}
+                    onAction={selectionAction} onOpenThread={openThread} />
+                ) : postFormat === "thread" ? (
                   <ThreadComposer
                     segments={threadSegments}
                     readOnly={readOnly}
@@ -1175,11 +1242,14 @@ function PostPane({
           keeps a streaming turn alive while the sheet is closed; the `isLg`
           gate keeps exactly one panel subscribed to the post's session. */}
       {(() => {
-        const refinePanel =
+        const conversationPanel =
           offline || localPost?.newSession ? (
             <p className="p-5 text-sm text-muted-foreground">{te.refineNeedsConnection}</p>
           ) : (
             <TuningChatPanel
+              ref={mainChatRef}
+              ready={!structured || !remoteBlocked}
+              feedTarget={structured && localPost ? { sessionId, revision: localPost.revision, ...(selection ? { target: selection.target } : {}) } : undefined}
               docked
               assistantId={assistantId}
               assistantName={assistantName}
@@ -1203,6 +1273,21 @@ function PostPane({
               ownsDockRecorderTarget
             />
           );
+        const refinePanel = structured && localPost?.content.composition ? <div className="flex h-full min-h-0 flex-col">
+          <div role="tablist" aria-label={tc.review} className="flex shrink-0 border-b p-2 gap-2">
+            {(['conversation', 'review'] as const).map(view => <button key={view} type="button" role="tab" aria-selected={panelView === view} className="min-h-11 flex-1 rounded-md px-3 text-sm aria-selected:bg-muted" onClick={() => setPanelView(view)}>{tc[view]}</button>)}
+          </div>
+          <div hidden={panelView !== 'conversation'} className="min-h-0 flex-1 relative"><div className="flex h-full min-h-0 flex-col">
+            {selection?.quote ? <div className="border-b p-3 text-sm"><p className="font-medium">{tc.selection}</p><blockquote className="max-h-24 overflow-y-auto whitespace-pre-wrap">{selection.quote}</blockquote><button type="button" className="min-h-11 rounded-md border px-3" onClick={() => setSelection(null)}>{tc.post}</button></div> : null}
+            <div className="min-h-0 flex-1 relative">{conversationPanel}</div>
+          </div></div>
+          <div hidden={panelView !== 'review'} className="min-h-0 flex-1">
+            <DraftCommentPanel workspaceId={workspaceId} assistantId={assistantId} assistantName={assistantName} sessionId={sessionId}
+              composition={localPost.content.composition} revision={localPost.revision} snapshot={collaboration.data} loading={collaboration.loading} error={collaboration.error}
+              pending={localPost.dirty || localSaving > 0} offline={offline} readOnly={readOnly} composer={composer} onComposer={setComposer}
+              selectedThread={selectedThread} onThread={openThread} selection={selection?.target} onCommand={runCommands} onRefresh={() => void collaboration.refresh()} />
+          </div>
+        </div> : conversationPanel;
         return isLg ? (
           <aside className="relative hidden border-border/60 lg:block lg:h-auto lg:min-h-0 lg:border-l">
             <PeekResizeHandle resizing={railResizing} {...railHandleProps} />

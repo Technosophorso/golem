@@ -136,3 +136,61 @@ describe("[COMP:app-web/feed-offline] durable authoring and replay", () => {
     await expect(feedCachedJson("/api/workspaces/workspace-1")).rejects.toThrow();
   });
 });
+
+// Command replay is exercised through the same persisted record and driver as
+// legacy authoring; transport replies are the only replacement boundary here.
+import { queueFeedCommands } from '../feed-offline';
+import { applyFeedEdits, proposeFeedReplacement, projectFeed, walkFeed } from '@use-brian/doc-model';
+async function structuredPost() {
+  const post = await createLocalFeedPost(assistant, 'threads', content());
+  vi.stubGlobal('navigator', { onLine: true });
+  vi.mocked(authFetch).mockImplementation(syncReply);
+  await flushFeedWorkingCopies();
+  const upgraded = await queueFeedCommands(assistant, post.session.id, [{ kind: 'upgrade', seed: crypto.randomUUID() }]);
+  vi.mocked(authFetch).mockImplementation(commandReply);
+  await flushFeedWorkingCopies();
+  return (await readLocalFeedPost(assistant, upgraded.session.id))!;
+}
+function commandReply(_url: unknown, init?: RequestInit) {
+  const request = JSON.parse(init!.body as string);
+  return Promise.resolve(reply({ receipt: { mutationId: request.mutationId, revision: request.expectedRevision + request.commands.filter((c: {kind: string}) => ['upgrade', 'edit', 'context'].includes(c.kind)).length, sequence: 0, threadIds: [], suggestionIds: [] } }));
+}
+describe('[COMP:app-web/feed-offline] structured collaboration replay', () => {
+  it('scenario 6: persists exact commands across a lost response while retaining newer edits', async () => {
+    const post = await structuredPost();
+    const first = proposeFeedReplacement(post.content.composition!, { kind: 'post' }, 'First change');
+    const local = await queueFeedCommands(assistant, post.session.id, [{ kind: 'edit', edits: first }]);
+    vi.mocked(authFetch).mockClear().mockRejectedValueOnce(new TypeError('lost reply')).mockImplementation(commandReply);
+    await flushFeedWorkingCopies(); const sent = vi.mocked(authFetch).mock.calls[0]![1]!.body;
+    const second = proposeFeedReplacement(local.content.composition!, { kind: 'post' }, 'Newer change');
+    await queueFeedCommands(assistant, post.session.id, [{ kind: 'edit', edits: second }]);
+    await flushFeedWorkingCopies();
+    expect(vi.mocked(authFetch).mock.calls[1]![1]!.body).toBe(sent);
+    expect(await readLocalFeedPost(assistant, post.session.id)).toMatchObject({ revision: 4, dirty: false, content: { text: 'Newer change' } });
+  });
+  it('scenario 6: conflict recovery carries intentional slots into a new typed draft', async () => {
+    const post = await structuredPost(); const segment = post.content.composition!.segments[0]!;
+    await queueFeedCommands(assistant, post.session.id, [{ kind: 'edit', edits: [{ kind: 'insertBlock', segmentId: segment.id, afterId: segment.content[0]!.attrs.id, node: { type: 'generationPlaceholder', attrs: { id: crypto.randomUUID(), kind: 'image', brief: 'Keep this intent', briefRevision: 2, references: [] } } }] }]);
+    vi.mocked(authFetch).mockResolvedValueOnce(reply({}, 409)); await flushFeedWorkingCopies();
+    const conflict = (await readLocalFeedPost(assistant, post.session.id))!;
+    const copy = await forkLocalFeedPost(conflict);
+    expect(projectFeed(copy.content.composition!).missingSlots).toHaveLength(1);
+    expect(projectFeed(copy.content.composition!).missingSlots).not.toEqual(projectFeed(conflict.content.composition!).missingSlots);
+    vi.mocked(authFetch).mockClear().mockImplementationOnce(syncReply).mockImplementation(commandReply);
+    await flushFeedWorkingCopies();
+    const creation = JSON.parse(vi.mocked(authFetch).mock.calls[0]![1]!.body as string);
+    expect(creation.content.schemaVersion).toBeUndefined(); expect(creation.content.text).not.toContain('Keep this intent');
+    await flushFeedWorkingCopies();
+    const replayed = (await readLocalFeedPost(assistant, copy.session.id))!;
+    expect(replayed.dirty).toBe(false); expect(replayed.content.schemaVersion).toBe(2);
+    expect(walkFeed(replayed.content.composition!).some(row => row.node.type === 'generationPlaceholder' && row.node.attrs.brief === 'Keep this intent')).toBe(true);
+    expect(await readLocalFeedPost(assistant, post.session.id)).toBeNull();
+  });
+  it('scenario 6: context controls use commands and refuse to replace the canonical tree', async () => {
+    const post = await structuredPost();
+    vi.stubGlobal('navigator', { onLine: false });
+    const updated = await patchFeedWorkingCopy(assistant, post.session.id, { title: 'A renamed post', privateBrief: 'Context only' });
+    expect(updated.content.composition).toEqual(post.content.composition);
+    expect(updated.collaborationQueue?.[0]?.commands).toEqual([{ kind: 'context', title: 'A renamed post', privateBrief: 'Context only' }]);
+  });
+});
