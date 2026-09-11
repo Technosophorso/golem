@@ -4,7 +4,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useT } from "@/lib/i18n/client";
-import { checkInAssociationAttendee,exportAssociationAttendees,type AssociationEvent,type AssociationTicket } from "@/lib/api/association";
+import { checkInAssociationAttendee,exportAssociationAttendees,exportAssociationOperationalRoster,type AssociationEvent,type AssociationTicket } from "@/lib/api/association";
 import { listCrmConsentPurposes } from "@/lib/api/crm";
 import { crmRecordHref } from "@/lib/crm-view";
 import { associationPageCacheKey } from "@/lib/surface-prefetch";
@@ -16,10 +16,10 @@ import { useAssociationPage,AssociationListState,useAssociationAction } from "./
 import { AssociationEventForm,AssociationTicketForm } from "./catalog-forms";
 import { AssociationReservationForm } from "./reservation-form";
 
-function Attendees({workspaceId,eventId}:{workspaceId:string;eventId:string}) {
+function Attendees({workspaceId,eventId,canExportRoster}:{workspaceId:string;eventId:string;canExportRoster:boolean}) {
   const t=useT().associationPage,rows=useAssociationPage(workspaceId,"registrations",{eventId}),action=useAssociationAction(workspaceId);
   const purposes=useCachedResource(associationPageCacheKey(workspaceId,"email-purposes"),()=>listCrmConsentPurposes(workspaceId));
-  const [purpose,setPurpose]=useState(""),[exporting,setExporting]=useState(false),[exportError,setExportError]=useState(false);
+  const [purpose,setPurpose]=useState(""),[exporting,setExporting]=useState(false),[exportError,setExportError]=useState(false),[rosterExporting,setRosterExporting]=useState(false),[rosterError,setRosterError]=useState(false);
   async function download() {
     if(!purpose||exporting||purposes.error)return;
     setExporting(true);setExportError(false);
@@ -27,6 +27,14 @@ function Attendees({workspaceId,eventId}:{workspaceId:string;eventId:string}) {
       const csv=await exportAssociationAttendees(workspaceId,eventId,purpose),url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
       const anchor=document.createElement("a");anchor.href=url;anchor.download=`attendees-${eventId}.csv`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),0);
     } catch {setExportError(true);}finally {setExporting(false);}
+  }
+  async function downloadRoster() {
+    if(!canExportRoster||rosterExporting)return;
+    setRosterExporting(true);setRosterError(false);
+    try {
+      const csv=await exportAssociationOperationalRoster(workspaceId,eventId),url=URL.createObjectURL(new Blob([csv],{type:"text/csv;charset=utf-8"}));
+      const anchor=document.createElement("a");anchor.href=url;anchor.download=`operational-roster-${eventId}.csv`;anchor.click();setTimeout(()=>URL.revokeObjectURL(url),0);
+    } catch {setRosterError(true);}finally {setRosterExporting(false);}
   }
   return <section className="space-y-3"><h3 className="text-lg font-semibold">{t.manage.attendees}</h3>
     <AssociationListState {...rows}>{rows.data?.items.length===0?<p className="text-sm">{t.manage.empty}</p>:null}
@@ -40,9 +48,10 @@ function Attendees({workspaceId,eventId}:{workspaceId:string;eventId:string}) {
       <SelectTrigger className="min-h-11 w-full" aria-label={t.manage.purpose}><SelectValue placeholder={t.manage.choose}/></SelectTrigger><SelectContent>{purposes.data?.filter(p=>!p.archivedAt&&p.applicableChannels.includes("email")).map(p=><SelectItem key={p.id} value={p.purposeKey}>{p.label}</SelectItem>)}</SelectContent>
     </Select><p className="text-sm text-muted-foreground">{t.manage.exportHelp}</p><Button type="button" className="min-h-11" variant="outline" disabled={!purpose||exporting||!!purposes.error} onClick={()=>void download()}>{t.manage.export}</Button>
     {(purposes.error||exportError)?<p role="alert" className="text-sm text-destructive">{t.manage.loadFailed}</p>:null}</div>
+    {canExportRoster?<div className="space-y-2 rounded-xl border border-border p-3"><p className="text-sm font-medium">{t.manage.operationalRoster}</p><p className="text-sm text-muted-foreground">{t.manage.operationalRosterHelp}</p><Button type="button" className="min-h-11" variant="outline" disabled={rosterExporting} onClick={()=>void downloadRoster()}>{t.manage.operationalRoster}</Button>{rosterError?<p role="alert" className="text-sm text-destructive">{t.manage.loadFailed}</p>:null}</div>:null}
   </section>;
 }
-function EventOperations({workspaceId,event,enabled}:{workspaceId:string;event:AssociationEvent;enabled:boolean}) {
+function EventOperations({workspaceId,event,enabled,canExportRoster}:{workspaceId:string;event:AssociationEvent;enabled:boolean;canExportRoster:boolean}) {
   const t=useT().associationPage,rows=useAssociationPage(workspaceId,"tickets",{eventId:event.id});
   const [editing,setEditing]=useState<AssociationTicket|"new"|null>(null),[reserving,setReserving]=useState<AssociationTicket|null>(null);
   return <div className="space-y-6"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-lg font-semibold">{t.manage.tickets}: {event.title}</h3>
@@ -53,7 +62,7 @@ function EventOperations({workspaceId,event,enabled}:{workspaceId:string;event:A
     </div>)}</div></AssociationListState>
     {editing?<AssociationTicketForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} eventId={event.id} ticket={editing==="new"?undefined:editing} disabled={!enabled||!!rows.error} onSaved={()=>{setEditing(null);void rows.refresh();}}/>:null}
     {reserving?<AssociationReservationForm key={reserving.id} workspaceId={workspaceId} ticket={rows.data?.items.find(row=>row.id===reserving.id) ?? reserving} disabled={!enabled||!!rows.error}/>:null}
-    <Attendees workspaceId={workspaceId} eventId={event.id}/>
+    <Attendees workspaceId={workspaceId} eventId={event.id} canExportRoster={canExportRoster}/>
   </div>;
 }
 export function AssociationEventsPanel({workspaceId}:{workspaceId:string}) {
@@ -67,6 +76,6 @@ export function AssociationEventsPanel({workspaceId}:{workspaceId:string}) {
       <button type="button" className="min-h-11 text-left text-sm" onClick={()=>{setSelected(event);setEditing(null);}}><span className="font-medium">{event.title}</span><span className="block text-muted-foreground">{new Date(event.startsAt).toLocaleString()} · {event.timezone} · {t.manage.options[event.status]}</span></button>
       <Button type="button" className="min-h-11" variant="ghost" disabled={!configure||!!rows.error} onClick={()=>{setSelected(event);setEditing(event);}}>{t.manage.edit}</Button></div>)}</div></AssociationListState>
     {editing?<AssociationEventForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} event={editing==="new"?undefined:editing} disabled={!configure||!!rows.error} onSaved={()=>{setEditing(null);void rows.refresh();}}/>:null}
-    {selected?<EventOperations key={selected.id} workspaceId={workspaceId} event={selected} enabled={module.data?.module.state==="enabled"&&!module.error}/>:null}
+    {selected?<EventOperations key={selected.id} workspaceId={workspaceId} event={selected} enabled={module.data?.module.state==="enabled"&&!module.error} canExportRoster={configure}/>:null}
   </section>;
 }

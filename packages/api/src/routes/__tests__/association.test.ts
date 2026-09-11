@@ -63,6 +63,7 @@ function fakeStore(): AssociationStore {
     resolveProviderReceipt: vi.fn(),
     listProviderReceipts: vi.fn(),
     listEventRegistrations: vi.fn(),
+    listOperationalRoster: vi.fn(),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'commerce' }),
     updateRegistration: vi.fn(),
     listNotifications: vi.fn(),

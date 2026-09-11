@@ -14,6 +14,7 @@ function fixture() {
     listOrders: vi.fn().mockResolvedValue({ items: [], nextCursor: null, total: 7,
       financialSummary: [{ currency: 'USD', orderCount: 7, settledOrderCount: 2, subtotalMinor: '2100', discountMinor: '100', grossMinor: '2000', refundedMinor: '400', netMinor: '1600', pendingMinor: '500' }] }),
     listTickets: vi.fn().mockResolvedValue([]), getOrder: vi.fn().mockResolvedValue({ id: orderId }),
+    listOperationalRoster: vi.fn().mockResolvedValue({ items: [{ id: orderId }], nextCursor: null }),
     listWaitlist: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     offerWaitlistPlace: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
     bindOrderProvider: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
@@ -103,6 +104,16 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     const result = await f.service.execute(member, command({ kind: 'list_orders', eventId, status: 'paid' }))
     expect(result.financialSummary).toEqual([expect.objectContaining({ currency: 'USD', grossMinor: '2000', refundedMinor: '400' })])
     expect(f.store.listOrders).toHaveBeenCalledWith(workspaceId, expect.objectContaining({ eventId, status: 'paid' }))
+  })
+  it('confines the complete operational roster to owner/admin user sessions', async () => {
+    const f = fixture(), roster = command({ kind: 'list_operational_roster', eventId, limit: 25 })
+    await expect(f.service.execute(member, roster)).rejects.toMatchObject({ code: 'not_authorized' })
+    await expect(f.service.execute({ ...integration(), authority: { ...integration().authority, role: 'admin', canConfigure: true } }, roster))
+      .rejects.toMatchObject({ code: 'not_authorized' })
+    expect(f.store.listOperationalRoster).not.toHaveBeenCalled()
+    const result = await f.service.execute({ ...member, authority: { ...member.authority, role: 'owner', canConfigure: true } }, roster)
+    expect(result.items).toEqual([{ id: orderId }])
+    expect(f.store.listOperationalRoster).toHaveBeenCalledWith(workspaceId, eventId, expect.objectContaining({ limit: 25, cursor: null }))
   })
   it('carries the original grant ceiling to by-id reads and refuses mismatched credentials', async () => {
     const f = fixture(), context = integration()

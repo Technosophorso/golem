@@ -44,6 +44,7 @@ export const AssociationCommandSchema = z.union([
   AssociationListPageSchema.extend({ kind: z.literal('list_provider_receipts'), orderId: Id.optional(), entitlementId: Id.optional(), state: ProviderReceiptStateSchema.optional() }).strict(),
   z.object({ kind: z.literal('retry_provider_receipt'), receiptId: Id }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_registrations'), eventId: Id, status: AssociationRegistrationStatusSchema.optional() }).strict(),
+  AssociationListPageSchema.extend({ kind: z.literal('list_operational_roster'), eventId: Id }).strict(),
   z.object({ kind: z.literal('update_registration'), registrationId: Id, update: AssociationRegistrationUpdateSchema }).strict(),
 ])
 export type AssociationCommand = z.infer<typeof AssociationCommandSchema>
@@ -60,4 +61,4 @@ export type AssociationCommandResult = {
 export interface AssociationServicePort {
   execute(context: AssociationContext, command: AssociationCommand): Promise<AssociationCommandResult>
 }
-export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_waitlist', 'list_provider_receipts'] as const
+export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts'] as const

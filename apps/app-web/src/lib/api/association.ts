@@ -67,6 +67,7 @@ export type AssociationPlan = { id:string;planKey:string;name:string;currency:st
 export type AssociationEvent = {id:string;slug:string;title:string;description:string;startsAt:string;endsAt:string;timezone:string;mode:"venue"|"online"|"hybrid";venue:string|null;onlineUrl:string|null;registrationOpensAt:string|null;registrationClosesAt:string|null;capacity:number|null;status:"draft"|"published"|"cancelled"|"completed";canonicalUrl:string|null;programmeKey:string|null;metadata:Record<string,unknown>};
 export type AssociationTicket = {id:string;key:string;name:string;currency:string;priceMinor:string;memberPriceMinor:string|null;eligiblePlanKeys:string[];capacity:number|null;perOrderLimit:number;saleStartsAt:string|null;saleEndsAt:string|null;status:"draft"|"on_sale"|"sold_out"|"closed";reservedCount:number;available:number|null};
 export type AssociationRegistration = {id:string;eventId:string;ticketId:string|null;orderId:string|null;attendeeContactId:string|null;attendeeName:string;attendeeEmail:string|null;status:"reserved"|"confirmed"|"checked_in"|"cancelled"|"refunded"|"registered"|"attended"|"no_show";sourceKind:string;checkedInAt:string|null};
+export type AssociationOperationalRosterRow = {id:string;eventId:string;orderId:string|null;orderLineId:string|null;ticketId:string|null;ticketKey:string|null;ticketName:string|null;buyerContactId:string|null;attendeeContactId:string|null;attendeeName:string;attendeeEmail:string|null;phone:string|null;organisation:string|null;jobTitle:string|null;status:AssociationRegistration["status"];checkedInAt:string|null;sourceKind:string;sourceId:string|null;historicalImport:boolean;marketingConsent:boolean|null;ticketingConsent:boolean|null;policyVersion:string|null;policyAcceptedAt:string|null;questionResponses:unknown;createdAt:string;updatedAt:string};
 export type AssociationWaitlistRow = {id:string;contactId:string;contactName:string;eventId:string;ticketId:string;waitlistState:"waiting"|"offered"|"converted"|"closed";promotionId:string|null;orderId:string|null;reservationExpiresAt:string|null};
 export type AssociationProviderReceipt = {id:string;provider:string;eventId:string;state:"pending"|"processing"|"applied"|"retry"|"needs_reconciliation";errorCode:string|null;attempts:number;nextAttemptAt:string|null;appliedAt:string|null;orderId:string|null;entitlementId:string|null};
 export type AssociationMembership = import("./crm").CrmEntitlement;
@@ -110,12 +111,14 @@ export function offerAssociationPlace(workspaceId:string,submissionId:string,inp
   return request<{offer:{orderId:string}}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/waitlist/${encodeURIComponent(submissionId)}/offer`,input);
 }
 
+const associationCsvCell=(value:string)=>`"${(/^[\s]*[=+@-]/.test(value)?"'":"")+value.replace(/"/g,'""')}"`;
+const associationRosterCell=(value:unknown)=>associationCsvCell(value===null||value===undefined?"":typeof value==="string"?value:typeof value==="object"?(JSON.stringify(value)??""):String(value));
+
 /** Complete, fail-closed export from the existing authorized member read plane. */
 export async function exportAssociationAttendees(workspaceId:string,eventId:string,purposeKey:string):Promise<string> {
   const {fetchCrmRecord,checkCrmSendability}=await import("./crm");
   const contacts=new Map<string,Promise<string|null>>();
   const lines=[["registrationId","contactId","name","email","status"].join(",")];
-  const csv=(value:string)=>`"${(/^[\s]*[=+@-]/.test(value)?"'":"")+value.replace(/"/g,'""')}"`;
   const seen=new Set<string>();let cursor:string|undefined;
   do {
     const page=await listAssociationPage(workspaceId,"registrations",{eventId,cursor});
@@ -130,7 +133,7 @@ export async function exportAssociationAttendees(workspaceId:string,eventId:stri
         })());
         const email=await contacts.get(id)!;
         if(!email || email.trim().toLowerCase()!==row.attendeeEmail?.trim().toLowerCase()) return null;
-        return [row.id,id,row.attendeeName,email,row.status].map(csv).join(",");
+        return [row.id,id,row.attendeeName,email,row.status].map(associationCsvCell).join(",");
       }));
       lines.push(...rows.filter((row):row is string=>row!==null));
     }
@@ -138,5 +141,30 @@ export async function exportAssociationAttendees(workspaceId:string,eventId:stri
     if(page.nextCursor) seen.add(page.nextCursor);
     cursor=page.nextCursor ?? undefined;
   } while(cursor);
+  return lines.join("\r\n")+"\r\n";
+}
+
+/** Owner/admin event-operations roster. Marketing consent is evidence, never an inclusion filter. */
+export async function exportAssociationOperationalRoster(workspaceId:string,eventId:string):Promise<string> {
+  const columns:Array<[string,keyof AssociationOperationalRosterRow]>=[
+    ["registrationId","id"],["eventId","eventId"],["orderId","orderId"],["orderLineId","orderLineId"],
+    ["ticketId","ticketId"],["ticketKey","ticketKey"],["ticketName","ticketName"],["buyerContactId","buyerContactId"],
+    ["attendeeContactId","attendeeContactId"],["attendeeName","attendeeName"],["attendeeEmail","attendeeEmail"],
+    ["phone","phone"],["organisation","organisation"],["jobTitle","jobTitle"],["registrationStatus","status"],
+    ["checkedInAt","checkedInAt"],["sourceKind","sourceKind"],["sourceId","sourceId"],["historicalImport","historicalImport"],
+    ["marketingConsent","marketingConsent"],["ticketingConsent","ticketingConsent"],["policyVersion","policyVersion"],
+    ["policyAcceptedAt","policyAcceptedAt"],["questionResponses","questionResponses"],["createdAt","createdAt"],["updatedAt","updatedAt"],
+  ];
+  const lines=[columns.map(([label])=>associationCsvCell(label)).join(",")],seen=new Set<string>();let cursor:string|undefined;
+  do {
+    const params=new URLSearchParams({limit:"100",...(cursor?{cursor}:{})});
+    const page=await request<{registrations:AssociationOperationalRosterRow[];nextCursor:string|null}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/events/${encodeURIComponent(eventId)}/operational-roster?${params}`);
+    if(!Array.isArray(page.registrations)||(page.nextCursor!==null&&typeof page.nextCursor!=="string")
+      ||page.registrations.some(row=>!row||typeof row.id!=="string"||typeof row.eventId!=="string"))throw new AssociationApiError("invalid_response",502);
+    lines.push(...page.registrations.map(row=>columns.map(([,key])=>associationRosterCell(row[key])).join(",")));
+    if(page.nextCursor&&seen.has(page.nextCursor))throw new AssociationApiError("invalid_cursor",502);
+    if(page.nextCursor)seen.add(page.nextCursor);
+    cursor=page.nextCursor??undefined;
+  }while(cursor);
   return lines.join("\r\n")+"\r\n";
 }

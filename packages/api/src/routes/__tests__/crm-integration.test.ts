@@ -168,6 +168,22 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'user', userId } }),
       { kind: 'retry_provider_receipt', receiptId: credentialId })
   })
+  it('maps the authenticated member roster route without exposing it on the integration adapter', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn().mockResolvedValue({ command: 'list_operational_roster', items: [{ id: eventId }], nextCursor: null }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use((req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const response = await request(app).get(`/api/crm/${workspaceId}/association/events/${eventId}/operational-roster?limit=25`)
+    expect(response.status).toBe(200)
+    expect(response.body).toEqual({ registrations: [{ id: eventId }], nextCursor: null })
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'user', userId } }),
+      { kind: 'list_operational_roster', eventId, limit: 25 })
+    const integration = fixture()
+    expect((await request(integration.app).get(`/api/crm/integration/association/events/${eventId}/operational-roster`).set('Authorization', `Bearer ${token}`)).status).toBe(403)
+    expect(integration.association.execute).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'integration_key', credentialId } }),
+      { kind: 'list_operational_roster', eventId, limit: 50 })
+  })
   it('keeps member module reads separate from owner/admin actions and credential issuance', async () => {
     const workspaceStore = { getRole: vi.fn().mockResolvedValue('member') } as unknown as WorkspaceStore
     const credentials = { create: vi.fn(), listForMember: vi.fn() } as unknown as CrmIntegrationStore

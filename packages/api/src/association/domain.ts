@@ -38,6 +38,8 @@ export {
   type AssociationProviderFinancialEventInput as ProviderFinancialEventInput,
   AssociationRegistrationStatusSchema as RegistrationStatusSchema,
   type AssociationRegistrationStatus as RegistrationStatus,
+  AssociationOperationalRosterRowSchema as OperationalRosterRowSchema,
+  type AssociationOperationalRosterRow,
   AssociationRegistrationUpdateSchema as RegistrationUpdateSchema,
   type AssociationRegistrationUpdateInput as RegistrationUpdateInput,
   AssociationListPageSchema as ListPageSchema,

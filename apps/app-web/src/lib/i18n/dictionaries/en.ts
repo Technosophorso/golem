@@ -273,6 +273,8 @@ export const en = {
       "checkIn": "Check in",
       "export": "Export consent-filtered attendees",
       "exportHelp": "Only attendees with a matching CRM email and an allowed purpose are included. Recheck before sending.",
+      "operationalRoster": "Export operational roster",
+      "operationalRosterHelp": "Includes every registration for event operations, regardless of marketing consent or status. Do not use this file as a marketing audience.",
       "purpose": "Email purpose",
       "reserve": "Reserve an order",
       "minutes": "Reservation minutes",

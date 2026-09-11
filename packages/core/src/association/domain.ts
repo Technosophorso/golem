@@ -278,6 +278,36 @@ export const AssociationRegistrationStatusSchema = z.enum([
 ])
 export type AssociationRegistrationStatus = z.infer<typeof AssociationRegistrationStatusSchema>
 
+export const AssociationOperationalRosterRowSchema = z.object({
+  id: UUID,
+  eventId: UUID,
+  orderId: UUID.nullable(),
+  orderLineId: UUID.nullable(),
+  ticketId: UUID.nullable(),
+  ticketKey: z.string().nullable(),
+  ticketName: z.string().nullable(),
+  buyerContactId: UUID.nullable(),
+  attendeeContactId: UUID.nullable(),
+  attendeeName: z.string(),
+  attendeeEmail: z.string().nullable(),
+  phone: z.string().nullable(),
+  organisation: z.string().nullable(),
+  jobTitle: z.string().nullable(),
+  status: z.enum(['reserved', 'confirmed', 'cancelled', 'refunded', 'checked_in', 'registered', 'attended', 'no_show']),
+  checkedInAt: z.union([z.string(), z.date()]).nullable(),
+  sourceKind: z.string(),
+  sourceId: z.string().nullable(),
+  historicalImport: z.boolean(),
+  marketingConsent: z.boolean().nullable(),
+  ticketingConsent: z.boolean().nullable(),
+  policyVersion: z.string().nullable(),
+  policyAcceptedAt: z.string().nullable(),
+  questionResponses: z.unknown().nullable(),
+  createdAt: z.union([z.string(), z.date()]),
+  updatedAt: z.union([z.string(), z.date()]),
+}).strict()
+export type AssociationOperationalRosterRow = z.infer<typeof AssociationOperationalRosterRowSchema>
+
 export const AssociationRegistrationUpdateSchema = z.object({
   status: z.enum(['cancelled', 'checked_in']),
 })

@@ -42,6 +42,7 @@ import {
   type MembershipUpdateInput,
   type OrderCreateInput,
   type AssociationOrderFinancialSummary,
+  type AssociationOperationalRosterRow,
   type OrderStatus,
   type PlanInput,
   type ProviderEventInput,
@@ -96,6 +97,7 @@ export type AssociationStore = {
   reconcileProviderEvent(workspaceId: string, orderId: string, input: ProviderEventInput, actor: AssociationActor): Promise<MutationResult>
   reconcileProviderFinancialEvent(workspaceId: string, orderId: string, input: ProviderFinancialEventInput, actor: AssociationActor): Promise<MutationResult>
   listEventRegistrations(workspaceId: string, eventId: string, input: AssociationListInput & { status?: RegistrationStatus }): Promise<AssociationPage>
+  listOperationalRoster(workspaceId: string, eventId: string, input: AssociationListInput): Promise<AssociationPage>
   getRegistrationManagement(workspaceId: string, id: string): Promise<{ sourceKind: string; eventId?: string } | null>
   updateRegistration(workspaceId: string, id: string, input: RegistrationUpdateInput, actor: AssociationActor): Promise<AssociationRecord>
   listNotifications(workspaceId: string, input: AssociationListInput & { status?: string }): Promise<AssociationPage>
@@ -1491,6 +1493,37 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
       }
       return page(pool, workspaceId, 'association.registrations', input,
         `SELECT ${REGISTRATION_SELECT} FROM association_registrations WHERE ${conditions.join(' AND ')}`, values)
+    },
+
+    async listOperationalRoster(workspaceId, eventId, input) {
+      const event = await pool.query('SELECT 1 FROM association_events WHERE workspace_id=$1 AND id=$2', [workspaceId, eventId])
+      if (!event.rowCount) throw new AssociationError('not_found', 'event not found')
+      return queryCrmPage<'items', AssociationOperationalRosterRow>((sql, params) => pool.query(sql, params), {
+        workspaceId, resource: 'association.operational-roster', key: 'items',
+        query: { limit: input.limit, cursor: input.cursor ?? undefined, createdAfter: input.createdAfter, createdBefore: input.createdBefore },
+        params: [workspaceId, eventId],
+        sql: `SELECT r.id,r.event_id AS "eventId",r.order_id AS "orderId",r.order_line_id AS "orderLineId",
+          r.ticket_id AS "ticketId",t.ticket_key AS "ticketKey",t.name AS "ticketName",o.contact_id AS "buyerContactId",
+          r.attendee_contact_id AS "attendeeContactId",r.attendee_name AS "attendeeName",r.attendee_email AS "attendeeEmail",
+          CASE WHEN jsonb_typeof(r.attendee_metadata->'phone')='string' THEN r.attendee_metadata->>'phone' END AS phone,
+          CASE WHEN jsonb_typeof(r.attendee_metadata->'organisation')='string' THEN r.attendee_metadata->>'organisation' END AS organisation,
+          CASE WHEN jsonb_typeof(COALESCE(r.attendee_metadata->'jobTitle',r.attendee_metadata->'job_title'))='string'
+            THEN COALESCE(r.attendee_metadata->>'jobTitle',r.attendee_metadata->>'job_title') END AS "jobTitle",
+          r.status,r.checked_in_at AS "checkedInAt",r.source_kind AS "sourceKind",r.source_id AS "sourceId",
+          r.historical_import AS "historicalImport",
+          CASE WHEN jsonb_typeof(COALESCE(r.attendee_metadata->'marketingConsent',r.attendee_metadata->'marketing_consent'))='boolean'
+            THEN COALESCE(r.attendee_metadata->>'marketingConsent',r.attendee_metadata->>'marketing_consent')::boolean END AS "marketingConsent",
+          CASE WHEN jsonb_typeof(COALESCE(o.metadata->'ticketingConsent',o.metadata->'ticketing_consent'))='boolean'
+            THEN COALESCE(o.metadata->>'ticketingConsent',o.metadata->>'ticketing_consent')::boolean END AS "ticketingConsent",
+          COALESCE(r.attendee_metadata->>'policyVersion',r.attendee_metadata->>'policy_version',o.metadata->>'policyVersion',o.metadata->>'policy_version') AS "policyVersion",
+          COALESCE(r.attendee_metadata->>'policyAcceptedAt',r.attendee_metadata->>'policy_accepted_at',o.metadata->>'policyAcceptedAt',o.metadata->>'policy_accepted_at') AS "policyAcceptedAt",
+          COALESCE(r.attendee_metadata->'questionResponses',r.attendee_metadata->'question_responses',r.attendee_metadata->'questions') AS "questionResponses",
+          r.created_at AS "createdAt",r.updated_at AS "updatedAt"
+          FROM association_registrations r
+          LEFT JOIN association_ticket_types t ON t.workspace_id=r.workspace_id AND t.id=r.ticket_id
+          LEFT JOIN association_orders o ON o.workspace_id=r.workspace_id AND o.id=r.order_id
+          WHERE r.workspace_id=$1 AND r.event_id=$2`,
+      })
     },
 
     async getRegistrationManagement(workspaceId, id) {

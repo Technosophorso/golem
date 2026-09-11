@@ -260,6 +260,8 @@ export const ja: Dictionary = {
       "checkIn": "チェックイン",
       "export": "同意確認済み参加者を出力",
       "exportHelp": "CRMのメールアドレスが一致し、目的が許可された参加者のみ含まれます。送信前に再確認してください。",
+      "operationalRoster": "運営用名簿を出力",
+      "operationalRosterHelp": "イベント運営のため、マーケティング同意や状態に関係なく全登録を含みます。マーケティング対象リストとして使用しないでください。",
       "purpose": "メールの目的",
       "reserve": "注文を予約",
       "minutes": "予約保持時間（分）",

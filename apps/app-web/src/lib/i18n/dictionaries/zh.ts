@@ -260,6 +260,8 @@ export const zh: Dictionary = {
       "checkIn": "辦理入場",
       "export": "匯出已核准同意的參加者",
       "exportHelp": "僅包含 CRM 電郵相符且用途獲准的參加者。發送前須再次檢查。",
+      "operationalRoster": "匯出活動營運名冊",
+      "operationalRosterHelp": "包含所有活動報名記錄，不受市場推廣同意或狀態限制。請勿把此檔案用作市場推廣名單。",
       "purpose": "電郵用途",
       "reserve": "預留訂單",
       "minutes": "預留分鐘",

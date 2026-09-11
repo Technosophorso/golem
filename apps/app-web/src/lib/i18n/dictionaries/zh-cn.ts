@@ -271,6 +271,8 @@ export const zhCN: Dictionary = {
       "checkIn": "办理入场",
       "export": "导出已核准同意的参加者",
       "exportHelp": "仅包含 CRM 邮箱匹配且用途获准的参加者。发送前须再次检查。",
+      "operationalRoster": "导出活动运营名册",
+      "operationalRosterHelp": "包含所有活动报名记录，不受市场营销同意或状态限制。请勿将此文件用作市场营销名单。",
       "purpose": "邮件用途",
       "reserve": "预留订单",
       "minutes": "预留分钟",

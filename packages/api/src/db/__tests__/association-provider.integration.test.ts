@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
-import { type AssociationActor, type AssociationProviderEventInput, type AssociationProviderFinancialEventInput } from '@use-brian/core'
+import { AssociationOperationalRosterRowSchema, type AssociationActor, type AssociationProviderEventInput, type AssociationProviderFinancialEventInput } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
 import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
 import { createAssociationStore } from '../association-store.js'
@@ -20,7 +20,7 @@ async function fixture() {
   const human: AssociationActor = { credentialKind: 'user', credentialId: userId, actingUserId: userId }, actor: AssociationActor = { credentialKind: 'api_key', credentialId: 'fixture-backend' }
   const eventId = String((await store.upsertEvent(workspaceId, EventInputSchema.parse({ slug: 'fixture', title: 'Provider fixture', startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity: 10 }), human)).record.id)
   const ticketId = String((await store.upsertTicket(workspaceId, eventId, TicketInputSchema.parse({ key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 1000, status: 'on_sale', capacity: 10 }), human)).record.id)
-  const order = async () => String((await store.createOrder(workspaceId, OrderCreateSchema.parse({ contactId, idempotencyKey: randomUUID(), lines: [{ ticketId, quantity: 1, attendees: [{ contactId, name: 'Fictional buyer' }] }] }), human)).record.id)
+  const order = async (attendee: Record<string, unknown> = {}) => String((await store.createOrder(workspaceId, OrderCreateSchema.parse({ contactId, idempotencyKey: randomUUID(), metadata: { ticketingConsent: true, policyVersion: 'ticketing-v1', policyAcceptedAt: '2026-09-01T10:00:00Z' }, lines: [{ ticketId, quantity: 1, attendees: [{ contactId, name: 'Fictional buyer', email: 'buyer@example.com', metadata: { marketingConsent: false, phone: '+852 0000 0000', organisation: 'Fictional Org', jobTitle: 'Tester', questionResponses: { accessibility: 'None' }, ...attendee } }] }] }), human)).record.id)
   const orderId = await order(), binding = { provider: 'fixture', providerReference: randomUUID(), amountMinor: 1000, currency: 'USD' }
   const bind = (id = orderId, patch = {}, a = actor) => store.bindOrderProvider(workspaceId, id, { ...binding, ...patch }, a)
   const evidence: AssociationProviderEventInput = { ...binding, eventId: randomUUID(), targetStatus: 'paid', occurredAt: '2026-09-01T12:00:00.000001Z', metadata: {} }
@@ -116,6 +116,23 @@ describe('[COMP:crm/association-provider] Actual provider object and money admis
       occurredAt: '2026-09-01T15:00:00.000001Z' })).created).toBe(false)
     await expect(f.applyFinancial({ eventId: completedEventId, adjustmentReference: remainder, status: 'failed', amountMinor: 600,
       occurredAt: '2026-09-01T15:00:00.000001Z' })).rejects.toMatchObject({ code: 'idempotency_conflict' })
+  })
+  it('pages a complete operational roster with ticket, order, contact and form evidence regardless of consent or state', async () => {
+    const f = await fixture()
+    const secondOrder = await f.order({ marketingConsent: true, jobTitle: 'Second role' })
+    const secondRegistration = (await pool.query('SELECT id FROM association_registrations WHERE order_id=$1', [secondOrder])).rows[0].id
+    await store.updateRegistration(f.workspaceId, secondRegistration, { status: 'cancelled' }, f.human)
+    const first = await store.listOperationalRoster(f.workspaceId, f.eventId, { limit: 1, cursor: null })
+    expect(first.nextCursor).toEqual(expect.any(String))
+    const second = await store.listOperationalRoster(f.workspaceId, f.eventId, { limit: 1, cursor: first.nextCursor })
+    const rows = [...first.items, ...second.items].map(row => AssociationOperationalRosterRowSchema.parse(row))
+    expect(rows).toHaveLength(2)
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ orderId: f.orderId, ticketKey: 'standard', ticketName: 'Standard', attendeeEmail: 'buyer@example.com',
+        phone: '+852 0000 0000', organisation: 'Fictional Org', jobTitle: 'Tester', marketingConsent: false,
+        ticketingConsent: true, policyVersion: 'ticketing-v1', questionResponses: { accessibility: 'None' }, status: 'reserved' }),
+      expect.objectContaining({ orderId: secondOrder, marketingConsent: true, jobTitle: 'Second role', status: 'cancelled' }),
+    ]))
   })
   it('records dispute outcomes without inferring attendance or order transitions', async () => {
     const f = await fixture(); await f.bind(); await f.apply()

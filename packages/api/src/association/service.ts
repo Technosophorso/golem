@@ -126,6 +126,12 @@ export function createAssociationService(options: {
             : await store.reconcileProviderEvent(workspaceId, command.orderId, command.event, dbActor)) }
         }
         case 'list_registrations': return { ...output, ...(await store.listEventRegistrations(workspaceId, command.eventId, { ...pagination(), status: command.status })) }
+        case 'list_operational_roster': {
+          if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
+            throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to export an operational event roster.')
+          }
+          return { ...output, ...(await store.listOperationalRoster(workspaceId, command.eventId, pagination())) }
+        }
         case 'update_registration': {
           const management = await store.getRegistrationManagement(workspaceId, command.registrationId)
           if (!management) throw new AssociationError('not_found', 'registration not found')
