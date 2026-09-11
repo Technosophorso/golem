@@ -2,6 +2,15 @@ import type { Dictionary } from "./en";
 
 export const ja: Dictionary = {
   feedGeneration: {
+    unfinished: "確定前に未完成の枠を埋めるか削除してください。",
+    openSlot: "枠を開く",
+
+    imageUnavailable: "画像を表示できません",
+    exportArticle: "記事と画像を書き出す",
+    exportTitle: "未完成の下書きを書き出しますか？",
+    exportOmissions: "未入力の枠は省略されます。非公開の指示、コメント、未採用の候補は含まれません。",
+    exportContinue: "採用済みの内容を書き出す",
+
     "loading": "読み込み中...",
     "costIncluded": "通常の利用に含まれます。これはプロバイダー費用の見積もりです。",
     "costByo": "設定されたプロバイダーから請求されます。",

@@ -1,21 +1,30 @@
 /** Configured generation providers and cheap, bounded reference reads. [COMP:feed/draft-generation] */
-import { calculateCost } from '@use-brian/core'
+import { calculateCost, createGeminiImageProvider, aiStudioTransport, type GeminiImageReceipt, type GoogleTransport, type FilesApi, type FilesContext, type UsageStore } from '@use-brian/core'
+import { FEED_IMAGE_CAPABILITY, feedImageCost, type FeedImageConfig, type FeedMedia } from '@use-brian/shared'
+import { withFeedTransaction, FeedCollaborationError } from '../db/feed-collaboration-store.js'
+import { editorialActor, type FeedEditorialRun } from '../db/feed-editorial-runs-store.js'
 import { registryRow } from '@use-brian/shared/model-registry'
 import { FEED_GENERATION_LIMITS, type FeedGenerationPrice, type FeedPlaceholderAttrs } from '@use-brian/shared'
 import type { FeedEditorialModel, FeedEditorialModelResolver, FeedModelIdentity } from './editorial-model.js'
 import { feedEditorialHash } from '../db/feed-editorial-runs-store.js'
 import { query } from '../db/client.js'
+import { walkFeed } from '@use-brian/doc-model'
+import type { FeedGenerationContext } from './generation.js'
 import { createPublicCustomLlmFetch } from '../custom-llm-public-fetch.js'
 export type FeedGenerationSource = { id: string; title: string; body: string; hash: string }
-export type FeedGenerationResolved = FeedEditorialModel & { identity: string; price(inputCharacters: number): FeedGenerationPrice }
+export type FeedGenerationResolved = Omit<FeedEditorialModel, 'call'> & { identity: string; price(inputCharacters: number): FeedGenerationPrice; call(input: Parameters<FeedEditorialModel['call']>[0] & { slot?: FeedPlaceholderAttrs }): Promise<{ text: string; imageReceipt?: GeminiImageReceipt; usage?: unknown }> }
 export type FeedGenerationPort = {
+  billing?: FeedGenerationBilling;
+  persistImage?: (run: FeedEditorialRun, receipt: GeminiImageReceipt) => Promise<FeedMedia>;
   resolve(actor: FeedModelIdentity, kind: 'text' | 'image', tier: string): Promise<FeedGenerationResolved>;
   readReference(ref: FeedPlaceholderAttrs['references'][number]): Promise<{ source?: FeedGenerationSource; omission?: string }>;
 }
-export function createFeedGenerationPort(resolveText: FeedEditorialModelResolver): FeedGenerationPort {
+export function createFeedGenerationPort(resolveText: FeedEditorialModelResolver, image: FeedImagePortOptions = {}): FeedGenerationPort {
   return {
+    billing: image.billing,
+    persistImage: (run, receipt) => persistFeedImage(image, run, receipt),
     async resolve(actor, kind, tier) {
-      if (kind !== 'text') throw new Error('image_generation_unavailable')
+      if (kind === 'image') return resolveFeedImage(image, actor)
       const model = await resolveText(actor, tier); const rates = registryRow(model.model)?.rates
       const identity = feedEditorialHash({ model: model.model, tier: model.tier, maxTokens: model.maxTokens, inputCharacters: model.inputCharacters, rates, keySource: model.providerKeySource })
       return { ...model, identity, price(inputCharacters) {
@@ -54,4 +63,81 @@ export async function readFeedGenerationReference(ref: FeedPlaceholderAttrs['ref
     }
   } catch { /* A missing or denied source is visible before confirmation. */ }
   return { omission: `url:${ref.url}:reference_unavailable` }
+}
+
+export type FeedGenerationBilling = {
+  quote(maximumUsd: number): number;
+  available(workspaceId: string): Promise<number | null>;
+  settle(input: { workspaceId: string; userId: string; runId: string; model: string; actualCostUsd: number }): Promise<void>;
+}
+export type FeedImagePortOptions = {
+  transport?: GoogleTransport;
+  resolveWorkspaceKey?: (workspaceId: string) => Promise<string | null>;
+  config?: FeedImageConfig;
+  files?: FilesApi;
+  usageStore?: UsageStore;
+  billing?: FeedGenerationBilling;
+  /** Transport-only fixture seam; no synthetic storage or authority. */
+  fetcher?: typeof fetch;
+}
+function imageConfig(options: FeedImagePortOptions): FeedImageConfig | null {
+  const config = options.config ?? (options.transport?.kind === 'vertex' ? null : { model: FEED_IMAGE_CAPABILITY.model, rates: FEED_IMAGE_CAPABILITY.rates, transport: 'ai-studio' as const })
+  if (!config || !/^[a-zA-Z0-9._-]+$/.test(config.model) || !config.rates.version || ![config.rates.inputPerMillion, config.rates.textPerMillion, config.rates.imagePerMillion, config.rates.imageTokens].every(value => Number.isFinite(value) && value > 0)) return null
+  return config
+}
+async function resolveFeedImage(options: FeedImagePortOptions, actor: FeedModelIdentity): Promise<FeedGenerationResolved> {
+  const config = imageConfig(options)
+  if (!config || !options.files) throw new FeedCollaborationError(503, 'image_generation_unavailable')
+  // Vertex is a deployment authority boundary, never a fallback suggestion.
+  const key = options.transport?.kind === 'vertex' ? null : await options.resolveWorkspaceKey?.(actor.workspaceId)
+  const transport = key ? aiStudioTransport(key) : options.transport
+  if (!transport || transport.kind !== config.transport) throw new FeedCollaborationError(503, 'image_generation_unavailable')
+  const headers = await transport.headers()
+  if (transport.kind === 'ai-studio' && !headers['x-goog-api-key']) throw new FeedCollaborationError(503, 'image_generation_unavailable')
+  const byok = Boolean(key); const identity = feedEditorialHash({ config, transport: transport.endpoint(config.model, 'generateContent'), credential: transport.kind === 'vertex' ? 'deployment' : feedEditorialHash(headers) })
+  return { model: config.model, tier: 'image', providerKeySource: byok ? 'user' : 'platform', identity, inputCharacters: FEED_IMAGE_CAPABILITY.inputCharacters, maxTokens: FEED_IMAGE_CAPABILITY.outputTokens,
+    price(inputCharacters) { const maximumUsd = feedImageCost(config.rates, inputCharacters, FEED_IMAGE_CAPABILITY.outputTokens); return { currency: 'USD', maximumUsd, rateVersion: config.rates.version, billing: byok ? 'byo' : options.billing ? 'metered' : 'included', ...(!byok && options.billing ? { credits: options.billing.quote(maximumUsd) } : {}) } },
+    async call(input) {
+      const imageReceipt = await createGeminiImageProvider(transport, options.fetcher).generate({ model: config.model, prompt: `${input.systemPrompt}\n\n${input.prompt}`, aspectRatio: input.slot?.aspectRatio, signal: input.signal })
+      const actualCostUsd = imageReceipt.status && imageReceipt.status >= 400 && imageReceipt.status < 500 ? 0 : feedImageCost(config.rates, imageReceipt.usage.inputTokens, imageReceipt.usage.outputTokens, imageReceipt.usage.imageTokens)
+      let usageRecorded = !options.usageStore
+      if (options.usageStore) { try { await options.usageStore.recordUsage({ userId: actor.userId, assistantId: actor.assistantId, sessionId: actor.sessionId, model: config.model, modelTier: 'standard', inputTokens: imageReceipt.usage.inputTokens, outputTokens: imageReceipt.usage.outputTokens, actualCostUsd: byok ? 0 : actualCostUsd, source: 'included', triggerKey: 'feed_image_generation', providerKeySource: byok ? 'user' : 'platform' }); usageRecorded = true } catch { /* Keep measured usage in the durable receipt. */ } }
+      return { text: '', imageReceipt, usage: { ...imageReceipt.usage, actualCostUsd, model: config.model, providerKeySource: byok ? 'user' : 'platform', usageRecorded } }
+    },
+  }
+}
+async function persistFeedImage(options: FeedImagePortOptions, run: FeedEditorialRun, receipt: GeminiImageReceipt): Promise<FeedMedia> {
+  if (!receipt.image || receipt.error) throw new FeedCollaborationError(422, receipt.error ?? 'image_missing')
+  if (!options.files) throw new FeedCollaborationError(503, 'image_storage_unavailable')
+  const actor = editorialActor(run); const context = run.context as FeedGenerationContext
+  const authority = await withFeedTransaction(actor, async (client, scope) => {
+    const publicAudience = (await client.query("SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND clearance='public' LIMIT 1", [scope.workspaceId])).rowCount
+    const sourceFiles = walkFeed(context.content.composition).flatMap(({ node }) => node.type === 'image' ? [node.attrs.fileId] : node.type === 'generationPlaceholder' ? node.attrs.references.flatMap(ref => 'fileId' in ref ? [ref.fileId] : []) : [])
+    const ids = (kind: string) => context.sources.filter(source => source.id.startsWith(`${kind}:`)).map(source => source.id.split(':')[1]!)
+    const rows = (await client.query<{ sensitivity: FilesContext['clearance']; compartments: string[]; project_ids: string[] }>(`
+      SELECT sensitivity,compartments,project_ids FROM workspace_files WHERE workspace_id=$1 AND id=ANY($2::uuid[])
+      UNION ALL SELECT sensitivity,compartments,project_ids FROM memories WHERE workspace_id=$1 AND id=ANY($3::uuid[])
+      UNION ALL SELECT decision_sensitivity AS sensitivity,'{}'::text[] AS compartments,'{}'::uuid[] AS project_ids FROM assistant_playbook_rules WHERE assistant_id=$4 AND id=ANY($5::uuid[])
+      UNION ALL SELECT sensitivity,'{}'::text[] AS compartments,'{}'::uuid[] AS project_ids FROM workspace_brands WHERE workspace_id=$1 AND id=ANY($6::uuid[])`, [scope.workspaceId, sourceFiles, ids('memory'), run.assistantId, ids('playbook'), ids('brand')])).rows
+    const ranks = ['public', 'internal', 'confidential', 'restricted']
+    const baseline = publicAudience || scope.clearance === 'public' ? 0 : 1
+    const sensitivity = ranks[Math.max(baseline, ...rows.map(row => ranks.indexOf(row.sensitivity ?? 'internal')))] as NonNullable<FilesContext['clearance']>
+    return { sensitivity, compartments: [...new Set(rows.flatMap(row => row.compartments ?? []))], projectIds: [...new Set(rows.flatMap(row => row.project_ids ?? []))] }
+  })
+  const ctx: FilesContext = { workspaceId: run.workspaceId, userId: run.actorUserId, assistantId: null, assistantKind: 'standard', clearance: authority.sensitivity, writeCompartments: authority.compartments, writeProjectIds: authority.projectIds }
+
+  const ext = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp' }[receipt.image.mimeType]
+  const path = `/doc/feed/${run.sessionId}/${run.id}.${ext}`
+  let file = await options.files.stat(ctx, path)
+  if (!file.ok) {
+    file = await options.files.writeBytes(ctx, { path, bytes: Buffer.from(receipt.image.data, 'base64'), mime: receipt.image.mimeType, sensitivity: authority.sensitivity, tags: ['draft', 'feed-generated'] })
+    if (!file.ok && file.error.kind === 'conflict') file = await options.files.stat(ctx, path)
+  }
+  if (!file.ok) throw new FeedCollaborationError(503, 'image_storage_unavailable')
+  if (file.value.mime !== receipt.image.mimeType || file.value.sizeBytes !== Buffer.from(receipt.image.data, 'base64').length) throw new FeedCollaborationError(409, 'generation_file_conflict')
+  const stored = await options.files.readBytes(ctx, file.value.id)
+  if (!stored.ok || feedEditorialHash(Buffer.from(stored.value.bytes).toString('base64')) !== feedEditorialHash(receipt.image.data)) throw new FeedCollaborationError(409, 'generation_file_conflict')
+  const tagged = await options.files.setMeta(ctx, file.value.id, { metadata: { ...file.value.metadata, feedGeneration: { runId: run.id, sessionId: run.sessionId, slotId: context.slot.id, sourceRevision: run.revision, providerResponseId: receipt.responseId ?? null } } })
+  if (!tagged.ok) throw new FeedCollaborationError(409, 'generation_file_conflict')
+  return { fileId: file.value.id, mimeType: receipt.image.mimeType, alt: context.slot.altIntent ?? '' }
 }

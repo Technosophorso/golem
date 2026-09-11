@@ -6,10 +6,10 @@ import { executeFeedCommands, getFeedCollaboration, FeedCollaborationError, type
 import { resolvePlanningAccess } from '../routes/content-planning.js'
 import { notifyWorkspaceChange } from '../brain-stream/notify.js'
 import { getFeedRun } from '../db/feed-editorial-runs-store.js'
-import { loadFeedReviewContext } from './review-context.js'
+import { loadFeedReviewContext, type FeedReviewContextLoader } from './review-context.js'
 import type { FeedReviewContext } from '@use-brian/shared'
 /** Source edits can invalidate a completed Review without changing post text. */
-export async function readReviewedFeedCollaboration(actor: FeedActor) {
+export async function readReviewedFeedCollaboration(actor: FeedActor, loadContext: FeedReviewContextLoader = loadFeedReviewContext) {
   const snapshot = await getFeedCollaboration(actor)
   const latest = snapshot.runs.find(run => run.kind === 'review' && run.status === 'succeeded')
   if (!latest) return snapshot
@@ -18,7 +18,7 @@ export async function readReviewedFeedCollaboration(actor: FeedActor) {
   // freshness is unknown until an authorized editor can revalidate sources.
   const access = await resolvePlanningAccess(actor.userId, actor.assistantId)
   if (!access?.canDraft) return { ...snapshot, runs: snapshot.runs.map(item => ({ ...item, stale: true })) }
-  const current = await loadFeedReviewContext(actor, { month: frozen.month, historyCursor: frozen.historyCursor })
+  const current = await loadContext(actor, { month: frozen.month, historyCursor: frozen.historyCursor })
   return { ...snapshot, runs: snapshot.runs.map(item => ({ ...item, stale: item.revision !== current.revision || (item.id === latest.id && current.contextHash !== frozen.contextHash) })) }
 }
 export async function feedCommand(actor: FeedActor, input: FeedCommandRequest) {

@@ -59,6 +59,7 @@ import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { webAppUrl } from "@/lib/primary-auth";
 import {
   approveFeedDraft,
+  exportFeedSessionArticle,
   deleteFeedDraftSession,
   fetchFeedDraftSessions,
   fetchFeedSavedDrafts,
@@ -99,11 +100,11 @@ import {
   type FeedWorkingContent, type LocalFeedPost,
 } from "@/lib/offline/feed-offline";
 
-import { CompositionEditor, type FeedEditorSelection } from './composition-editor';
+import { CompositionEditor, FeedCompositionPreview, type FeedEditorSelection } from './composition-editor';
 import { DraftCommentPanel, type FeedCommentComposer } from './draft-comment-panel';
 import { FeedReview, useFeedReviewActions } from './feed-review';
 import { useFeedCollaboration } from '@/lib/feed-collaboration';
-import { createFeedAnchor } from '@use-brian/doc-model';
+import { createFeedAnchor, feedCompositionHtml, projectFeed } from '@use-brian/doc-model';
 import type { FeedCommand, FeedEdit } from '@use-brian/shared';
 import { queueFeedCommands, flushFeedWorkingCopies } from '@/lib/offline/feed-offline';
 
@@ -410,6 +411,7 @@ function PostPane({
   const t = useT().feedPage;
   const te = t.postEditor;
   const tc = useT().feedCollaboration;
+  const tg = useT().feedGeneration;
   const router = useRouter();
   const dockRecorder = useGlobalDockRecorder();
   // Below `lg` the refine chat is a FAB -> bottom sheet instead of the
@@ -654,7 +656,7 @@ function PostPane({
     setBusy(true);
     try {
       const result = await saveFeedSessionDraft(assistantId, sessionId, {
-        text, platform, postFormat, media,
+        text, platform, postFormat, media, expectedRevision: structured ? localPost?.revision : undefined,
         ...(postFormat === "thread" ? { threadSegments } : {}),
         ...(postFormat === "article" ? { article } : {}),
       });
@@ -787,7 +789,17 @@ function PostPane({
     }
   }
 
+  async function acknowledgeDraftOmissions() {
+    if (!localPost?.content.composition || !projectFeed(localPost.content.composition).missingSlots.length) return true;
+    return confirmDialog({ title: tg.exportTitle, description: tg.exportOmissions, confirmLabel: tg.exportContinue });
+  }
+  async function exportArticle() {
+    if (remoteBlocked || !localPost || !await acknowledgeDraftOmissions()) return;
+    setBusy(true);
+    try { const blob = await exportFeedSessionArticle(assistantId, sessionId, localPost.revision, true); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'feed-article.zip'; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); } catch { setError(te.actionFailed); } finally { setBusy(false); }
+  }
   async function copyCaption() {
+    if (!await acknowledgeDraftOmissions()) return;
     const copy = postFormat === "thread"
       ? threadSegments
           .map((part, index) => `${index + 1}/${threadSegments.length} ${part.trim()}`)
@@ -797,7 +809,7 @@ function PostPane({
         : selected?.text ?? "";
     if (!copy) return;
     try {
-      const richHtml = postFormat === "thread"
+      const richHtml = localPost?.content.composition ? feedCompositionHtml(localPost.content.composition) : postFormat === "thread"
         ? null
         : richCopyRef.current?.innerHTML ?? null;
       if (
@@ -838,10 +850,12 @@ function PostPane({
       articleUrlValid = false;
     }
   }
+  const canonicalProjection = localPost?.content.composition ? projectFeed(localPost.content.composition) : null;
+  const missingSlots = canonicalProjection?.missingSlots ?? [];
   const compositionValid = postFormat === "thread"
     ? threadValid
     : postFormat === "article"
-      ? Boolean(compositionText.trim() && articleUrlValid && article.title.trim())
+      ? Boolean(compositionText.trim() && ((canonicalProjection?.inlineImages.length ?? 0) > 0 || articleUrlValid && article.title.trim()))
       : Boolean(compositionText.trim() && !counterState(compositionText, platform).over);
   const compositionDirty = compositionHasChanges({
     format: postFormat,
@@ -1019,7 +1033,7 @@ function PostPane({
                       size="sm"
                       type="button"
                       onClick={() => void act("approve")}
-                      disabled={busy || remoteBlocked || compositionDirty}
+                      disabled={busy || remoteBlocked || compositionDirty || missingSlots.length > 0}
                       title={compositionDirty ? te.saveBeforeApprove : undefined}
                       className="bg-foreground text-background !shadow-none [background-image:none] hover:bg-foreground/90 hover:!shadow-none"
                     >
@@ -1046,12 +1060,14 @@ function PostPane({
                   {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
                   {copied ? te.copied : te.copyCaption}
                 </Button>
+                {structured ? <Button size="sm" variant="outline" type="button" disabled={busy || remoteBlocked} onClick={() => void exportArticle()}>{tg.exportArticle}</Button> : null}
                 <Button variant="outline" size="icon" type="button" onClick={() => void removePost()} disabled={busy || remoteBlocked} aria-label={te.delete} title={te.delete} className="size-9 md:size-8 text-muted-foreground hover:text-destructive">
                   <Trash2 className="size-3.5" aria-hidden />
                 </Button>
               </div>
             </header>
 
+            {missingSlots.length ? <div role="status" className="flex flex-wrap gap-2 rounded-xl border p-3"><span className="py-3 text-sm">{tg.unfinished}</span>{missingSlots.map((id, index) => <button key={id} className="min-h-11 rounded-md border px-3 text-sm" onClick={() => { setViewMode('edit'); requestAnimationFrame(() => { const target = document.querySelector<HTMLElement>(`[data-placeholder-id="${id}"]`); target?.scrollIntoView({ block: 'center' }); target?.querySelector<HTMLTextAreaElement>('textarea')?.focus(); }); }}>{tg.openSlot} {index + 1}</button>)}</div> : null}
             <div role="status" className="rounded-xl border border-border/60 bg-muted/25 p-3 text-sm">
               {localSaveError ? te.localSaveFailed : localSaving ? te.saving :
                 localPost?.error === "conflict" ? te.syncConflict : localPost?.error ? te.syncBlocked :
@@ -1215,7 +1231,7 @@ function PostPane({
                         : te.manualDelivery}
                     </span>
                   </div>
-                  <PlatformPostPreview
+                  {structured && localPost?.content.composition ? <FeedCompositionPreview composition={localPost.content.composition} workspaceId={workspaceId} /> : <PlatformPostPreview
                     platform={platform}
                     postFormat={postFormat}
                     text={selected?.text ?? ""}
@@ -1223,7 +1239,7 @@ function PostPane({
                     article={article}
                     accountName={assistantName || te.previewAccount}
                     brand={workspace.brand}
-                  />
+                  />}
                 </div>
               )}
 

@@ -432,3 +432,24 @@ export function insertFeedPlaceholder(composition: FeedComposition, selection: {
   applyFeedEdits(composition, edits)
   return edits
 }
+
+/** Accepted content only. Callers explicitly provide any image URLs they own. */
+export function feedCompositionHtml(composition: FeedComposition, imageSource?: (fileId: string, mime: string) => string): string {
+  validateFeedComposition(composition)
+  const escape = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+  const inline = (content: FeedInline[] = []) => content.map(part => {
+    if (part.type === 'hardBreak') return '<br>'
+    let value = escape(part.text)
+    for (const mark of part.marks ?? []) value = mark.type === 'bold' ? `<strong>${value}</strong>` : mark.type === 'italic' ? `<em>${value}</em>` : `<a href="${escape(mark.attrs.href)}" rel="noopener noreferrer">${value}</a>`
+    return value
+  }).join('')
+  const node = (item: FeedNode): string => {
+    if (item.type === 'generationPlaceholder') return ''
+    if (item.type === 'image') return imageSource ? `<figure><img src="${escape(imageSource(item.attrs.fileId, item.attrs.mimeType))}" alt="${escape(item.attrs.alt ?? '')}"></figure>` : ''
+    if (item.type === 'paragraph') return `<p>${inline(item.content)}</p>`
+    if (item.type === 'heading') return `<h${item.attrs.level}>${inline(item.content)}</h${item.attrs.level}>`
+    const tag = item.type === 'bulletList' ? 'ul' : item.type === 'orderedList' ? 'ol' : item.type === 'listItem' ? 'li' : 'blockquote'
+    return `<${tag}${item.type === 'orderedList' ? ` start="${item.attrs.start}"` : ''}>${item.content.map(node).join('')}</${tag}>`
+  }
+  return composition.segments.map(segment => `<section>${segment.content.map(node).join('')}</section>`).join('\n')
+}

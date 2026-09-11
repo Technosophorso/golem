@@ -13,6 +13,15 @@ import type { Dictionary } from "./en";
 
 export const zhCN: Dictionary = {
   feedGeneration: {
+    unfinished: "确认前请填写或移除未完成的区块。",
+    openSlot: "打开区块",
+
+    imageUnavailable: "无法显示图片",
+    exportArticle: "导出文章和图片",
+    exportTitle: "导出未完成的草稿？",
+    exportOmissions: "未填写的区块会被省略。私人指示、评论及未采用的候选内容不会包含在内。",
+    exportContinue: "导出已采用的内容",
+
     "loading": "加载中...",
     "costIncluded": "包含于一般使用量。此为供应商费用估算。",
     "costByo": "由您设置的供应商计费。",

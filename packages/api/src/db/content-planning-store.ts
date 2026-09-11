@@ -1,3 +1,5 @@
+import { readFeedSaveProjection, assertFeedSavedReady, type FeedSavedCanonical } from '../content-planning/projection.js'
+import { FeedCollaborationError } from './feed-collaboration-store.js'
 /**
  * Open, provider-independent content-planning persistence.
  *
@@ -280,6 +282,7 @@ export interface ContentPlanningStore {
     allowAnyone: boolean
   }): Promise<boolean>
   saveDraft(params: {
+    expectedRevision?: number
     assistantId: string
     sessionId: string
     userId: string
@@ -580,6 +583,10 @@ export function createContentPlanningStore(): ContentPlanningStore {
     },
 
     async saveDraft(params) {
+      const canonical = await readFeedSaveProjection({ userId: params.userId, assistantId: params.assistantId, sessionId: params.sessionId, kind: 'user' }, params.expectedRevision, params.platform)
+      if (params.expectedRevision !== undefined && !canonical) throw new FeedCollaborationError(409, 'structured_composition_required')
+      if (canonical) params = { ...params, text: canonical.projection.text, media: canonical.projection.media, postFormat: canonical.projection.postFormat, threadSegments: canonical.projection.threadSegments, article: canonical.projection.article, imageBrief: undefined }
+      const formatData = { ...(params.postFormat === 'thread' ? { threadSegments: params.threadSegments ?? [] } : params.postFormat === 'article' ? { article: params.article ?? null } : {}), ...(canonical ? { feedCanonical: canonical.canonical } : {}) }
       const result = await query<Parameters<typeof mapDraftRow>[0]>(
         `INSERT INTO content_planning_drafts (
            assistant_id, session_id, platform, draft_text, image_brief,
@@ -620,11 +627,7 @@ export function createContentPlanningStore(): ContentPlanningStore {
           params.imageBrief ?? null,
           params.topicTag ?? null,
           params.postFormat ?? 'post',
-          params.postFormat === 'thread'
-            ? { threadSegments: params.threadSegments ?? [] }
-            : params.postFormat === 'article'
-              ? { article: params.article ?? null }
-              : {},
+          formatData,
           JSON.stringify(params.media ?? []),
           params.reply?.externalId ?? null,
           params.reply?.authorHandle ?? null,
@@ -687,6 +690,11 @@ export function createContentPlanningStore(): ContentPlanningStore {
     },
 
     async approve(params) {
+      const row = (await query('SELECT session_id,platform,format_data FROM content_planning_drafts WHERE id=$1 AND assistant_id=$2', [params.draftId, params.assistantId])).rows[0]
+      if (row?.session_id) {
+        const saved = await assertFeedSavedReady({ userId: params.userId, assistantId: params.assistantId, sessionId: row.session_id, kind: 'user' }, row.format_data?.feedCanonical as FeedSavedCanonical | undefined, row.platform)
+        if (saved && params.finalText !== undefined && params.finalText !== saved.projection.text) throw new FeedCollaborationError(409, 'canonical_edit_required')
+      }
       return updateDraftStatus({
         assistantId: params.assistantId,
         draftId: params.draftId,

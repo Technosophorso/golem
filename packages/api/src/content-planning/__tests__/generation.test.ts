@@ -40,3 +40,22 @@ describe('[COMP:feed/draft-generation] estimate and candidate contract', () => {
     expect(resolved.price(100)).toMatchObject({ maximumUsd: null, billing: 'byo', currency: 'USD' }); expect(call).not.toHaveBeenCalled()
   })
 })
+
+import { aiStudioTransport, vertexTransport, type FilesApi } from '@use-brian/core'
+import { FEED_IMAGE_CAPABILITY } from '@use-brian/shared'
+describe('[COMP:feed/draft-generation] configured image execution', () => {
+  it('scenario 4: quotes workspace BYO without calling the provider and records zero platform COGS', async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify({ promptFeedback: { blockReason: 'SAFETY' }, usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 0 } })))
+    const recordUsage = vi.fn(async () => undefined); const quote = vi.fn(() => 5)
+    const port = createFeedGenerationPort(async () => { throw new Error('No text model') }, { files: {} as FilesApi, resolveWorkspaceKey: async () => 'fixture-workspace-key', transport: aiStudioTransport('fixture-platform-key'), fetcher, usageStore: { recordUsage } as never, billing: { quote, available: async () => 10, settle: vi.fn() } })
+    const resolved = await port.resolve({ workspaceId: randomUUID(), userId: randomUUID(), assistantId: randomUUID(), sessionId: randomUUID() }, 'image', 'standard')
+    expect(resolved.model).toBe(FEED_IMAGE_CAPABILITY.model); expect(resolved.price(100)).toMatchObject({ billing: 'byo', rateVersion: FEED_IMAGE_CAPABILITY.rates.version }); expect(quote).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled()
+    const response = await resolved.call({ prompt: 'Square', systemPrompt: 'One image', signal: AbortSignal.timeout(1000) })
+    expect(response.imageReceipt?.error).toBe('image_refused'); expect(recordUsage).toHaveBeenCalledWith(expect.objectContaining({ actualCostUsd: 0, providerKeySource: 'user' })); expect(fetcher.mock.calls).toHaveLength(1)
+  })
+  it('scenario 8: refuses unpriced Vertex without falling back to a workspace AI Studio key', async () => {
+    const key = vi.fn(async () => 'fixture-key')
+    const port = createFeedGenerationPort(async () => { throw new Error('No text model') }, { files: {} as FilesApi, resolveWorkspaceKey: key, transport: vertexTransport({ project: 'fixture-project', location: 'asia-east2', tokenSource: async () => 'fixture-token' }) })
+    await expect(port.resolve({ workspaceId: randomUUID(), userId: randomUUID(), assistantId: randomUUID(), sessionId: randomUUID() }, 'image', 'standard')).rejects.toMatchObject({ code: 'image_generation_unavailable' }); expect(key).not.toHaveBeenCalled()
+  })
+})

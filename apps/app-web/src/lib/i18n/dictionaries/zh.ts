@@ -2,6 +2,15 @@ import type { Dictionary } from "./en";
 
 export const zh: Dictionary = {
   feedGeneration: {
+    unfinished: "確認前請填寫或移除未完成的區塊。",
+    openSlot: "開啟區塊",
+
+    imageUnavailable: "無法顯示圖片",
+    exportArticle: "匯出文章和圖片",
+    exportTitle: "匯出未完成的草稿？",
+    exportOmissions: "未填寫的區塊會被省略。私人指示、留言及未採用的候選內容不會包含在內。",
+    exportContinue: "匯出已採用的內容",
+
     "loading": "載入中...",
     "costIncluded": "包含於一般使用量。此為供應商費用估算。",
     "costByo": "由您設定的供應商計費。",

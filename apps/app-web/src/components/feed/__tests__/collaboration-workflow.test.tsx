@@ -7,7 +7,8 @@ import { TextSelection } from '@tiptap/pm/state';
 import type { FeedCommand, FeedEdit, FeedTarget, FeedPlaceholderAttrs, FeedGenerationEstimate } from '@use-brian/shared';
 import { applyFeedEdits, createFeedAnchor, importLegacyFeed, projectFeed, proposeFeedReplacement } from '@use-brian/doc-model';
 import { en } from '@/lib/i18n/dictionaries/en';
-const state = vi.hoisted(() => ({ http: vi.fn(), upload: vi.fn(), messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
+const state = vi.hoisted(() => ({ http: vi.fn(), upload: vi.fn(), image: vi.fn(), messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
+vi.mock('@/components/doc/doc-file-url', () => ({ fetchDocFileBlob: (...args: unknown[]) => state.image(...args) }));
 vi.mock('@/lib/auth-fetch', () => ({ authFetch: (...args: unknown[]) => state.http(...args) }));
 vi.mock('@/lib/use-post-media', () => ({ usePostMedia: () => ({ upload: state.upload, resolve: vi.fn(), uploading: false }) }));
 vi.mock('@/lib/i18n/client', () => ({ useT: () => en, useLocale: () => 'en' }));
@@ -15,7 +16,7 @@ vi.mock('@/lib/surface-cache', () => ({ useCachedResource: () => state.messages 
 vi.mock('@/lib/surface-prefetch', () => ({ feedCollaborationCacheKey: () => 'fixture-collaboration', goalsCacheKey: () => 'fixture-goals' }));
 vi.mock('../tuning-chat-panel', () => ({ TuningChatPanel: (props: { sessionId: string }) => <div data-chat-session={props.sessionId} /> }));
 import { GenerationPlaceholder, FeedGenerationResults, type FeedGenerationControls } from '../generation-placeholder';
-import { CompositionEditor } from '../composition-editor';
+import { CompositionEditor, FeedCompositionPreview } from '../composition-editor';
 import { DraftCommentPanel, type FeedCommentPanelProps } from '../draft-comment-panel';
 import { FeedReview, type FeedReviewActions } from '../feed-review';
 let host: HTMLDivElement; let root: Root;
@@ -181,5 +182,22 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     act(() => field.focus());
     expect(onSelection).toHaveBeenLastCalledWith(expect.objectContaining({ target: { kind: 'block', segmentId: changed.segments[0]!.id, blockId: changed.segments[0]!.content[0]!.attrs.id } }));
     expect(state.http).not.toHaveBeenCalled();
+  });
+});
+
+describe('[COMP:app-web/feed-generation-placeholder] durable image review', () => {
+  it('scenarios 4 and 10: image previews use authenticated bytes and keep the accepted outline order', async () => {
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:fixture-image') }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    state.image.mockResolvedValue(new Blob(['fixture'], { type: 'image/png' }));
+    const doc = composition(); const fileId = crypto.randomUUID(); doc.segments[0]!.content.splice(1, 0, { type: 'image', attrs: { id: crypto.randomUUID(), fileId, mimeType: 'image/png', alt: 'Orchard diagram', placement: 'inline' } });
+    await act(async () => root.render(<FeedCompositionPreview composition={doc} workspaceId="fixture-workspace" />));
+    const image = host.querySelector('img')!; expect(image.alt).toBe('Orchard diagram'); expect(image.src).toBe('blob:fixture-image'); expect(state.image).toHaveBeenCalledWith('fixture-workspace', fileId);
+    const section = host.querySelector('section')!; expect([...section.children].map(node => node.tagName)).toEqual(['P', 'FIGURE', 'P', 'P']);
+    expect(projectFeed(doc).media[0]!.fileId).toBe(fileId); expect(JSON.stringify(doc)).not.toContain('blob:');
+  });
+  it('scenario 8: missing image bytes show an explicit recovery state rather than a fabricated preview', async () => {
+    state.image.mockRejectedValue(new Error('Denied')); const doc = composition(); doc.segments[0]!.content = [{ type: 'image', attrs: { id: crypto.randomUUID(), fileId: crypto.randomUUID(), mimeType: 'image/png', alt: 'Source diagram', placement: 'inline' } }];
+    await act(async () => root.render(<FeedCompositionPreview composition={doc} workspaceId="fixture" />));
+    expect(host.querySelector('img')).toBeNull(); expect(host.textContent).toContain(en.feedGeneration.imageUnavailable);
   });
 });

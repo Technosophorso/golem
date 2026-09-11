@@ -1,3 +1,4 @@
+import { loadFeedReviewContext, type FeedReviewContextLoader } from './review-context.js'
 import type { FeedGenerationService } from './generation.js'
 /** Selection-bound Feed tools use the UI's domain service. [COMP:feed/draft-suggestions] */
 import { randomUUID } from 'node:crypto'
@@ -20,9 +21,9 @@ function selectedEdits(context: FeedTurnContext, edits: FeedEdit[]) {
     } else if (edit.kind === 'joinBlocks' || !('blockId' in edit) || edit.segmentId !== target.segmentId || edit.blockId !== target.blockId) throw new FeedCollaborationError(403, 'selection_scope_mismatch')
   }
 }
-export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMessageId?: string, generation?: FeedGenerationService): Tool[] {
+export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMessageId?: string, generation?: FeedGenerationService, loadContext: FeedReviewContextLoader = loadFeedReviewContext): Tool[] {
   const live = async () => {
-    const current = await readReviewedFeedCollaboration(context.actor)
+    const current = await readReviewedFeedCollaboration(context.actor, loadContext)
     if (!current.copy || current.copy.revision !== context.reference.revision) throw new FeedCollaborationError(409, 'draft_context_changed')
     if (context.reference.threadId && !current.threads.some(t => t.id === context.reference.threadId)) throw new FeedCollaborationError(403, 'thread_scope_mismatch')
     return current
@@ -59,7 +60,7 @@ export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMess
         return { data: await feedCommand({ ...context.actor, kind: 'user' }, { mutationId: input.mutationId, expectedRevision: context.reference.revision, commands: [{ kind: 'edit', edits, reasonThreadId: context.reference.threadId }] }) }
       } }),
     buildTool({ ...common, name: 'reviewFeedDraft', description: 'Request five bounded editorial checks for the current Feed draft. Results appear as comments with source coverage. This does not edit, approve, publish, change Goals or save memory. Reuse mutationId to check the same request; an uncertain call requires an explicit new attempt.', inputSchema: feedReviewRequestSchema, isReadOnly: false, requiresConfirmation: false,
-      async execute(input) { await live(); if (input.expectedRevision !== context.reference.revision) throw new FeedCollaborationError(409, 'draft_context_changed'); return { data: summarizeFeedRun(await requestFeedReview(context.actor, input)) } } }),
+      async execute(input) { await live(); if (input.expectedRevision !== context.reference.revision) throw new FeedCollaborationError(409, 'draft_context_changed'); return { data: summarizeFeedRun(await requestFeedReview(context.actor, input, loadContext)) } } }),
     buildTool({ ...common, name: 'readFeedDraft', description: 'Read the current authorized composition, comments and suggestions for this Feed draft. Returns its exact content revision.', inputSchema: z.object({}).strict(), isReadOnly: true, requiresConfirmation: false,
       async execute() { return { data: await live() } } }),
     buildTool({ ...common, name: 'commentOnFeedDraft', description: 'Discuss the selected Feed passage or block without changing copy. In a thread, reply in that same thread. Ordinary comments do not generate images or authorize rewriting.',

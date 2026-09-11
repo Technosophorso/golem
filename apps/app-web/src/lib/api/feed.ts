@@ -815,6 +815,7 @@ export async function saveFeedSessionDraft(
   assistantId: string,
   sessionId: string,
   body: {
+    expectedRevision?: number;
     text: string;
     platform: FeedPlatform;
     topicTag?: string;
@@ -1615,4 +1616,10 @@ export async function draftFromFeedIdea(
     };
   }
   return { ok: false, error: data.error ?? null };
+}
+
+export async function exportFeedSessionArticle(assistantId: string, sessionId: string, expectedRevision: number, acknowledgeOmissions: boolean): Promise<Blob> {
+  const response = await authFetch(`${API_URL}/api/distribution/${assistantId}/draft-sessions/${sessionId}/export`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ expectedRevision, acknowledgeOmissions }) });
+  if (!response.ok) throw new Error('feed_export_failed');
+  return response.blob();
 }

@@ -1,4 +1,8 @@
+import type { FeedReviewContextLoader } from '../content-planning/review-context.js'
 /** Authenticated shared Feed collaboration routes. [COMP:feed/draft-comments] */
+import { exportFeedArticle, feedOutputProjection } from '../content-planning/projection.js'
+import { readFeedCopy, requireFeedComposition } from '../db/feed-collaboration-store.js'
+import type { FilesApi } from '@use-brian/core'
 import type { FeedGenerationService } from '../content-planning/generation.js'
 import { Router } from 'express'
 import { z } from 'zod'
@@ -8,7 +12,7 @@ import { getFeedThreadMessages, FeedCollaborationError, withFeedTransaction, typ
 import { requestFeedReview } from '../content-planning/review.js'
 import { getFeedRun, summarizeFeedRun, cancelFeedRun, retryFeedRun } from '../db/feed-editorial-runs-store.js'
 const uuid = z.string().uuid()
-export function feedCollaborationRoutes(options: { generation?: FeedGenerationService } = {}): Router {
+export function feedCollaborationRoutes(options: { generation?: FeedGenerationService; reviewContext?: FeedReviewContextLoader; files?: FilesApi } = {}): Router {
   const router = Router(); const base = '/:assistantId/draft-sessions/:sessionId'
   router.all(`${base}/{*rest}`, async (req, res, next) => {
     if (!req.userId) { res.status(401).json({ error: 'Unauthorized' }); return }
@@ -16,7 +20,7 @@ export function feedCollaborationRoutes(options: { generation?: FeedGenerationSe
     next()
   })
   router.get(`${base}/collaboration`, async (req, res) => {
-    try { res.json(await readReviewedFeedCollaboration({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' })) }
+    try { res.json(await readReviewedFeedCollaboration({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, options.reviewContext)) }
     catch (error) { replyError(res, error) }
   })
   router.post(`${base}/commands`, async (req, res) => {
@@ -38,7 +42,7 @@ export function feedCollaborationRoutes(options: { generation?: FeedGenerationSe
     } catch (error) { replyError(res, error) }
   })
   router.post(`${base}/reviews`, async (req, res) => {
-    try { res.json({ run: summarizeFeedRun(await requestFeedReview({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedReviewRequestSchema.parse(req.body))) }) }
+    try { res.json({ run: summarizeFeedRun(await requestFeedReview({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedReviewRequestSchema.parse(req.body), options.reviewContext)) }) }
     catch (error) { replyError(res, error) }
   })
   router.post(`${base}/generations/estimate`, async (req, res) => {
@@ -62,6 +66,19 @@ export function feedCollaborationRoutes(options: { generation?: FeedGenerationSe
       const action = z.enum(['cancel', 'retry']).parse(req.params.action)
       const actor: FeedActor = { userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }
       res.json({ run: summarizeFeedRun(await (action === 'cancel' ? cancelFeedRun : retryFeedRun)(actor, uuid.parse(req.params.runId))) })
+    } catch (error) { replyError(res, error) }
+  })
+  router.get(`${base}/projection`, async (req, res) => {
+    try {
+      const actor: FeedActor = { userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }
+      res.json(await withFeedTransaction(actor, async client => { const copy = await readFeedCopy(client, actor.sessionId); if (!copy) throw new FeedCollaborationError(404, 'working_copy_required'); const session = (await client.query('SELECT title FROM sessions WHERE id=$1', [actor.sessionId])).rows[0]; return { revision: copy.revision, ...feedOutputProjection(requireFeedComposition(copy.content), /^\[([^\]]+)\]/.exec(session.title)?.[1] ?? 'threads') } }, false))
+    } catch (error) { replyError(res, error) }
+  })
+  router.post(`${base}/export`, async (req, res) => {
+    try {
+      const input = z.object({ expectedRevision: z.number().int().nonnegative(), acknowledgeOmissions: z.boolean().default(false) }).strict().parse(req.body)
+      const archive = await exportFeedArticle({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, input.expectedRevision, input.acknowledgeOmissions, options.files)
+      res.setHeader('Content-Type', 'application/zip'); res.setHeader('Content-Disposition', 'attachment; filename="feed-article.zip"'); res.send(archive)
     } catch (error) { replyError(res, error) }
   })
   return router

@@ -353,6 +353,7 @@ function resolveRunChannel(session: {
 }
 
 type WebChatOptions = {
+  feedReviewContext?: import('../content-planning/review-context.js').FeedReviewContextLoader
   feedGeneration?: FeedGenerationService
   provider: LLMProvider
   /**
@@ -5402,7 +5403,7 @@ export function chatRoutes(options: WebChatOptions): Router {
         }
       }
 
-      if (feedTurnContext) for (const tool of buildFeedCollaborationTools(feedTurnContext, storedUserMsg.id, options.feedGeneration)) allTools.set(tool.name, tool)
+      if (feedTurnContext) for (const tool of buildFeedCollaborationTools(feedTurnContext, storedUserMsg.id, options.feedGeneration, options.feedReviewContext)) allTools.set(tool.name, tool)
 
       // Pages the AI wrote this turn (filled by the doc tools' onEvent
       // below). Drives the post-turn auto-title pass (migration 218).

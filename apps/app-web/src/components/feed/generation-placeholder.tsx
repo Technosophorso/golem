@@ -1,6 +1,6 @@
 "use client";
 /** Typed slot options, explicit preflight and retained candidate review. [COMP:app-web/feed-generation-placeholder] */
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { feedMediaSchema, type FeedCommand, type FeedEdit, type FeedGenerationEstimate, type FeedPlaceholderAttrs, type FeedNode, type FeedEditorialRunSummary } from '@use-brian/shared';
 import { feedText, importFeedMarkdown, canonicalFeedValue, walkFeed } from '@use-brian/doc-model';
 import { useLocale, useT } from '@/lib/i18n/client';
@@ -75,7 +75,7 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
       <button className={button} disabled={remoteBlocked} onClick={() => setFiles('image')}>{t.chooseFile}</button>
     </div>}
     {files ? <FeedGenerationFilePicker controls={c} onCancel={() => setFiles(null)} onPick={async id => { if (files === 'reference') update({ references: [...props.slot.references, { fileId: id }] }); else { try { const blob = await fetchDocFileBlob(c.workspaceId, id); fillImage(id, blob.type); } catch { setError(t.imageRequired); } } setFiles(null); }} /> : null}
-    <div className="flex flex-wrap gap-2" role="group" aria-label={t.model}>{(['standard', 'pro', 'max'] as const).map(tier => <button className={button} key={tier} disabled={remoteBlocked || active} aria-pressed={model === tier} onClick={() => { setModel(tier); setEstimate(null); }}>{tr[tier]}</button>)}</div>
+    {props.slot.kind === 'text' ? <div className="flex flex-wrap gap-2" role="group" aria-label={t.model}>{(['standard', 'pro', 'max'] as const).map(tier => <button className={button} key={tier} disabled={remoteBlocked || active} aria-pressed={model === tier} onClick={() => { setModel(tier); setEstimate(null); }}>{tr[tier]}</button>)}</div> : null}
     {props.slot.kind === 'text' ? <label className="block text-sm">{t.candidates}<input className={inputClass} type="number" min={1} max={5} value={count} disabled={remoteBlocked || active} onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 5) { setCount(value); setEstimate(null); } }} /></label> : null}
     <button className={button} disabled={remoteBlocked || active || !props.slot.brief.trim()} onClick={() => void estimateGeneration()}>{runs.length ? t.tryAgain : t.generate}</button>
     {c.offline ? <p role="status" className="text-sm">{tr.offline}</p> : c.pending ? <p role="status" className="text-sm">{tc.syncFirst}</p> : null}
@@ -113,7 +113,7 @@ export function FeedGenerationResults({ controls: c, runs, candidates, slot, onR
     {candidates.map(candidate => {
       const edit = candidate.edits[0]; const stale = !slot || edit?.kind !== 'replaceBlock' || canonicalFeedValue(edit.preimage) !== canonicalFeedValue({ type: 'generationPlaceholder', attrs: slot });
       const text = candidate.edits.flatMap(edit => edit.kind === 'replaceBlock' ? edit.replacement.map(feedText) : []).join('\n\n'); const actionable = ['proposed', 'deferred'].includes(candidate.status);
-      return <article key={candidate.id} className="space-y-2 rounded-lg border bg-background p-3" data-feed-candidate={candidate.id}><p className="whitespace-pre-wrap text-sm">{text}</p><p className="text-xs text-muted-foreground">{candidate.rationale}</p>
+      return <article key={candidate.id} className="space-y-2 rounded-lg border bg-background p-3" data-feed-candidate={candidate.id}>{candidate.edits.flatMap(edit => edit.kind === 'replaceBlock' ? edit.replacement.filter(node => node.type === 'image') : []).map(node => node.type === 'image' ? <FeedGenerationImage key={node.attrs.id} workspaceId={c.workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} /> : null)}<p className="whitespace-pre-wrap text-sm">{text}</p><p className="text-xs text-muted-foreground">{candidate.rationale}</p>
         {stale && actionable ? <p className="text-sm">{t.stale}</p> : null}
         {actionable ? <div className="flex flex-wrap gap-2"><button className={button} disabled={disabled || stale} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'accepted' }])}>{tc.accept}</button><button className={button} disabled={disabled} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'rejected' }])}>{tc.reject}</button><button className={button} disabled={disabled || candidate.status === 'deferred'} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'deferred' }])}>{t.keepLater}</button></div> : <p className="text-xs">{tc[candidate.status as 'accepted' | 'rejected'] ?? candidate.status}</p>}
       </article>;
@@ -135,4 +135,14 @@ export function FeedDetachedGenerationResults({ controls: c }: { controls: FeedG
       try { const response = await authFetch(`${publicRuntimeConfig().apiUrl ?? 'http://localhost:4000'}${feedCollaborationPath(c.assistantId, c.sessionId)}/runs/${id}/${action}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); if (!response.ok) throw new Error(t.failed); } catch { setError(t.failed); } c.onRefresh();
     }} />
   </details>;
+}
+
+/** Authenticated durable bytes; object URLs never become composition content. */
+export function FeedGenerationImage({ workspaceId, fileId, alt }: { workspaceId: string; fileId: string; alt: string }) {
+  const t = useT().feedGeneration; const [url, setUrl] = useState<string | null>(null); const [failed, setFailed] = useState(false);
+  useEffect(() => { let disposed = false; let objectUrl: string | null = null; setUrl(null); setFailed(false);
+    void fetchDocFileBlob(workspaceId, fileId).then(blob => { if (disposed) return; objectUrl = URL.createObjectURL(blob); setUrl(objectUrl); }).catch(() => { if (!disposed) setFailed(true); });
+    return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [workspaceId, fileId]);
+  return url ? <img src={url} alt={alt} className="max-h-96 max-w-full rounded-lg object-contain" /> : <p role="status" className="min-h-11 text-sm">{failed ? t.imageUnavailable : t.loading}{alt ? `: ${alt}` : ''}</p>;
 }

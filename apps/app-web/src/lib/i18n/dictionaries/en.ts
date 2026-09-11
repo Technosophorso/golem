@@ -15,6 +15,15 @@ import type { BuiltinToolGroupId } from "@use-brian/shared/builtin-connectors";
 
 export const en = {
   feedGeneration: {
+    unfinished: "Fill or remove unfinished slots before confirmation.",
+    openSlot: "Open slot",
+
+    imageUnavailable: "Image unavailable",
+    exportArticle: "Export article and images",
+    exportTitle: "Export unfinished draft?",
+    exportOmissions: "Unfilled slots will be omitted. Private briefs, comments and unaccepted candidates are excluded.",
+    exportContinue: "Export accepted content",
+
     "loading": "Loading...",
     "costIncluded": "Included in normal usage. This is the estimated provider cost.",
     "costByo": "Billed by your configured provider.",

@@ -22,7 +22,7 @@ export function boundFeedReviewSources(sources: FeedReviewSource[], initial: Fee
   }
   return { sources: kept, coverage: { ...initial, retrieved: kept.length, state: kept.length < sources.length ? 'partial' as const : initial.state, limits } }
 }
-export async function loadFeedReviewContext(actor: FeedActor, options: { month?: string; historyCursor?: number; source?: { revision: number; content: StructuredFeedContent }; now?: Date } = {}): Promise<FeedReviewContext> {
+export async function loadFeedReviewContext(actor: FeedActor, options: { month?: string; historyCursor?: number; source?: { revision: number; content: StructuredFeedContent }; now?: Date; additionalHistorySql?: string } = {}): Promise<FeedReviewContext> {
   // Release the session lock before loaders use the ordinary query pool.
   // Otherwise concurrent requests waiting for that lock could consume every
   // connection while the lock holder waits for a source-loader connection.
@@ -33,7 +33,7 @@ export async function loadFeedReviewContext(actor: FeedActor, options: { month?:
   })
   return readFeedReviewContext({ query }, authorized.scope, actor, { ...options, source: authorized.source })
 }
-async function readFeedReviewContext(client: FeedReader, scope: FeedScope, actor: FeedActor, options: { month?: string; historyCursor?: number; source?: { revision: number; content: StructuredFeedContent }; now?: Date } = {}): Promise<FeedReviewContext> {
+async function readFeedReviewContext(client: FeedReader, scope: FeedScope, actor: FeedActor, options: { month?: string; historyCursor?: number; source?: { revision: number; content: StructuredFeedContent }; now?: Date; additionalHistorySql?: string } = {}): Promise<FeedReviewContext> {
   const copy = options.source ?? await readFeedCopy(client, actor.sessionId)
   if (!copy) throw new FeedCollaborationError(409, 'working_copy_required')
   const content = requireFeedComposition(copy.content)
@@ -71,7 +71,7 @@ async function readFeedReviewContext(client: FeedReader, scope: FeedScope, actor
       if (!goal || goal.workspaceId !== scope.workspaceId) { dimensions.post_goal.coverage = coverage(0, 'unavailable', ['linked_goal_unavailable']); return }
       dimensions.post_goal = { sources: [source(`goal:${goal.id}`, 'goal', goal.outcome, goal)], coverage: coverage(1) }
     }],
-    ['post_history', async () => { dimensions.post_history = await readFeedPostHistory(client, { workspaceId: scope.workspaceId, assistantIds: historyAssistantIds, sessionId: actor.sessionId, text: composition.body, cursor: options.historyCursor }); if (!brandId) dimensions.post_history.coverage.limits.push('brand_unbound_current_feed_only') }],
+    ['post_history', async () => { dimensions.post_history = await readFeedPostHistory(client, { workspaceId: scope.workspaceId, assistantIds: historyAssistantIds, sessionId: actor.sessionId, text: composition.body, cursor: options.historyCursor, additionalHistorySql: options.additionalHistorySql }); if (!brandId) dimensions.post_history.coverage.limits.push('brand_unbound_current_feed_only') }],
     ['memory', async () => {
       const contexts = members.map(member => ({ workspaceId: scope.workspaceId, userId: member.userId, assistantId: actor.assistantId, assistantKind: 'app' as const, clearance: member.clearance, compartments: member.compartments }))
       contexts.push({ workspaceId: scope.workspaceId, userId: actor.userId, assistantId: actor.assistantId, assistantKind: 'app', clearance: scope.clearance as AccessContext['clearance'], compartments: scope.compartments })
@@ -90,4 +90,9 @@ async function readFeedReviewContext(client: FeedReader, scope: FeedScope, actor
   for (const key of FEED_REVIEW_DIMENSIONS) dimensions[key] = boundFeedReviewSources(dimensions[key].sources, dimensions[key].coverage)
   const context = { historyCursor: options.historyCursor ?? 0, version: 1 as const, revision: copy.revision, composition: content.composition, platform, month, goalId: content.goalId ?? null, brandId, historyAssistantIds, dimensions }
   return { ...context, contextHash: feedEditorialHash(context) }
+}
+
+export type FeedReviewContextLoader = typeof loadFeedReviewContext
+export function createFeedReviewContextLoader(additionalHistorySql?: string): FeedReviewContextLoader {
+  return (actor, options = {}) => loadFeedReviewContext(actor, { ...options, additionalHistorySql })
 }

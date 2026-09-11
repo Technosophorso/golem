@@ -7,7 +7,7 @@ import { en } from "@/lib/i18n/dictionaries/en";
 const state = vi.hoisted(() => ({ data: new Map<string, unknown>(), push: vi.fn(), canDraft: true }));
 vi.mock("@/lib/user", () => ({ getUserInfo: () => ({ id: "viewer-a" }) }));
 vi.mock("@/lib/auth-fetch", () => ({ authFetch: vi.fn(async () => { throw new Error("offline"); }) }));
-vi.mock("@/lib/i18n/client", async () => { const { en } = await import("@/lib/i18n/dictionaries/en"); return { useT: () => en }; });
+vi.mock("@/lib/i18n/client", async () => { const { en } = await import("@/lib/i18n/dictionaries/en"); return { useT: () => en, useLocale: () => "en" }; });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: state.push }) }));
 vi.mock("@/lib/offline/use-offline-sync", () => ({ useIsOffline: () => true }));
 vi.mock("@/lib/recorder/dock-recorder-bridge", () => ({ useGlobalDockRecorder: () => null }));

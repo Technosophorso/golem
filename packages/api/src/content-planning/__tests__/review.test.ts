@@ -32,3 +32,22 @@ describe('[COMP:feed/draft-review] five-dimension evidence contract', () => {
     expect(result.coverage).toMatchObject({ state: 'partial', eligible: 2, retrieved: 1, reviewed: 0, limits: ['whole_source_input_limit'] })
   })
 })
+
+import { deterministicFeedFindings } from '../review.js'
+import type { StructuredFeedContent } from '../../db/feed-collaboration-store.js'
+describe('[COMP:feed/draft-review] deterministic image and brand checks', () => {
+  it('scenarios 8 and 16: unfinished targets and literal prohibited copy produce localized comments without edits', () => {
+    const input = context(); const phrase = 'Always promise perfect irrigation'; const slotId = randomUUID()
+    input.composition.segments[0]!.content.push({ type: 'generationPlaceholder', attrs: { id: slotId, kind: 'image', brief: 'PRIVATE BRIEF', briefRevision: 0, references: [] } })
+    input.dimensions.content.sources = [{ id: 'composition:fixture', kind: 'composition', title: 'Draft', body: phrase, hash: 'fixture' }]
+    input.dimensions.memory.sources = [{ id: 'brand:fixture', kind: 'brand', title: 'Brand', body: JSON.stringify({ naming: { restrictedTerms: [phrase] } }), hash: 'fixture' }]
+    const content = { schemaVersion: 2, composition: input.composition, title: 'Fixture', privateBrief: '', postFormat: 'post', article: { sourceUrl: '', title: '', description: '' }, media: [], text: phrase, threadSegments: [] } as StructuredFeedContent
+    const before = JSON.stringify(content)
+    for (const locale of ['en', 'ja', 'zh', 'zh-cn'] as const) {
+      const findings = deterministicFeedFindings(input, content, locale)
+      expect(findings).toHaveLength(2); expect(findings[0]!.target).toMatchObject({ kind: 'block', blockId: slotId }); expect(findings[1]!.evidence[0]!.sourceId).toBe('brand:fixture')
+      expect(findings.every(finding => !finding.suggestion)).toBe(true); expect(JSON.stringify(findings)).not.toContain('PRIVATE')
+    }
+    expect(JSON.stringify(content)).toBe(before)
+  })
+})

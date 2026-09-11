@@ -2,7 +2,7 @@
 /** Feed ProseMirror authoring with stable target decorations. [COMP:app-web/feed-composition-editor] */
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { GenerationPlaceholder, FeedDetachedGenerationResults, type FeedGenerationControls } from './generation-placeholder';
+import { GenerationPlaceholder, FeedDetachedGenerationResults, FeedGenerationImage, type FeedGenerationControls } from './generation-placeholder';
 import { EditorState, NodeSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
 import { EditorView, Decoration, DecorationSet } from '@tiptap/pm/view';
 import { baseKeymap, toggleMark, setBlockType, wrapIn } from '@tiptap/pm/commands';
@@ -83,6 +83,10 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
         const dom = document.createElement('div'); const slotId = String(node.attrs.id); dom.contentEditable = 'false'; dom.dataset.placeholderId = slotId;
         setSlotMounts(mounts => [...mounts.filter(item => item.id !== slotId), { id: slotId, dom }]);
         return { dom, update(next) { return next.type.name === 'generationPlaceholder' && next.attrs.id === slotId; }, ignoreMutation: () => true, stopEvent: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
+      }, image(node) {
+        const dom = document.createElement('div'); const blockId = String(node.attrs.id); dom.contentEditable = 'false';
+        setSlotMounts(mounts => [...mounts.filter(item => item.id !== blockId), { id: blockId, dom }]);
+        return { dom, update(next) { return next.type.name === 'image' && next.attrs.id === blockId; }, ignoreMutation: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
       } } : undefined,
       editable: () => !latest.current.readOnly,
       attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-44 rounded-xl border border-border/60 bg-card p-5 text-base leading-relaxed outline-none focus:border-ring [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
@@ -126,6 +130,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     <div ref={host} />
     {props.generation ? slotMounts.map(mount => {
       let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }
+      if (found.node.type === 'image') return createPortal(<FeedGenerationImage workspaceId={props.generation!.workspaceId} fileId={found.node.attrs.fileId} alt={found.node.attrs.alt ?? ''} />, mount.dom, mount.id);
       if (found.node.type !== 'generationPlaceholder') return null;
       return createPortal(<GenerationPlaceholder slot={found.node.attrs} segmentId={props.segmentId} controls={props.generation!} onEdit={props.onEdit}
         onSelect={() => { const view = viewRef.current; if (!view) return; let position: number | undefined; view.state.doc.descendants((node, pos) => { if (node.attrs.id === mount.id) position = pos; }); if (position !== undefined && (!(view.state.selection instanceof NodeSelection) || view.state.selection.from !== position)) view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, position))); }} onAction={props.onAction} />, mount.dom, mount.id);
@@ -148,4 +153,25 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
       }}>{t[action]}</button>)}
     </div>
   </div>;
+}
+
+/** The accepted outline, including inline images, in document order. */
+export function FeedCompositionPreview({ composition, workspaceId }: { composition: FeedComposition; workspaceId: string }) {
+  const renderInline = (node: Extract<FeedNode, { type: 'paragraph' | 'heading' }>) => (node.content ?? []).map((part, index) => {
+    if (part.type === 'hardBreak') return <br key={index} />;
+    let text: import('react').ReactNode = part.text;
+    for (const mark of part.marks ?? []) text = mark.type === 'bold' ? <strong>{text}</strong> : mark.type === 'italic' ? <em>{text}</em> : <a href={mark.attrs.href} rel="noopener noreferrer" className="underline">{text}</a>;
+    return <span key={index}>{text}</span>;
+  });
+  const render = (node: FeedNode): import('react').ReactNode => {
+    if (node.type === 'generationPlaceholder') return null;
+    if (node.type === 'image') return <figure key={node.attrs.id}><FeedGenerationImage workspaceId={workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} /></figure>;
+    if (node.type === 'paragraph') return <p key={node.attrs.id}>{renderInline(node)}</p>;
+    if (node.type === 'heading') return <div key={node.attrs.id} role="heading" aria-level={node.attrs.level} className="text-xl font-semibold">{renderInline(node)}</div>;
+    if (node.type === 'bulletList') return <ul className="list-disc pl-5" key={node.attrs.id}>{node.content.map(render)}</ul>;
+    if (node.type === 'orderedList') return <ol className="list-decimal pl-5" start={node.attrs.start} key={node.attrs.id}>{node.content.map(render)}</ol>;
+    if (node.type === 'listItem') return <li key={node.attrs.id}>{node.content.map(render)}</li>;
+    return <blockquote className="border-l-2 pl-4" key={node.attrs.id}>{node.content.map(render)}</blockquote>;
+  };
+  return <div className="space-y-6 break-words [&_p]:my-3 [&_figure]:my-4">{composition.segments.map(segment => <section key={segment.id}>{segment.content.map(render)}</section>)}</div>;
 }

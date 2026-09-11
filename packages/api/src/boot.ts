@@ -1,3 +1,4 @@
+import { createFeedReviewContextLoader } from './content-planning/review-context.js'
 /**
  * bootOpenApi — the OPEN composition root for the Use Brian HTTP API.
  *
@@ -909,8 +910,10 @@ export interface EpisodeIngestorDeps {
  * connectors absent.
  */
 export interface OpenApiPorts {
+  feedHistorySql?: string;
   // ── Billing — open default: allow-all / no-op ──
   /** Real DB credit gate; default allows every turn. */
+  feedImage?: { config?: import('@use-brian/shared').FeedImageConfig; billing?: import('./content-planning/generation-port.js').FeedGenerationBilling };
   checkCreditBudget?: CreditBudgetGate
   /** Edition-local DB usage recorder; default no-op for bespoke compositions. */
   usageStore?: UsageStore
@@ -4645,9 +4648,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       })
     : null
 
-  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' })))
+  const feedReviewContext = createFeedReviewContextLoader(ports.feedHistorySql)
+  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' }), { transport: vertexTx ?? (env.GEMINI_API_KEY ? aiStudioTransport(env.GEMINI_API_KEY) : undefined), resolveWorkspaceKey: resolveWorkspaceByoGeminiKey, files: filesApi ?? undefined, usageStore, config: ports.feedImage?.config, billing: ports.feedImage?.billing }), feedReviewContext)
   app.use('/api/chat', optionalAuth(env.JWT_SECRET), chatRoutes({
     feedGeneration,
+    feedReviewContext,
     provider,
     artifactPromoter,
     checkCreditBudget: ports.checkCreditBudget,
@@ -5044,7 +5049,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // and developing an idea must never require a credential in either edition.
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
-  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration }))
+  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration, reviewContext: feedReviewContext, files: filesApi ?? undefined }))
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its
@@ -7315,6 +7320,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // The store independently enforces thresholds and prohibited output.
   const feedEditorialWorker = createFeedEditorialWorker({ handlers: {
     text_generation: feedGeneration.handler,
+    image_generation: feedGeneration.handler,
     review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget })),
   } })
   if (runWorkers) feedEditorialWorker.start()
