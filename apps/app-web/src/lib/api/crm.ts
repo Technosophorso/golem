@@ -995,6 +995,7 @@ export function confirmCrmImport(
     mapping: CrmProductionImportMapping;
     dryRunHash: string;
     confirmed: true;
+    confirmationKey?: string;
   },
 ): Promise<CrmProductionImportJob> {
   return jsonRequest(`/api/crm/${encodeURIComponent(workspaceId)}/operations/imports`, {

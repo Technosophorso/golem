@@ -27,6 +27,7 @@ const workspaceId = '11111111-1111-4111-8111-111111111111'
 const userId = '22222222-2222-4222-8222-222222222222'
 const fileId = '33333333-3333-4333-8333-333333333333'
 const jobId = '44444444-4444-4444-8444-444444444444'
+const confirmationKey = '66666666-6666-4666-8666-666666666666'
 const entityId = '55555555-5555-4555-8555-555555555555'
 const source = 'Name,Email\nAda Example,ada@example.test\n'
 const bytes = Buffer.from(source)
@@ -47,11 +48,17 @@ function job(status: 'ready' | 'paused' | 'completed', overrides: Record<string,
     id: jobId,
     workspaceId,
     stagedFileId: fileId,
+    sourceId: null,
+    integrationCredentialId: null,
+    integrationGrants: null,
     entityKind: 'contact',
     status,
+    privacyErased: false,
+    privacyErasedAt: null,
     mapping: { columns: { 0: 'name', 1: 'email' } },
     mappingHash: 'a'.repeat(64),
     sourceHash,
+    confirmationKey: null,
     totalRows: 1,
     processedRows: status === 'completed' ? 1 : 0,
     succeededRows: status === 'completed' ? 1 : 0,
@@ -178,6 +185,34 @@ describe('[COMP:crm/production-import] production CRM import', () => {
     mocks.query.mockResolvedValueOnce({ rows: [job('completed')] }).mockResolvedValueOnce({ rows: [job('completed')] })
     await expect(service.resume(context, jobId)).resolves.toMatchObject({ status: 'completed' })
     expect(mocks.createContact).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns the original job for an exact confirmation replay and rejects changed input', async () => {
+    const service = createCrmProductionImportService({ filesApi, operationsForTransaction: () => operations as never })
+    const input = {
+      stagedFileId: fileId,
+      entityKind: 'contact' as const,
+      mapping: { columns: { 0: 'name', 1: 'email' } },
+    }
+    const checked = await service.dryRun(context, input)
+    const replay = job('ready', {
+      confirmationKey,
+      mappingHash: createHash('sha256').update(JSON.stringify({
+        columns: { 0: 'name', 1: 'email' }, trustedIdentitySource: null,
+      })).digest('hex'),
+    })
+    mocks.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [replay] })
+    await expect(service.confirm(context, {
+      ...input, confirmed: true, dryRunHash: checked.dryRunHash, confirmationKey,
+    })).resolves.toMatchObject({ id: jobId, status: 'ready' })
+    expect(String(mocks.query.mock.calls[0]?.[0])).toContain('ON CONFLICT (workspace_id,confirmation_key)')
+
+    mocks.query.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
+      rows: [{ ...replay, sourceHash: 'b'.repeat(64) }],
+    })
+    await expect(service.confirm(context, {
+      ...input, confirmed: true, dryRunHash: checked.dryRunHash, confirmationKey,
+    })).rejects.toMatchObject({ code: 'idempotency_conflict' })
   })
 
   it('matches a unique exact email only after admin confirms a trusted source', async () => {

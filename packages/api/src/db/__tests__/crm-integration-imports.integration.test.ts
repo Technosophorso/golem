@@ -88,6 +88,32 @@ describe('[COMP:crm/production-import] Actual machine source, job and row author
     await expect(imports.resume(inspection.context, id)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await expect(pool.query(`UPDATE crm_import_jobs SET mapping='{}'::jsonb WHERE id=$1`, [id])).rejects.toThrow('immutable')
   })
+  it('deduplicates an exact confirmation key and rejects reuse for another immutable source', async () => {
+    const f = await fixture(), writer = await f.issue(), confirmationKey = randomUUID()
+    const firstSource = await sources.stage(writer.context, randomUUID(), Buffer.from(csv))
+    const firstInput = { sourceId: firstSource.sourceId, entityKind: 'contact' as const, mapping }
+    const checked = await imports.dryRun(writer.context, firstInput)
+    const [first, replay] = await Promise.all([
+      imports.confirm(writer.context, {
+        ...firstInput, confirmed: true, dryRunHash: checked.dryRunHash, confirmationKey,
+      }),
+      imports.confirm(writer.context, {
+        ...firstInput, confirmed: true, dryRunHash: checked.dryRunHash, confirmationKey,
+      }),
+    ])
+    expect(replay).toEqual(first)
+    expect((await pool.query('SELECT id FROM crm_import_jobs WHERE workspace_id=$1 AND confirmation_key=$2',
+      [f.workspaceId, confirmationKey])).rows).toEqual([{ id: first.id }])
+
+    const changedSource = await sources.stage(writer.context, randomUUID(), Buffer.from(csv.replace('Fixture Person', 'Changed Person')))
+    const changedInput = { ...firstInput, sourceId: changedSource.sourceId }
+    const changed = await imports.dryRun(writer.context, changedInput)
+    await expect(imports.confirm(writer.context, {
+      ...changedInput, confirmed: true, dryRunHash: changed.dryRunHash, confirmationKey,
+    })).rejects.toMatchObject({ code: 'idempotency_conflict' })
+    expect((await pool.query('SELECT id FROM crm_import_jobs WHERE workspace_id=$1 AND confirmation_key=$2',
+      [f.workspaceId, confirmationKey])).rowCount).toBe(1)
+  })
   it('denies files, changed authority, unknown trust and out-of-scope rows before any entity side effect', async () => {
     const f = await fixture(), writer = await f.issue()
     await expect(imports.dryRun(writer.context, { stagedFileId: randomUUID(), entityKind: 'contact', mapping })).rejects.toMatchObject({ code: 'not_authorized' })

@@ -101,6 +101,7 @@ export const CrmImportPreflightSchema = ImportInputSchema.refine(hasOneSource, '
 export const CrmImportConfirmSchema = ImportInputSchema.extend({
   confirmed: z.literal(true),
   dryRunHash: z.string().regex(/^[0-9a-f]{64}$/),
+  confirmationKey: z.string().uuid().optional(),
 }).strict().refine(hasOneSource, 'Choose exactly one import source.')
 
 type ImportInput = z.infer<typeof CrmImportPreflightSchema>
@@ -146,6 +147,7 @@ export type CrmImportJob = {
 type ImportJobRow = CrmImportJob & {
   mappingHash: string
   sourceHash: string
+  confirmationKey: string | null
   createdByUserId: string | null
   integrationCredentialId: string | null
   integrationGrants: CrmIntegrationGrant[] | null
@@ -482,7 +484,8 @@ function csvCell(value: unknown): string {
 
 function jobProjection(row: ImportJobRow): CrmImportJob {
   const { mappingHash: _mappingHash, sourceHash: _sourceHash, createdByUserId: _createdBy,
-    integrationCredentialId: _credential, integrationGrants: _grants, ...job } = row
+    confirmationKey: _confirmationKey, integrationCredentialId: _credential,
+    integrationGrants: _grants, ...job } = row
   return job
 }
 
@@ -674,7 +677,7 @@ export function createCrmProductionImportService(deps: {
       `SELECT id, workspace_id AS "workspaceId", staged_file_id AS "stagedFileId",
               source_id AS "sourceId", integration_credential_id AS "integrationCredentialId", integration_grants AS "integrationGrants",
               entity_kind AS "entityKind", status, privacy_erased AS "privacyErased", privacy_erased_at AS "privacyErasedAt", mapping, mapping_hash AS "mappingHash",
-              source_hash AS "sourceHash", total_rows AS "totalRows",
+              source_hash AS "sourceHash", confirmation_key AS "confirmationKey", total_rows AS "totalRows",
               processed_rows AS "processedRows", succeeded_rows AS "succeededRows",
               failed_rows AS "failedRows", next_chunk_index AS "nextChunkIndex",
               created_by_user_id AS "createdByUserId", created_at AS "createdAt",
@@ -701,12 +704,14 @@ export function createCrmProductionImportService(deps: {
       `INSERT INTO crm_import_jobs (
          id, workspace_id, staged_file_id, entity_kind, status, mapping,
          mapping_hash, source_hash, trusted_identity, total_rows,
-         created_by_user_id, confirmed_by_user_id, source_id, integration_credential_id, integration_grants
-       ) VALUES ($1,$2,$3,$4,'ready',$5::jsonb,$6,$7,$8,$9,$10,$10,$11,$12,$13::jsonb)
+         created_by_user_id, confirmed_by_user_id, source_id, integration_credential_id, integration_grants,
+         confirmation_key
+       ) VALUES ($1,$2,$3,$4,'ready',$5::jsonb,$6,$7,$8,$9,$10,$10,$11,$12,$13::jsonb,$14)
+       ON CONFLICT (workspace_id,confirmation_key) WHERE confirmation_key IS NOT NULL DO NOTHING
        RETURNING id, workspace_id AS "workspaceId", staged_file_id AS "stagedFileId",
          source_id AS "sourceId", integration_credential_id AS "integrationCredentialId", integration_grants AS "integrationGrants",
          entity_kind AS "entityKind", status, privacy_erased AS "privacyErased", privacy_erased_at AS "privacyErasedAt", mapping, mapping_hash AS "mappingHash",
-         source_hash AS "sourceHash", total_rows AS "totalRows",
+         source_hash AS "sourceHash", confirmation_key AS "confirmationKey", total_rows AS "totalRows",
          processed_rows AS "processedRows", succeeded_rows AS "succeededRows",
          failed_rows AS "failedRows", next_chunk_index AS "nextChunkIndex",
          created_by_user_id AS "createdByUserId", created_at AS "createdAt",
@@ -714,15 +719,45 @@ export function createCrmProductionImportService(deps: {
       [id, context.workspaceId, input.stagedFileId ?? null, input.entityKind, JSON.stringify(input.mapping),
         mappingHash(input.mapping), parsed.sourceHash, !!input.mapping.trustedIdentitySource,
         parsed.rows.length, context.actor.kind === 'user' ? context.actor.userId : null, input.sourceId ?? null,
-        parsed.sourceAuthority?.credentialId ?? null, parsed.sourceAuthority ? JSON.stringify(parsed.sourceAuthority.grants) : null],
+        parsed.sourceAuthority?.credentialId ?? null, parsed.sourceAuthority ? JSON.stringify(parsed.sourceAuthority.grants) : null,
+        input.confirmationKey ?? null],
     ).catch((error: unknown) => {
       if (error instanceof Error && 'code' in error && error.code === '55000' && error.message === 'import_source_retired') {
         throw new CrmOperationsError('conflict', 'The CRM import source was erased before confirmation. Its receipt cannot restore the CSV.', { reason: 'import_source_retired' })
       }
       throw error
     })
-    console.info('[crm-import] job confirmed', { workspaceId: context.workspaceId, jobId: id, totalRows: parsed.rows.length })
-    return jobProjection(result.rows[0])
+    if (result.rows[0]) {
+      console.info('[crm-import] job confirmed', { workspaceId: context.workspaceId, jobId: id, totalRows: parsed.rows.length })
+      return jobProjection(result.rows[0])
+    }
+    if (!input.confirmationKey) throw new Error('CRM import confirmation returned no job.')
+    const replay = await query<ImportJobRow>(
+      `SELECT id, workspace_id AS "workspaceId", staged_file_id AS "stagedFileId",
+              source_id AS "sourceId", integration_credential_id AS "integrationCredentialId", integration_grants AS "integrationGrants",
+              entity_kind AS "entityKind", status, privacy_erased AS "privacyErased", privacy_erased_at AS "privacyErasedAt", mapping, mapping_hash AS "mappingHash",
+              source_hash AS "sourceHash", confirmation_key AS "confirmationKey", total_rows AS "totalRows",
+              processed_rows AS "processedRows", succeeded_rows AS "succeededRows",
+              failed_rows AS "failedRows", next_chunk_index AS "nextChunkIndex",
+              created_by_user_id AS "createdByUserId", created_at AS "createdAt",
+              updated_at AS "updatedAt", completed_at AS "completedAt"
+         FROM crm_import_jobs WHERE workspace_id=$1 AND confirmation_key=$2`,
+      [context.workspaceId, input.confirmationKey],
+    )
+    const existing = replay.rows[0]
+    const sameActor = context.actor.kind === 'user'
+      ? existing?.createdByUserId === context.actor.userId
+      : existing?.integrationCredentialId === parsed.sourceAuthority?.credentialId
+    if (!existing || existing.privacyErased || !sameActor
+      || existing.stagedFileId !== (input.stagedFileId ?? null)
+      || existing.sourceId !== (input.sourceId ?? null)
+      || existing.entityKind !== input.entityKind
+      || existing.mappingHash !== mappingHash(input.mapping)
+      || existing.sourceHash !== parsed.sourceHash) {
+      throw new CrmOperationsError('idempotency_conflict', 'This import confirmation key was already used for different input or authority.')
+    }
+    jobContext(context, existing, 'write')
+    return jobProjection(existing)
   }
 
   async function findImportedEntity(workspaceId: string, importKey: string, client: PoolClient): Promise<string | null> {
@@ -1099,7 +1134,7 @@ export function createCrmProductionImportService(deps: {
       sql: `SELECT id,workspace_id AS "workspaceId",staged_file_id AS "stagedFileId",
          source_id AS "sourceId",integration_credential_id AS "integrationCredentialId",integration_grants AS "integrationGrants",
          entity_kind AS "entityKind",status,privacy_erased AS "privacyErased",privacy_erased_at AS "privacyErasedAt",mapping,mapping_hash AS "mappingHash",
-         source_hash AS "sourceHash",total_rows AS "totalRows",processed_rows AS "processedRows",
+         source_hash AS "sourceHash",confirmation_key AS "confirmationKey",total_rows AS "totalRows",processed_rows AS "processedRows",
          succeeded_rows AS "succeededRows",failed_rows AS "failedRows",
          next_chunk_index AS "nextChunkIndex",created_by_user_id AS "createdByUserId",
          created_at AS "createdAt",updated_at AS "updatedAt",completed_at AS "completedAt"
