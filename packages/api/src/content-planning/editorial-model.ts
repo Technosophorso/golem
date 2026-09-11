@@ -39,3 +39,21 @@ export function createFeedEditorialModelResolver(options: { provider: LLMProvide
     } }
   }
 }
+
+/** Included confirmation synthesis uses the configured background runtime. */
+export function createFeedLearningModelResolver(options: { provider: LLMProvider; configuredProviders: ProviderAvailability; resolveBackgroundRuntime?: import('../custom-llm-runtime.js').BackgroundRuntimeResolver; usageStore?: UsageStore }): FeedEditorialModelResolver {
+  return async actor => {
+    const { backgroundModelFor } = await import('../model-resolution.js')
+    const { FEED_LEARNING_LIMITS } = await import('@use-brian/shared')
+    const custom = await options.resolveBackgroundRuntime?.(actor.workspaceId)
+    const provider = custom?.provider ?? options.provider; const model = custom?.selector ?? backgroundModelFor(options.configuredProviders)
+    const maxTokens = Math.min(FEED_LEARNING_LIMITS.outputTokens, custom?.maxTokens ?? FEED_LEARNING_LIMITS.outputTokens)
+    const inputCharacters = Math.max(0, Math.min(FEED_LEARNING_LIMITS.inputCharacters, (custom?.inputTokenLimit ?? registryRow(model)?.contextWindow ?? 32768) - maxTokens - 4000))
+    return { model, tier: 'background', inputCharacters, maxTokens, providerKeySource: custom?.providerKeySource ?? 'platform', async call(input) {
+      const response = await collectStream(provider.stream({ model, systemPrompt: input.systemPrompt, messages: [{ role: 'user', content: input.prompt }], maxTokens, responseFormat: 'json', signal: input.signal }))
+      const usage = response.usage; let usageRecorded = !usage || !options.usageStore
+      if (usage && options.usageStore) { try { await options.usageStore.recordUsage({ userId: actor.userId, assistantId: actor.assistantId, sessionId: actor.sessionId, model: response.model || model, modelTier: 'standard', ...usage, actualCostUsd: custom?.providerKeySource === 'user' ? 0 : calculateCost(response.model || model, usage), source: 'overhead:playbook-reflection', triggerKey: 'feed_confirmation_learning', providerKeySource: custom?.providerKeySource ?? 'platform' }); usageRecorded = true } catch { /* The durable receipt retains measured usage. */ } }
+      return { text: response.content.some(block => block.type === 'tool_use') ? '' : response.content.filter(block => block.type === 'text').map(block => block.type === 'text' ? block.text : '').join(''), usage: { model: response.model || model, ...usage, usageRecorded } }
+    } }
+  }
+}

@@ -174,7 +174,8 @@ import {
 import { contentPlanRoutes } from './routes/content-plan.js'
 import { contentIdeasRoutes } from './routes/content-ideas.js'
 import { postWorkingCopiesRoutes } from './routes/post-working-copies.js'
-import { createFeedEditorialModelResolver } from './content-planning/editorial-model.js'
+import { createFeedLearningHandler, reconcileFeedLearning } from './content-planning/learning.js'
+import { createFeedEditorialModelResolver, createFeedLearningModelResolver } from './content-planning/editorial-model.js'
 import { createFeedGenerationPort } from './content-planning/generation-port.js'
 import { createFeedGenerationService } from './content-planning/generation.js'
 import { createFeedReviewHandler } from './content-planning/review.js'
@@ -7319,9 +7320,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // Daily user-scoped projection from minimized, deliberate decision evidence.
   // The store independently enforces thresholds and prohibited output.
   const feedEditorialWorker = createFeedEditorialWorker({ handlers: {
+    confirmation_learning: createFeedLearningHandler(createFeedLearningModelResolver({ provider, configuredProviders, resolveBackgroundRuntime, usageStore })),
+    reconcile: reconcileFeedLearning,
     text_generation: feedGeneration.handler,
     image_generation: feedGeneration.handler,
-    review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget })),
+    review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget }), feedReviewContext),
   } })
   if (runWorkers) feedEditorialWorker.start()
 

@@ -1,9 +1,9 @@
 "use client";
 /** Shared cached Feed collaboration client. [COMP:app-web/feed-composition-editor] */
 import { useEffect } from 'react';
-import type { FeedAnchor, FeedEdit, FeedEditorialRunSummary, FeedReviewFinding } from '@use-brian/shared';
+import type { FeedAnchor, FeedEdit, FeedEditorialRunSummary, FeedReviewFinding, FeedLearnedDecisions } from '@use-brian/shared';
 import { useCachedResource, invalidateSurfaceCache } from '@/lib/surface-cache';
-import { feedCollaborationCacheKey } from '@/lib/surface-prefetch';
+import { feedCollaborationCacheKey, feedLearningCacheKey } from '@/lib/surface-prefetch';
 import { feedCachedJson, feedPaintFirst, readFeedCachedJson, isAuthoritativeFeedDenial } from '@/lib/offline/feed-cache';
 import { FEED_LOCAL_CHANGED, adoptFeedServerCopy, readLocalFeedPost, type FeedWorkingContent } from '@/lib/offline/feed-offline';
 export type FeedCommentThread = { id: string; transcriptSessionId: string; anchor: FeedAnchor; resolved: boolean; authorUserId: string; authorName?: string | null; authorKind: 'user' | 'assistant'; createdAt: string };
@@ -24,5 +24,21 @@ export function useFeedCollaboration(workspaceId: string, assistantId: string, s
     window.addEventListener(FEED_LOCAL_CHANGED, refresh); window.addEventListener('online', refresh);
     return () => { window.removeEventListener(FEED_LOCAL_CHANGED, refresh); window.removeEventListener('online', refresh); };
   }, [assistantId, sessionId, enabled, resource.refresh]);
+  return resource;
+}
+
+/** Learning shares the Feed event family and native offline cache. */
+export function useFeedLearning(workspaceId: string, assistantId: string, sessionId: string, enabled: boolean) {
+  const key = feedLearningCacheKey(workspaceId, assistantId, sessionId);
+  const path = feedCollaborationPath(assistantId, sessionId) + '/learning';
+  const resource = useCachedResource<FeedLearnedDecisions>(enabled ? key : null, () => feedPaintFirst(key,
+    () => readFeedCachedJson<FeedLearnedDecisions>(path),
+    async () => { try { return await feedCachedJson<FeedLearnedDecisions>(path); } catch (error) { if (isAuthoritativeFeedDenial(error)) invalidateSurfaceCache(key); throw error; } },
+  ));
+  useEffect(() => {
+    const refresh = () => { if (enabled) void resource.refresh(); };
+    window.addEventListener(FEED_LOCAL_CHANGED, refresh); window.addEventListener('online', refresh);
+    return () => { window.removeEventListener(FEED_LOCAL_CHANGED, refresh); window.removeEventListener('online', refresh); };
+  }, [enabled, resource.refresh]);
   return resource;
 }

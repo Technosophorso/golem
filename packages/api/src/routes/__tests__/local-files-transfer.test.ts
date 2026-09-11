@@ -58,6 +58,8 @@ describe('[COMP:files/local-transfer] Signed local file transfers', () => {
 
     const readUrl = await client.signedReadUrl('ws-upload/recordings/clip')
     const response = await request(app).get(pathOf(readUrl)).expect(200)
+    expect(response.headers.vary).toBe('Origin')
+    expect(response.headers['access-control-allow-origin']).toBeUndefined()
     expect(response.headers['content-type']).toMatch(/^audio\/mp4/)
     expect(Buffer.from(response.body).equals(bytes)).toBe(true)
   })

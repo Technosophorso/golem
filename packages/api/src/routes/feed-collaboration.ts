@@ -6,10 +6,12 @@ import type { FilesApi } from '@use-brian/core'
 import type { FeedGenerationService } from '../content-planning/generation.js'
 import { Router } from 'express'
 import { z } from 'zod'
-import { feedCommandRequestSchema, feedReviewRequestSchema, feedGenerationEstimateRequestSchema, feedGenerationRequestSchema } from '@use-brian/shared'
+import { feedCommandRequestSchema, feedReviewRequestSchema, feedGenerationEstimateRequestSchema, feedGenerationRequestSchema, feedConfirmationRequestSchema, feedLearningCommandRequestSchema } from '@use-brian/shared'
 import { feedCommand, readReviewedFeedCollaboration } from '../content-planning/collaboration-service.js'
 import { getFeedThreadMessages, FeedCollaborationError, withFeedTransaction, type FeedActor } from '../db/feed-collaboration-store.js'
 import { requestFeedReview } from '../content-planning/review.js'
+import { confirmFeedPost } from '../content-planning/confirmation.js'
+import { executeFeedLearningCommand, readFeedLearnedDecisions } from '../content-planning/learning.js'
 import { getFeedRun, summarizeFeedRun, cancelFeedRun, retryFeedRun } from '../db/feed-editorial-runs-store.js'
 const uuid = z.string().uuid()
 export function feedCollaborationRoutes(options: { generation?: FeedGenerationService; reviewContext?: FeedReviewContextLoader; files?: FilesApi } = {}): Router {
@@ -25,6 +27,20 @@ export function feedCollaborationRoutes(options: { generation?: FeedGenerationSe
   })
   router.post(`${base}/commands`, async (req, res) => {
     try { res.json({ receipt: await feedCommand({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedCommandRequestSchema.parse(req.body)) }) }
+    catch (error) { replyError(res, error) }
+  })
+  router.get(`${base}/learning`, async (req, res) => {
+    try { res.json(await readFeedLearnedDecisions({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' })) }
+    catch (error) { replyError(res, error) }
+  })
+  router.post(`${base}/confirmation`, async (req, res) => {
+    try {
+      const result = await confirmFeedPost({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedConfirmationRequestSchema.parse(req.body))
+      res.json({ confirmationId: result.confirmation.id, revision: result.confirmation.revision, runId: result.runId })
+    } catch (error) { replyError(res, error) }
+  })
+  router.post(`${base}/learning/commands`, async (req, res) => {
+    try { res.json({ receipt: await executeFeedLearningCommand({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedLearningCommandRequestSchema.parse(req.body)) }) }
     catch (error) { replyError(res, error) }
   })
   router.get(`${base}/threads/:threadId/messages`, async (req, res) => {

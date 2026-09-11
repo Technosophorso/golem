@@ -1,5 +1,6 @@
 import type { FeedGenerationService } from '../content-planning/generation.js'
 import { resolveFeedTurnContext, formatFeedTurnContext } from '../content-planning/collaboration-service.js'
+import { loadFeedReviewContext, recordFeedContextApplication } from '../content-planning/review-context.js'
 import { buildFeedCollaborationTools } from '../content-planning/collaboration-tools.js'
 import { createHash } from 'node:crypto'
 import { renderSystemContext } from '@use-brian/core'
@@ -2960,6 +2961,18 @@ export function chatRoutes(options: WebChatOptions): Router {
         feedTurnContext = await resolveFeedTurnContext(user.id, assistant.id, session, (req.body as { feedTarget?: unknown }).feedTarget)
       } catch (error) {
         sendEvent('error', { code: 'feed_context_invalid', error: error instanceof Error ? error.message : 'Invalid draft context' })
+        options.analytics?.logEvent({
+          userId: user.id,
+          assistantId: assistant.id,
+          sessionId: session.id,
+          eventName: 'chat_setup_error', channelType: 'web',
+          metadata: {
+            error_type: sanitize('feed_context_invalid'),
+            stage: sanitize('session_binding'),
+            session_channel_type: sanitize(session.channelType),
+            session_app_origin: sanitize(session.appOrigin ?? ''),
+          },
+        })
         res.end(); return
       }
 
@@ -4325,14 +4338,25 @@ export function chatRoutes(options: WebChatOptions): Router {
       }
       const teamPurpose = workspaceIdentity?.purpose ?? null
 
+      // Shared Feed authoring uses the existing loaders intersected with its
+      // viewers and draft scope. Generic personal indexes cannot bypass that
+      // boundary or inject a lesson for a different brand/platform/format.
+      const feedPromptContext = feedTurnContext
+        ? await (options.feedReviewContext ?? loadFeedReviewContext)(feedTurnContext.actor).catch(() => null)
+        : null
+      if (feedTurnContext) {
+        feedTurnContext.learningSources = feedPromptContext?.dimensions.memory.sources ?? []
+        feedTurnContext.learningCoverage = feedPromptContext?.dimensions.memory.coverage ?? { state: 'failed', eligible: 0, retrieved: 0, reviewed: 0, limits: ['source_read_failed'] }
+      }
+
       const memoryContext = buildMemoryContext({
         soul,
         identityMemories: identityMemories.map((m) => ({ id: m.id, summary: m.summary, detail: m.detail })),
-        memoryIndex: rankedIndex.rows.map((m) => ({ ...m, appId: null })),
+        memoryIndex: feedTurnContext ? [] : rankedIndex.rows.map((m) => ({ ...m, appId: null })),
         totalNonIdentityCount: rankedIndex.totalCount,
-        workspaceIdentityMemories: workspaceIdentityMemories.map((m) => ({ id: m.id, summary: m.summary, detail: m.detail })),
-        teamMemoryIndex: teamMemoryIndex.map((m) => ({ ...m, appId: null })),
-        teamVoiceRules: teamVoiceRules.map((m) => ({
+        workspaceIdentityMemories: feedTurnContext ? [] : workspaceIdentityMemories.map((m) => ({ id: m.id, summary: m.summary, detail: m.detail })),
+        teamMemoryIndex: feedTurnContext ? [] : teamMemoryIndex.map((m) => ({ ...m, appId: null })),
+        teamVoiceRules: (feedTurnContext ? [] : teamVoiceRules).map((m) => ({
           id: m.id,
           summary: m.summary,
           detail: m.detail,
@@ -4632,8 +4656,10 @@ export function chatRoutes(options: WebChatOptions): Router {
         channelType: 'web',
         analytics: options.analytics,
         logLabel: 'chat',
+        ...(feedTurnContext ? { allowedRuleIds: (feedPromptContext?.dimensions.memory.sources ?? []).filter(source => source.kind === 'playbook').map(source => source.id.slice('playbook:'.length)), recordApplication: false, applicability: { kind: 'feed' as const, scope: feedPromptContext?.learningScope } } : {}),
       })
       const playbookRules = decisionPlaybookContext.playbookRules
+      if (feedTurnContext && assistant.workspaceId) feedTurnContext.applicationId = await recordFeedContextApplication(feedTurnContext.actor, assistant.workspaceId, 'feed_chat', storedUserMsg.id, feedTurnContext.learningSources ?? [], feedPromptContext?.learningScope) ?? undefined
 
       // Charter intake mode (growth loop Phase 2): an unconfigured standard
       // assistant being spoken to by its OWNER gets the setup interview -

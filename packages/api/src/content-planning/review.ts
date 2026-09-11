@@ -10,6 +10,7 @@ import { enqueueFeedRun, readFeedRun, feedEditorialHash, markFeedDispatch, saveF
 import { loadFeedReviewContext, type FeedReviewContextLoader } from './review-context.js'
 import type { FeedEditorialModel, FeedEditorialModelResolver } from './editorial-model.js'
 import { loadDecisionPlaybookContext } from '../decision-learning/playbook-context.js'
+import { recordFeedContextApplication } from './review-context.js'
 import { notifyWorkspaceChange } from '../brain-stream/notify.js'
 const instructions: Record<FeedReviewDimension, string> = {
   monthly_plan: 'Check alignment with the selected month brief, themes, cadence and scheduled posts. Distinguish planned from published. Do not create a monthly Goal.',
@@ -85,9 +86,10 @@ export function createFeedReviewHandler(resolveModel: FeedEditorialModelResolver
         if (!sources.length || spent > model.inputCharacters) { coverage[dimension] = { ...bounded, state: 'partial', limits: [...bounded.limits, 'composition_exceeds_model_context'] }; continue }
         if (dimension === 'memory') {
           const ruleIds = sources.filter(item => item.kind === 'playbook').map(item => item.id.slice('playbook:'.length))
-          const playbook = await loadDecisionPlaybookContext({ workspaceId: run.workspaceId, assistantId: run.assistantId, actorUserId: run.actorUserId, externalPrincipal: false, allowedRuleIds: ruleIds, applicability: { kind: 'tool', key: `feed:${frozen.platform}` }, operationKind: 'feed_review', operationId: run.id, sourceKind: 'feed_review', sourceId: run.id, logLabel: 'feed-review' })
+          const playbook = await loadDecisionPlaybookContext({ workspaceId: run.workspaceId, assistantId: run.assistantId, actorUserId: run.actorUserId, externalPrincipal: false, allowedRuleIds: ruleIds, recordApplication: false, applicability: frozen.learningScope ? { kind: 'feed', scope: frozen.learningScope } : { kind: 'tool', key: `feed:${frozen.platform}` }, operationKind: 'feed_review', operationId: run.id, sourceKind: 'feed_review', sourceId: run.id, logLabel: 'feed-review' })
           if (playbook.readFailed || sources.some(item => item.kind === 'playbook' && !playbook.playbookRules.includes(item.body.trim()))) { coverage[dimension] = { ...bounded, state: 'partial', limits: [...bounded.limits, 'playbook_changed_before_call'] }; continue }
-          if (playbook.decisionApplicationId) for (const item of sources) if (playbook.appliedRuleIds.includes(item.id.slice('playbook:'.length))) item.applicationId = playbook.decisionApplicationId
+          const applicationId = await recordFeedContextApplication(actor, run.workspaceId, 'feed_review', run.id, sources, frozen.learningScope)
+          if (applicationId) for (const item of sources) if (item.kind === 'memory' || item.kind === 'playbook') item.applicationId = applicationId
         }
         const prompt = JSON.stringify({ dimension, locale: request.locale, revision: frozen.revision, platform: frozen.platform, month: frozen.month, composition: frozen.composition, coverage: bounded, sources })
         await markFeedDispatch(run, dimension, { model: model.model, tier: model.tier, inputCharacters: prompt.length, maximumOutputTokens: model.maxTokens, limitsVersion: FEED_EDITORIAL_LIMITS.version })

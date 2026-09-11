@@ -586,5 +586,12 @@ describe('[COMP:feed/draft-generation] durable image and output integration', ()
     expect(saved?.draftText).toBe('Canonical accepted paragraph.'); expect(saved?.formatData.feedCanonical).toMatchObject({ revision: 2 })
     await expect(store.approve({ assistantId: f.actor.assistantId, draftId: saved!.id, userId: f.actor.userId, finalText: 'Bypass the command journal.' })).rejects.toMatchObject({ code: 'canonical_edit_required' })
     expect(await store.approve({ assistantId: f.actor.assistantId, draftId: saved!.id, userId: f.actor.userId })).toBe(true)
+    const confirmations = (await pool.query('SELECT id,source_revision FROM feed_post_confirmations WHERE session_id=$1', [f.actor.sessionId])).rows
+    expect(confirmations).toEqual([{ id: expect.any(String), source_revision: 2 }])
+    expect((await pool.query("SELECT id FROM feed_editorial_runs WHERE session_id=$1 AND kind='confirmation_learning'", [f.actor.sessionId])).rows).toHaveLength(1)
+    expect(await store.approve({ assistantId: f.actor.assistantId, draftId: saved!.id, userId: f.actor.userId })).toBe(false)
+    expect(await store.markPosted({ assistantId: f.actor.assistantId, draftId: saved!.id, userId: f.actor.userId, permalink: 'https://example.com/posted' })).toBe(true)
+    expect((await pool.query('SELECT id,source_revision FROM feed_post_confirmations WHERE session_id=$1', [f.actor.sessionId])).rows).toEqual(confirmations)
+
   })
 })

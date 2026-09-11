@@ -201,3 +201,51 @@ describe('[COMP:app-web/feed-generation-placeholder] durable image review', () =
     expect(host.querySelector('img')).toBeNull(); expect(host.textContent).toContain(en.feedGeneration.imageUnavailable);
   });
 });
+
+import { FeedLearnedDecisions, type FeedLearningActions } from '../feed-learned-decisions';
+import type { FeedLearnedDecisions as Learned } from '@use-brian/shared';
+vi.mock('@/components/ui/confirm-dialog', () => ({ confirmDialog: vi.fn(async () => true) }));
+vi.mock('@/components/chrome/surface-skeleton', () => ({ ListSurfaceSkeleton: () => <div data-learning-skeleton /> }));
+function learningActions(): FeedLearningActions { return { busy: false, error: false, confirm: vi.fn(async () => true), command: vi.fn(async () => true), retry: vi.fn(async () => true) }; }
+function learningData(): Learned {
+  return { canConfirm: true, privateSourcesOmitted: false, sources: [{ id: 'source', sessionId: 'draft', actorUserId: 'author', actorName: 'Fixture author', canRetract: true, eventKind: 'feed.draft_revised', revision: 2, outcome: 'revised', threadId: 'reason' }], confirmations: [{ id: 'confirmation', revision: 2, actorUserId: 'author', createdAt: '', priorConfirmationId: null, reviewRunId: 'review', current: true, revoked: false, run: { id: 'learning-run', kind: 'confirmation_learning', revision: 2, status: 'succeeded', attempts: 1, error: null, createdAt: '', model: 'background', summaryThreadId: null, coverage: {} }, summary: { id: 'summary', sourceEventIds: ['source'], postOnly: false, text: 'A concrete orchard example was kept.', correction: null, canEdit: true, decisions: [{ statement: 'A promotional opening was rejected for this post.', actorUserId: 'author', outcome: 'rejected', sourceIds: ['source'] }], conflicts: [{ statement: 'No shared universal preference was established.', sourceIds: ['source'] }], unresolved: ['Which audience should the next post address?'] }, artifacts: [{ id: 'rule', kind: 'rule', text: 'Use observable openings.', status: 'suggested', actorUserId: 'author', scope: { platform: 'threads', postFormat: 'post', brandId: null, sensitivity: 'internal', compartments: [], projectIds: [] }, canEdit: true, canPromote: true, erased: false, sourceEventIds: ['source'] }], coverage: { included: 3, eligible: 5, omitted: 2 } }] };
+}
+function learnedPanel(data: Learned | null = learningData(), actions = learningActions()) { return { workspaceId: 'workspace', sessionId: 'draft', platform: 'threads' as const, revision: 2, data, actions, loading: false, disabled: false, offline: false, unfinished: false, onRefresh: vi.fn(), onThread: vi.fn(), reviewRunId: 'review' }; }
+describe('[COMP:app-web/feed-learned-decisions] confirmation and correction controls', () => {
+  it('scenarios 12-13 and 20: explicitly confirms the exact post with the considered Review, separately from delivery', async () => {
+    const props = learnedPanel({ ...learningData(), confirmations: [] });
+    act(() => root.render(<FeedLearnedDecisions {...props} />));
+    expect(host.textContent).toContain(en.feedLearning.notConfirmed);
+    await click(en.feedLearning.confirm); expect(props.actions.confirm).toHaveBeenCalledWith('review'); expect(props.actions.command).not.toHaveBeenCalled();
+    act(() => root.render(<FeedLearnedDecisions {...props} data={learningData()} />));
+    expect(button(en.feedLearning.confirm).disabled).toBe(true);
+  });
+  it('scenarios 11 and 13-15: exposes summary, conflicts, coverage, exact source and typed governance', async () => {
+    const props = learnedPanel(); act(() => root.render(<FeedLearnedDecisions {...props} />));
+    expect(host.textContent).toContain('3/5'); expect(host.textContent).toContain('No shared universal preference');
+    await click(en.feedLearning.openSource); expect(props.onThread).toHaveBeenCalledWith('reason');
+    await click(en.feedLearning.approve); expect(props.actions.command).toHaveBeenLastCalledWith('confirmation', { action: 'decideRule', ruleId: 'rule', decision: 'approve' });
+    await click(en.feedLearning.retract); expect(props.actions.command).toHaveBeenLastCalledWith('confirmation', { action: 'retractSource', eventId: 'source' });
+    await click(en.feedLearning.revoke); expect(props.actions.command).toHaveBeenLastCalledWith('confirmation', { action: 'revoke' });
+  });
+  it('scenario 15: Remember and corrections have keyboard forms and preserve the entered instruction', async () => {
+    const props = learnedPanel(); act(() => root.render(<FeedLearnedDecisions {...props} />));
+    await click(en.feedLearning.remember);
+    const field = host.querySelector('textarea')!; expect(document.activeElement).toBe(field);
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'Use a concrete example in future openings.'); field.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(props.actions.command).toHaveBeenLastCalledWith('confirmation', { action: 'remember', rule: 'Use a concrete example in future openings.' });
+    expect(host.querySelector('form')).toBeNull();
+    await click(en.feedLearning.edit); expect(host.querySelectorAll('textarea')).toHaveLength(2);
+    await click(en.feedLearning.save); expect(props.actions.command).toHaveBeenLastCalledWith('confirmation', expect.objectContaining({ action: 'editSummary', summary: 'A concrete orchard example was kept.' }));
+  });
+  it('scenarios 7-8 and 15: loading, offline, unfinished, denied and failed states never silently confirm', async () => {
+    const props = learnedPanel(null); act(() => root.render(<FeedLearnedDecisions {...props} loading />)); expect(host.querySelector('[data-learning-skeleton]')).toBeTruthy(); expect(button(en.feedLearning.confirm).disabled).toBe(true);
+    for (const state of [{ offline: true }, { disabled: true }, { unfinished: true }, { error: new Error('unavailable') }]) {
+      act(() => root.render(<FeedLearnedDecisions {...props} data={{ ...learningData(), confirmations: [] }} {...state} />)); expect(button(en.feedLearning.confirm).disabled).toBe(true);
+    }
+    expect(props.actions.confirm).not.toHaveBeenCalled();
+    act(() => root.render(<FeedLearnedDecisions {...props} data={{ ...learningData(), canConfirm: false, privateSourcesOmitted: true }} />)); expect(host.textContent).toContain(en.feedLearning.privateOmitted);
+    const unknown = learningData(); unknown.confirmations[0]!.run!.status = 'unknown_outcome'; act(() => root.render(<FeedLearnedDecisions {...props} data={unknown} />)); expect(host.textContent).toContain(en.feedReview.unknownExplanation); expect([...host.querySelectorAll('button')].some(node => node.textContent === en.feedCollaboration.retry)).toBe(false);
+  });
+});

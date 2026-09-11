@@ -103,7 +103,8 @@ import {
 import { CompositionEditor, FeedCompositionPreview, type FeedEditorSelection } from './composition-editor';
 import { DraftCommentPanel, type FeedCommentComposer } from './draft-comment-panel';
 import { FeedReview, useFeedReviewActions } from './feed-review';
-import { useFeedCollaboration } from '@/lib/feed-collaboration';
+import { FeedLearnedDecisions, useFeedLearningActions } from './feed-learned-decisions';
+import { useFeedLearning, useFeedCollaboration } from '@/lib/feed-collaboration';
 import { createFeedAnchor, feedCompositionHtml, projectFeed } from '@use-brian/doc-model';
 import type { FeedCommand, FeedEdit } from '@use-brian/shared';
 import { queueFeedCommands, flushFeedWorkingCopies } from '@/lib/offline/feed-offline';
@@ -285,7 +286,7 @@ function NewPost({
   }
 
   return (
-    <div className="h-full overflow-y-auto bg-muted/15">
+    <div className="h-full overflow-y-auto bg-muted/15 pb-24 lg:pb-0">
       <div className="grid min-h-full w-full lg:grid-cols-[minmax(0,1.08fr)_minmax(340px,0.92fr)]">
         <main className="flex items-center border-b border-border/60 bg-background px-5 py-8 sm:px-8 lg:border-b-0 lg:border-r lg:px-10 xl:px-14">
           <div className="mx-auto w-full max-w-2xl space-y-8 lg:mx-0">
@@ -458,6 +459,8 @@ function PostPane({
   const structured = localPost?.content.schemaVersion === 2 && !!localPost.content.composition;
   const collaboration = useFeedCollaboration(workspaceId, assistantId, sessionId, structured && !localPost?.newSession);
   const review = useFeedReviewActions(assistantId, sessionId, localPost?.revision ?? 0, () => void collaboration.refresh());
+  const learning = useFeedLearning(workspaceId, assistantId, sessionId, structured && !localPost?.newSession);
+  const learningActions = useFeedLearningActions(assistantId, sessionId, localPost?.revision ?? 0, () => { void learning.refresh(); void collaboration.refresh(); });
 
   const [localSaving, setLocalSaving] = useState(0);
   const persist = useCallback(async (patch: Partial<FeedWorkingContent>) => {
@@ -1301,6 +1304,7 @@ function PostPane({
             <div className="min-h-0 flex-1 relative">{conversationPanel}</div>
           </div></div>
           <div hidden={panelView !== 'review'} className="min-h-0 flex-1 overflow-y-auto">
+            <div className="p-3"><FeedLearnedDecisions key={sessionId} workspaceId={workspaceId} sessionId={sessionId} platform={platform} revision={localPost.revision} data={learning.data} loading={learning.loading} error={learning.error} disabled={readOnly || localPost.dirty || localSaving > 0} offline={offline} unfinished={missingSlots.length > 0} reviewRunId={collaboration.data?.runs?.find(run => run.kind === 'review' && run.revision === localPost.revision && run.status === 'succeeded')?.id} actions={learningActions} onRefresh={() => void learning.refresh()} onThread={openThread} /></div>
             <DraftCommentPanel reviewHeader={<FeedReview workspaceId={workspaceId} revision={localPost.revision} snapshot={collaboration.data} disabled={readOnly || localPost.dirty || localSaving > 0} offline={offline} goalId={localPost.content.goalId} month={localPost.content.reviewMonth} actions={review} onCommand={runCommands} onThread={openThread} />} workspaceId={workspaceId} assistantId={assistantId} assistantName={assistantName} sessionId={sessionId}
               composition={localPost.content.composition} revision={localPost.revision} snapshot={collaboration.data} loading={collaboration.loading} error={collaboration.error}
               pending={localPost.dirty || localSaving > 0} offline={offline} readOnly={readOnly} composer={composer} onComposer={setComposer}

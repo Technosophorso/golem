@@ -99,6 +99,15 @@ export async function retryFeedRun(actor: FeedActor, runId: string) {
     if (run.status === 'succeeded') return run
     if (run.dispatchedPart || run.status === 'unknown_outcome') throw new FeedCollaborationError(409, 'fresh_explicit_attempt_required')
     if (run.attempts >= FEED_EDITORIAL_LIMITS.attempts || !['failed', 'cancelled'].includes(run.status)) throw new FeedCollaborationError(409, 'run_not_retryable')
+    if (run.kind === 'confirmation_learning' && run.result.invalidParts) {
+      const result = structuredClone(run.result)
+      const discarded = Array.isArray(result.discardedParts) ? result.discardedParts : []
+      for (const part of Object.keys(result.invalidParts as Record<string, unknown>)) {
+        if (part in result.parts) { discarded.push({ part, response: result.parts[part], usage: run.usage[part], attempt: run.attempts }); delete result.parts[part] }
+      }
+      result.discardedParts = discarded; delete result.invalidParts
+      await client.query('UPDATE feed_editorial_runs SET result=$2 WHERE id=$1', [run.id, JSON.stringify(result)])
+    }
     await client.query(`UPDATE feed_editorial_runs SET status='pending',last_error=NULL,lease_id=NULL,lease_until=NULL,updated_at=now() WHERE id=$1`, [run.id])
     return readFeedRun(client, actor.sessionId, runId)
   })

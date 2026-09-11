@@ -6,7 +6,7 @@ import { FEED_EDITORIAL_LIMITS, FEED_GENERATION_LIMITS, feedGenerationEstimateRe
 import { locateFeedNode, importFeedMarkdown, applyFeedEdits } from '@use-brian/doc-model'
 import { withFeedTransaction, readFeedCopy, requireFeedComposition, assertFeedFiles, executeFeedCommands, FeedCollaborationError, type FeedActor, type StructuredFeedContent } from '../db/feed-collaboration-store.js'
 import { enqueueFeedRun, readFeedRun, feedEditorialHash, editorialActor, markFeedDispatch, saveFeedPart, type FeedEditorialRun } from '../db/feed-editorial-runs-store.js'
-import { loadFeedReviewContext, type FeedReviewContextLoader } from './review-context.js'
+import { loadFeedReviewContext, recordFeedContextApplication, type FeedReviewContextLoader } from './review-context.js'
 import { notifyWorkspaceChange } from '../brain-stream/notify.js'
 import type { FeedGenerationPort, FeedGenerationResolved, FeedGenerationSource } from './generation-port.js'
 export type FeedGenerationContext = {
@@ -99,14 +99,16 @@ export function createFeedGenerationService(port: FeedGenerationPort, loadContex
       const model = await resolve(port, { ...actor, workspaceId: run.workspaceId }, context.slot.kind, context.request.model)
       if (model.identity !== context.identity) throw new FeedCollaborationError(409, 'generation_configuration_changed')
       const ruleIds = context.sources.filter(item => item.id.startsWith('playbook:')).map(item => item.id.slice('playbook:'.length))
-      const playbook = await loadDecisionPlaybookContext({ workspaceId: run.workspaceId, assistantId: run.assistantId, actorUserId: run.actorUserId, externalPrincipal: false, allowedRuleIds: ruleIds, applicability: { kind: 'tool', key: `feed:${context.review.platform}` }, operationKind: 'feed_generation', operationId: run.id, sourceKind: 'feed_generation', sourceId: run.id, logLabel: 'feed-generation' })
+      const playbook = await loadDecisionPlaybookContext({ workspaceId: run.workspaceId, assistantId: run.assistantId, actorUserId: run.actorUserId, externalPrincipal: false, allowedRuleIds: ruleIds, recordApplication: false, applicability: context.review.learningScope ? { kind: 'feed', scope: context.review.learningScope } : { kind: 'tool', key: `feed:${context.review.platform}` }, operationKind: 'feed_generation', operationId: run.id, sourceKind: 'feed_generation', sourceId: run.id, logLabel: 'feed-generation' })
       if (playbook.readFailed || context.sources.some(item => item.id.startsWith('playbook:') && !playbook.playbookRules.includes(item.body.trim()))) throw new FeedCollaborationError(409, 'generation_sources_changed')
       const systemPrompt = generationInstructions(context.slot.kind, context.request.count, context.request.locale)
       const prompt = generationPrompt(context, model.inputCharacters - systemPrompt.length - 2).prompt
+      const applicationSources = context.review.dimensions.memory.sources.filter(source => context.sources.some(included => included.id === source.id && included.hash === source.hash))
+      const applicationId = await recordFeedContextApplication(actor, run.workspaceId, 'feed_generation', run.id, applicationSources, context.review.learningScope)
       await reserveGeneration(port, run, context)
       await markFeedDispatch(run, part, context.estimate)
       const response = await model.call({ slot: context.slot, systemPrompt, prompt, signal: AbortSignal.any([signal, AbortSignal.timeout(FEED_EDITORIAL_LIMITS.callTimeoutMs)]) })
-      await saveFeedPart(run, part, { ...response, applicationId: playbook.decisionApplicationId ?? undefined }, response.usage)
+      await saveFeedPart(run, part, { ...response, applicationId: applicationId ?? undefined }, response.usage)
     }
     await settleGeneration(port, run, context)
     await withFeedTransaction(actor, async (client, scope) => { await assertFeedFiles(client, actor, scope, context.content.composition) })
