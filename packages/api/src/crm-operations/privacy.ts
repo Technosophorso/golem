@@ -46,6 +46,7 @@ export const CRM_OPERATIONS_PRIVACY_TABLES = [
   'crm_segments',
   'association_membership_plans',
   'association_memberships',
+  'association_membership_offline_rescues',
   'association_events',
   'association_registrations',
   'association_inventory_boundaries',
@@ -205,6 +206,7 @@ export async function redactCrmOperationsForContact(
   for (const table of [
     'crm_suppression_events',
     'association_consent_events',
+    'association_membership_offline_rescues',
     'association_memberships',
     'association_enquiries',
     'association_external_identities',

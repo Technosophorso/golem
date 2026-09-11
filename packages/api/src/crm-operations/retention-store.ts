@@ -102,6 +102,7 @@ export async function inspectCrmRetention(client:PoolClient,workspaceId:string,b
   // the configured horizon and retained set until a domain-specific resolution.
   for(const [name,domain,seconds] of [
     ['audit','association_audit_log',policy?.auditSeconds],['financialRecords','association_orders',policy?.financialRecordsSeconds],
+    ['membershipRescueFinancialRecords','association_membership_offline_rescues',policy?.financialRecordsSeconds],
   ] as const) {
     const date=cutoff(name,seconds)
     if(date)await select(name,domain,'retain',`SELECT id,xmin::text version,true retained FROM ${domain}

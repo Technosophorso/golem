@@ -10,6 +10,9 @@ import {
   AssociationTicketInputSchema, AssociationOrderCreateSchema, AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema, AssociationProviderBindingInputSchema,
   AssociationRegistrationUpdateSchema, AssociationOrderStatusSchema, AssociationRegistrationStatusSchema,
   AssociationCheckInCorrectionSchema,
+  AssociationMembershipRescueCreateSchema, AssociationMembershipRescueSettlementSchema,
+  AssociationMembershipRescueReversalSchema, AssociationMembershipRescueCancellationSchema,
+  AssociationMembershipRescueStatusSchema,
   AssociationListPageSchema, type AssociationOrderFinancialSummary,
 } from './domain.js'
 
@@ -44,6 +47,12 @@ export const AssociationCommandSchema = z.union([
   z.object({ kind: z.literal('reconcile_provider_entitlement'), event: ProviderEntitlementEventSchema }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_provider_receipts'), orderId: Id.optional(), entitlementId: Id.optional(), state: ProviderReceiptStateSchema.optional() }).strict(),
   z.object({ kind: z.literal('retry_provider_receipt'), receiptId: Id }).strict(),
+  AssociationListPageSchema.extend({ kind: z.literal('list_membership_rescues'), contactId: Id.optional(),
+    planId: Id.optional(), status: AssociationMembershipRescueStatusSchema.optional() }).strict(),
+  z.object({ kind: z.literal('create_membership_rescue'), rescue: AssociationMembershipRescueCreateSchema }).strict(),
+  z.object({ kind: z.literal('settle_membership_rescue'), rescueId: Id, settlement: AssociationMembershipRescueSettlementSchema }).strict(),
+  z.object({ kind: z.literal('reverse_membership_rescue'), rescueId: Id, reversal: AssociationMembershipRescueReversalSchema }).strict(),
+  z.object({ kind: z.literal('cancel_membership_rescue'), rescueId: Id, cancellation: AssociationMembershipRescueCancellationSchema }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_registrations'), eventId: Id, status: AssociationRegistrationStatusSchema.optional() }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_operational_roster'), eventId: Id }).strict(),
   z.object({ kind: z.literal('update_registration'), registrationId: Id, update: AssociationRegistrationUpdateSchema }).strict(),
@@ -63,4 +72,4 @@ export type AssociationCommandResult = {
 export interface AssociationServicePort {
   execute(context: AssociationContext, command: AssociationCommand): Promise<AssociationCommandResult>
 }
-export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts'] as const
+export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_membership_rescues'] as const

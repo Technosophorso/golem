@@ -39,6 +39,11 @@ import {
   type EventInput,
   type ExternalIdentityInput,
   type MembershipInput,
+  type MembershipRescueCancellationInput,
+  type MembershipRescueCreateInput,
+  type MembershipRescueReversalInput,
+  type MembershipRescueSettlementInput,
+  type MembershipRescueStatus,
   type MembershipUpdateInput,
   type OrderCreateInput,
   type AssociationOrderFinancialSummary,
@@ -78,6 +83,11 @@ export type AssociationStore = {
   createMembership(workspaceId: string, input: MembershipInput, actor: AssociationActor): Promise<MutationResult>
   listMemberships(workspaceId: string, contactId: string, filters?: CrmEffectiveEntitlementQuery): Promise<AssociationRecord[]>
   updateMembership(workspaceId: string, id: string, input: MembershipUpdateInput, actor: AssociationActor): Promise<AssociationRecord>
+  listMembershipRescues(workspaceId: string, input: AssociationListInput & { contactId?: string; planId?: string; status?: MembershipRescueStatus }): Promise<AssociationPage>
+  createMembershipRescue(workspaceId: string, input: MembershipRescueCreateInput, actor: AssociationActor): Promise<MutationResult>
+  settleMembershipRescue(workspaceId: string, id: string, input: MembershipRescueSettlementInput, actor: AssociationActor): Promise<MutationResult>
+  reverseMembershipRescue(workspaceId: string, id: string, input: MembershipRescueReversalInput, actor: AssociationActor): Promise<MutationResult>
+  cancelMembershipRescue(workspaceId: string, id: string, input: MembershipRescueCancellationInput, actor: AssociationActor): Promise<MutationResult>
   upsertEvent(workspaceId: string, input: EventInput, actor: AssociationActor): Promise<MutationResult>
   listEvents(workspaceId: string, input: AssociationListInput & { status?: string }): Promise<AssociationPage>
   upsertTicket(workspaceId: string, eventId: string, input: TicketInput, actor: AssociationActor): Promise<MutationResult>
@@ -202,6 +212,18 @@ const MEMBERSHIP_SELECT = `
   m.ends_at AS "endsAt", m.renewal_mode AS "renewalMode", m.provider,
   m.provider_membership_id AS "providerMembershipId", m.provider_period_id AS "providerPeriodId", m.predecessor_id AS "predecessorId",
   m.created_at AS "createdAt", m.updated_at AS "updatedAt"`
+const MEMBERSHIP_RESCUE_SELECT = `
+  r.id, r.workspace_id AS "workspaceId", r.contact_id AS "contactId",
+  e.display_name AS "contactName", r.plan_id AS "planId", p.plan_key AS "planKey", p.name AS "planName",
+  r.idempotency_key AS "idempotencyKey", r.status, r.amount_minor::text AS "amountMinor", r.currency,
+  r.starts_at AS "startsAt", r.ends_at AS "endsAt", r.due_at AS "dueAt", r.reason,
+  (r.status='outstanding' AND r.due_at<=statement_timestamp()) AS overdue,
+  r.membership_id AS "membershipId", m.status AS "membershipStatus",
+  r.settlement_method AS "settlementMethod", r.settlement_reference AS "settlementReference",
+  r.settlement_occurred_at AS "settlementOccurredAt", r.settlement_note AS "settlementNote",
+  r.reversal_reference AS "reversalReference", r.reversal_occurred_at AS "reversalOccurredAt",
+  r.reversal_reason AS "reversalReason", r.cancellation_reason AS "cancellationReason",
+  r.created_at AS "createdAt", r.updated_at AS "updatedAt"`
 const EVENT_SELECT = `
   id, workspace_id AS "workspaceId", slug, programme_key AS "programmeKey",
   title, description, starts_at AS "startsAt", ends_at AS "endsAt", timezone,
@@ -279,6 +301,20 @@ async function requireWorkspaceUser(client: PoolClient, workspaceId: string, use
   if (!found.rowCount) throw new AssociationError('not_found', 'ownerUserId is not a workspace member')
 }
 
+async function requireFinanceActor(client: PoolClient, workspaceId: string, actor: AssociationActor): Promise<string> {
+  if (actor.credentialKind !== 'user' || !actor.actingUserId || actor.credentialId !== actor.actingUserId) {
+    throw new CrmOperationsError('not_authorized', 'A current workspace owner or admin must review offline payment evidence.')
+  }
+  const member = await client.query<{ role: string }>(
+    `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR KEY SHARE`,
+    [workspaceId, actor.actingUserId],
+  )
+  if (!['owner', 'admin'].includes(member.rows[0]?.role ?? '')) {
+    throw new CrmOperationsError('not_authorized', 'A current workspace owner or admin must review offline payment evidence.')
+  }
+  return actor.actingUserId
+}
+
 async function audit(
   client: PoolClient,
   workspaceId: string,
@@ -335,6 +371,19 @@ async function getOrderRecord(client: Pick<PoolClient, 'query'>, workspaceId: st
     ),
   ])
   return { ...order, lines: lines.rows, registrations: registrations.rows }
+}
+
+async function getMembershipRescueRecord(client: Pick<PoolClient, 'query'>, workspaceId: string, id: string): Promise<AssociationRecord | null> {
+  const result = await client.query<DbRow>(
+    `SELECT ${MEMBERSHIP_RESCUE_SELECT}
+       FROM association_membership_offline_rescues r
+       JOIN association_membership_plans p ON p.workspace_id=r.workspace_id AND p.id=r.plan_id
+       JOIN entities e ON e.workspace_id=r.workspace_id AND e.id=r.contact_id
+       LEFT JOIN association_memberships m ON m.workspace_id=r.workspace_id AND m.id=r.membership_id
+      WHERE r.workspace_id=$1 AND r.id=$2`,
+    [workspaceId, id],
+  )
+  return result.rows[0] ?? null
 }
 
 
@@ -1018,6 +1067,203 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         )
         await audit(client, workspaceId, 'membership.updated', 'membership', id, actor, input)
         return result.rows[0]
+      })
+    },
+
+    async listMembershipRescues(workspaceId, input) {
+      const conditions = ['r.workspace_id=$1']
+      const values: unknown[] = [workspaceId]
+      for (const [column, value] of [['r.contact_id', input.contactId], ['r.plan_id', input.planId], ['r.status', input.status]] as const) {
+        if (value) { values.push(value); conditions.push(`${column}=$${values.length}`) }
+      }
+      return page(pool, workspaceId, 'association.membership_offline_rescues', input,
+        `SELECT ${MEMBERSHIP_RESCUE_SELECT}
+           FROM association_membership_offline_rescues r
+           JOIN association_membership_plans p ON p.workspace_id=r.workspace_id AND p.id=r.plan_id
+           JOIN entities e ON e.workspace_id=r.workspace_id AND e.id=r.contact_id
+           LEFT JOIN association_memberships m ON m.workspace_id=r.workspace_id AND m.id=r.membership_id
+          WHERE ${conditions.join(' AND ')}`, values)
+    },
+
+    async createMembershipRescue(workspaceId, input, actor) {
+      return transact(async (client) => {
+        const userId = await requireFinanceActor(client, workspaceId, actor)
+        const fingerprint = associationFingerprint(input)
+        const existing = (await client.query<{ id: string; request_fingerprint: string }>(
+          `SELECT id,request_fingerprint FROM association_membership_offline_rescues
+            WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE`, [workspaceId, input.idempotencyKey],
+        )).rows[0]
+        if (existing) {
+          if (existing.request_fingerprint !== fingerprint) throw new AssociationError('conflict', 'Offline rescue request identity was already used for different details.')
+          return { record: (await getMembershipRescueRecord(client, workspaceId, existing.id))!, created: false }
+        }
+        await requirePerson(client, workspaceId, input.contactId)
+        const plan = (await client.query<{ fee_minor: string; currency: string; provider: string | null }>(
+          `SELECT fee_minor::text,currency,provider FROM association_membership_plans
+            WHERE workspace_id=$1 AND id=$2 FOR SHARE`, [workspaceId, input.planId],
+        )).rows[0]
+        if (!plan) throw new AssociationError('not_found', 'membership plan not found')
+        if (BigInt(plan.fee_minor) <= 0n) throw new AssociationError('conflict', 'Offline payment rescue requires a paid plan; use the complimentary grant workflow for a free plan.')
+        if (plan.provider) throw new AssociationError('conflict', 'Provider-bound plans must use verified provider settlement and cannot use offline rescue.')
+        const inserted = (await client.query<{ id: string }>(
+          `INSERT INTO association_membership_offline_rescues
+             (workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,amount_minor,currency,
+              starts_at,ends_at,due_at,reason,created_by_user_id)
+           VALUES($1,$2,$3,$4,$5,'outstanding',$6,$7,$8,$9,$10,$11,$12)
+           ON CONFLICT(workspace_id,idempotency_key) DO NOTHING RETURNING id`,
+          [workspaceId, input.contactId, input.planId, input.idempotencyKey, fingerprint, plan.fee_minor, plan.currency,
+            input.startsAt, input.endsAt, input.dueAt, input.reason, userId],
+        )).rows[0]
+        if (!inserted) {
+          const raced = (await client.query<{ id: string; request_fingerprint: string }>(
+            `SELECT id,request_fingerprint FROM association_membership_offline_rescues
+              WHERE workspace_id=$1 AND idempotency_key=$2`, [workspaceId, input.idempotencyKey],
+          )).rows[0]
+          if (!raced || raced.request_fingerprint !== fingerprint) throw new AssociationError('conflict', 'Offline rescue request identity was used concurrently for different details.')
+          return { record: (await getMembershipRescueRecord(client, workspaceId, raced.id))!, created: false }
+        }
+        await audit(client, workspaceId, 'membership_rescue.created', 'membership_rescue', inserted.id, actor,
+          { contactId: input.contactId, planId: input.planId, amountMinor: plan.fee_minor, currency: plan.currency })
+        return { record: (await getMembershipRescueRecord(client, workspaceId, inserted.id))!, created: true }
+      })
+    },
+
+    async settleMembershipRescue(workspaceId, id, input, actor) {
+      return transact(async (client) => {
+        const userId = await requireFinanceActor(client, workspaceId, actor)
+        const fingerprint = crmOperationsSha256(input)
+        const rescue = (await client.query<{
+          contact_id: string; plan_id: string; status: string; amount_minor: string; currency: string;
+          starts_at: Date; ends_at: Date; settlement_request_id: string | null; settlement_fingerprint: string | null;
+        }>(`SELECT contact_id,plan_id,status,amount_minor::text,currency,starts_at,ends_at,
+                    settlement_request_id,settlement_fingerprint
+               FROM association_membership_offline_rescues WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+          [workspaceId, id])).rows[0]
+        if (!rescue) throw new AssociationError('not_found', 'offline membership rescue not found')
+        if (rescue.settlement_request_id === input.requestId) {
+          if (rescue.settlement_fingerprint !== fingerprint) throw new AssociationError('conflict', 'Settlement request identity was already used for different evidence.')
+          return { record: (await getMembershipRescueRecord(client, workspaceId, id))!, created: false }
+        }
+        if (rescue.settlement_request_id || rescue.status !== 'outstanding') throw new AssociationError('invalid_transition', 'Only an outstanding rescue can be settled.')
+        if (rescue.amount_minor !== String(input.amountMinor) || rescue.currency !== input.currency) {
+          throw new AssociationError('conflict', 'Settlement money must exactly match the amount and currency locked on the rescue case.')
+        }
+        const admissible = (await client.query<{ allowed: boolean }>(
+          `SELECT $1::timestamptz<=clock_timestamp()+interval '5 minutes' allowed`, [input.occurredAt],
+        )).rows[0]?.allowed
+        if (!admissible) throw new AssociationError('conflict', 'Settlement evidence cannot be dated in the future.')
+        const membershipInput: MembershipInput = {
+          contactId: rescue.contact_id, planId: rescue.plan_id, idempotencyKey: `offline-rescue:${id}`,
+          status: 'active', startsAt: rescue.starts_at.toISOString(), endsAt: rescue.ends_at.toISOString(), renewalMode: 'manual',
+        }
+        const membershipFingerprint = associationFingerprint(membershipInput)
+        let membershipId = (await client.query<{ id: string }>(
+          `INSERT INTO association_memberships
+             (workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,starts_at,ends_at,renewal_mode)
+           VALUES($1,$2,$3,$4,$5,'active',$6,$7,'manual')
+           ON CONFLICT(workspace_id,idempotency_key) DO NOTHING RETURNING id`,
+          [workspaceId, rescue.contact_id, rescue.plan_id, membershipInput.idempotencyKey, membershipFingerprint,
+            rescue.starts_at, rescue.ends_at],
+        )).rows[0]?.id
+        if (!membershipId) {
+          const existing = (await client.query<{ id: string; request_fingerprint: string }>(
+            `SELECT id,request_fingerprint FROM association_memberships WHERE workspace_id=$1 AND idempotency_key=$2 FOR UPDATE`,
+            [workspaceId, membershipInput.idempotencyKey],
+          )).rows[0]
+          if (!existing || existing.request_fingerprint !== membershipFingerprint) throw new AssociationError('conflict', 'The rescue entitlement identity is already bound to different access.')
+          membershipId = existing.id
+        }
+        await client.query(
+          `UPDATE association_membership_offline_rescues SET status='settled',membership_id=$3,
+             settlement_request_id=$4,settlement_fingerprint=$5,settlement_method=$6,settlement_reference=$7,
+             settlement_occurred_at=$8,settlement_note=$9,settlement_by_user_id=$10
+           WHERE workspace_id=$1 AND id=$2`,
+          [workspaceId, id, membershipId, input.requestId, fingerprint, input.method, input.evidenceReference,
+            input.occurredAt, input.note ?? null, userId],
+        )
+        await audit(client, workspaceId, 'membership.created', 'membership', membershipId, actor,
+          { contactId: rescue.contact_id, planId: rescue.plan_id, status: 'active', rescueId: id })
+        await audit(client, workspaceId, 'membership_rescue.settled', 'membership_rescue', id, actor,
+          { contactId: rescue.contact_id, planId: rescue.plan_id, membershipId, amountMinor: rescue.amount_minor, currency: rescue.currency, method: input.method })
+        return { record: (await getMembershipRescueRecord(client, workspaceId, id))!, created: true }
+      })
+    },
+
+    async reverseMembershipRescue(workspaceId, id, input, actor) {
+      return transact(async (client) => {
+        const userId = await requireFinanceActor(client, workspaceId, actor)
+        const fingerprint = crmOperationsSha256(input)
+        const rescue = (await client.query<{
+          contact_id: string; plan_id: string; status: string; amount_minor: string; currency: string; membership_id: string | null;
+          settlement_occurred_at: Date | null; reversal_request_id: string | null; reversal_fingerprint: string | null;
+        }>(`SELECT contact_id,plan_id,status,amount_minor::text,currency,membership_id,settlement_occurred_at,
+                    reversal_request_id,reversal_fingerprint
+               FROM association_membership_offline_rescues WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+          [workspaceId, id])).rows[0]
+        if (!rescue) throw new AssociationError('not_found', 'offline membership rescue not found')
+        if (rescue.reversal_request_id === input.requestId) {
+          if (rescue.reversal_fingerprint !== fingerprint) throw new AssociationError('conflict', 'Reversal request identity was already used for different evidence.')
+          return { record: (await getMembershipRescueRecord(client, workspaceId, id))!, created: false }
+        }
+        if (rescue.reversal_request_id || rescue.status !== 'settled' || !rescue.membership_id || !rescue.settlement_occurred_at) {
+          throw new AssociationError('invalid_transition', 'Only a settled rescue can be reversed.')
+        }
+        if (rescue.amount_minor !== String(input.amountMinor) || rescue.currency !== input.currency) {
+          throw new AssociationError('conflict', 'Reversal money must exactly match the settled rescue.')
+        }
+        const admissible = (await client.query<{ allowed: boolean }>(
+          `SELECT $1::timestamptz>=$2::timestamptz AND $1::timestamptz<=clock_timestamp()+interval '5 minutes' allowed`,
+          [input.occurredAt, rescue.settlement_occurred_at],
+        )).rows[0]?.allowed
+        if (!admissible) {
+          throw new AssociationError('conflict', 'Reversal evidence must follow settlement and cannot be dated in the future.')
+        }
+        const membership = (await client.query<{ status: string; provider: string | null }>(
+          `SELECT status,provider FROM association_memberships WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+          [workspaceId, rescue.membership_id],
+        )).rows[0]
+        if (!membership || membership.provider) throw new AssociationError('conflict', 'The rescue entitlement no longer matches manual access.')
+        const changed = await client.query(
+          `UPDATE association_memberships SET status='cancelled' WHERE workspace_id=$1 AND id=$2 AND status IN('pending','active')`,
+          [workspaceId, rescue.membership_id],
+        )
+        await client.query(
+          `UPDATE association_membership_offline_rescues SET status='reversed',reversal_request_id=$3,
+             reversal_fingerprint=$4,reversal_reference=$5,reversal_occurred_at=$6,reversal_reason=$7,reversed_by_user_id=$8
+           WHERE workspace_id=$1 AND id=$2`,
+          [workspaceId, id, input.requestId, fingerprint, input.evidenceReference, input.occurredAt, input.reason, userId],
+        )
+        if (changed.rowCount) await audit(client, workspaceId, 'membership.updated', 'membership', rescue.membership_id, actor,
+          { status: 'cancelled', rescueId: id, reason: 'offline_settlement_reversed' })
+        await audit(client, workspaceId, 'membership_rescue.reversed', 'membership_rescue', id, actor,
+          { contactId: rescue.contact_id, planId: rescue.plan_id, membershipId: rescue.membership_id, amountMinor: rescue.amount_minor, currency: rescue.currency })
+        return { record: (await getMembershipRescueRecord(client, workspaceId, id))!, created: true }
+      })
+    },
+
+    async cancelMembershipRescue(workspaceId, id, input, actor) {
+      return transact(async (client) => {
+        const userId = await requireFinanceActor(client, workspaceId, actor)
+        const fingerprint = crmOperationsSha256(input)
+        const rescue = (await client.query<{
+          contact_id: string; plan_id: string; status: string; cancellation_request_id: string | null; cancellation_fingerprint: string | null;
+        }>(`SELECT contact_id,plan_id,status,cancellation_request_id,cancellation_fingerprint
+               FROM association_membership_offline_rescues WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+          [workspaceId, id])).rows[0]
+        if (!rescue) throw new AssociationError('not_found', 'offline membership rescue not found')
+        if (rescue.cancellation_request_id === input.requestId) {
+          if (rescue.cancellation_fingerprint !== fingerprint) throw new AssociationError('conflict', 'Cancellation request identity was already used for a different reason.')
+          return { record: (await getMembershipRescueRecord(client, workspaceId, id))!, created: false }
+        }
+        if (rescue.cancellation_request_id || rescue.status !== 'outstanding') throw new AssociationError('invalid_transition', 'Only an outstanding rescue can be cancelled.')
+        await client.query(
+          `UPDATE association_membership_offline_rescues SET status='cancelled',cancellation_request_id=$3,
+             cancellation_fingerprint=$4,cancellation_reason=$5,cancelled_by_user_id=$6 WHERE workspace_id=$1 AND id=$2`,
+          [workspaceId, id, input.requestId, fingerprint, input.reason, userId],
+        )
+        await audit(client, workspaceId, 'membership_rescue.cancelled', 'membership_rescue', id, actor,
+          { contactId: rescue.contact_id, planId: rescue.plan_id })
+        return { record: (await getMembershipRescueRecord(client, workspaceId, id))!, created: true }
       })
     },
 

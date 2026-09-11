@@ -21,6 +21,11 @@ function fixture() {
     reconcileProviderEntitlement: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     listProviderReceipts: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     resolveProviderReceipt: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
+    listMembershipRescues: vi.fn().mockResolvedValue({ items: [{ id: orderId, status: 'outstanding' }], nextCursor: null }),
+    createMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'outstanding' }, created: true }),
+    settleMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'settled' }, created: true }),
+    reverseMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'reversed' }, created: true }),
+    cancelMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'cancelled' }, created: true }),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'manual', eventId }),
     updateRegistration: vi.fn(), correctRegistrationCheckIn: vi.fn().mockResolvedValue({ id: orderId, status: 'confirmed' }),
     reconcileProviderEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
@@ -154,6 +159,22 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     await expect(f.service.execute({ ...member, authority: { ...member.authority, canReconcileProvider: true } }, input)).rejects.toMatchObject({ code: 'not_authorized' })
     await f.service.execute({ ...member, actor: { kind: 'brain_key', credentialId }, authority: { ...member.authority, canReconcileProvider: true } }, input)
     expect(f.store.bindOrderProvider).toHaveBeenCalledTimes(1)
+  })
+  it('confines offline rescue reads and evidence actions to owner/admin users', async () => {
+    const f=fixture(),owner={...member,authority:{...member.authority,role:'owner' as const,canConfigure:true}}
+    const rescue={contactId:userId,planId:eventId,idempotencyKey:randomUUID(),startsAt:'2026-09-01T00:00:00Z',
+      endsAt:'2027-09-01T00:00:00Z',dueAt:'2026-09-30T00:00:00Z',reason:'Reviewed bank transfer exception'}
+    await expect(f.service.execute(member,command({kind:'list_membership_rescues',limit:10}))).rejects.toMatchObject({code:'not_authorized'})
+    const machine=integration();machine.authority.integration!.grants.push({operation:'association.orders.write',selectors:{eventIds:[eventId]}})
+    await expect(f.service.execute({...machine,authority:{...machine.authority,role:'admin',canConfigure:true}},command({kind:'create_membership_rescue',rescue}))).rejects.toMatchObject({code:'not_authorized'})
+    expect(f.store.createMembershipRescue).not.toHaveBeenCalled()
+    expect((await f.service.execute(owner,command({kind:'create_membership_rescue',rescue}))).record).toMatchObject({status:'outstanding'})
+    await f.service.execute(owner,command({kind:'list_membership_rescues',limit:10,status:'outstanding'}))
+    expect(f.store.listMembershipRescues).toHaveBeenCalledWith(workspaceId,expect.objectContaining({limit:10,status:'outstanding'}))
+    const settlement={requestId:randomUUID(),method:'bank_transfer' as const,evidenceReference:'bank-fixture-1',amountMinor:100,
+      currency:'USD',occurredAt:'2026-09-08T00:00:00Z'}
+    expect((await f.service.execute(owner,command({kind:'settle_membership_rescue',rescueId:orderId,settlement}))).record).toMatchObject({status:'settled'})
+    expect(f.store.settleMembershipRescue).toHaveBeenCalledWith(workspaceId,orderId,settlement,expect.objectContaining({credentialKind:'user'}))
   })
   it('routes generic participation through CRM and preserves the legacy registration envelope', async () => {
     const f = fixture()

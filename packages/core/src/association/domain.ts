@@ -140,6 +140,47 @@ export const AssociationMembershipUpdateSchema = z.object({
 }).refine((value) => Object.keys(value).length > 0, 'at least one change is required')
 export type AssociationMembershipUpdateInput = z.infer<typeof AssociationMembershipUpdateSchema>
 
+export const AssociationMembershipRescueStatusSchema = z.enum(['outstanding', 'settled', 'reversed', 'cancelled'])
+export type AssociationMembershipRescueStatus = z.infer<typeof AssociationMembershipRescueStatusSchema>
+
+export const AssociationMembershipRescueCreateSchema = z.object({
+  contactId: UUID,
+  planId: UUID,
+  idempotencyKey: z.string().trim().min(1).max(200),
+  startsAt: Instant,
+  endsAt: Instant,
+  dueAt: Instant,
+  reason: z.string().trim().min(1).max(2_000),
+}).strict().refine((value) => Date.parse(value.startsAt) < Date.parse(value.endsAt), 'endsAt must be after startsAt')
+export type AssociationMembershipRescueCreateInput = z.infer<typeof AssociationMembershipRescueCreateSchema>
+
+export const AssociationMembershipRescueSettlementSchema = z.object({
+  requestId: z.string().trim().min(1).max(200),
+  method: z.enum(['bank_transfer', 'cash', 'cheque', 'other']),
+  evidenceReference: z.string().trim().min(1).max(500),
+  amountMinor: z.number().int().positive().safe(),
+  currency: Currency,
+  occurredAt: Instant,
+  note: z.string().trim().max(2_000).nullable().optional(),
+}).strict()
+export type AssociationMembershipRescueSettlementInput = z.infer<typeof AssociationMembershipRescueSettlementSchema>
+
+export const AssociationMembershipRescueReversalSchema = z.object({
+  requestId: z.string().trim().min(1).max(200),
+  evidenceReference: z.string().trim().min(1).max(500),
+  amountMinor: z.number().int().positive().safe(),
+  currency: Currency,
+  occurredAt: Instant,
+  reason: z.string().trim().min(1).max(2_000),
+}).strict()
+export type AssociationMembershipRescueReversalInput = z.infer<typeof AssociationMembershipRescueReversalSchema>
+
+export const AssociationMembershipRescueCancellationSchema = z.object({
+  requestId: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(1).max(2_000),
+}).strict()
+export type AssociationMembershipRescueCancellationInput = z.infer<typeof AssociationMembershipRescueCancellationSchema>
+
 function validIanaTimezone(value: string): boolean {
   try {
     new Intl.DateTimeFormat('en', { timeZone: value }).format()

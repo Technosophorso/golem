@@ -33,7 +33,7 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
         if (!context) return
         const input = AssociationCommandSchema.parse(command(req))
         const result = await options.service.execute(context, input)
-        const createsResource = ['save_ticket', 'create_order', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'offer_waitlist_place'].includes(input.kind)
+        const createsResource = ['save_ticket', 'create_order', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'offer_waitlist_place', 'create_membership_rescue'].includes(input.kind)
         res.status(result.created && createsResource ? 201 : 200).json({
           [key]: result.items ?? result.record, ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
           ...(result.created !== undefined ? { created: result.created } : {}),
@@ -73,6 +73,11 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
     z.object({}).strict().parse(req.body ?? {})
     return { kind: 'retry_provider_receipt', receiptId: req.params.id }
   }, 'result')
+  route('get', '/membership-rescues', req => ({ ...req.query, kind: 'list_membership_rescues' }), 'rescues')
+  route('post', '/membership-rescues', req => ({ kind: 'create_membership_rescue', rescue: req.body }), 'rescue')
+  route('post', '/membership-rescues/:id/settle', req => ({ kind: 'settle_membership_rescue', rescueId: req.params.id, settlement: req.body }), 'rescue')
+  route('post', '/membership-rescues/:id/reverse', req => ({ kind: 'reverse_membership_rescue', rescueId: req.params.id, reversal: req.body }), 'rescue')
+  route('post', '/membership-rescues/:id/cancel', req => ({ kind: 'cancel_membership_rescue', rescueId: req.params.id, cancellation: req.body }), 'rescue')
   return router
 }
 

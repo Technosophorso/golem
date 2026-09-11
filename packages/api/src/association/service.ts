@@ -57,6 +57,11 @@ export function createAssociationService(options: {
         return { limit: command.limit, cursor: command.cursor ?? null,
           createdAfter: command.createdAfter, createdBefore: command.createdBefore }
       }
+      const requireFinanceReviewer = () => {
+        if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
+          throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to review offline payment evidence.')
+        }
+      }
       switch (command.kind) {
         case 'module_status': return { ...output, record: { ...(await modules().getAssociation(workspaceId)) } }
         case 'module_action': {
@@ -88,6 +93,27 @@ export function createAssociationService(options: {
             throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to retry provider evidence.')
           }
           return { ...output, ...(await store.resolveProviderReceipt(workspaceId, command.receiptId, dbActor)) }
+        }
+        case 'list_membership_rescues': {
+          requireFinanceReviewer()
+          return { ...output, ...(await store.listMembershipRescues(workspaceId, { ...pagination(), contactId: command.contactId,
+            planId: command.planId, status: command.status })) }
+        }
+        case 'create_membership_rescue': {
+          requireFinanceReviewer()
+          return { ...output, ...(await store.createMembershipRescue(workspaceId, command.rescue, dbActor)) }
+        }
+        case 'settle_membership_rescue': {
+          requireFinanceReviewer()
+          return { ...output, ...(await store.settleMembershipRescue(workspaceId, command.rescueId, command.settlement, dbActor)) }
+        }
+        case 'reverse_membership_rescue': {
+          requireFinanceReviewer()
+          return { ...output, ...(await store.reverseMembershipRescue(workspaceId, command.rescueId, command.reversal, dbActor)) }
+        }
+        case 'cancel_membership_rescue': {
+          requireFinanceReviewer()
+          return { ...output, ...(await store.cancelMembershipRescue(workspaceId, command.rescueId, command.cancellation, dbActor)) }
         }
         case 'create_order': return { ...output, ...(await store.createOrder(workspaceId, command.order, dbActor)) }
         case 'get_order': {
