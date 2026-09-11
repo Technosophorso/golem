@@ -51,6 +51,7 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
   route('get', '/events/:eventId/registrations', (req) => ({ ...req.query, kind: 'list_registrations', eventId: req.params.eventId }), 'registrations')
   route('get', '/events/:eventId/operational-roster', (req) => ({ ...req.query, kind: 'list_operational_roster', eventId: req.params.eventId }), 'registrations')
   route('patch', '/registrations/:id', (req) => ({ kind: 'update_registration', registrationId: req.params.id, update: req.body }), 'registration')
+  route('post', '/registrations/:id/check-in-correction', (req) => ({ kind: 'correct_check_in', registrationId: req.params.id, correction: req.body }), 'registration')
   route('get', '/waitlist', req => ({ ...req.query, kind: 'list_waitlist',
     includeClosed: req.query.includeClosed === undefined ? false : z.enum(['true', 'false']).parse(req.query.includeClosed) === 'true' }), 'submissions')
   route('post', '/waitlist/:id/offer', req => ({ kind: 'offer_waitlist_place', offer: { ...req.body, submissionId: req.params.id } }), 'offer')

@@ -144,6 +144,24 @@ export function createAssociationService(options: {
             attendeeMetadata: metadata ?? {}, orderId: null, orderLineId: null, ticketId: null,
             reservationExpiresAt: null, status: command.update.status } }
         }
+        case 'correct_check_in': {
+          if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
+            throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to correct a check-in.')
+          }
+          const management = await store.getRegistrationManagement(workspaceId, command.registrationId)
+          if (!management) throw new AssociationError('not_found', 'registration not found')
+          if (management.sourceKind === 'commerce') {
+            if (command.correction.expectedStatus !== 'checked_in') throw new AssociationError('conflict', 'Commerce check-in correction expects checked_in.')
+            return { ...output, record: await store.correctRegistrationCheckIn(workspaceId, command.registrationId, command.correction, dbActor) }
+          }
+          if (command.correction.expectedStatus !== 'attended') throw new AssociationError('conflict', 'Participation check-in correction expects attended.')
+          const result = await options.crmService.execute(context, { kind: 'correct_participation_check_in', participationId: command.registrationId,
+            expectedStatus: 'attended', reason: command.correction.reason })
+          const { contactId, metadata, ...rest } = result.record
+          return { ...output, record: { workspaceId, ...rest, attendeeContactId: contactId ?? null,
+            attendeeMetadata: metadata ?? {}, orderId: null, orderLineId: null, ticketId: null,
+            reservationExpiresAt: null, status: 'registered' } }
+        }
       }
     },
   }

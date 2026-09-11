@@ -232,6 +232,7 @@ export type CrmOperationsTransaction = {
   updateEntitlement(entitlementId: string, changes: CrmOperationsRecord): Promise<CrmOperationsRecord | null>
   recordParticipation(params: CrmOperationsRecord): Promise<{ record: CrmOperationsRecord; created: boolean }>
   updateParticipation(participationId: string, status: string): Promise<CrmOperationsRecord | null>
+  correctParticipationCheckIn(participationId: string, expectedStatus: 'attended'): Promise<CrmOperationsRecord | null>
   setDealPipelineStage(params: {
     dealId: string
     pipelineId: string
@@ -1244,6 +1245,31 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
                    source_id AS "sourceId",historical_import AS "historicalImport",checked_in_at AS "checkedInAt",
                    created_at AS "createdAt",updated_at AS "updatedAt"`,
         [workspaceId, participationId, status],
+      )
+      await refreshAssociationInventory(client, workspaceId, eventIds, context.actor.kind)
+      return result.rows[0] ?? null
+    },
+
+    async correctParticipationCheckIn(participationId, expectedStatus) {
+      const eventIds = await lockAssociationInventory(client, workspaceId, { registrationId: participationId })
+      const current = await client.query<{ status: string; sourceKind: string }>(
+        `SELECT status,source_kind AS "sourceKind" FROM association_registrations
+          WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, [workspaceId, participationId],
+      )
+      const participation = current.rows[0]
+      if (!participation) return null
+      if (participation.sourceKind === 'commerce') throw new CrmOperationsError('conflict',
+        'Commerce participation must be corrected through Association registration operations.', { commerceManaged: true })
+      if (participation.status !== expectedStatus) throw new CrmOperationsError('conflict',
+        'Participation status no longer matches the expected check-in state.', { expectedStatus, currentStatus: participation.status })
+      const result = await client.query<DbRecord>(
+        `UPDATE association_registrations SET status='registered',checked_in_at=NULL,updated_at=now()
+          WHERE workspace_id=$1 AND id=$2
+          RETURNING id,event_id AS "eventId",attendee_contact_id AS "contactId",
+            attendee_name AS "attendeeName",attendee_email AS "attendeeEmail",attendee_metadata AS metadata,
+            status,source_kind AS "sourceKind",source_id AS "sourceId",historical_import AS "historicalImport",
+            checked_in_at AS "checkedInAt",created_at AS "createdAt",updated_at AS "updatedAt"`,
+        [workspaceId, participationId],
       )
       await refreshAssociationInventory(client, workspaceId, eventIds, context.actor.kind)
       return result.rows[0] ?? null

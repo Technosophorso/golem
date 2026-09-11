@@ -42,6 +42,8 @@ export {
   type AssociationOperationalRosterRow,
   AssociationRegistrationUpdateSchema as RegistrationUpdateSchema,
   type AssociationRegistrationUpdateInput as RegistrationUpdateInput,
+  AssociationCheckInCorrectionSchema as CheckInCorrectionSchema,
+  type AssociationCheckInCorrectionInput as CheckInCorrectionInput,
   AssociationListPageSchema as ListPageSchema,
   associationFingerprint,
   mayTransitionAssociationOrder as mayTransitionOrder,

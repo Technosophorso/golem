@@ -94,6 +94,7 @@ function makeTransaction(overrides: Partial<CrmOperationsTransaction> = {}) {
     updateEntitlement: vi.fn(),
     recordParticipation: vi.fn(),
     updateParticipation: vi.fn(),
+    correctParticipationCheckIn: vi.fn(),
     setDealPipelineStage: vi.fn(),
     appendDomainAudit: vi.fn().mockResolvedValue('domain-audit'),
     appendWorkspaceAudit: vi.fn().mockResolvedValue('workspace-audit'),
@@ -364,6 +365,28 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
     ])
     expect(JSON.stringify(payloads)).not.toContain('person@example.com')
     expect(JSON.stringify(payloads)).not.toContain('do not emit')
+  })
+
+  it('requires an owner/admin and audits an expected-state participation check-in correction', async () => {
+    const participationId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const tx = makeTransaction({ correctParticipationCheckIn: vi.fn().mockResolvedValue({
+      id: participationId, contactId: CONTACT_ID, eventId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      status: 'registered', checkedInAt: null, updatedAt: '2026-08-30T12:00:00.000Z',
+    }) })
+    const memberContext: CrmOperationsContext = { workspaceId: WORKSPACE_ID, actor: { kind: 'user', userId: USER_ID },
+      authority: { role: 'member', canWrite: true, canConfigure: false, trustedIdentitySources: [] } }
+    const service = createCrmOperationsService(makeStore(tx), { now: () => new Date('2026-08-30T12:00:00.000Z') })
+    const command = { kind: 'correct_participation_check_in' as const, participationId, expectedStatus: 'attended' as const,
+      reason: 'Marked the wrong attendee' }
+    await expect(service.execute(memberContext, command)).rejects.toMatchObject({ code: 'not_authorized' })
+    const owner = { ...memberContext, authority: { ...memberContext.authority, role: 'owner' as const, canConfigure: true } }
+    const result = await service.execute(owner, command)
+    expect(result.record).toMatchObject({ status: 'registered', checkedInAt: null })
+    expect(tx.correctParticipationCheckIn).toHaveBeenCalledWith(participationId, 'attended')
+    expect(tx.appendDomainAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'crm.participation.check_in_corrected',
+      metadata: { from: 'attended', to: 'registered', reason: 'Marked the wrong attendee' } }))
+    expect(tx.emitDomainEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'crm.participation.changed',
+      payload: expect.objectContaining({ status: 'registered' }) }))
   })
 
   it('emits one redacted domain event for a custom pipeline stage move', async () => {

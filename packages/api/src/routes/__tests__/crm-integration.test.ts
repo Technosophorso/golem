@@ -184,6 +184,20 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(integration.association.execute).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'integration_key', credentialId } }),
       { kind: 'list_operational_roster', eventId, limit: 50 })
   })
+  it('maps the reviewed member check-in correction to its closed command', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn().mockResolvedValue({ command: 'correct_check_in', record: { id: eventId, status: 'confirmed' } }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const response = await request(app).post(`/api/crm/${workspaceId}/association/registrations/${eventId}/check-in-correction`)
+      .send({ expectedStatus: 'checked_in', reason: 'Scanned the wrong badge' })
+    expect(response.status).toBe(200)
+    expect(response.body).toEqual({ registration: { id: eventId, status: 'confirmed' } })
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'user', userId } }), {
+      kind: 'correct_check_in', registrationId: eventId, correction: { expectedStatus: 'checked_in', reason: 'Scanned the wrong badge' },
+    })
+  })
   it('keeps member module reads separate from owner/admin actions and credential issuance', async () => {
     const workspaceStore = { getRole: vi.fn().mockResolvedValue('member') } as unknown as WorkspaceStore
     const credentials = { create: vi.fn(), listForMember: vi.fn() } as unknown as CrmIntegrationStore

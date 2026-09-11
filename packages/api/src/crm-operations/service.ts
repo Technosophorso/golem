@@ -735,6 +735,19 @@ export function createCrmOperationsService(
           })
           return result(command.kind, record, { emittedEventIds: [eventId] })
         }
+        if (command.kind === 'correct_participation_check_in') {
+          const record = await tx.correctParticipationCheckIn(command.participationId, command.expectedStatus)
+          if (!record) throw new CrmOperationsError('not_found', 'Participation was not found.')
+          await audit(tx, context.actor, { action: 'crm.participation.check_in_corrected', subjectKind: 'participation',
+            subjectId: command.participationId, details: { from: command.expectedStatus, to: 'registered', reason: command.reason } })
+          const eventId = await emit(tx, context, {
+            eventType: 'crm.participation.changed', eventKey: `crm.participation.changed:${command.participationId}:${String(record.updatedAt)}`,
+            subjectKind: 'participation', subjectId: command.participationId,
+            payload: { participationId: command.participationId, contactId: record.contactId, eventId: record.eventId,
+              status: 'registered', actorKind: context.actor.kind, occurredAt }, occurredAt,
+          })
+          return result(command.kind, record, { emittedEventIds: [eventId] })
+        }
         if (command.kind === 'set_deal_pipeline_stage') {
           const record = await tx.setDealPipelineStage({ ...command, actorUserId: actorUserId(context.actor), actorAssistantId: actorAssistantId(context.actor) })
           if (!record) throw new CrmOperationsError('catalog_key_invalid', 'Deal, pipeline, or stage is unavailable.')

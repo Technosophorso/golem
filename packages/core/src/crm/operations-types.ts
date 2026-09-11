@@ -416,6 +416,13 @@ export const UpdateCrmParticipationCommandSchema = z.object({
   status: z.enum(['registered', 'attended', 'cancelled', 'no_show']),
 })
 
+export const CorrectCrmParticipationCheckInCommandSchema = z.object({
+  kind: z.literal('correct_participation_check_in'),
+  participationId: CrmOperationsUuidSchema,
+  expectedStatus: z.literal('attended'),
+  reason: z.string().trim().min(5).max(500),
+}).strict()
+
 const CRM_ENTITLEMENT_TRANSITIONS = {
   pending: new Set(['pending', 'active', 'cancelled']),
   active: new Set(['active', 'expired', 'cancelled']),
@@ -589,6 +596,7 @@ export const CrmOperationsCommandSchema = z.union([
   UpdateCrmEntitlementCommandSchema,
   RecordCrmParticipationCommandSchema,
   UpdateCrmParticipationCommandSchema,
+  CorrectCrmParticipationCheckInCommandSchema,
   SetDealPipelineStageCommandSchema,
 ])
 export type CrmOperationsCommand = z.infer<typeof CrmOperationsCommandSchema>
@@ -720,9 +728,9 @@ export function assertCrmOperationsAuthority(
   if(command.kind==='expire_due_entitlement' && !(context.actor.kind==='system_job' && context.actor.job==='entitlement_expiry')) {
     throw new CrmOperationsError('not_authorized','Due entitlement expiry requires its dedicated system job.')
   }
-  if (['preview_import_file_cleanup', 'execute_import_file_cleanup', 'preview_retention', 'execute_retention', 'preview_contact_erasure', 'erase_contact_with_preview', 'save_privacy_policy', 'release_address_suppression', 'save_managed_mailbox_policy', 'save_mailbox_integration_grant'].includes(command.kind) && (context.actor.kind !== 'user'
+  if (['preview_import_file_cleanup', 'execute_import_file_cleanup', 'preview_retention', 'execute_retention', 'preview_contact_erasure', 'erase_contact_with_preview', 'save_privacy_policy', 'release_address_suppression', 'save_managed_mailbox_policy', 'save_mailbox_integration_grant', 'correct_participation_check_in'].includes(command.kind) && (context.actor.kind !== 'user'
     || !['owner', 'admin'].includes(context.authority.role))) {
-    throw new CrmOperationsError('not_authorized', 'Policy approval and suppression release require a workspace owner or admin member.')
+    throw new CrmOperationsError('not_authorized', 'This reviewed operation requires a workspace owner or admin member.')
   }
   if (context.actor.kind === 'integration_key' && context.authority.integration?.credentialId !== context.actor.credentialId) {
     throw new CrmOperationsError('not_authorized', 'Integration authority must come from its authenticated credential.')

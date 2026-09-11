@@ -117,6 +117,31 @@ describe('[COMP:crm/association-inventory] Actual admission and committed bounda
     expect((await boundaries(f.workspaceId)).filter(r => r.event_type === 'association.inventory.available')).toHaveLength(1)
     await expect(commerce.updateRegistration(f.workspaceId, String(saved.record.id), { status: 'checked_in' }, f.actor)).rejects.toMatchObject({ code: 'invalid_transition' })
   })
+  it('corrects commerce and generic check-ins only from the expected state and retains the reason in audit', async () => {
+    const commerceFixture = await fixture(), order = await commerceFixture.order(), orderId = String(order.record.id)
+    await commerce.confirmFreeOrder(commerceFixture.workspaceId, orderId, commerceFixture.actor)
+    const registrationId = String((await pool.query('SELECT id FROM association_registrations WHERE order_id=$1', [orderId])).rows[0].id)
+    await commerce.updateRegistration(commerceFixture.workspaceId, registrationId, { status: 'checked_in' }, commerceFixture.actor)
+    const corrected = await commerce.correctRegistrationCheckIn(commerceFixture.workspaceId, registrationId,
+      { expectedStatus: 'checked_in', reason: 'Scanned the wrong badge' }, commerceFixture.actor)
+    expect(corrected).toMatchObject({ status: 'confirmed', checkedInAt: null })
+    await expect(commerce.correctRegistrationCheckIn(commerceFixture.workspaceId, registrationId,
+      { expectedStatus: 'checked_in', reason: 'Repeated correction' }, commerceFixture.actor))
+      .rejects.toMatchObject({ code: 'conflict', details: { currentStatus: 'confirmed' } })
+    const genericFixture = await fixture({ capacity: null }, false), participation = await genericFixture.participation({ status: 'attended' })
+    const participationId = String(participation.record.id)
+    const generic = await operations.execute(genericFixture.context, { kind: 'correct_participation_check_in', participationId,
+      expectedStatus: 'attended', reason: 'Marked the wrong attendee' })
+    expect(generic.record).toMatchObject({ status: 'registered', checkedInAt: null })
+    await expect(operations.execute(genericFixture.context, { kind: 'correct_participation_check_in', participationId,
+      expectedStatus: 'attended', reason: 'Repeated correction' })).rejects.toMatchObject({ code: 'conflict', details: { currentStatus: 'registered' } })
+    const audits = (await pool.query("SELECT action,metadata FROM association_audit_log WHERE (workspace_id=$1 OR workspace_id=$2) AND action IN('registration.check_in_corrected','crm.participation.check_in_corrected') ORDER BY action",
+      [commerceFixture.workspaceId, genericFixture.workspaceId])).rows
+    expect(audits).toEqual([
+      { action: 'crm.participation.check_in_corrected', metadata: { from: 'attended', to: 'registered', reason: 'Marked the wrong attendee' } },
+      { action: 'registration.check_in_corrected', metadata: { from: 'checked_in', to: 'confirmed', reason: 'Scanned the wrong badge' } },
+    ])
+  })
   it('requires an explicit human admin historical import, records provenance and never consumes stock', async () => {
     const f = await fixture({ startsAt: '1999-01-01T12:00:00Z', endsAt: '1999-01-01T14:00:00Z' })
     const patch = { sourceKind: 'import' as const, historicalImport: true, sourceId: randomUUID(), status: 'attended' as const }

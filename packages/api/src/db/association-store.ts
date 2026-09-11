@@ -43,6 +43,7 @@ import {
   type OrderCreateInput,
   type AssociationOrderFinancialSummary,
   type AssociationOperationalRosterRow,
+  type CheckInCorrectionInput,
   type OrderStatus,
   type PlanInput,
   type ProviderEventInput,
@@ -100,6 +101,7 @@ export type AssociationStore = {
   listOperationalRoster(workspaceId: string, eventId: string, input: AssociationListInput): Promise<AssociationPage>
   getRegistrationManagement(workspaceId: string, id: string): Promise<{ sourceKind: string; eventId?: string } | null>
   updateRegistration(workspaceId: string, id: string, input: RegistrationUpdateInput, actor: AssociationActor): Promise<AssociationRecord>
+  correctRegistrationCheckIn(workspaceId: string, id: string, input: CheckInCorrectionInput, actor: AssociationActor): Promise<AssociationRecord>
   listNotifications(workspaceId: string, input: AssociationListInput & { status?: string }): Promise<AssociationPage>
 }
 
@@ -1573,6 +1575,30 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           to: input.status,
         })
         return result.rows[0]
+      })
+    },
+
+    async correctRegistrationCheckIn(workspaceId, id, input, actor) {
+      return transact(async client => {
+        await lockAssociationModule(client, workspaceId)
+        await lockAssociationInventory(client, workspaceId, { registrationId: id })
+        const current = (await client.query<{ status: string; sourceKind: string }>(
+          `SELECT status,source_kind AS "sourceKind" FROM association_registrations
+            WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, [workspaceId, id],
+        )).rows[0]
+        if (!current) throw new AssociationError('not_found', 'registration not found')
+        if (current.sourceKind !== 'commerce') throw new AssociationError('invalid_transition', 'Non-commerce participation uses CRM participation commands.')
+        if (input.expectedStatus !== 'checked_in' || current.status !== input.expectedStatus) {
+          throw new AssociationError('conflict', 'Registration status no longer matches the expected check-in state.',
+            { expectedStatus: input.expectedStatus, currentStatus: current.status })
+        }
+        const record = (await client.query<DbRow>(
+          `UPDATE association_registrations SET status='confirmed',checked_in_at=NULL,updated_at=now()
+            WHERE workspace_id=$1 AND id=$2 RETURNING ${REGISTRATION_SELECT}`, [workspaceId, id],
+        )).rows[0]!
+        await audit(client, workspaceId, 'registration.check_in_corrected', 'registration', id, actor,
+          { from: input.expectedStatus, to: 'confirmed', reason: input.reason })
+        return record
       })
     },
 

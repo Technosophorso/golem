@@ -9,6 +9,7 @@ import { CrmOperationsActorSchema, CrmOperationsAuthoritySchema } from '../crm/o
 import {
   AssociationTicketInputSchema, AssociationOrderCreateSchema, AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema, AssociationProviderBindingInputSchema,
   AssociationRegistrationUpdateSchema, AssociationOrderStatusSchema, AssociationRegistrationStatusSchema,
+  AssociationCheckInCorrectionSchema,
   AssociationListPageSchema, type AssociationOrderFinancialSummary,
 } from './domain.js'
 
@@ -46,6 +47,7 @@ export const AssociationCommandSchema = z.union([
   AssociationListPageSchema.extend({ kind: z.literal('list_registrations'), eventId: Id, status: AssociationRegistrationStatusSchema.optional() }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_operational_roster'), eventId: Id }).strict(),
   z.object({ kind: z.literal('update_registration'), registrationId: Id, update: AssociationRegistrationUpdateSchema }).strict(),
+  z.object({ kind: z.literal('correct_check_in'), registrationId: Id, correction: AssociationCheckInCorrectionSchema }).strict(),
 ])
 export type AssociationCommand = z.infer<typeof AssociationCommandSchema>
 export type AssociationCommandResult = {

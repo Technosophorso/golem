@@ -107,6 +107,9 @@ export async function checkInAssociationAttendee(workspaceId:string,registration
   const response=await authFetch(`${API_URL}/api/crm/${encodeURIComponent(workspaceId)}/association/registrations/${encodeURIComponent(registrationId)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({status:"checked_in"})});
   if(!response.ok) throw new AssociationApiError("save_failed",response.status);
 }
+export function correctAssociationCheckIn(workspaceId:string,registrationId:string,expectedStatus:"checked_in"|"attended",reason:string) {
+  return request<{registration:AssociationRegistration}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/registrations/${encodeURIComponent(registrationId)}/check-in-correction`,{expectedStatus,reason});
+}
 export function offerAssociationPlace(workspaceId:string,submissionId:string,input:{promotionId:string;reservationMinutes:number;useMemberPrice:boolean}) {
   return request<{offer:{orderId:string}}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/waitlist/${encodeURIComponent(submissionId)}/offer`,input);
 }

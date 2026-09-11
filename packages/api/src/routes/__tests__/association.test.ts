@@ -66,6 +66,7 @@ function fakeStore(): AssociationStore {
     listOperationalRoster: vi.fn(),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'commerce' }),
     updateRegistration: vi.fn(),
+    correctRegistrationCheckIn: vi.fn(),
     listNotifications: vi.fn(),
   }
 }

@@ -22,7 +22,8 @@ function fixture() {
     listProviderReceipts: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     resolveProviderReceipt: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'manual', eventId }),
-    updateRegistration: vi.fn(), reconcileProviderEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
+    updateRegistration: vi.fn(), correctRegistrationCheckIn: vi.fn().mockResolvedValue({ id: orderId, status: 'confirmed' }),
+    reconcileProviderEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
     reconcileProviderFinancialEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
     expireDueOrder: vi.fn(),
     cancelOrder: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }), confirmFreeOrder: vi.fn(),
@@ -160,5 +161,26 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     expect(f.crm.execute).toHaveBeenCalledWith(expect.objectContaining({ workspaceId }), { kind: 'update_participation', participationId: orderId, status: 'attended' })
     expect(result.record).toMatchObject({ attendeeContactId: userId, status: 'checked_in', orderId: null })
     expect(f.store.updateRegistration).not.toHaveBeenCalled()
+  })
+  it('restricts reasoned check-in correction to owners/admins and preserves each writer boundary', async () => {
+    const f = fixture(), correction = command({ kind: 'correct_check_in', registrationId: orderId,
+      correction: { expectedStatus: 'checked_in', reason: 'Duplicate scanner tap' } })
+    await expect(f.service.execute(member, correction)).rejects.toMatchObject({ code: 'not_authorized' })
+    const machine = integration()
+    machine.authority.integration!.grants.push({ operation: 'association.orders.write', selectors: { eventIds: [eventId] } })
+    await expect(f.service.execute({ ...machine, authority: { ...machine.authority, role: 'admin', canConfigure: true } }, correction))
+      .rejects.toMatchObject({ code: 'not_authorized' })
+    expect(f.store.getRegistrationManagement).not.toHaveBeenCalled()
+    f.store.getRegistrationManagement.mockResolvedValueOnce({ sourceKind: 'commerce', eventId })
+    const owner = { ...member, authority: { ...member.authority, role: 'owner' as const, canConfigure: true } }
+    expect((await f.service.execute(owner, correction)).record).toMatchObject({ status: 'confirmed' })
+    expect(f.store.correctRegistrationCheckIn).toHaveBeenCalledWith(workspaceId, orderId,
+      { expectedStatus: 'checked_in', reason: 'Duplicate scanner tap' }, expect.objectContaining({ credentialKind: 'user' }))
+    f.store.getRegistrationManagement.mockResolvedValueOnce({ sourceKind: 'manual', eventId })
+    const generic = await f.service.execute(owner, command({ kind: 'correct_check_in', registrationId: orderId,
+      correction: { expectedStatus: 'attended', reason: 'Marked the wrong person' } }))
+    expect(f.crm.execute).toHaveBeenLastCalledWith(owner, { kind: 'correct_participation_check_in', participationId: orderId,
+      expectedStatus: 'attended', reason: 'Marked the wrong person' })
+    expect(generic.record).toMatchObject({ status: 'registered', attendeeContactId: userId })
   })
 })

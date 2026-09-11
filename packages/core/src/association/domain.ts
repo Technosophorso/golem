@@ -313,6 +313,12 @@ export const AssociationRegistrationUpdateSchema = z.object({
 })
 export type AssociationRegistrationUpdateInput = z.infer<typeof AssociationRegistrationUpdateSchema>
 
+export const AssociationCheckInCorrectionSchema = z.object({
+  expectedStatus: z.enum(['checked_in', 'attended']),
+  reason: z.string().trim().min(5).max(500),
+}).strict()
+export type AssociationCheckInCorrectionInput = z.infer<typeof AssociationCheckInCorrectionSchema>
+
 export const AssociationListPageSchema = CrmPageQuerySchema.strip()
 
 function canonicalize(value: unknown): unknown {
