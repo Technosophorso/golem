@@ -9657,7 +9657,7 @@ export const en = {
     liveFinalizeFree:
       "Finalize this live meeting page? The full recording will be processed and linked here; no second brief will be created. No recording credits will be charged.",
     liveLinkFailed:
-      "The recording is queued, but it could not be linked to the meeting page. You can link it from the recording board.",
+      "It could not be linked to the meeting page. You can link it from the recording board.",
     liveAssembledNote:
       "The lossless upload could not complete, so this recording was assembled from the live stream's windows. Small gaps at 30-second seams are possible.",
     voiceMessage: "Voice message",
@@ -9665,6 +9665,10 @@ export const en = {
     micAndComputerAudio: "Mic + computer audio",
     finishing: "Saving...",
     savingBackground: "Saving recordings in the background ({count}). You can keep chatting or record again.",
+    transcriptionQueued: "Waiting to transcribe...",
+    transcriptionProcessing: "Transcribing and filing to the brain...",
+    transcriptionReady: "Recording processed and ready.",
+    transcriptionFailed: "Transcription failed. Open Recordings to retry.",
     pause: "Pause",
     resume: "Resume",
     stop: "Stop",

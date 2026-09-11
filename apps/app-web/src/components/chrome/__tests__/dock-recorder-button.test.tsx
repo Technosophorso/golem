@@ -16,6 +16,7 @@ import type { DockRecorderApi } from "@/lib/recorder/use-dock-recorder";
 const pickerMocks = vi.hoisted(() => ({
   listCaptureSources: vi.fn(),
   confirmDialog: vi.fn(),
+  recordingStatus: "queued" as "queued" | "processing" | "processed" | "failed",
 }));
 
 vi.mock("@/lib/desktop-auth-source", () => ({
@@ -28,14 +29,33 @@ vi.mock("@/components/ui/confirm-dialog", () => ({
   confirmDialog: (...args: unknown[]) => pickerMocks.confirmDialog(...args),
 }));
 
+vi.mock("@/lib/recordings/use-recording-summary", () => ({
+  useRecordingSummary: () => ({
+    summary: { status: pickerMocks.recordingStatus },
+    error: false,
+  }),
+}));
+
 vi.mock("@/lib/i18n/client", () => ({
   useT: () => ({
+    recordings: {
+      uploadingProgress: "Uploading {percent}%",
+      estimating: "Checking recording...",
+      processing: "Preparing recording...",
+      queued: "Recording uploaded. Transcribing in the background.",
+    },
     recorder: {
       start: "Record",
       audioOptions: "Recording audio options",
       includeComputerAudio: "Include computer audio",
       streamToPage: "Stream transcript and notes to a page",
       savingBackground: "Saving in background ({count}). Keep chatting or record again.",
+      liveLinkFailed: "It could not be linked to the meeting page. You can link it from the recording board.",
+      transcriptionQueued: "Waiting to transcribe...",
+      transcriptionProcessing: "Transcribing and filing to the brain...",
+      transcriptionReady: "Recording processed and ready.",
+      transcriptionFailed: "Transcription failed. Open Recordings to retry.",
+      dismiss: "Dismiss",
     },
   }),
 }));
@@ -107,13 +127,16 @@ afterEach(() => {
   vi.clearAllMocks();
   pickerMocks.listCaptureSources.mockReset();
   pickerMocks.confirmDialog.mockReset();
+  pickerMocks.recordingStatus = "queued";
 });
 
 function recorder(overrides: Partial<DockRecorderApi> = {}): DockRecorderApi {
   return {
+    workspaceId: "workspace-1",
     phase: { kind: "idle" },
     active: false,
     savingCount: 0,
+    saveProgress: null,
     elapsedMs: () => 0,
     notice: null,
     clearNotices: vi.fn(),
@@ -151,7 +174,14 @@ function mount(rec: DockRecorderApi): void {
 
 describe("[COMP:app-web/dock-recorder] DockRecorderButton", () => {
   it("keeps Record enabled and shows background progress independently of dismissible outcomes", () => {
-    const rec = recorder({ savingCount: 2, notice: { kind: "queued", text: "First recording queued" } });
+    const rec = recorder({
+      savingCount: 2,
+      notice: {
+        kind: "queued",
+        recordingId: "recording-1",
+        text: "First recording queued",
+      },
+    });
     mount(rec);
     act(() => root!.render(<><DockRecorderButton rec={rec} /><DockRecorderNotice rec={rec} /></>));
     expect((container!.querySelector('[aria-label="Record"]') as HTMLButtonElement).disabled).toBe(false);
@@ -160,6 +190,58 @@ describe("[COMP:app-web/dock-recorder] DockRecorderButton", () => {
     expect(container!.textContent).toContain("First recording queued");
     act(() => root!.render(<DockRecorderNotice rec={{ ...rec, notice: null }} />));
     expect(container!.textContent).toContain("Saving in background (2)");
+  });
+
+  it("shows exact upload bytes, then follows transcription to a terminal state", () => {
+    const uploading = recorder({
+      savingCount: 1,
+      saveProgress: { status: "uploading", uploadProgress: 0.42, message: "" },
+    });
+    mount(uploading);
+    act(() => root!.render(<DockRecorderNotice rec={uploading} />));
+    expect(container!.textContent).toContain("Uploading 42%");
+    expect(container!.textContent).not.toContain("Saving in background");
+    expect(container!.querySelector('[role="progressbar"]')?.getAttribute("aria-valuenow"))
+      .toBe("42");
+
+    const queued = recorder({
+      notice: {
+        kind: "queued",
+        recordingId: "recording-1",
+        text: "Recording uploaded. Transcribing in the background.",
+      },
+    });
+    act(() => root!.render(<DockRecorderNotice rec={queued} />));
+    expect(container!.textContent).toContain("Waiting to transcribe");
+    expect(container!.textContent).not.toContain("Recording uploaded");
+    expect(container!.querySelector('[role="progressbar"]')?.hasAttribute("aria-valuenow"))
+      .toBe(false);
+
+    pickerMocks.recordingStatus = "processing";
+    act(() => root!.render(<DockRecorderNotice rec={queued} />));
+    expect(container!.textContent).toContain("Transcribing and filing to the brain");
+
+    pickerMocks.recordingStatus = "processed";
+    act(() => root!.render(<DockRecorderNotice rec={queued} />));
+    expect(container!.textContent).toContain("Recording processed and ready");
+    expect(container!.querySelector('[role="progressbar"]')).toBeNull();
+
+    const linkFailure = recorder({
+      notice: {
+        kind: "queued",
+        recordingId: "recording-1",
+        text: "It could not be linked to the meeting page. You can link it from the recording board.",
+      },
+    });
+    act(() => root!.render(<DockRecorderNotice rec={linkFailure} />));
+    expect(container!.textContent).toContain("Recording processed and ready");
+    expect(container!.textContent).toContain("It could not be linked to the meeting page");
+    expect(container!.textContent).not.toContain("queued");
+
+    pickerMocks.recordingStatus = "failed";
+    act(() => root!.render(<DockRecorderNotice rec={linkFailure} />));
+    expect(container!.textContent).toContain("Transcription failed");
+    expect(container!.querySelector(".text-destructive")).toBeTruthy();
   });
 
   it("offers live page streaming in browsers and old shells", () => {

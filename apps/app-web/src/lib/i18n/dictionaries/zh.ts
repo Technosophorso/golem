@@ -9329,7 +9329,7 @@ export const zh: Dictionary = {
     liveFinalizeFree:
       "要最终处理此实时会议页面吗? 完整录音会被处理并关联到这里,不会创建第二份简报,也不会收取录音积分。",
     liveLinkFailed:
-      "录音已排队,但无法关联到会议页面。你可以从录音面板手动关联。",
+      "錄音無法關聯到會議頁面。你可以從錄音面板手動關聯。",
     liveAssembledNote:
       "完整录音上传未能完成,因此本录音由实时传送的窗口拼接而成。30秒接缝处可能有细小缺口。",
     voiceMessage: "语音消息",
@@ -9337,6 +9337,10 @@ export const zh: Dictionary = {
     micAndComputerAudio: "麦克风 + 电脑音频",
     finishing: "保存中...",
     savingBackground: "正在背景儲存錄音或錄影（{count} 個）。你可以繼續聊天或開始下一段錄製。",
+    transcriptionQueued: "正在等待轉錄...",
+    transcriptionProcessing: "正在轉錄並歸檔到大腦...",
+    transcriptionReady: "錄音處理完成，可以使用了。",
+    transcriptionFailed: "轉錄失敗。請到錄音頁面重試。",
     pause: "暂停",
     resume: "继续",
     stop: "停止",
