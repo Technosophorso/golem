@@ -127,6 +127,17 @@ describe('[COMP:api/association-route] credential and workspace authority', () =
     expect(rejected.status).toBe(400)
     expect(store.reconcileProviderFinancialEvent).toHaveBeenCalledTimes(1)
   })
+  it('returns canonical financial totals with the filtered order page', async () => {
+    const store = fakeStore()
+    vi.mocked(store.listOrders).mockResolvedValue({ items: [{ id: RECORD_ID, status: 'paid' }], nextCursor: null, total: 1,
+      financialSummary: [{ currency: 'USD', orderCount: 1, settledOrderCount: 1, subtotalMinor: '1200',
+        discountMinor: '200', grossMinor: '1000', refundedMinor: '400', netMinor: '600', pendingMinor: '0' }] })
+    const response = await request(makeApp(store, auth({ scope: 'read' }))).get('/api/association/orders')
+      .query({ eventId: RECORD_ID, status: 'paid', limit: '10' })
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ orders: [{ id: RECORD_ID }], financialSummary: [{ currency: 'USD', netMinor: '600' }] })
+    expect(store.listOrders).toHaveBeenCalledWith(WID, expect.objectContaining({ eventId: RECORD_ID, status: 'paid', limit: 10 }))
+  })
   it('adapts paginated waitlist reads and explicit offers through the shared command service', async () => {
     const store = fakeStore()
     vi.mocked(store.listWaitlist).mockResolvedValue({ items: [{ id: RECORD_ID, waitlistState: 'waiting' }], nextCursor: null })

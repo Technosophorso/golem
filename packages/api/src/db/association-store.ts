@@ -41,6 +41,7 @@ import {
   type MembershipInput,
   type MembershipUpdateInput,
   type OrderCreateInput,
+  type AssociationOrderFinancialSummary,
   type OrderStatus,
   type PlanInput,
   type ProviderEventInput,
@@ -83,7 +84,7 @@ export type AssociationStore = {
   offerWaitlistPlace(workspaceId: string, input: AssociationWaitlistOfferInput, actor: AssociationActor): Promise<MutationResult>
   createOrder(workspaceId: string, input: OrderCreateInput, actor: AssociationActor): Promise<MutationResult>
   getOrder(workspaceId: string, id: string, actor?: AssociationActor): Promise<AssociationRecord | null>
-  listOrders(workspaceId: string, input: AssociationListInput & { status?: OrderStatus; eventId?: string; contactId?: string; allowedEventIds?: readonly string[] }): Promise<AssociationPage & { total: number }>
+  listOrders(workspaceId: string, input: AssociationListInput & { status?: OrderStatus; eventId?: string; contactId?: string; allowedEventIds?: readonly string[] }): Promise<AssociationPage & { total: number; financialSummary: AssociationOrderFinancialSummary[] }>
   expireDueOrder(workspaceId:string,id:string,actor:AssociationActor):Promise<MutationResult>
   cancelOrder(workspaceId: string, id: string, actor: AssociationActor): Promise<MutationResult>
   confirmFreeOrder(workspaceId: string, id: string, actor: AssociationActor): Promise<MutationResult>
@@ -1372,10 +1373,23 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         conditions.push(`NOT EXISTS (SELECT 1 FROM association_order_lines l JOIN association_ticket_types t ON t.workspace_id=l.workspace_id AND t.id=l.ticket_id
           WHERE l.workspace_id=$1 AND l.order_id=association_orders.id AND NOT (t.event_id=ANY($${values.length}::uuid[])))`)
       }
-      const count = await pool.query<{ total: number }>(`SELECT count(*)::int AS total FROM association_orders WHERE ${conditions.join(' AND ')}`, values)
+      if (input.createdAfter) { values.push(crmPageInstant(input.createdAfter)); conditions.push(`created_at>=$${values.length}::timestamptz`) }
+      if (input.createdBefore) { values.push(crmPageInstant(input.createdBefore)); conditions.push(`created_at<$${values.length}::timestamptz`) }
+      const summaries = await pool.query<{
+        currency: string; orderCount: number; settledOrderCount: number; subtotalMinor: string; discountMinor: string;
+        grossMinor: string; refundedMinor: string; netMinor: string; pendingMinor: string;
+      }>(`SELECT currency,count(*)::int AS "orderCount",
+          count(*) FILTER(WHERE status IN('paid','refunded'))::int AS "settledOrderCount",
+          COALESCE(sum(subtotal_minor) FILTER(WHERE status IN('paid','refunded')),0)::text AS "subtotalMinor",
+          COALESCE(sum(discount_minor) FILTER(WHERE status IN('paid','refunded')),0)::text AS "discountMinor",
+          COALESCE(sum(total_minor) FILTER(WHERE status IN('paid','refunded')),0)::text AS "grossMinor",
+          COALESCE(sum(refunded_minor),0)::text AS "refundedMinor",
+          (COALESCE(sum(total_minor) FILTER(WHERE status IN('paid','refunded')),0)-COALESCE(sum(refunded_minor),0))::text AS "netMinor",
+          COALESCE(sum(total_minor) FILTER(WHERE status='pending'),0)::text AS "pendingMinor"
+        FROM association_orders WHERE ${conditions.join(' AND ')} GROUP BY currency ORDER BY currency`, values)
       const result = await page(pool, workspaceId, 'association.orders', input,
         `SELECT ${ORDER_SELECT} FROM association_orders WHERE ${conditions.join(' AND ')}`, values)
-      return { ...result, total: count.rows[0].total }
+      return { ...result, total: summaries.rows.reduce((sum, row) => sum + row.orderCount, 0), financialSummary: summaries.rows }
     },
 
     expireDueOrder: (workspaceId,id,actor)=>settleWithoutProvider(pool,workspaceId,id,actor,'expire'),

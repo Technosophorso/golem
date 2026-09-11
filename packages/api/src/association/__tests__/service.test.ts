@@ -11,7 +11,8 @@ const member: AssociationContext = { workspaceId, actor: { kind: 'user', userId 
 const command = (raw: unknown) => AssociationCommandSchema.parse(raw)
 function fixture() {
   const store = {
-    listOrders: vi.fn().mockResolvedValue({ items: [], nextCursor: null, total: 7 }),
+    listOrders: vi.fn().mockResolvedValue({ items: [], nextCursor: null, total: 7,
+      financialSummary: [{ currency: 'USD', orderCount: 7, settledOrderCount: 2, subtotalMinor: '2100', discountMinor: '100', grossMinor: '2000', refundedMinor: '400', netMinor: '1600', pendingMinor: '500' }] }),
     listTickets: vi.fn().mockResolvedValue([]), getOrder: vi.fn().mockResolvedValue({ id: orderId }),
     listWaitlist: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     offerWaitlistPlace: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
@@ -96,6 +97,12 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     expect(result.pendingOrders).toBe(7)
     await expect(f.service.execute(integration(), command({ kind: 'list_orders', eventId: randomUUID() }))).rejects.toMatchObject({ code: 'integration_scope_denied' })
     expect(f.store.listOrders).toHaveBeenCalledTimes(1)
+  })
+  it('returns server-computed order finance totals for the exact list filters', async () => {
+    const f = fixture()
+    const result = await f.service.execute(member, command({ kind: 'list_orders', eventId, status: 'paid' }))
+    expect(result.financialSummary).toEqual([expect.objectContaining({ currency: 'USD', grossMinor: '2000', refundedMinor: '400' })])
+    expect(f.store.listOrders).toHaveBeenCalledWith(workspaceId, expect.objectContaining({ eventId, status: 'paid' }))
   })
   it('carries the original grant ceiling to by-id reads and refuses mismatched credentials', async () => {
     const f = fixture(), context = integration()

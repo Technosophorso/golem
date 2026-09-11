@@ -224,6 +224,20 @@ export type AssociationOrderCreateInput = z.infer<typeof AssociationOrderCreateS
 export const AssociationOrderStatusSchema = z.enum(['pending', 'paid', 'failed', 'cancelled', 'refunded'])
 export type AssociationOrderStatus = z.infer<typeof AssociationOrderStatusSchema>
 
+const AggregateMinor = z.string().regex(/^(0|[1-9]\d*)$/)
+export const AssociationOrderFinancialSummarySchema = z.object({
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  orderCount: z.number().int().nonnegative(),
+  settledOrderCount: z.number().int().nonnegative(),
+  subtotalMinor: AggregateMinor,
+  discountMinor: AggregateMinor,
+  grossMinor: AggregateMinor,
+  refundedMinor: AggregateMinor,
+  netMinor: AggregateMinor,
+  pendingMinor: AggregateMinor,
+}).strict()
+export type AssociationOrderFinancialSummary = z.infer<typeof AssociationOrderFinancialSummarySchema>
+
 export const AssociationProviderBindingInputSchema = z.object({
   provider: ProviderKey,
   providerReference: z.string().trim().min(1).max(500),

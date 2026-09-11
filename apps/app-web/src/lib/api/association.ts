@@ -37,12 +37,26 @@ export type AssociationOrder = {
   disputeState: "none" | "open" | "won" | "lost" | "mixed";
   provider: string | null; providerReference: string | null; createdAt: string;
 };
-export type AssociationOrdersPage = { orders: AssociationOrder[]; nextCursor: string | null };
-export async function listAssociationOrders(workspaceId: string, cursor?: string): Promise<AssociationOrdersPage> {
+export type AssociationOrderLine = { id:string;ticketId:string;ticketKey:string;ticketName:string;quantity:number;
+  unitPriceMinor:string;discountMinor:string;lineTotalMinor:string;pricingBasis:"public"|"member";eligibleMembershipId:string|null };
+export type AssociationOrderDetail = AssociationOrder & { lines:AssociationOrderLine[];registrations:AssociationRegistration[] };
+export type AssociationOrderFinancialSummary = {currency:string;orderCount:number;settledOrderCount:number;subtotalMinor:string;
+  discountMinor:string;grossMinor:string;refundedMinor:string;netMinor:string;pendingMinor:string};
+export type AssociationOrderFilters = {eventId?:string;contactId?:string;status?:AssociationOrder["status"];
+  createdAfter?:string;createdBefore?:string};
+export type AssociationOrdersPage = { orders: AssociationOrder[]; nextCursor: string | null; financialSummary?:AssociationOrderFinancialSummary[] };
+export async function listAssociationOrders(workspaceId: string, cursor?: string, filters:AssociationOrderFilters={}): Promise<AssociationOrdersPage> {
   const params = new URLSearchParams({ limit: "50", ...(cursor ? { cursor } : {}) });
+  for(const [key,value] of Object.entries(filters))if(value)params.set(key,value);
   const page = await request<AssociationOrdersPage>(`/api/crm/${encodeURIComponent(workspaceId)}/association/orders?${params}`);
-  if (!Array.isArray(page.orders) || (page.nextCursor !== null && typeof page.nextCursor !== "string")) throw new AssociationApiError("invalid_response", 502);
+  if (!Array.isArray(page.orders) || (page.nextCursor !== null && typeof page.nextCursor !== "string")
+    || (page.financialSummary!==undefined&&!Array.isArray(page.financialSummary))) throw new AssociationApiError("invalid_response", 502);
   return page;
+}
+export async function getAssociationOrder(workspaceId:string,orderId:string):Promise<AssociationOrderDetail>{
+  const body=await request<{order:AssociationOrderDetail}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/orders/${encodeURIComponent(orderId)}`);
+  if(!body.order||!Array.isArray(body.order.lines)||!Array.isArray(body.order.registrations))throw new AssociationApiError("invalid_response",502);
+  return body.order;
 }
 export function changeAssociationOrder(workspaceId: string, orderId: string, action: "cancel" | "confirm-free"): Promise<{ order: AssociationOrder }> {
   return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/orders/${encodeURIComponent(orderId)}/${action}`, {});

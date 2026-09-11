@@ -131,8 +131,8 @@ export function associationIntentKey(workspaceId:string,operation:string,target:
   return `association-intent:${workspaceId}${viewerSuffix()}:${operation}:${target}`;
 }
 
-export function associationOrdersCacheKey(workspaceId: string, cursor: string | null): string {
-  return `association-orders:${workspaceId}${viewerSuffix()}:${cursor ?? "first"}`;
+export function associationOrdersCacheKey(workspaceId: string, cursor: string | null, filters = ""): string {
+  return `association-orders:${workspaceId}${viewerSuffix()}:${filters}:${cursor ?? "first"}`;
 }
 
 /**

@@ -107,6 +107,9 @@ describe('[COMP:crm/association-provider] Actual provider object and money admis
     const completed = await f.applyFinancial({ eventId: completedEventId, adjustmentReference: remainder, status: 'succeeded', amountMinor: 600,
       occurredAt: '2026-09-01T15:00:00.000001Z' })
     expect(completed.record).toMatchObject({ status: 'refunded', refundedMinor: '1000', refundState: 'full' })
+    expect((await store.listOrders(f.workspaceId, { limit: 10, cursor: null, eventId: f.eventId })).financialSummary)
+      .toEqual([{ currency: 'USD', orderCount: 1, settledOrderCount: 1, subtotalMinor: '1000', discountMinor: '0',
+        grossMinor: '1000', refundedMinor: '1000', netMinor: '0', pendingMinor: '0' }])
     expect((await pool.query('SELECT status FROM association_registrations WHERE id=$1', [registration])).rows[0].status).toBe('refunded')
     expect((await store.listTickets(f.workspaceId, f.eventId))[0]).toMatchObject({ reservedCount: 0, available: 10 })
     expect((await f.applyFinancial({ eventId: completedEventId, adjustmentReference: remainder, status: 'succeeded', amountMinor: 600,

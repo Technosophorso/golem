@@ -57,6 +57,16 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(f.association.execute).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'integration_key', credentialId } }),
       { kind: 'reconcile_provider_financial_event', orderId: eventId, event })
   })
+  it('preserves order financial totals on the scoped integration list route', async () => {
+    const f = fixture(), summary = [{ currency: 'USD', orderCount: 1, settledOrderCount: 1, subtotalMinor: '1000',
+      discountMinor: '0', grossMinor: '1000', refundedMinor: '400', netMinor: '600', pendingMinor: '0' }]
+    f.association.execute.mockResolvedValueOnce({ command: 'list_orders', items: [{ id: eventId }], nextCursor: null,
+      financialSummary: summary } as never)
+    const response = await request(f.app).get(`/api/crm/integration/association/orders?eventId=${eventId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ orders: [{ id: eventId }], financialSummary: summary })
+  })
   it('runs before JWT-only guards, derives context from the CRM credential and exposes no secret', async () => {
     const f = fixture()
     const result = await request(f.app).get('/api/crm/integration/catalog').set('Authorization', `Bearer ${token}`)

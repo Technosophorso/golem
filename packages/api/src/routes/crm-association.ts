@@ -38,6 +38,7 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
           [key]: result.items ?? result.record, ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
           ...(result.created !== undefined ? { created: result.created } : {}),
           ...(result.pendingOrders !== undefined ? { pendingOrders: result.pendingOrders } : {}),
+          ...(result.financialSummary !== undefined ? { financialSummary: result.financialSummary } : {}),
           ...(result.receipt ? { receipt: result.receipt } : {}),
         })
       } catch (error) { associationErrorResponse(error, res) }

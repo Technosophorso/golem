@@ -2,10 +2,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const api = vi.hoisted(() => ({ get: vi.fn(), change: vi.fn(), confirm: vi.fn(), orders: vi.fn(), orderChange: vi.fn() }));
+const api = vi.hoisted(() => ({ get: vi.fn(), change: vi.fn(), confirm: vi.fn(), orders: vi.fn(), order: vi.fn(), orderChange: vi.fn() }));
 vi.mock("@/lib/api/association", async importOriginal => ({
   ...await importOriginal<typeof import("@/lib/api/association")>(), getAssociationModuleSnapshot: api.get, changeAssociationModule: api.change,
-  listAssociationOrders: api.orders, changeAssociationOrder: api.orderChange,
+  listAssociationOrders: api.orders, getAssociationOrder: api.order, changeAssociationOrder: api.orderChange,
 }));
 vi.mock("@/lib/surface-prefetch", () => ({ associationModuleCacheKey: (workspaceId: string) => `association-module:${workspaceId}:viewer`,
   associationOrdersCacheKey: (workspaceId: string, cursor: string | null) => `association-orders:${workspaceId}:viewer:${cursor ?? "first"}` }));
@@ -104,7 +104,7 @@ describe("[COMP:app-web/association] Order history and recovery", () => {
     await renderOrders();
     expect(host.querySelectorAll("article")).toHaveLength(50);
     await click(t.next);
-    expect(api.orders).toHaveBeenLastCalledWith("w1", "next-cursor");
+    expect(api.orders).toHaveBeenLastCalledWith("w1", "next-cursor", {});
     expect(host.querySelectorAll("article")).toHaveLength(1);
     await click(t.previous);
     expect(host.querySelectorAll("article")).toHaveLength(50);
@@ -133,6 +133,22 @@ describe("[COMP:app-web/association] Order history and recovery", () => {
     expect(host.querySelector("[data-order-refund]")?.textContent).toContain("$4.00");
     expect(host.querySelector("[data-order-dispute]")?.textContent).toContain(t.disputeStates.open);
     expect(api.orderChange).not.toHaveBeenCalled();
+  });
+  it("shows filtered server totals and loads exact lines and attendees only on request", async () => {
+    const order={...orderRow("financial", "paid", "1000"),refundedMinor:"400",refundState:"partial"};
+    api.orders.mockResolvedValue({orders:[order],nextCursor:null,financialSummary:[{currency:"USD",orderCount:1,settledOrderCount:1,
+      subtotalMinor:"1200",discountMinor:"200",grossMinor:"1000",refundedMinor:"400",netMinor:"600",pendingMinor:"0"}]});
+    api.order.mockResolvedValue({...order,lines:[{id:"line-one",ticketId:"ticket-one",ticketKey:"standard",ticketName:"Standard",
+      quantity:1,unitPriceMinor:"1000",discountMinor:"200",lineTotalMinor:"1000",pricingBasis:"member",eligibleMembershipId:"membership-one"}],
+      registrations:[{id:"registration-one",eventId:"event-one",ticketId:"ticket-one",orderId:"financial",attendeeContactId:"contact-one",
+        attendeeName:"Fictional Attendee",attendeeEmail:"attendee@example.test",status:"confirmed",sourceKind:"commerce",checkedInAt:null}]});
+    await renderOrders();
+    expect(host.querySelector("[data-order-financial-summary]")?.textContent).toContain("$6.00");
+    expect(api.order).not.toHaveBeenCalled();
+    await click(t.orderDetails);
+    expect(api.order).toHaveBeenCalledExactlyOnceWith("w1","financial");
+    expect(host.querySelector("[data-order-details]")?.textContent).toContain("Standard");
+    expect(host.querySelector("[data-order-details]")?.textContent).toContain("Fictional Attendee");
   });
   it("does not auto-retry an uncertain mutation or send a cancelled confirmation", async () => {
     api.orders.mockResolvedValue({ orders: [orderRow()], nextCursor: null });

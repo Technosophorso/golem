@@ -30,6 +30,8 @@ export {
   type AssociationOrderCreateInput as OrderCreateInput,
   AssociationOrderStatusSchema as OrderStatusSchema,
   type AssociationOrderStatus as OrderStatus,
+  AssociationOrderFinancialSummarySchema as OrderFinancialSummarySchema,
+  type AssociationOrderFinancialSummary,
   AssociationProviderEventInputSchema as ProviderEventInputSchema,
   type AssociationProviderEventInput as ProviderEventInput,
   AssociationProviderFinancialEventInputSchema as ProviderFinancialEventInputSchema,

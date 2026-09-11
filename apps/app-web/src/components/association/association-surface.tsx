@@ -27,7 +27,7 @@ export function AssociationSurface({ workspaceId }: { workspaceId: string }) {
       {section === "overview" && <AssociationModuleControls workspaceId={workspaceId} />}
       {section === "memberships" && <AssociationMembershipsPanel key={workspaceId} workspaceId={workspaceId} />}
       {section === "events" && <AssociationEventsPanel key={workspaceId} workspaceId={workspaceId} />}
-      {section === "orders" && <AssociationOrdersPanel key={workspaceId} workspaceId={workspaceId} />}
+      {section === "orders" && <AssociationOrdersPanel key={`${workspaceId}:${search?.get("eventId") ?? ""}`} workspaceId={workspaceId} initialEventId={search?.get("eventId") ?? ""} />}
       {section === "waitlist" && <AssociationWaitlistPanel key={workspaceId} workspaceId={workspaceId} />}
       {section === "operations" && <AssociationOperationsPanel key={workspaceId} workspaceId={workspaceId} />}
     </div>

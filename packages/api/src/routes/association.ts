@@ -493,7 +493,7 @@ export function associationRoutes(opts: Options): Router {
     const query = parsed(ListPageSchema.extend({ eventId: UUID.optional(), contactId: UUID.optional(), status: OrderStatusSchema.optional() }), req.query, res)
     if (!query) return
     const result = await associationService.execute(associationContextFor(res.locals.associationAuth), { kind: 'list_orders', ...query })
-    res.json({ orders: result.items, nextCursor: result.nextCursor })
+    res.json({ orders: result.items, nextCursor: result.nextCursor, financialSummary: result.financialSummary })
   }))
 
   router.post('/orders/:id/provider-binding', endpoint(async (req, res) => {

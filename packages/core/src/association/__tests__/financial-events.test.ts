@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AssociationCommandSchema, AssociationProviderFinancialEventInputSchema, ProviderInboxEnvelopeSchema } from '../../index.js'
+import { AssociationCommandSchema, AssociationOrderFinancialSummarySchema, AssociationProviderFinancialEventInputSchema, ProviderInboxEnvelopeSchema } from '../../index.js'
 
 const event = {
   provider: 'stripe', providerReference: 'cs_fixture', adjustmentReference: 're_fixture',
@@ -24,5 +24,12 @@ describe('association financial evidence contracts', () => {
       { ...event, currency: 'usd' },
       { ...event, rawProviderObject: {} },
     ]) expect(AssociationProviderFinancialEventInputSchema.safeParse(candidate).success).toBe(false)
+  })
+
+  it('keeps aggregate money as exact nonnegative decimal strings', () => {
+    const summary = { currency: 'USD', orderCount: 3, settledOrderCount: 2, subtotalMinor: '2000', discountMinor: '200',
+      grossMinor: '1800', refundedMinor: '400', netMinor: '1400', pendingMinor: '100' }
+    expect(AssociationOrderFinancialSummarySchema.parse(summary)).toEqual(summary)
+    expect(AssociationOrderFinancialSummarySchema.safeParse({ ...summary, netMinor: '-1' }).success).toBe(false)
   })
 })

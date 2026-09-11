@@ -104,7 +104,7 @@ export function createAssociationService(options: {
             ...(selected === 'all' ? {} : { allowedEventIds: selected }),
           })
           return { ...output, items: page.items, nextCursor: page.nextCursor,
-            ...(command.kind === 'module_blockers' ? { pendingOrders: page.total } : {}) }
+            ...(command.kind === 'module_blockers' ? { pendingOrders: page.total } : { financialSummary: page.financialSummary }) }
         }
         case 'expire_due_order': return { ...output, ...(await store.expireDueOrder(workspaceId,command.orderId,dbActor)) }
         case 'cancel_order': return { ...output, ...(await store.cancelOrder(workspaceId, command.orderId, dbActor)) }

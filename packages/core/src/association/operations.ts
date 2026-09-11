@@ -9,7 +9,7 @@ import { CrmOperationsActorSchema, CrmOperationsAuthoritySchema } from '../crm/o
 import {
   AssociationTicketInputSchema, AssociationOrderCreateSchema, AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema, AssociationProviderBindingInputSchema,
   AssociationRegistrationUpdateSchema, AssociationOrderStatusSchema, AssociationRegistrationStatusSchema,
-  AssociationListPageSchema,
+  AssociationListPageSchema, type AssociationOrderFinancialSummary,
 } from './domain.js'
 
 const Id = z.string().uuid()
@@ -54,6 +54,7 @@ export type AssociationCommandResult = {
   nextCursor?: string | null
   created?: boolean
   pendingOrders?: number
+  financialSummary?: AssociationOrderFinancialSummary[]
   receipt?: Record<string, unknown>
 }
 export interface AssociationServicePort {
