@@ -167,6 +167,11 @@ export const en = {
     "low": "Low priority"
 },
   feedCollaboration: {
+    formatting: "Formatting",
+    insert: "Insert",
+    blockMenu: "Block actions",
+    suggestShort: "Suggest",
+
     comments: "Comments",
     commentConversation: "Comment conversation",
     'moveUp': 'Move up',

@@ -1,6 +1,9 @@
 "use client";
 /** Feed ProseMirror authoring with stable target decorations. [COMP:app-web/feed-composition-editor] */
 import { useEffect, useRef, useState } from 'react';
+import { MessageSquarePlus, PencilLine, Sparkles } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { FeedEditorToolbar, type FeedFormatAction, type FeedPlaceholderAction, type FeedBlockAction } from './editor-toolbar';
 import { createPortal } from 'react-dom';
 import { GenerationPlaceholder, FeedDetachedGenerationResults, FeedGenerationImage, type FeedGenerationControls } from './generation-placeholder';
 import { EditorState, NodeSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
@@ -44,14 +47,17 @@ export function CompositionEditor(props: {
   return <div className="space-y-4" data-feed-composition>
     {props.composition.segments.map(segment => <FeedSegmentEditor key={segment.id} {...props} segmentId={segment.id} />)}
     {props.generation ? <FeedDetachedGenerationResults controls={props.generation} /> : null}
-    <div role="toolbar" aria-label={t.blockActions} className="flex flex-wrap gap-2">
-      {(['comment', 'suggest', 'ask'] as const).map(action => <button type="button" key={action} disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction(action)} className="min-h-11 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50">{action === 'comment' ? t.comment : action === 'suggest' ? t.suggest : t.askBrian}</button>)}
+    <div role="group" aria-label={t.blockActions} className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-muted/25 p-2">
+      <Button type="button" variant="outline" size="sm" className="min-h-11 md:min-h-8" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction('comment')}><MessageSquarePlus aria-hidden />{t.comment}</Button>
+      <Button type="button" variant="outline" size="sm" className="min-h-11 md:min-h-8" aria-label={t.suggest} disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction('suggest')}><PencilLine aria-hidden />{t.suggestShort}</Button>
+      <Button type="button" size="sm" className="ml-auto min-h-11 md:min-h-8" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction('ask')}><Sparkles aria-hidden />{t.askBrian}</Button>
     </div>
   </div>;
 }
 function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { segmentId: string }) {
-  const t = useT().feedCollaboration; const tg = useT().feedGeneration; const host = useRef<HTMLDivElement>(null); const viewRef = useRef<EditorView | null>(null); const latest = useRef(props); latest.current = props;
+  const t = useT().feedCollaboration; const host = useRef<HTMLDivElement>(null); const viewRef = useRef<EditorView | null>(null); const latest = useRef(props); latest.current = props;
   const [slotMounts, setSlotMounts] = useState<{ id: string; dom: HTMLElement }[]>([]);
+  const [formatting, setFormatting] = useState<Partial<Record<FeedFormatAction, boolean>>>({});
   const local = useRef(props.composition); const lastEmitted = useRef('');
   const decorations = (doc: PMNode) => {
     const output: Decoration[] = [];
@@ -89,7 +95,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
         return { dom, update(next) { return next.type.name === 'image' && next.attrs.id === blockId; }, ignoreMutation: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
       } } : undefined,
       editable: () => !latest.current.readOnly,
-      attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-44 rounded-xl border border-border/60 bg-card p-5 text-base leading-relaxed outline-none focus:border-ring [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
+      attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-64 bg-card p-5 text-base leading-relaxed outline-none [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
       handleClick(_view, _pos, event) { const hit = (event.target as HTMLElement).closest<HTMLElement>('[data-feed-thread]'); if (hit?.dataset.feedThread && hit.dataset.feedThread !== 'draft') latest.current.onOpenThread(hit.dataset.feedThread); return false; },
       dispatchTransaction(transaction: Transaction) {
         let next = view.state.apply(transaction);
@@ -99,6 +105,16 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
           if (identity.docChanged) next = next.apply(identity);
         }
         view.updateState(next);
+        const active: Partial<Record<FeedFormatAction, boolean>> = {};
+        for (const mark of ['bold', 'italic', 'link'] as const) {
+          const type = feedSchema.marks[mark]!;
+          active[mark] = next.selection.empty ? Boolean(type.isInSet(next.storedMarks ?? next.selection.$from.marks())) : next.doc.rangeHasMark(next.selection.from, next.selection.to, type);
+        }
+        for (let depth = next.selection.$from.depth; depth > 0; depth--) {
+          const kind = next.selection.$from.node(depth).type.name;
+          if (kind === 'heading' || kind === 'bulletList' || kind === 'orderedList' || kind === 'blockquote') active[kind] = true;
+        }
+        setFormatting(previous => JSON.stringify(previous) === JSON.stringify(active) ? previous : active);
         if (transaction.docChanged) {
           const content: FeedNode[] = []; next.doc.forEach(node => content.push(cleanNode(node)));
           const before = local.current; const composition = validateFeedComposition({ ...before, segments: before.segments.map(s => s.id === props.segmentId ? { ...s, content } : s) });
@@ -121,12 +137,31 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     }
     local.current = props.composition; view.setProps({ editable: () => !latest.current.readOnly }); view.dispatch(view.state.tr.setMeta(decorationKey, true));
   }, [props.composition, props.threads, props.draftAnchor, props.readOnly, props.segmentId]);
-  return <div className="space-y-2">
-    <div role="toolbar" aria-label={t.editor} className="flex flex-wrap gap-2">
-      {(['bold', 'italic'] as const).map(mark => <button key={mark} type="button" disabled={props.readOnly} aria-label={t[mark]} onMouseDown={e => e.preventDefault()} onClick={() => { const view = viewRef.current; if (view) { toggleMark(feedSchema.marks[mark]!)(view.state, view.dispatch); view.focus(); } }} className="min-h-11 min-w-11 rounded-md border px-3 text-sm hover:bg-muted">{t[mark]}</button>)}
-      {(['bulletList', 'orderedList', 'heading', 'blockquote'] as const).map(kind => <button key={kind} type="button" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => { const view = viewRef.current; if (!view) return; const command = kind === 'heading' ? setBlockType(feedSchema.nodes.heading!, { level: 2 }) : kind === 'blockquote' ? wrapIn(feedSchema.nodes.blockquote!) : wrapInList(feedSchema.nodes[kind]!); command(view.state, view.dispatch); view.focus(); }} className="min-h-11 rounded-md border px-3 text-sm hover:bg-muted">{t[kind]}</button>)}
-      <button type="button" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => { void (async () => { const view = viewRef.current; if (!view) return; const href = await promptDialog({ title: t.link, placeholder: t.linkPlaceholder, confirmLabel: t.accept, cancelLabel: t.cancel, allowEmpty: true }); if (href === null || (href && !/^https?:\/\//i.test(href))) return; try { if (href) new URL(href); else { view.dispatch(view.state.tr.removeMark(view.state.selection.from, view.state.selection.to, feedSchema.marks.link!)); return; } toggleMark(feedSchema.marks.link!, { href })(view.state, view.dispatch); view.focus(); } catch { /* Invalid URL leaves the selected content unchanged. */ } })(); }} className="min-h-11 rounded-md border px-3 text-sm hover:bg-muted">{t.link}</button>
-    </div>
+  function format(action: FeedFormatAction) {
+    const view = viewRef.current; if (!view) return;
+    if (action === 'link') { void (async () => { const view = viewRef.current; if (!view) return; const href = await promptDialog({ title: t.link, placeholder: t.linkPlaceholder, confirmLabel: t.accept, cancelLabel: t.cancel, allowEmpty: true }); if (href === null || (href && !/^https?:\/\//i.test(href))) return; try { if (href) new URL(href); else { view.dispatch(view.state.tr.removeMark(view.state.selection.from, view.state.selection.to, feedSchema.marks.link!)); return; } toggleMark(feedSchema.marks.link!, { href })(view.state, view.dispatch); view.focus(); } catch { /* Invalid URL leaves the selected content unchanged. */ } })(); return; }
+    if (action === 'bold' || action === 'italic') toggleMark(feedSchema.marks[action]!)(view.state, view.dispatch);
+    else {
+      const command = action === 'heading' ? setBlockType(feedSchema.nodes.heading!, { level: 2 }) : action === 'blockquote' ? wrapIn(feedSchema.nodes.blockquote!) : wrapInList(feedSchema.nodes[action]!);
+      command(view.state, view.dispatch);
+    }
+    view.focus();
+  }
+  function placeholder(action: FeedPlaceholderAction) {
+    const view = viewRef.current; if (!view) return;
+    const selected = feedSelectionFromEditor(view.state, props.segmentId, local.current); const convert = action.startsWith('convert'); if (convert && selected.target.kind === 'post') return;
+    try { latest.current.onEdit(insertFeedPlaceholder(local.current, selected, action.endsWith('Image') ? 'image' : 'text', convert)); } catch { /* Non-text atoms cannot be converted to notes. */ }
+  }
+  function blockAction(action: FeedBlockAction) {
+    const view = viewRef.current; if (!view) return;
+    const selected = feedSelectionFromEditor(view.state, props.segmentId, local.current); const blockId = selected.caret?.blockId ?? (selected.target.kind === 'block' ? selected.target.blockId : undefined); if (!blockId) return;
+    const { node, siblings, index, parentId } = locateFeedNode(local.current, props.segmentId, blockId);
+    if (action === 'duplicate') latest.current.onEdit([{ kind: 'insertBlock', segmentId: props.segmentId, parentId, afterId: blockId, node: duplicateFeedNode(node) }]);
+    else if (action === 'deleteBlock') { let position: number | undefined; view.state.doc.descendants((item, pos) => { if (item.attrs.id === blockId) position = pos; }); if (position !== undefined) view.dispatch(view.state.tr.delete(position, position + feedSchema.nodeFromJSON(node).nodeSize)); }
+    else if ((action === 'moveUp' && index > 0) || (action === 'moveDown' && index < siblings.length - 1)) latest.current.onEdit([{ kind: 'moveBlock', segmentId: props.segmentId, blockId, parentId, afterId: action === 'moveUp' ? siblings[index - 2]?.attrs.id ?? null : siblings[index + 1]!.attrs.id }]);
+  }
+  return <div className="overflow-hidden rounded-xl border border-border bg-card shadow-xs transition-colors focus-within:border-ring [&_:focus-visible]:shadow-none" data-feed-segment-editor>
+    <FeedEditorToolbar disabled={props.readOnly} active={formatting} onFormat={format} onPlaceholder={placeholder} onBlock={blockAction} focusEditor={() => viewRef.current?.focus()} />
     <div ref={host} />
     {props.generation ? slotMounts.map(mount => {
       let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }
@@ -135,23 +170,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
       return createPortal(<GenerationPlaceholder slot={found.node.attrs} segmentId={props.segmentId} controls={props.generation!} onEdit={props.onEdit}
         onSelect={() => { const view = viewRef.current; if (!view) return; let position: number | undefined; view.state.doc.descendants((node, pos) => { if (node.attrs.id === mount.id) position = pos; }); if (position !== undefined && (!(view.state.selection instanceof NodeSelection) || view.state.selection.from !== position)) view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, position))); }} onAction={props.onAction} />, mount.dom, mount.id);
     }) : null}
-    <div role="toolbar" aria-label={tg.advanced} className="flex flex-wrap gap-2">
-      {(['insertText', 'insertImage', 'convertText', 'convertImage'] as const).map(action => <button key={action} className="min-h-11 rounded-md border px-3 text-sm" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => {
-        const view = viewRef.current; if (!view) return;
-        const selected = feedSelectionFromEditor(view.state, props.segmentId, local.current); const convert = action.startsWith('convert'); if (convert && selected.target.kind === 'post') return;
-        try { latest.current.onEdit(insertFeedPlaceholder(local.current, selected, action.endsWith('Image') ? 'image' : 'text', convert)); } catch { /* Non-text atoms cannot be converted to notes. */ }
-      }}>{tg[action]}</button>)}
-    </div>
-    <div role="toolbar" aria-label={t.blockActions} className="flex flex-wrap gap-2">
-      {(['moveUp', 'moveDown', 'duplicate', 'deleteBlock'] as const).map(action => <button key={action} type="button" className="min-h-11 rounded-md border px-3 text-sm hover:bg-muted" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => {
-        const view = viewRef.current; if (!view) return;
-        const selected = feedSelectionFromEditor(view.state, props.segmentId, local.current); const blockId = selected.caret?.blockId ?? (selected.target.kind === 'block' ? selected.target.blockId : undefined); if (!blockId) return;
-        const { node, siblings, index, parentId } = locateFeedNode(local.current, props.segmentId, blockId);
-        if (action === 'duplicate') latest.current.onEdit([{ kind: 'insertBlock', segmentId: props.segmentId, parentId, afterId: blockId, node: duplicateFeedNode(node) }]);
-        else if (action === 'deleteBlock') { let position: number | undefined; view.state.doc.descendants((item, pos) => { if (item.attrs.id === blockId) position = pos; }); if (position !== undefined) view.dispatch(view.state.tr.delete(position, position + feedSchema.nodeFromJSON(node).nodeSize)); }
-        else if ((action === 'moveUp' && index > 0) || (action === 'moveDown' && index < siblings.length - 1)) latest.current.onEdit([{ kind: 'moveBlock', segmentId: props.segmentId, blockId, parentId, afterId: action === 'moveUp' ? siblings[index - 2]?.attrs.id ?? null : siblings[index + 1]!.attrs.id }]);
-      }}>{t[action]}</button>)}
-    </div>
+
   </div>;
 }
 

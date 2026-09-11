@@ -57,11 +57,60 @@ describe('[COMP:app-web/feed-review] five-check controls', () => {
     expect(actions.start).not.toHaveBeenCalled(); expect(actions.action).not.toHaveBeenCalled();
   });
 });
-function button(label: string) { const found = [...host.querySelectorAll('button')].find(node => node.textContent === label); expect(found, label).toBeDefined(); return found!; }
+function button(label: string) { const found = [...host.querySelectorAll('button')].find(node => (node.getAttribute('aria-label') ?? node.textContent) === label); expect(found, label).toBeDefined(); return found!; }
 async function click(label: string) { await act(async () => button(label).click()); }
 function panel(overrides: Partial<FeedCommentPanelProps> = {}) {
   return { workspaceId: crypto.randomUUID(), assistantId: crypto.randomUUID(), assistantName: 'Fixture Brian', sessionId: crypto.randomUUID(), composition: composition(), revision: 2, snapshot: { copy: null, threads: [], suggestions: [] }, pending: false, offline: false, readOnly: false, composer: null, onComposer: vi.fn(), selectedThread: null, onThread: vi.fn(), onAskBrian: vi.fn(), onCommand: vi.fn(async () => true), onRefresh: vi.fn(), ...overrides } satisfies FeedCommentPanelProps;
 }
+describe('[COMP:app-web/feed-editor-toolbar] selected-passage controls', () => {
+  function renderEditor(readOnly = false) {
+    const doc = composition(); const onEdit = vi.fn();
+    act(() => root.render(<CompositionEditor composition={doc} readOnly={readOnly} threads={[]} onEdit={onEdit} onSelection={vi.fn()} onAction={vi.fn()} onOpenThread={vi.fn()} />));
+    return { doc, onEdit, view: editorView(host.querySelector<HTMLElement>('[contenteditable]')!)! };
+  }
+  async function menuItem(label: string) {
+    const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node => node.textContent === label);
+    expect(item, label).toBeDefined();
+    await act(async () => item!.click());
+  }
+  it('tracks formatting and supports keyboard movement between named icon controls', async () => {
+    const { view, onEdit } = renderEditor();
+    act(() => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 6))));
+    await click(text.bold);
+    expect(button(text.bold).getAttribute('aria-pressed')).toBe('true');
+    expect(host.querySelector('strong')?.textContent).toBe('First');
+    expect(onEdit).toHaveBeenCalledOnce();
+    act(() => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 8, 12))));
+    expect(button(text.bold).getAttribute('aria-pressed')).toBe('false');
+    act(() => { button(text.bold).focus(); button(text.bold).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
+    expect(document.activeElement).toBe(button(text.italic));
+  });
+  it('opening Insert does not edit; converting a duplicate phrase keeps the selected block identity', async () => {
+    const { view, doc, onEdit } = renderEditor();
+    let position = 0; view.state.doc.forEach((_, offset, index) => { if (index === 2) position = offset + 1; });
+    act(() => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, position + 4, position + 15))));
+    await click(text.insert);
+    expect(onEdit).not.toHaveBeenCalled();
+    await menuItem(en.feedGeneration.convertText);
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(onEdit.mock.calls[0]![0]).toEqual(expect.arrayContaining([expect.objectContaining({ blockId: doc.segments[0]!.content[2]!.attrs.id })]));
+    await vi.waitFor(() => expect(document.activeElement).toBe(view.dom));
+  });
+  it('the block menu duplicates the selected paragraph rather than the first matching text', async () => {
+    const { view, doc, onEdit } = renderEditor();
+    let position = 0; view.state.doc.forEach((_, offset, index) => { if (index === 2) position = offset + 1; });
+    act(() => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, position))));
+    await click(text.blockMenu); expect(onEdit).not.toHaveBeenCalled();
+    await menuItem(text.duplicate);
+    expect(onEdit.mock.calls[0]![0]).toEqual([expect.objectContaining({ kind: 'insertBlock', afterId: doc.segments[0]!.content[2]!.attrs.id })]);
+  });
+  it('read-only viewers cannot open mutation menus or apply formatting', () => {
+    const { onEdit } = renderEditor(true);
+    for (const label of [text.bold, text.insert, text.blockMenu]) expect(button(label).disabled).toBe(true);
+    expect(onEdit).not.toHaveBeenCalled();
+  });
+});
+
 describe('[COMP:app-web/feed-composition-editor] authoring and collaboration workflow', () => {
   it('scenarios 1 and 2: keyboard selection names the second duplicate and comment creation keeps its decoration', async () => {
     const doc = composition(); let selected: FeedTarget | undefined;
@@ -121,6 +170,16 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     expect(host.textContent).toContain(text.detached); await click(text.reattach);
     expect(props.onCommand).toHaveBeenCalledWith([{ kind: 'reattach', threadId: thread.id, target }]);
     await click(text.resolve); expect(props.onCommand).toHaveBeenLastCalledWith([{ kind: 'resolve', threadId: thread.id, resolved: true }]);
+  });
+  it('the styled Reply button submits the attributed comment form', async () => {
+    const props = panel();
+    const thread = { id: crypto.randomUUID(), transcriptSessionId: crypto.randomUUID(), anchor: createFeedAnchor(props.composition, { kind: 'post' }, 2), resolved: false, authorUserId: crypto.randomUUID(), authorKind: 'user' as const, createdAt: '' };
+    act(() => root.render(<DraftCommentPanel {...props} selectedThread={thread.id} snapshot={{ ...props.snapshot!, threads: [thread] }} />));
+    const input = host.querySelector('textarea')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'A useful clarification'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(text.reply);
+    expect(props.onCommand).toHaveBeenCalledWith([{ kind: 'reply', threadId: thread.id, text: 'A useful clarification' }]);
+    expect(input.value).toBe('');
   });
   it('opens Brian in the shared chat without replacing the selected comment or mounting an inline chat', async () => {
     const props = panel();

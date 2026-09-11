@@ -154,6 +154,11 @@ export const zh: Dictionary = {
     "low": "低優先度"
 },
   feedCollaboration: {
+    formatting: "格式",
+    insert: "插入",
+    blockMenu: "區塊操作",
+    suggestShort: "建議",
+
     comments: "留言",
     commentConversation: "留言對話",
     'moveUp': '向上移動',

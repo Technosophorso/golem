@@ -24,6 +24,8 @@ import remarkGfm from "remark-gfm";
 import {
   Check,
   Copy,
+  ClipboardCheck,
+  FileDown,
   Heart,
   Link2,
   MessageCircle,
@@ -34,6 +36,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/client";
 import { format } from "@/lib/i18n/format";
@@ -952,7 +955,7 @@ function PostPane({
         <div className="min-h-full p-4 pb-24 sm:p-5 lg:pb-5">
           <div className="space-y-6">
             <header className="flex flex-wrap items-center gap-3 border-b border-border/60 pb-4">
-              <div className="flex min-w-0 flex-1 items-center gap-2.5">
+              <div className="flex min-w-[min(100%,14rem)] flex-1 items-center gap-2.5">
                 <span className="inline-flex size-8 items-center justify-center rounded-xl border border-border/60 bg-muted/40">
                   <PlatformIcon platform={platform} className="size-4" />
                 </span>
@@ -1011,27 +1014,27 @@ function PostPane({
               <div
                 role="group"
                 aria-label={te.viewModeAria}
-                className="inline-flex h-10 md:h-8 items-center rounded-lg border border-border/70 bg-muted/35 p-0.5"
+                className="inline-flex items-center rounded-lg border border-border/70 bg-muted/60 p-0.5"
               >
                 {(["edit", "preview"] as const).map((mode) => (
-                  <button
+                  <Button variant="ghost" size="sm"
                     key={mode}
                     type="button"
                     onClick={() => setViewMode(mode)}
                     aria-pressed={viewMode === mode}
                     className={cn(
-                      "h-9 md:h-7 rounded-md px-3 md:px-2.5 text-[11px] font-medium transition-colors",
+                      "min-h-11 md:min-h-8 rounded-md px-3 md:px-2.5 text-xs font-medium",
                       viewMode === mode
                         ? "bg-background text-foreground shadow-xs"
                         : "text-muted-foreground hover:text-foreground",
                     )}
                   >
                     {mode === "edit" ? te.editMode : te.previewMode}
-                  </button>
+                  </Button>
                 ))}
               </div>
               {structured ? <Button type="button" variant="outline" size="sm" onClick={showComments}><MessageSquareText className="size-3.5" aria-hidden />{tc.comments}</Button> : null}
-              {structured ? <Button type="button" variant="outline" size="sm" disabled={readOnly || !localPost || localPost.dirty || localSaving > 0 || offline || review.busy || collaboration.data?.runs?.some(run => run.status === 'pending' || run.status === 'running')} onClick={() => { setReviewOpen(true); showComments(); void review.start(); }}>{tc.review}</Button> : null}
+              {structured ? <Button type="button" variant="outline" size="sm" disabled={readOnly || !localPost || localPost.dirty || localSaving > 0 || offline || review.busy || collaboration.data?.runs?.some(run => run.status === 'pending' || run.status === 'running')} onClick={() => { setReviewOpen(true); showComments(); void review.start(); }}><ClipboardCheck aria-hidden />{tc.review}</Button> : null}
               <StatusLabel status={status} label={t.posts.status[status]} />
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {status === "drafting" ? (
@@ -1084,14 +1087,15 @@ function PostPane({
                     {te.markPosted}
                   </Button>
                 ) : null}
-                <Button size="sm" variant="outline" type="button" onClick={() => void copyCaption()} disabled={!compositionText}>
-                  {copied ? <Check className="size-3.5" aria-hidden /> : <Copy className="size-3.5" aria-hidden />}
-                  {copied ? te.copied : te.copyCaption}
-                </Button>
-                {structured ? <Button size="sm" variant="outline" type="button" disabled={busy || remoteBlocked} onClick={() => void exportArticle()}>{tg.exportArticle}</Button> : null}
-                <Button variant="outline" size="icon" type="button" onClick={() => void removePost()} disabled={busy || remoteBlocked} aria-label={te.delete} title={te.delete} className="size-9 md:size-8 text-muted-foreground hover:text-destructive">
-                  <Trash2 className="size-3.5" aria-hidden />
-                </Button>
+                <Tooltip label={copied ? te.copied : te.copyCaption}>
+                  <Button size="icon" variant="outline" type="button" className="size-11 md:size-8" aria-label={copied ? te.copied : te.copyCaption} onClick={() => void copyCaption()} disabled={!compositionText}>
+                    {copied ? <Check className="size-4" aria-hidden /> : <Copy className="size-4" aria-hidden />}
+                  </Button>
+                </Tooltip>
+                {structured ? <Tooltip label={tg.exportArticle}><Button size="icon" variant="outline" type="button" className="size-11 md:size-8" aria-label={tg.exportArticle} disabled={busy || remoteBlocked} onClick={() => void exportArticle()}><FileDown className="size-4" aria-hidden /></Button></Tooltip> : null}
+                <Tooltip label={te.delete}><Button variant="ghost" size="icon" type="button" onClick={() => void removePost()} disabled={busy || remoteBlocked} aria-label={te.delete} className="size-11 md:size-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
+                  <Trash2 className="size-4" aria-hidden />
+                </Button></Tooltip>
               </div>
             </header>
 

@@ -1,6 +1,8 @@
 "use client";
 
 /** The post and its thread transcripts share one chat rail. [COMP:app-web/feed-post-chat] */
+import { Button } from '@/components/ui/button';
+import { ArrowLeft } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useT } from '@/lib/i18n/client';
 import type { FeedCommentThread } from '@/lib/feed-collaboration';
@@ -31,7 +33,7 @@ export function FeedPostChat(props: {
     {quote ? <div className="shrink-0 border-b bg-muted/20 px-4 py-3 text-sm">
       <div className="flex items-center justify-between gap-2">
         <span className="font-medium">{active ? t.commentConversation : t.selection}</span>
-        <button type="button" className="min-h-11 shrink-0 rounded-md px-2 text-xs text-muted-foreground hover:bg-muted hover:text-foreground" onClick={props.onWholePost}>{t.post}</button>
+        <Button type="button" variant="secondary" size="sm" className="min-h-11 md:min-h-8 shrink-0" onClick={props.onWholePost}><ArrowLeft aria-hidden />{t.post}</Button>
       </div>
       <blockquote className="max-h-20 overflow-y-auto whitespace-pre-wrap break-words border-l-2 pl-2 text-muted-foreground">{quote}</blockquote>
     </div> : null}

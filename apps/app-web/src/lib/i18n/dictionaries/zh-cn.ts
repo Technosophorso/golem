@@ -165,6 +165,11 @@ export const zhCN: Dictionary = {
     "low": "低优先级"
 },
   feedCollaboration: {
+    formatting: "格式",
+    insert: "插入",
+    blockMenu: "区块操作",
+    suggestShort: "建议",
+
     comments: "评论",
     commentConversation: "评论对话",
     'moveUp': '向上移动',

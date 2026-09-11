@@ -1,4 +1,5 @@
 "use client";
+import { Button } from '@/components/ui/button';
 /** Typed slot options, explicit preflight and retained candidate review. [COMP:app-web/feed-generation-placeholder] */
 import { useEffect, useRef, useState } from 'react';
 import { feedMediaSchema, type FeedCommand, type FeedEdit, type FeedGenerationEstimate, type FeedPlaceholderAttrs, type FeedNode, type FeedEditorialRunSummary } from '@use-brian/shared';
@@ -14,7 +15,6 @@ import { useCachedResource } from '@/lib/surface-cache';
 import { listBrain } from '@/lib/api/brain';
 import { feedOwner } from '@/lib/offline/feed-cache';
 import { fetchDocFileBlob } from '@/components/doc/doc-file-url';
-const button = 'min-h-11 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50';
 const inputClass = 'min-h-11 w-full rounded-md border bg-background p-2 text-base';
 export type FeedGenerationControls = { workspaceId: string; assistantId: string; sessionId: string; revision: number; offline: boolean; pending: boolean; readOnly: boolean; article: boolean; snapshot?: FeedCollaborationSnapshot | null; onCommand: (commands: FeedCommand[]) => Promise<boolean>; onRefresh: () => void };
 export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segmentId: string; controls: FeedGenerationControls; onEdit: (edits: FeedEdit[]) => void; onSelect: () => void; onAction: (action: 'comment' | 'suggest' | 'ask') => void }) {
@@ -64,20 +64,20 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
         <label className="block text-sm">{t.altIntent}<input className={inputClass} value={props.slot.altIntent ?? ''} disabled={c.readOnly} onChange={e => update({ altIntent: e.target.value })} /></label>
       </>}
       <p className="text-xs text-muted-foreground">{t.referenceHint}</p>
-      <ul className="space-y-1 text-xs">{props.slot.references.map((ref, i) => <li className="flex gap-2 break-all" key={i}><span>{'url' in ref ? ref.url : ref.fileId}</span><button className={button} disabled={c.readOnly} onClick={() => update({ references: props.slot.references.filter((_, index) => index !== i) })}>{tc.deleteBlock}</button></li>)}</ul>
+      <ul className="space-y-1 text-xs">{props.slot.references.map((ref, i) => <li className="flex gap-2 break-all" key={i}><span>{'url' in ref ? ref.url : ref.fileId}</span><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={c.readOnly} onClick={() => update({ references: props.slot.references.filter((_, index) => index !== i) })}>{tc.deleteBlock}</Button></li>)}</ul>
       <label className="block text-sm">{t.referenceLink}<input className={inputClass} value={link} onChange={e => setLink(e.target.value)} disabled={c.readOnly} /></label>
-      <button className={button} disabled={c.readOnly || props.slot.references.length >= 20} onClick={() => { try { if (!/^https?:\/\//i.test(link)) return; new URL(link); update({ references: [...props.slot.references, { url: link }] }); setLink(''); } catch { setError(t.failed); } }}>{t.addReference}</button>
-      <button className={button} disabled={remoteBlocked || props.slot.references.length >= 20} onClick={() => setFiles('reference')}>{t.chooseFile}</button>
+      <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={c.readOnly || props.slot.references.length >= 20} onClick={() => { try { if (!/^https?:\/\//i.test(link)) return; new URL(link); update({ references: [...props.slot.references, { url: link }] }); setLink(''); } catch { setError(t.failed); } }}>{t.addReference}</Button>
+      <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked || props.slot.references.length >= 20} onClick={() => setFiles('reference')}>{t.chooseFile}</Button>
     </details>
-    {props.slot.kind === 'text' ? <details><summary className="min-h-11 cursor-pointer py-3 text-sm">{t.manualText}</summary><textarea className={inputClass} aria-label={t.manualText} value={manual} onChange={e => setManual(e.target.value)} disabled={c.readOnly} /><button className={button} disabled={c.readOnly || !manual.trim()} onClick={() => { const nodes = importFeedMarkdown(manual); nodes[0]!.attrs.id = props.slot.id; replace(nodes); }}>{t.fillText}</button></details> : <div className="flex flex-wrap gap-2">
+    {props.slot.kind === 'text' ? <details><summary className="min-h-11 cursor-pointer py-3 text-sm">{t.manualText}</summary><textarea className={inputClass} aria-label={t.manualText} value={manual} onChange={e => setManual(e.target.value)} disabled={c.readOnly} /><Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={c.readOnly || !manual.trim()} onClick={() => { const nodes = importFeedMarkdown(manual); nodes[0]!.attrs.id = props.slot.id; replace(nodes); }}>{t.fillText}</Button></details> : <div className="flex flex-wrap gap-2">
       <input hidden ref={uploadInput} type="file" accept={ACCEPTED_MEDIA_MIME.join(',')} onChange={e => { const file = e.target.files?.[0]; if (file) void media.upload([file]).then(result => { if (result.media[0]) fillImage(result.media[0].fileId, result.media[0].mimeType); if (result.errors.length) setError(t.failed); }); e.currentTarget.value = ''; }} />
-      <button className={button} disabled={remoteBlocked || media.uploading} onClick={() => uploadInput.current?.click()}>{t.uploadImage}</button>
-      <button className={button} disabled={remoteBlocked} onClick={() => setFiles('image')}>{t.chooseFile}</button>
+      <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked || media.uploading} onClick={() => uploadInput.current?.click()}>{t.uploadImage}</Button>
+      <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked} onClick={() => setFiles('image')}>{t.chooseFile}</Button>
     </div>}
     {files ? <FeedGenerationFilePicker controls={c} onCancel={() => setFiles(null)} onPick={async id => { if (files === 'reference') update({ references: [...props.slot.references, { fileId: id }] }); else { try { const blob = await fetchDocFileBlob(c.workspaceId, id); fillImage(id, blob.type); } catch { setError(t.imageRequired); } } setFiles(null); }} /> : null}
-    {props.slot.kind === 'text' ? <div className="flex flex-wrap gap-2" role="group" aria-label={t.model}>{(['standard', 'pro', 'max'] as const).map(tier => <button className={button} key={tier} disabled={remoteBlocked || active} aria-pressed={model === tier} onClick={() => { setModel(tier); setEstimate(null); }}>{tr[tier]}</button>)}</div> : null}
+    {props.slot.kind === 'text' ? <div className="flex flex-wrap gap-2" role="group" aria-label={t.model}>{(['standard', 'pro', 'max'] as const).map(tier => <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" key={tier} disabled={remoteBlocked || active} aria-pressed={model === tier} onClick={() => { setModel(tier); setEstimate(null); }}>{tr[tier]}</Button>)}</div> : null}
     {props.slot.kind === 'text' ? <label className="block text-sm">{t.candidates}<input className={inputClass} type="number" min={1} max={5} value={count} disabled={remoteBlocked || active} onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 5) { setCount(value); setEstimate(null); } }} /></label> : null}
-    <button className={button} disabled={remoteBlocked || active || !props.slot.brief.trim()} onClick={() => void estimateGeneration()}>{runs.length ? t.tryAgain : t.generate}</button>
+    <Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked || active || !props.slot.brief.trim()} onClick={() => void estimateGeneration()}>{runs.length ? t.tryAgain : t.generate}</Button>
     {c.offline ? <p role="status" className="text-sm">{tr.offline}</p> : c.pending ? <p role="status" className="text-sm">{tc.syncFirst}</p> : null}
     {busy ? <p role="status" className="text-sm">{t.loading}</p> : null}{error ? <p role="alert" className="text-sm">{error}</p> : null}
     {estimate ? <section className="space-y-2 rounded-lg border bg-background p-3" aria-label={t.estimateTitle}>
@@ -87,10 +87,10 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
       <dl className="text-sm">{(['intent', 'length', 'aspectRatio', 'style', 'altIntent'] as const).map(key => estimate.slot[key] !== undefined ? <div key={key}><dt className="font-medium">{t[key]}</dt><dd>{estimate.slot[key]}</dd></div> : null)}</dl>
       <p className="text-sm">{t.confirmShape}</p><p className="text-xs">{t.sources}: {estimate.sources.map(source => source.title).join(', ') || tr.unavailable}</p>
       {estimate.omissions.length ? <p className="text-sm">{t.referenceOmissions}</p> : null}
-      <button className={button} disabled={remoteBlocked || active || estimate.revision !== c.revision} onClick={() => void dispatch()}>{t.confirm}</button><button className={button} onClick={() => setEstimate(null)}>{tc.cancel}</button>
+      <Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked || active || estimate.revision !== c.revision} onClick={() => void dispatch()}>{t.confirm}</Button><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => setEstimate(null)}>{tc.cancel}</Button>
     </section> : null}
     <FeedGenerationResults controls={c} runs={runs} candidates={candidates} slot={props.slot} onRunAction={async (id, action) => { try { await request(`/runs/${id}/${action}`, {}); } catch { setError(t.failed); } c.onRefresh(); }} />
-    <div className="flex flex-wrap gap-2">{(['comment', 'suggest', 'ask'] as const).map(action => <button key={action} className={button} disabled={c.readOnly} onClick={() => props.onAction(action)}>{action === 'comment' ? tc.comment : action === 'suggest' ? tc.suggest : tc.askBrian}</button>)}</div>
+    <div className="flex flex-wrap gap-2">{(['comment', 'suggest', 'ask'] as const).map(action => <Button key={action} variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={c.readOnly} onClick={() => props.onAction(action)}>{action === 'comment' ? tc.comment : action === 'suggest' ? tc.suggest : tc.askBrian}</Button>)}</div>
   </section>;
 }
 function FeedGenerationFilePicker({ controls: c, onPick, onCancel }: { controls: FeedGenerationControls; onPick: (id: string) => Promise<void>; onCancel: () => void }) {
@@ -98,8 +98,8 @@ function FeedGenerationFilePicker({ controls: c, onPick, onCancel }: { controls:
   const key = `brain-entry:${c.workspaceId}:feed-files:${feedOwner()}:${c.assistantId}:${search}`;
   const files = useCachedResource(key, () => listBrain({ workspaceId: c.workspaceId, viewpointAssistantId: c.assistantId, primitives: ['files'], search, limit: 50, failOnError: true }));
   return <section className="space-y-2 rounded-lg border bg-background p-3"><input className={inputClass} aria-label={t.searchFiles} value={search} onChange={e => setSearch(e.target.value)} />
-    {files.loading ? <p role="status">{t.loading}</p> : files.error ? <p role="alert">{t.failed}<button className={button} onClick={() => void files.refresh()}>{tc.retry}</button></p> : <div className="max-h-60 overflow-y-auto">{files.data?.rows.length ? files.data.rows.map(file => <button className="block min-h-11 w-full rounded-md border p-2 text-left text-sm" key={file.id} onClick={() => void onPick(file.id)}>{file.name}</button>) : <p>{t.noFiles}</p>}</div>}
-    {files.data?.nextCursor ? <p className="text-xs">{t.moreFiles}</p> : null}<button className={button} onClick={onCancel}>{tc.cancel}</button>
+    {files.loading ? <p role="status">{t.loading}</p> : files.error ? <p role="alert">{t.failed}<Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => void files.refresh()}>{tc.retry}</Button></p> : <div className="max-h-60 overflow-y-auto">{files.data?.rows.length ? files.data.rows.map(file => <button className="block min-h-11 w-full rounded-md border p-2 text-left text-sm" key={file.id} onClick={() => void onPick(file.id)}>{file.name}</button>) : <p>{t.noFiles}</p>}</div>}
+    {files.data?.nextCursor ? <p className="text-xs">{t.moreFiles}</p> : null}<Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={onCancel}>{tc.cancel}</Button>
   </section>;
 }
 export function FeedGenerationResults({ controls: c, runs, candidates, slot, onRunAction }: { controls: FeedGenerationControls; runs: FeedEditorialRunSummary[]; candidates: FeedDraftSuggestion[]; slot?: FeedPlaceholderAttrs; onRunAction: (id: string, action: 'retry' | 'cancel') => Promise<void> }) {
@@ -107,15 +107,15 @@ export function FeedGenerationResults({ controls: c, runs, candidates, slot, onR
   return <div className="space-y-3">
     {runs.map(run => <div key={run.id} className="space-y-2 border-t pt-2 text-sm"><p>{tr[run.status]}</p>{run.generation && (!slot || run.generation.briefRevision !== slot.briefRevision) ? <p className="whitespace-pre-wrap">{t.originalBrief}: {run.generation.estimate.slot.brief}</p> : null}
       {run.status === 'unknown_outcome' || run.error === 'cancelled_after_dispatch' ? <p>{tr.unknownExplanation}</p> : null}
-      {run.status === 'pending' || run.status === 'running' ? <button className={button} disabled={disabled} onClick={() => void onRunAction(run.id, 'cancel')}>{tc.cancel}</button> : null}
-      {run.status === 'failed' && run.attempts < 3 ? <button className={button} disabled={disabled} onClick={() => void onRunAction(run.id, 'retry')}>{tc.retry}</button> : null}
+      {run.status === 'pending' || run.status === 'running' ? <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled} onClick={() => void onRunAction(run.id, 'cancel')}>{tc.cancel}</Button> : null}
+      {run.status === 'failed' && run.attempts < 3 ? <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled} onClick={() => void onRunAction(run.id, 'retry')}>{tc.retry}</Button> : null}
     </div>)}
     {candidates.map(candidate => {
       const edit = candidate.edits[0]; const stale = !slot || edit?.kind !== 'replaceBlock' || canonicalFeedValue(edit.preimage) !== canonicalFeedValue({ type: 'generationPlaceholder', attrs: slot });
       const text = candidate.edits.flatMap(edit => edit.kind === 'replaceBlock' ? edit.replacement.map(feedText) : []).join('\n\n'); const actionable = ['proposed', 'deferred'].includes(candidate.status);
       return <article key={candidate.id} className="space-y-2 rounded-lg border bg-background p-3" data-feed-candidate={candidate.id}>{candidate.edits.flatMap(edit => edit.kind === 'replaceBlock' ? edit.replacement.filter(node => node.type === 'image') : []).map(node => node.type === 'image' ? <FeedGenerationImage key={node.attrs.id} workspaceId={c.workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} /> : null)}<p className="whitespace-pre-wrap text-sm">{text}</p><p className="text-xs text-muted-foreground">{candidate.rationale}</p>
         {stale && actionable ? <p className="text-sm">{t.stale}</p> : null}
-        {actionable ? <div className="flex flex-wrap gap-2"><button className={button} disabled={disabled || stale} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'accepted' }])}>{tc.accept}</button><button className={button} disabled={disabled} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'rejected' }])}>{tc.reject}</button><button className={button} disabled={disabled || candidate.status === 'deferred'} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'deferred' }])}>{t.keepLater}</button></div> : <p className="text-xs">{tc[candidate.status as 'accepted' | 'rejected'] ?? candidate.status}</p>}
+        {actionable ? <div className="flex flex-wrap gap-2"><Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled || stale} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'accepted' }])}>{tc.accept}</Button><Button variant="destructive" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'rejected' }])}>{tc.reject}</Button><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled || candidate.status === 'deferred'} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'deferred' }])}>{t.keepLater}</Button></div> : <p className="text-xs">{tc[candidate.status as 'accepted' | 'rejected'] ?? candidate.status}</p>}
       </article>;
     })}
   </div>;
