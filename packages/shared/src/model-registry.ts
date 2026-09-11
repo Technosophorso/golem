@@ -204,7 +204,7 @@ const FLASH36_RATES: ModelRates = {
   cacheWritePerMTok: 1.50,
 }
 
-const FLASH37_RATES: ModelRates = {
+const FLASH38_RATES: ModelRates = {
   brackets: [{ upToInputTokens: Infinity, inPerMTok: 1.50, outPerMTok: 7.50 }],
   cacheReadPerMTok: 0.15,
   cacheWritePerMTok: 1.50,
@@ -281,18 +281,18 @@ export const MODEL_REGISTRY: readonly ModelRegistryRow[] = [
     capabilities: { tools: true, vision: true, thinking: true, nativePdf: true },
   },
   {
-    // Max tier default — Gemini Flash 3.7 (GA 2026-08-13).
-    alias: 'gemini-3.7-flash',
-    displayName: 'Gemini 3.7 Flash',
+    // Max tier default — Gemini Flash 3.8 (GA 2026-09-02).
+    alias: 'gemini-3.8-flash',
+    displayName: 'Gemini 3.8 Flash',
     provider: 'gemini',
-    apiModelId: 'gemini-3.7-flash',
+    apiModelId: 'gemini-3.8-flash',
     class: 'max',
     tier: 'max',
     status: 'active',
     chatTierKey: 'max',
     menu: true,
     idAliases: ['max'],
-    rates: FLASH37_RATES,
+    rates: FLASH38_RATES,
     contextWindow: 1_048_576,
     maxOutput: 65_536,
     capabilities: { tools: true, vision: true, thinking: true, nativePdf: true },
@@ -341,9 +341,24 @@ export const MODEL_REGISTRY: readonly ModelRegistryRow[] = [
 
   // ── Legacy rows (classification/pricing of historical usage only) ──
   {
+    // Prior Max default. Preserve its identity and original rates for
+    // historical usage; active requests use the current Max default.
+    alias: 'gemini-3.7-flash',
+    displayName: 'Gemini 3.7 Flash',
+    provider: 'gemini',
+    apiModelId: 'gemini-3.7-flash',
+    class: 'max',
+    tier: 'max',
+    status: 'legacy',
+    rates: FLASH36_RATES,
+    contextWindow: 1_048_576,
+    maxOutput: 65_536,
+    capabilities: { tools: true, vision: true, thinking: true, nativePdf: true },
+  },
+  {
     // Prior Max default (2026-07-27 through 2026-08-15). Keep its original
     // list rates and Max classification so historical rows never reprice
-    // when the active default moves to Flash 3.7.
+    // when the active default moves to Flash 3.8.
     alias: 'gemini-3.6-flash',
     displayName: 'Gemini 3.6 Flash',
     provider: 'gemini',
