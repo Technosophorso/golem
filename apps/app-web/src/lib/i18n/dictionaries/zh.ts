@@ -154,6 +154,8 @@ export const zh: Dictionary = {
     "low": "低優先度"
 },
   feedCollaboration: {
+    comments: "留言",
+    commentConversation: "留言對話",
     'moveUp': '向上移動',
     'moveDown': '向下移動',
     'duplicate': '複製區塊',

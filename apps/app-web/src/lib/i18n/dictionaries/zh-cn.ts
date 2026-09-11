@@ -165,6 +165,8 @@ export const zhCN: Dictionary = {
     "low": "低优先级"
 },
   feedCollaboration: {
+    comments: "评论",
+    commentConversation: "评论对话",
     'moveUp': '向上移动',
     'moveDown': '向下移动',
     'duplicate': '复制区块',

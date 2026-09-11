@@ -9,7 +9,6 @@ import { feedCollaborationCacheKey } from '@/lib/surface-prefetch';
 import { feedCachedJson, feedPaintFirst, readFeedCachedJson } from '@/lib/offline/feed-cache';
 import { feedCollaborationPath, type FeedCollaborationSnapshot, type FeedCommentThread, type FeedDraftSuggestion } from '@/lib/feed-collaboration';
 import { Skeleton } from '@/components/skeleton';
-import { TuningChatPanel } from './tuning-chat-panel';
 export type FeedCommentComposer = { kind: 'comment' | 'suggest'; anchor: FeedAnchor; parentId?: string; threadId?: string };
 export type FeedCommentPanelProps = {
   workspaceId: string; assistantId: string; assistantName: string; sessionId: string;
@@ -17,6 +16,7 @@ export type FeedCommentPanelProps = {
   loading?: boolean; error?: unknown; pending: boolean; offline: boolean; readOnly: boolean;
   composer: FeedCommentComposer | null; onComposer: (value: FeedCommentComposer | null) => void;
   selectedThread: string | null; onThread: (id: string) => void; selection?: FeedTarget;
+  onAskBrian: (threadId: string) => void;
   onCommand: (commands: FeedCommand[], optimisticEdits?: FeedEdit[]) => Promise<boolean>;
   onRefresh: () => void; reviewHeader?: ReactNode;
 };
@@ -24,13 +24,12 @@ const control = 'min-h-11 rounded-md border px-3 text-sm hover:bg-muted disabled
 export function DraftCommentPanel(props: FeedCommentPanelProps) {
   const t = useT().feedCollaboration; const tr = useT().feedReview;
   const [filter, setFilter] = useState<'open' | 'resolved' | 'all'>('open');
-  const [brianThreads, setBrianThreads] = useState<string[]>([]);
   const threads = props.snapshot?.threads ?? [];
   const active = threads.find(thread => thread.id === props.selectedThread);
   const canWrite = !props.readOnly && !props.pending;
   useEffect(() => { if (active?.resolved) setFilter('all'); }, [active?.id, active?.resolved]);
   const visible = threads.filter(thread => filter === 'all' || thread.resolved === (filter === 'resolved'));
-  return <section aria-label={t.review} className="h-full overflow-y-auto overscroll-contain p-4 space-y-4" data-feed-review-panel>
+  return <section aria-label={t.comments} className="space-y-4" data-feed-review-panel>
     {props.reviewHeader}
     <div className="flex flex-wrap gap-2" role="group" aria-label={t.review}>
       {(['open', 'resolved', 'all'] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} className={control} onClick={() => setFilter(value)}>{t[value]}</button>)}
@@ -53,7 +52,7 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
         <div className="flex flex-wrap gap-2">
           <button className={control} disabled={!canWrite} onClick={() => void props.onCommand([{ kind: 'resolve', threadId: thread.id, resolved: !thread.resolved }])}>{thread.resolved ? t.reopen : t.resolve}</button>
           {thread.anchor.state !== 'attached' ? <button className={control} disabled={!canWrite || !props.selection || props.selection.kind === 'post'} onClick={() => props.selection && void props.onCommand([{ kind: 'reattach', threadId: thread.id, target: props.selection }])}>{t.reattach}</button> : null}
-          <button className={control} disabled={!canWrite || props.offline} onClick={() => setBrianThreads(current => current.includes(thread.id) ? current : [...current, thread.id])}>{t.askBrian}</button>
+          <button className={control} disabled={!canWrite || props.offline} onClick={() => props.onAskBrian(thread.id)}>{t.askBrian}</button>
           <button className={control} disabled={!canWrite || thread.anchor.state !== 'attached'} onClick={() => props.onComposer({ kind: 'suggest', anchor: thread.anchor, threadId: thread.id })}>{t.suggest}</button>
         </div>
       </> : null}
@@ -61,11 +60,6 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
     <h3 className="text-sm font-semibold">{t.suggestions}</h3>
     {(props.snapshot?.suggestions ?? []).map(suggestion => <Suggestion key={suggestion.id} {...props} suggestion={suggestion} />)}
     {props.snapshot && !props.snapshot.suggestions.length ? <p className="text-sm text-muted-foreground">{t.noSuggestions}</p> : null}
-    {/* A thread's active stream stays mounted when another thread is selected. */}
-    {brianThreads.map(threadId => { const thread = threads.find(item => item.id === threadId); return thread ? <div key={threadId} hidden={active?.id !== threadId} className="h-[min(32rem,70dvh)]" data-feed-thread-chat>
-      <TuningChatPanel docked assistantId={props.assistantId} assistantName={props.assistantName} workspaceId={props.workspaceId} sessionId={thread.transcriptSessionId} ready={canWrite && !props.offline}
-        feedTarget={{ sessionId: props.sessionId, revision: props.revision, threadId }} title={t.askBrian} onTurnComplete={props.onRefresh} />
-    </div> : null; })}
   </section>;
 }
 function CommentComposer(props: FeedCommentPanelProps & { composer: FeedCommentComposer }) {

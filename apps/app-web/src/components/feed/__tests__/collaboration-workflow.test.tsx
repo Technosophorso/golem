@@ -60,7 +60,7 @@ describe('[COMP:app-web/feed-review] five-check controls', () => {
 function button(label: string) { const found = [...host.querySelectorAll('button')].find(node => node.textContent === label); expect(found, label).toBeDefined(); return found!; }
 async function click(label: string) { await act(async () => button(label).click()); }
 function panel(overrides: Partial<FeedCommentPanelProps> = {}) {
-  return { workspaceId: crypto.randomUUID(), assistantId: crypto.randomUUID(), assistantName: 'Fixture Brian', sessionId: crypto.randomUUID(), composition: composition(), revision: 2, snapshot: { copy: null, threads: [], suggestions: [] }, pending: false, offline: false, readOnly: false, composer: null, onComposer: vi.fn(), selectedThread: null, onThread: vi.fn(), onCommand: vi.fn(async () => true), onRefresh: vi.fn(), ...overrides } satisfies FeedCommentPanelProps;
+  return { workspaceId: crypto.randomUUID(), assistantId: crypto.randomUUID(), assistantName: 'Fixture Brian', sessionId: crypto.randomUUID(), composition: composition(), revision: 2, snapshot: { copy: null, threads: [], suggestions: [] }, pending: false, offline: false, readOnly: false, composer: null, onComposer: vi.fn(), selectedThread: null, onThread: vi.fn(), onAskBrian: vi.fn(), onCommand: vi.fn(async () => true), onRefresh: vi.fn(), ...overrides } satisfies FeedCommentPanelProps;
 }
 describe('[COMP:app-web/feed-composition-editor] authoring and collaboration workflow', () => {
   it('scenarios 1 and 2: keyboard selection names the second duplicate and comment creation keeps its decoration', async () => {
@@ -121,6 +121,17 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     expect(host.textContent).toContain(text.detached); await click(text.reattach);
     expect(props.onCommand).toHaveBeenCalledWith([{ kind: 'reattach', threadId: thread.id, target }]);
     await click(text.resolve); expect(props.onCommand).toHaveBeenLastCalledWith([{ kind: 'resolve', threadId: thread.id, resolved: true }]);
+  });
+  it('opens Brian in the shared chat without replacing the selected comment or mounting an inline chat', async () => {
+    const props = panel();
+    const thread = { id: crypto.randomUUID(), transcriptSessionId: crypto.randomUUID(), anchor: createFeedAnchor(props.composition, { kind: 'post' }, 2), resolved: false, authorUserId: crypto.randomUUID(), authorKind: 'user' as const, createdAt: new Date().toISOString() };
+    act(() => root.render(<DraftCommentPanel {...props} selectedThread={thread.id} snapshot={{ ...props.snapshot!, threads: [thread] }} />));
+    await click(text.askBrian);
+    expect(props.onAskBrian).toHaveBeenCalledWith(thread.id);
+    expect(props.onThread).not.toHaveBeenCalled();
+    expect(props.onCommand).not.toHaveBeenCalled();
+    expect(host.querySelector('textarea[aria-label="Reply"]')).not.toBeNull();
+    expect(host.querySelector('[data-chat-session]')).toBeNull();
   });
   it('scenario 10: cold loading, failed reads, cached offline discussion and pending edits remain distinct', () => {
     const props = panel({ loading: true, snapshot: null }); act(() => root.render(<DraftCommentPanel {...props} />));

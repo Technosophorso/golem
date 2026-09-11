@@ -167,6 +167,8 @@ export const en = {
     "low": "Low priority"
 },
   feedCollaboration: {
+    comments: "Comments",
+    commentConversation: "Comment conversation",
     'moveUp': 'Move up',
     'moveDown': 'Move down',
     'duplicate': 'Duplicate block',

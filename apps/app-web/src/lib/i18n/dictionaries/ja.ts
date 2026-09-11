@@ -154,6 +154,8 @@ export const ja: Dictionary = {
     "low": "優先度: 低"
 },
   feedCollaboration: {
+    comments: "コメント",
+    commentConversation: "コメントについて相談",
     'moveUp': '上へ移動',
     'moveDown': '下へ移動',
     'duplicate': 'ブロックを複製',
