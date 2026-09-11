@@ -170,4 +170,48 @@ describe('[COMP:crm/production-import] Actual machine source, job and row author
     expect(await imports.resume(writer.context, job.id)).toMatchObject({ status: 'completed', succeededRows: 1 })
     expect(await counts()).toEqual(before)
   })
+
+  it('requires an all-definitions submission grant and source selector for machine historical forms', async () => {
+    const f = await fixture(), contactId = randomUUID()
+    await pool.query(`INSERT INTO entities (id,workspace_id,kind,display_name,attributes,created_by_user_id,source)
+      VALUES ($1,$2,'person','Machine history fixture','{}',$3,'manual')`, [contactId, f.workspaceId, f.userId])
+    const columns = ['contactId', 'historicalSubmissionSource', 'historicalSubmissionSite',
+      'historicalSubmissionForm', 'historicalSubmissionId', 'historicalSubmissionOccurredAt',
+      'historicalSubmissionStatus', 'historicalSubmissionFieldsJson']
+    const bytes = Buffer.from([columns.join(','), [contactId, 'wix', 'oasahk_org', 'contact_form',
+      'machine-row', '2020-01-01T00:00:00Z', 'resolved', '{}'].join(','), ''].join('\n'))
+    const mapping = { columns: Object.fromEntries(columns.map((column, index) => [index, column])) }
+
+    const missingSubmission = await f.issue([{
+      operation: 'crm.imports.write', selectors: { providerKeys: ['wix'], definitionIds: 'all' },
+    }])
+    const missingSource = await sources.stage(missingSubmission.context, randomUUID(), bytes)
+    await expect(imports.dryRun(missingSubmission.context, {
+      sourceId: missingSource.sourceId, entityKind: 'operations', mapping,
+    })).rejects.toMatchObject({ code: 'integration_scope_denied', operation: 'crm.submissions.write' })
+
+    const scoped = await f.issue([
+      { operation: 'crm.imports.write', selectors: { providerKeys: ['wix'], definitionIds: 'all' } },
+      { operation: 'crm.submissions.write', selectors: {} },
+    ])
+    const scopedSource = await sources.stage(scoped.context, randomUUID(), bytes)
+    await expect(imports.dryRun(scoped.context, {
+      sourceId: scopedSource.sourceId, entityKind: 'operations', mapping,
+    })).rejects.toMatchObject({ code: 'integration_scope_denied', operation: 'crm.submissions.write', dimension: 'definitionIds' })
+
+    const writer = await f.issue([
+      { operation: 'crm.imports.write', selectors: { providerKeys: ['wix'], definitionIds: 'all' } },
+      { operation: 'crm.submissions.write', selectors: { definitionIds: 'all' } },
+    ])
+    const source = await sources.stage(writer.context, randomUUID(), bytes)
+    const input = { sourceId: source.sourceId, entityKind: 'operations' as const, mapping }
+    const checked = await imports.dryRun(writer.context, input)
+    expect(checked).toMatchObject({ validRows: 1, failedRows: 0 })
+    const job = await imports.confirm(writer.context, { ...input, confirmed: true, dryRunHash: checked.dryRunHash })
+    expect(await imports.resume(writer.context, job.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    expect((await pool.query(`SELECT actor_kind,actor_credential_id FROM association_audit_log
+      WHERE workspace_id=$1 AND action='crm.submission.historical_imported'`, [f.workspaceId])).rows)
+      .toEqual([{ actor_kind: 'integration_key', actor_credential_id: writer.principal.credentialId }])
+    expect((await pool.query(`SELECT count(*)::int AS count FROM crm_domain_event_outbox WHERE workspace_id=$1`, [f.workspaceId])).rows[0].count).toBe(0)
+  })
 })

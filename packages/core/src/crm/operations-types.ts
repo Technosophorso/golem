@@ -275,6 +275,30 @@ export const RecordCrmSubmissionCommandSchema = z.object({
 }).strict()
 export type RecordCrmSubmissionCommand = z.infer<typeof RecordCrmSubmissionCommandSchema>
 
+/** Internal production-import envelope. It is deliberately absent from the
+ * public CRM command union and tool/REST adapters. */
+export const ImportHistoricalCrmSubmissionSchema = z.object({
+  importJobId: CrmOperationsUuidSchema,
+  importRow: z.number().int().positive(),
+  contactId: CrmOperationsUuidSchema,
+  source: CrmOperationsStableKeySchema,
+  sourceSite: z.string().trim().min(1).max(500),
+  sourceForm: z.string().trim().min(1).max(500),
+  sourceSubmissionId: z.string().trim().min(1).max(500),
+  submittedAt: CrmOperationsInstantSchema,
+  status: z.enum(['new', 'in_progress', 'resolved', 'spam']),
+  fields: boundedCrmObject(1_048_576),
+  subject: z.string().trim().min(1).max(300).default('Historical form submission'),
+  message: z.string().trim().min(1).max(20_000).default('Imported historical form submission.'),
+  queueKey: CrmOperationsStableKeySchema.default('general'),
+}).strict()
+export type ImportHistoricalCrmSubmission = z.infer<typeof ImportHistoricalCrmSubmissionSchema>
+export type ImportHistoricalCrmSubmissionResult = {
+  record: Record<string, unknown>
+  created: boolean
+  duplicate: boolean
+}
+
 export const UpdateCrmSubmissionCommandSchema = z.object({
   kind: z.literal('update_submission'),
   submissionId: CrmOperationsUuidSchema,
@@ -628,6 +652,14 @@ export interface CrmOperationsServicePort {
     context: CrmOperationsContext,
     command: CrmOperationsCommand,
   ): Promise<CrmOperationsCommandResult>
+}
+
+/** Internal port used only by the confirmed production-import service. */
+export interface CrmHistoricalSubmissionImportPort {
+  importHistoricalSubmission(
+    context: CrmOperationsContext,
+    input: ImportHistoricalCrmSubmission,
+  ): Promise<ImportHistoricalCrmSubmissionResult>
 }
 
 export type CrmOperationsErrorCode =

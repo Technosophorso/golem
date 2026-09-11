@@ -13,6 +13,7 @@ import {
   CrmOperationsCommandSchema,
   CrmOperationsContextSchema,
   CrmOperationsError,
+  ImportHistoricalCrmSubmissionSchema,
   CrmLocaleWordingsSchema,
   CrmWordingLocaleSchema,
   CrmSegmentPredicateSchema,
@@ -21,6 +22,7 @@ import {
   isCrmConfigCommand,
   canonicalCrmRequest,
   crmOperationsSha256,
+  requireCrmIntegrationResources,
   validateCrmSegmentCatalog,
   type CrmIntakeFieldDefinition,
   type CrmOperationsActor,
@@ -28,6 +30,7 @@ import {
   type CrmOperationsCommandResult,
   type CrmOperationsContext,
   type CrmOperationsServicePort,
+  type CrmHistoricalSubmissionImportPort,
   type CrmDeliveryServicePort,
   type CrmPrivacyServicePort,
   type CrmRetentionServicePort,
@@ -447,13 +450,62 @@ async function executeSubmission(
 export function createCrmOperationsService(
   store: CrmOperationsStore,
   options: CrmOperationsServiceOptions = {},
-): CrmOperationsServicePort {
+): CrmOperationsServicePort & CrmHistoricalSubmissionImportPort {
   const clock = options.now ?? (() => new Date())
   const makeCredentialId = options.randomCredentialId ?? randomUUID
   const makeSecret = options.randomSecret ?? (() => randomBytes(32).toString('base64url'))
   const hashCredentialSecret = options.hashCredentialSecret ?? hashSecret
 
   return {
+    async importHistoricalSubmission(rawContext, rawInput) {
+      const context = CrmOperationsContextSchema.parse(rawContext)
+      const input = ImportHistoricalCrmSubmissionSchema.parse(rawInput)
+      if (!context.authority.canWrite) {
+        throw new CrmOperationsError('not_authorized', 'CRM import write authority is required.')
+      }
+      if (context.actor.kind === 'import') {
+        if (context.actor.jobId !== input.importJobId || !['owner', 'admin'].includes(context.authority.role)) {
+          throw new CrmOperationsError('not_authorized', 'Historical submission imports require the current owner/admin import job.')
+        }
+      } else if (context.actor.kind === 'integration_key') {
+        if (context.authority.integration?.credentialId !== context.actor.credentialId) {
+          throw new CrmOperationsError('not_authorized', 'Historical import authority must come from its authenticated credential.')
+        }
+        requireCrmIntegrationResources(context.authority.integration, 'crm.submissions.write', { definitionIds: null })
+      } else {
+        throw new CrmOperationsError('not_authorized', 'Historical submissions are only available to the confirmed production importer.')
+      }
+      const requestFingerprint = crmOperationsSha256({
+        contactId: input.contactId,
+        source: input.source,
+        sourceSite: input.sourceSite,
+        sourceForm: input.sourceForm,
+        sourceSubmissionId: input.sourceSubmissionId,
+        submittedAt: input.submittedAt,
+        status: input.status,
+        subject: input.subject,
+        message: input.message,
+        queueKey: input.queueKey,
+        fields: input.fields,
+      })
+      return store.transaction(context, async (tx) => {
+        const saved = await tx.importHistoricalSubmission({ ...input, requestFingerprint })
+        if (saved.created) await audit(tx, context.actor, {
+          action: 'crm.submission.historical_imported',
+          subjectKind: 'submission',
+          subjectId: recordId(saved.record, 'historical submission'),
+          details: {
+            source: input.source,
+            sourceSite: input.sourceSite,
+            sourceForm: input.sourceForm,
+            sourceSubmissionId: input.sourceSubmissionId,
+            importJobId: input.importJobId,
+            importRow: input.importRow,
+          },
+        })
+        return { record: saved.record, created: saved.created, duplicate: !saved.created }
+      })
+    },
     async execute(rawContext, rawCommand) {
       const context = CrmOperationsContextSchema.parse(rawContext)
       const command = CrmOperationsCommandSchema.parse(rawCommand)

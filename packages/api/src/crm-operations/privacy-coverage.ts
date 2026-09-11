@@ -118,6 +118,8 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "workspace_id",
       "contact_id",
       "source",
+      "source_site",
+      "source_form",
       "source_submission_id",
       "request_fingerprint",
       "subject",
@@ -134,7 +136,8 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "follow_up_task_id",
       "definition_schema_hash",
       "definition_schema_snapshot",
-      "identity_verification_evidence"
+      "identity_verification_evidence",
+      "historical_import"
     ],
     "excludedColumns": [],
     "orderBy": "t.id",

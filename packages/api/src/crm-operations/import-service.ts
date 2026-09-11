@@ -15,6 +15,7 @@ import type {
   AccessContext,
   CrmOperationsContext,
   CrmOperationsServicePort,
+  CrmHistoricalSubmissionImportPort,
   EntityLinksStore,
   FilesApi,
   StableExternalIdentity,
@@ -50,6 +51,10 @@ const BASE_TARGETS = new Set([
   'entitlementStatus', 'entitlementStartsAt', 'entitlementEndsAt',
   'entitlementRenewalMode', 'participationEventId', 'participationSourceId',
   'participationStatus', 'participationHistoricalImport', 'participantName', 'participantEmail',
+  'historicalSubmissionSource', 'historicalSubmissionSite', 'historicalSubmissionForm',
+  'historicalSubmissionId', 'historicalSubmissionOccurredAt', 'historicalSubmissionStatus',
+  'historicalSubmissionFieldsJson', 'historicalSubmissionSubject',
+  'historicalSubmissionMessage', 'historicalSubmissionQueueKey',
 ])
 
 function validTarget(target: string): boolean {
@@ -252,6 +257,24 @@ function isUuid(value: string | undefined): boolean {
   return !!value && z.string().uuid().safeParse(value).success
 }
 
+const HistoricalSubmissionFieldsSchema = z.record(
+  z.string().trim().min(1).max(500),
+  z.unknown(),
+).refine(
+  (value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= 1_048_576,
+  'Historical submission data must be no more than 1 MiB.',
+)
+
+function historicalSubmissionFields(raw: string | undefined): Record<string, unknown> {
+  if (!raw) throw new Error('Historical submission data is required.')
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) }
+  catch { throw new Error('Historical submission data must be a JSON object.') }
+  const result = HistoricalSubmissionFieldsSchema.safeParse(parsed)
+  if (!result.success) throw new Error(result.error.issues[0]?.message ?? 'Historical submission data is invalid.')
+  return result.data
+}
+
 function validateMappedRow(
   kind: CrmImportEntityKind,
   row: { row: number; cells: string[]; malformedReason?: string },
@@ -340,6 +363,44 @@ function validateMappedRow(
   if (values.participantEmail && !z.string().email().safeParse(values.participantEmail).success) {
     add('invalid_email', 'Participant email is invalid.', 'participantEmail')
   }
+  const hasHistoricalSubmission = [
+    values.historicalSubmissionSource, values.historicalSubmissionSite,
+    values.historicalSubmissionForm, values.historicalSubmissionId,
+    values.historicalSubmissionOccurredAt, values.historicalSubmissionStatus,
+    values.historicalSubmissionFieldsJson,
+  ].some(Boolean)
+  if (hasHistoricalSubmission && !(
+    values.historicalSubmissionSource && values.historicalSubmissionSite
+    && values.historicalSubmissionForm && values.historicalSubmissionId
+    && values.historicalSubmissionOccurredAt && values.historicalSubmissionStatus
+    && values.historicalSubmissionFieldsJson
+  )) add('incomplete_historical_submission', 'Historical submission source, site, form, ID, time, state, and JSON data are required together.', 'historicalSubmissionSource')
+  if (values.historicalSubmissionSource && !/^[a-z][a-z0-9_-]{0,62}$/.test(values.historicalSubmissionSource)) {
+    add('invalid_catalog_key', 'Historical submission source must be a stable source key.', 'historicalSubmissionSource')
+  }
+  for (const field of ['historicalSubmissionSite', 'historicalSubmissionForm', 'historicalSubmissionId']) {
+    if (values[field] && values[field].length > 500) add('value_too_long', 'Historical source identifiers are limited to 500 characters.', field)
+  }
+  if (values.historicalSubmissionOccurredAt) {
+    try { crmPageInstant(values.historicalSubmissionOccurredAt) }
+    catch { add('invalid_instant', 'Historical submission time must be an ISO timestamp with a timezone and at most six fractional digits.', 'historicalSubmissionOccurredAt') }
+  }
+  if (values.historicalSubmissionStatus && !['new', 'in_progress', 'resolved', 'spam'].includes(values.historicalSubmissionStatus)) {
+    add('invalid_submission_status', 'Historical submission state must be new, in_progress, resolved, or spam.', 'historicalSubmissionStatus')
+  }
+  if (values.historicalSubmissionSubject && values.historicalSubmissionSubject.length > 300) {
+    add('value_too_long', 'Historical submission subject is limited to 300 characters.', 'historicalSubmissionSubject')
+  }
+  if (values.historicalSubmissionMessage && values.historicalSubmissionMessage.length > 20_000) {
+    add('value_too_long', 'Historical submission message is limited to 20000 characters.', 'historicalSubmissionMessage')
+  }
+  if (values.historicalSubmissionQueueKey && !/^[a-z][a-z0-9_-]{0,62}$/.test(values.historicalSubmissionQueueKey)) {
+    add('invalid_catalog_key', 'Historical submission queue must be a stable key.', 'historicalSubmissionQueueKey')
+  }
+  if (values.historicalSubmissionFieldsJson) {
+    try { historicalSubmissionFields(values.historicalSubmissionFieldsJson) }
+    catch (error) { add('invalid_submission_data', error instanceof Error ? error.message : 'Historical submission data is invalid.', 'historicalSubmissionFieldsJson') }
+  }
   if (values.currencyCode && !/^[a-z]{3}$/i.test(values.currencyCode)) {
     add('invalid_currency', 'Currency must be a three-letter ISO code.', 'currencyCode')
   }
@@ -351,8 +412,8 @@ function validateMappedRow(
   if (kind === 'operations' && !isUuid(values.contactId)) {
     add('required_field', 'Operations rows require a contact UUID.', 'contactId')
   }
-  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation)) {
-    add('required_operation', 'An operations row must contain consent, suppression, entitlement, or participation evidence.')
+  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation || hasHistoricalSubmission)) {
+    add('required_operation', 'An operations row must contain consent, suppression, entitlement, participation, or historical submission evidence.')
   }
   return errors
 }
@@ -373,7 +434,7 @@ export type CrmProductionImportService = ReturnType<typeof createCrmProductionIm
 export function createCrmProductionImportService(deps: {
   filesApi?: FilesApi
   sources?: CrmImportSources
-  operationsForTransaction: (client: PoolClient) => CrmOperationsServicePort
+  operationsForTransaction: (client: PoolClient) => CrmOperationsServicePort & CrmHistoricalSubmissionImportPort
   pool?: Pool
   entityLinks?: EntityLinksStore
 }) {
@@ -642,7 +703,7 @@ export function createCrmProductionImportService(deps: {
     row: { row: number; cells: string[] },
     customCatalog: ReadonlyMap<string, ImportCustomDefinition>,
     transaction: CrmWriteTransaction,
-    operations: CrmOperationsServicePort,
+    operations: CrmOperationsServicePort & CrmHistoricalSubmissionImportPort,
   ): Promise<string | null> {
     const values = mappedValues(row.cells, job.mapping)
     requireImportRowAuthority(context, job.entityKind, values, job.mapping.trustedIdentitySource)
@@ -794,6 +855,23 @@ export function createCrmProductionImportService(deps: {
         attendeeName: values.participantName,
         attendeeEmail: values.participantEmail,
         metadata: { importJobId: job.id, importRow: row.row },
+      })
+    }
+    if (contactId && values.historicalSubmissionSource) {
+      await operations.importHistoricalSubmission(importContext, {
+        importJobId: job.id,
+        importRow: row.row,
+        contactId,
+        source: values.historicalSubmissionSource,
+        sourceSite: values.historicalSubmissionSite,
+        sourceForm: values.historicalSubmissionForm,
+        sourceSubmissionId: values.historicalSubmissionId,
+        submittedAt: values.historicalSubmissionOccurredAt,
+        status: values.historicalSubmissionStatus as 'new' | 'in_progress' | 'resolved' | 'spam',
+        fields: historicalSubmissionFields(values.historicalSubmissionFieldsJson),
+        subject: values.historicalSubmissionSubject ?? 'Historical form submission',
+        message: values.historicalSubmissionMessage ?? 'Imported historical form submission.',
+        queueKey: values.historicalSubmissionQueueKey ?? 'general',
       })
     }
     return entityId ?? contactId ?? null

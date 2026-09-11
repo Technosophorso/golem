@@ -8,7 +8,10 @@ import {
   type CrmIntegrationSelector, type CrmOperationsContext,
 } from '@use-brian/core'
 
-const IMPORT_WRITES = ['crm.imports.write', 'crm.records.write', 'crm.consent.write', 'crm.entitlements.write', 'crm.participation.write'] as const
+const IMPORT_WRITES = [
+  'crm.imports.write', 'crm.records.write', 'crm.submissions.write',
+  'crm.consent.write', 'crm.entitlements.write', 'crm.participation.write',
+] as const
 export function importGrantSnapshot(authority: CrmIntegrationAuthority): CrmIntegrationGrant[] {
   requireCrmIntegrationOperation(authority, 'crm.imports.write')
   return authority.grants.filter((grant) => (IMPORT_WRITES as readonly string[]).includes(grant.operation))
@@ -43,6 +46,10 @@ export function requireImportOperation(context: CrmOperationsContext, operation:
 export function requireImportRowAuthority(context: CrmOperationsContext, kind: string, values: Record<string, string>, trustedIdentitySource?: string): void {
   requireImportOperation(context, 'crm.imports.write')
   const integration = context.authority.integration
+  if (values.historicalSubmissionSource && !integration
+    && (context.actor.kind !== 'user' || !['owner', 'admin'].includes(context.authority.role))) {
+    throw new CrmOperationsError('not_authorized', 'Historical submission imports require a current workspace owner or admin.')
+  }
   if (!integration) return
   if (trustedIdentitySource) throw new CrmOperationsError('not_authorized', 'Integration imports cannot acknowledge trusted identity sources.')
   const resources = (operation: CrmIntegrationOperation, selected: Parameters<typeof requireCrmIntegrationResources>[2]) => {
@@ -54,6 +61,13 @@ export function requireImportRowAuthority(context: CrmOperationsContext, kind: s
   if (values.suppressionChannel) resources('crm.consent.write', { purposeKeys: null })
   if (values.entitlementPlanId) resources('crm.entitlements.write', { planIds: values.entitlementPlanId })
   if (values.participationEventId) resources('crm.participation.write', { eventIds: values.participationEventId })
+  if (values.historicalSubmissionSource) {
+    // Historical source forms are not active Brian intake definitions. Only a
+    // workspace-wide submissions grant may admit them; a definition allowlist
+    // cannot be widened by assigning an imported form to a convenient ID.
+    resources('crm.submissions.write', { definitionIds: null })
+    requireCrmIntegrationResources(integration, 'crm.imports.write', { providerKeys: values.historicalSubmissionSource })
+  }
   if (values.identityProvider) requireCrmIntegrationResources(integration, 'crm.imports.write', { providerKeys: values.identityProvider })
   if (values.pipelineId || values.stageId) requireCrmIntegrationOperation(integration, 'crm.records.write')
 }

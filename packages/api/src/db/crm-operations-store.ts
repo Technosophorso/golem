@@ -15,6 +15,7 @@ import {
   mayTransitionCrmEntitlement,
   mayTransitionCrmParticipation,
   type CrmIntakeDefinitionVersionInput,
+  type ImportHistoricalCrmSubmission,
   type CrmOperationsActor,
   type CrmOperationsContext,
   type CrmSegmentCatalog,
@@ -129,6 +130,9 @@ export type CrmOperationsTransaction = {
     submittedAt: string
     identityVerificationEvidence?: Record<string, unknown> | null
   }): Promise<CrmOperationsRecord>
+  importHistoricalSubmission(params: ImportHistoricalCrmSubmission & {
+    requestFingerprint: string
+  }): Promise<{ record: CrmOperationsRecord; created: boolean }>
   createFollowUpTask(params: {
     contactId: string
     submissionId: string
@@ -531,6 +535,53 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
           params.identityVerificationEvidence ? JSON.stringify(params.identityVerificationEvidence) : null],
       )
       return first(result)
+    },
+
+    async importHistoricalSubmission(params) {
+      const submittedData = {
+        historicalSource: {
+          source: params.source,
+          site: params.sourceSite,
+          form: params.sourceForm,
+          submissionId: params.sourceSubmissionId,
+        },
+        originalData: params.fields,
+      }
+      const inserted = await client.query<DbRecord>(
+        `INSERT INTO association_enquiries (
+           workspace_id,contact_id,source,source_site,source_form,source_submission_id,
+           request_fingerprint,subject,message,submitted_data,status,queue_key,
+           submitted_at,historical_import
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,true)
+         ON CONFLICT DO NOTHING
+         RETURNING id,workspace_id AS "workspaceId",contact_id AS "contactId",
+           source,source_site AS "sourceSite",source_form AS "sourceForm",
+           source_submission_id AS "sourceSubmissionId",status,queue_key AS "queueKey",
+           submitted_at AS "submittedAt",historical_import AS "historicalImport",
+           created_at AS "createdAt",updated_at AS "updatedAt"`,
+        [workspaceId, params.contactId, params.source, params.sourceSite,
+          params.sourceForm, params.sourceSubmissionId, params.requestFingerprint,
+          params.subject, params.message, JSON.stringify(submittedData), params.status,
+          params.queueKey, params.submittedAt],
+      )
+      if (inserted.rows[0]) return { record: inserted.rows[0], created: true }
+      const existing = await client.query<DbRecord & { requestFingerprint: string }>(
+        `SELECT id,workspace_id AS "workspaceId",contact_id AS "contactId",
+           source,source_site AS "sourceSite",source_form AS "sourceForm",
+           source_submission_id AS "sourceSubmissionId",request_fingerprint AS "requestFingerprint",
+           status,queue_key AS "queueKey",submitted_at AS "submittedAt",
+           historical_import AS "historicalImport",created_at AS "createdAt",updated_at AS "updatedAt"
+         FROM association_enquiries
+         WHERE workspace_id=$1 AND source=$2 AND source_site=$3
+           AND source_form=$4 AND source_submission_id=$5 FOR UPDATE`,
+        [workspaceId, params.source, params.sourceSite, params.sourceForm, params.sourceSubmissionId],
+      )
+      if (!existing.rows[0]) throw new Error('Historical submission identity could not be claimed.')
+      if (existing.rows[0].requestFingerprint !== params.requestFingerprint) {
+        throw new CrmOperationsError('idempotency_conflict', 'Historical submission identity was already used with different evidence.')
+      }
+      const { requestFingerprint: _requestFingerprint, ...record } = existing.rows[0]
+      return { record, created: false }
     },
 
     async createFollowUpTask(params) {

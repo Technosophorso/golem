@@ -4,6 +4,7 @@ import {
   CrmIntakeDefinitionVersionInputSchema,
   CrmOperationsError,
   CrmOperationsContextSchema,
+  ImportHistoricalCrmSubmissionSchema,
   actorAuditIdentity,
   assertCrmOperationsAuthority,
   canonicalCrmRequest,
@@ -102,6 +103,30 @@ describe('[COMP:crm/operations-contract] CRM operations contracts', () => {
       verified: true,
       fields: { name: 'Ari Example' },
     })).toThrowError(CrmOperationsError)
+  })
+
+  it('keeps historical submissions on the bounded internal import envelope', () => {
+    const input = {
+      importJobId: SESSION_ID,
+      importRow: 2,
+      contactId: USER_ID,
+      source: 'wix',
+      sourceSite: 'oasahk_org',
+      sourceForm: 'contact_form',
+      sourceSubmissionId: 'submission-42',
+      submittedAt: '2021-03-04T05:06:07.123456Z',
+      status: 'resolved',
+      fields: { answer: 'yes' },
+    }
+    expect(ImportHistoricalCrmSubmissionSchema.parse(input)).toMatchObject({
+      ...input,
+      subject: 'Historical form submission',
+      message: 'Imported historical form submission.',
+      queueKey: 'general',
+    })
+    expect(ImportHistoricalCrmSubmissionSchema.safeParse({ ...input, fields: [] }).success).toBe(false)
+    expect(ImportHistoricalCrmSubmissionSchema.safeParse({ ...input, submittedAt: '2021-03-04' }).success).toBe(false)
+    expect(CrmOperationsCommandSchema.safeParse({ kind: 'import_historical_submission', ...input }).success).toBe(false)
   })
 
   it('canonicalizes object key order for stable idempotency hashes', () => {

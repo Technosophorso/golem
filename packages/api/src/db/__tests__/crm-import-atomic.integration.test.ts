@@ -16,13 +16,17 @@ const filesApi = { readBytes: async (_ctx: unknown, id: string) => ({ ok: true, 
 const operations = createCrmOperationsService(createDbCrmOperationsStore(pool))
 type Hook = (client: pg.PoolClient, command: CrmOperationsCommand) => Promise<void>
 function importer(hook?: Hook, entityLinks?: EntityLinksStore) {
-  return createCrmProductionImportService({ pool, filesApi, entityLinks, operationsForTransaction: (client) => ({
-    execute: async (context, command) => {
-      const result = await createCrmOperationsService(createDbCrmOperationsStore(pool, client)).execute(context, command)
-      await hook?.(client, command)
-      return result
-    },
-  }) })
+  return createCrmProductionImportService({ pool, filesApi, entityLinks, operationsForTransaction: (client) => {
+    const service = createCrmOperationsService(createDbCrmOperationsStore(pool, client))
+    return {
+      importHistoricalSubmission: service.importHistoricalSubmission,
+      execute: async (context, command) => {
+        const result = await service.execute(context, command)
+        await hook?.(client, command)
+        return result
+      },
+    }
+  } })
 }
 async function fixture() {
   const workspaceId = randomUUID(), userId = randomUUID()
@@ -38,7 +42,8 @@ async function fixture() {
     return id
   }
   async function job(columns: string[], rows: string[][], kind: CrmImportEntityKind = 'contact', trustedIdentitySource?: string) {
-    const id = randomUUID(), bytes = Buffer.from([columns.join(','), ...rows.map((row) => row.join(',')), ''].join('\n'))
+    const csvCell = (value: string) => /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value
+    const id = randomUUID(), bytes = Buffer.from([columns.join(','), ...rows.map((row) => row.map(csvCell).join(',')), ''].join('\n'))
     files.set(id, bytes)
     await pool.query(`INSERT INTO workspace_files (id,workspace_id,path,name,storage_uri,created_by_user_id)
       VALUES ($1,$2,$3,'fixture.csv','fixture://local',$4)`, [id, workspaceId, `/fixture/${id}.csv`, userId])
@@ -107,6 +112,87 @@ describe('[COMP:crm/production-import] Atomic rows and serialized chunk recovery
     expect(await f.counts()).toEqual(before)
     expect(await importer().resume(f.context, job.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
     expect(await f.counts()).toMatchObject({ entities: 1, consent: 1, receipts: 1, chunks: 1, errors: 0, outbox: 1 })
+  })
+
+  it('imports historical forms silently with original evidence and protects their identity across jobs', async () => {
+    const f = await fixture(), contactId = await f.entity('person', 'Historical form person', { email: 'history@example.com' })
+    const columns = [
+      'contactId', 'historicalSubmissionSource', 'historicalSubmissionSite',
+      'historicalSubmissionForm', 'historicalSubmissionId', 'historicalSubmissionOccurredAt',
+      'historicalSubmissionStatus', 'historicalSubmissionFieldsJson',
+      'historicalSubmissionSubject', 'historicalSubmissionQueueKey',
+    ]
+    const original = [contactId, 'wix', 'oasahk_org', 'contact_form', 'wix-submission-42',
+      '2021-03-04T05:06:07.123456Z', 'resolved', '{"answer":"yes"}', 'Archived contact request', 'general']
+    const counts = async () => (await pool.query(`SELECT
+      (SELECT count(*) FROM association_enquiries WHERE workspace_id=$1)::int AS submissions,
+      (SELECT count(*) FROM association_audit_log WHERE workspace_id=$1 AND action='crm.submission.historical_imported')::int AS audit,
+      (SELECT count(*) FROM crm_domain_event_outbox WHERE workspace_id=$1)::int AS domain_outbox,
+      (SELECT count(*) FROM association_notification_outbox WHERE workspace_id=$1)::int AS notification_outbox,
+      (SELECT count(*) FROM crm_delivery_receipts WHERE workspace_id=$1)::int AS deliveries,
+      (SELECT count(*) FROM association_consent_events WHERE workspace_id=$1)::int AS consent,
+      (SELECT count(*) FROM tasks WHERE workspace_id=$1)::int AS tasks`, [f.workspaceId])).rows[0]
+
+    const first = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, first.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    const saved = (await pool.query(`SELECT contact_id,source,source_site,source_form,source_submission_id,
+      status,queue_key,subject,submitted_data,historical_import,
+      to_char(submitted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS submitted_at
+      FROM association_enquiries WHERE workspace_id=$1`, [f.workspaceId])).rows[0]
+    expect(saved).toMatchObject({
+      contact_id: contactId, source: 'wix', source_site: 'oasahk_org', source_form: 'contact_form',
+      source_submission_id: 'wix-submission-42', status: 'resolved', queue_key: 'general',
+      subject: 'Archived contact request', historical_import: true,
+      submitted_at: '2021-03-04T05:06:07.123456Z',
+      submitted_data: {
+        historicalSource: { source: 'wix', site: 'oasahk_org', form: 'contact_form', submissionId: 'wix-submission-42' },
+        originalData: { answer: 'yes' },
+      },
+    })
+    expect(await counts()).toMatchObject({ submissions: 1, audit: 1, domain_outbox: 0,
+      notification_outbox: 0, deliveries: 0, consent: 0, tasks: 0 })
+
+    const exactReplay = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, exactReplay.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    expect(await counts()).toMatchObject({ submissions: 1, audit: 1, domain_outbox: 0,
+      notification_outbox: 0, deliveries: 0, consent: 0, tasks: 0 })
+
+    const changed = [...original]
+    changed[7] = '{"answer":"no"}'
+    const conflict = await f.job(columns, [changed], 'operations')
+    expect(await importer().resume(f.context, conflict.id)).toMatchObject({ status: 'completed', succeededRows: 0, failedRows: 1 })
+    expect((await pool.query(`SELECT error_code,message FROM crm_import_errors WHERE job_id=$1`, [conflict.id])).rows)
+      .toEqual([{ error_code: 'command_failed', message: 'Historical submission identity was already used with different evidence.' }])
+    expect(await counts()).toMatchObject({ submissions: 1, audit: 1, domain_outbox: 0,
+      notification_outbox: 0, deliveries: 0, consent: 0, tasks: 0 })
+
+    const anotherForm = [...original]
+    anotherForm[3] = 'application_form'
+    const distinct = await f.job(columns, [anotherForm], 'operations')
+    expect(await importer().resume(f.context, distinct.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    expect(await counts()).toMatchObject({ submissions: 2, audit: 2, domain_outbox: 0,
+      notification_outbox: 0, deliveries: 0, consent: 0, tasks: 0 })
+  })
+
+  it('requires current owner or admin authority for member-file historical submissions', async () => {
+    const f = await fixture(), contactId = await f.entity('person', 'Authority fixture')
+    const columns = ['contactId', 'historicalSubmissionSource', 'historicalSubmissionSite',
+      'historicalSubmissionForm', 'historicalSubmissionId', 'historicalSubmissionOccurredAt',
+      'historicalSubmissionStatus', 'historicalSubmissionFieldsJson']
+    const values = [contactId, 'wix', 'oasahk_org', 'contact_form', 'authority-row',
+      '2020-01-01T00:00:00Z', 'resolved', '{}']
+    const job = await f.job(columns, [values], 'operations')
+    await pool.query(`UPDATE workspace_members SET role='member' WHERE workspace_id=$1 AND user_id=$2`, [f.workspaceId, f.userId])
+    expect(await importer().resume(f.context, job.id)).toMatchObject({ status: 'completed', succeededRows: 0, failedRows: 1 })
+    expect((await pool.query(`SELECT count(*)::int AS count FROM association_enquiries WHERE workspace_id=$1`, [f.workspaceId])).rows[0].count).toBe(0)
+    const member = { ...f.context, authority: { ...f.context.authority, role: 'member' as const, canConfigure: false } }
+    const nextId = randomUUID(), bytes = Buffer.from([columns.join(','), values.join(','), ''].join('\n'))
+    files.set(nextId, bytes)
+    await pool.query(`INSERT INTO workspace_files (id,workspace_id,path,name,storage_uri,created_by_user_id)
+      VALUES ($1,$2,$3,'fixture.csv','fixture://local',$4)`, [nextId, f.workspaceId, `/fixture/${nextId}.csv`, f.userId])
+    await expect(importer().dryRun(member, { stagedFileId: nextId, entityKind: 'operations',
+      mapping: { columns: Object.fromEntries(columns.map((column, index) => [index, column])) } }))
+      .rejects.toMatchObject({ code: 'not_authorized' })
   })
 
   it('finishes file I/O before borrowing the only transaction connection', async () => {
