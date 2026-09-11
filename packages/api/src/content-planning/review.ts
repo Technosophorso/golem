@@ -1,12 +1,16 @@
+import { feedOutputProjection } from './projection.js'
+import { brandCopyFlags, type BrandRecord } from '@use-brian/shared'
+import type { StructuredFeedContent } from '../db/feed-collaboration-store.js'
 /** Five independent Review checks create ordinary anchored comments, never edits. [COMP:feed/draft-review] */
 import { randomUUID } from 'node:crypto'
 import { FEED_REVIEW_DIMENSIONS, FEED_EDITORIAL_LIMITS, feedReviewRequestSchema, feedReviewOutputSchema, type FeedReviewRequest, type FeedReviewContext, type FeedReviewDimension, type FeedReviewFinding, type FeedReviewCoverage, type FeedCommand } from '@use-brian/shared'
 import { applyFeedEdits, createFeedAnchor, canonicalFeedValue } from '@use-brian/doc-model'
 import { FeedCollaborationError, withFeedTransaction, readFeedCopy, requireFeedComposition, executeFeedCommands, type FeedActor } from '../db/feed-collaboration-store.js'
 import { enqueueFeedRun, readFeedRun, feedEditorialHash, markFeedDispatch, saveFeedPart, finishFeedRun, editorialActor, type FeedEditorialRun } from '../db/feed-editorial-runs-store.js'
-import { loadFeedReviewContext } from './review-context.js'
+import { loadFeedReviewContext, type FeedReviewContextLoader } from './review-context.js'
 import type { FeedEditorialModel, FeedEditorialModelResolver } from './editorial-model.js'
 import { loadDecisionPlaybookContext } from '../decision-learning/playbook-context.js'
+import { recordFeedContextApplication } from './review-context.js'
 import { notifyWorkspaceChange } from '../brain-stream/notify.js'
 const instructions: Record<FeedReviewDimension, string> = {
   monthly_plan: 'Check alignment with the selected month brief, themes, cadence and scheduled posts. Distinguish planned from published. Do not create a monthly Goal.',
@@ -38,7 +42,7 @@ export function mergeFeedReviewFindings(findings: FeedReviewFinding[]): FeedRevi
   }
   return [...merged.values()]
 }
-export async function requestFeedReview(actor: FeedActor, raw: FeedReviewRequest) {
+export async function requestFeedReview(actor: FeedActor, raw: FeedReviewRequest, loadContext: FeedReviewContextLoader = loadFeedReviewContext) {
   const request = feedReviewRequestSchema.parse(raw)
   const state = await withFeedTransaction(actor, async client => {
     const prior = (await client.query<{ id: string }>('SELECT id FROM feed_editorial_runs WHERE session_id=$1 AND request_id=$2', [actor.sessionId, request.mutationId])).rows[0]
@@ -49,14 +53,14 @@ export async function requestFeedReview(actor: FeedActor, raw: FeedReviewRequest
   if (state.run) return state.run
   const previous = state.previous?.context as FeedReviewContext | undefined
   if (previous) {
-    const livePrevious = await loadFeedReviewContext(actor, { month: previous.month, historyCursor: previous.historyCursor })
+    const livePrevious = await loadContext(actor, { month: previous.month, historyCursor: previous.historyCursor })
     if (request.expectedRevision !== previous.revision || livePrevious.contextHash !== previous.contextHash) throw new FeedCollaborationError(409, 'review_context_changed_start_new')
   }
-  const context = await loadFeedReviewContext(actor, { historyCursor: state.historyCursor, month: previous?.month })
+  const context = await loadContext(actor, { historyCursor: state.historyCursor, month: previous?.month })
   return enqueueFeedRun(actor, { requestId: request.mutationId, revision: request.expectedRevision, kind: 'review', request, context, model: request.model, logicalKey: feedEditorialHash({ context: context.contextHash, model: request.model, locale: request.locale, historyCursor: state.historyCursor }), parentRunId: request.continuationRunId })
 }
 type CheckResult = { raw: string; coverage: FeedReviewCoverage; sources: FeedReviewContext['dimensions']['content']['sources'] }
-export function createFeedReviewHandler(resolveModel: FeedEditorialModelResolver) {
+export function createFeedReviewHandler(resolveModel: FeedEditorialModelResolver, loadContext: FeedReviewContextLoader = loadFeedReviewContext) {
   return async (run: FeedEditorialRun, signal: AbortSignal) => {
     const actor = editorialActor(run); const frozen = run.context as FeedReviewContext; const request = feedReviewRequestSchema.parse(run.request)
     const source = await withFeedTransaction(actor, async client => { const row = (await client.query('SELECT content FROM feed_post_revisions WHERE session_id=$1 AND revision=$2', [actor.sessionId, run.revision])).rows[0]; if (!row) throw new FeedCollaborationError(409, 'source_revision_unavailable'); return { revision: run.revision, content: requireFeedComposition(row.content) } })
@@ -68,7 +72,7 @@ export function createFeedReviewHandler(resolveModel: FeedEditorialModelResolver
       if (signal.aborted) throw new FeedCollaborationError(409, 'run_cancelled')
       // Current authorization and source versions are checked before each
       // dispatch. A removed source is never resubmitted from the frozen copy.
-      const current = await loadFeedReviewContext(actor, { source, month: frozen.month, historyCursor: frozen.historyCursor })
+      const current = await loadContext(actor, { source, month: frozen.month, historyCursor: frozen.historyCursor })
       const input = frozen.dimensions[dimension]
       const liveHashes = new Set(current.dimensions[dimension].sources.map(item => item.id + ':' + item.hash))
       if (input.sources.some(item => !liveHashes.has(item.id + ':' + item.hash))) { coverage[dimension] = { ...input.coverage, state: 'partial', reviewed: 0, limits: [...input.coverage.limits, 'source_changed_or_unavailable'] }; continue }
@@ -82,9 +86,10 @@ export function createFeedReviewHandler(resolveModel: FeedEditorialModelResolver
         if (!sources.length || spent > model.inputCharacters) { coverage[dimension] = { ...bounded, state: 'partial', limits: [...bounded.limits, 'composition_exceeds_model_context'] }; continue }
         if (dimension === 'memory') {
           const ruleIds = sources.filter(item => item.kind === 'playbook').map(item => item.id.slice('playbook:'.length))
-          const playbook = await loadDecisionPlaybookContext({ workspaceId: run.workspaceId, assistantId: run.assistantId, actorUserId: run.actorUserId, externalPrincipal: false, allowedRuleIds: ruleIds, applicability: { kind: 'tool', key: `feed:${frozen.platform}` }, operationKind: 'feed_review', operationId: run.id, sourceKind: 'feed_review', sourceId: run.id, logLabel: 'feed-review' })
+          const playbook = await loadDecisionPlaybookContext({ workspaceId: run.workspaceId, assistantId: run.assistantId, actorUserId: run.actorUserId, externalPrincipal: false, allowedRuleIds: ruleIds, recordApplication: false, applicability: frozen.learningScope ? { kind: 'feed', scope: frozen.learningScope } : { kind: 'tool', key: `feed:${frozen.platform}` }, operationKind: 'feed_review', operationId: run.id, sourceKind: 'feed_review', sourceId: run.id, logLabel: 'feed-review' })
           if (playbook.readFailed || sources.some(item => item.kind === 'playbook' && !playbook.playbookRules.includes(item.body.trim()))) { coverage[dimension] = { ...bounded, state: 'partial', limits: [...bounded.limits, 'playbook_changed_before_call'] }; continue }
-          if (playbook.decisionApplicationId) for (const item of sources) if (playbook.appliedRuleIds.includes(item.id.slice('playbook:'.length))) item.applicationId = playbook.decisionApplicationId
+          const applicationId = await recordFeedContextApplication(actor, run.workspaceId, 'feed_review', run.id, sources, frozen.learningScope)
+          if (applicationId) for (const item of sources) if (item.kind === 'memory' || item.kind === 'playbook') item.applicationId = applicationId
         }
         const prompt = JSON.stringify({ dimension, locale: request.locale, revision: frozen.revision, platform: frozen.platform, month: frozen.month, composition: frozen.composition, coverage: bounded, sources })
         await markFeedDispatch(run, dimension, { model: model.model, tier: model.tier, inputCharacters: prompt.length, maximumOutputTokens: model.maxTokens, limitsVersion: FEED_EDITORIAL_LIMITS.version })
@@ -102,7 +107,8 @@ export function createFeedReviewHandler(resolveModel: FeedEditorialModelResolver
       interrupted = error
       for (const dimension of FEED_REVIEW_DIMENSIONS) if (!coverage[dimension]) coverage[dimension] = { ...frozen.dimensions[dimension].coverage, state: 'failed', reviewed: 0, limits: [...frozen.dimensions[dimension].coverage.limits, dimension === run.dispatchedPart ? 'provider_outcome_unknown' : 'check_not_completed'] }
     }
-    const current = await loadFeedReviewContext(actor, { source, month: frozen.month, historyCursor: frozen.historyCursor })
+    const current = await loadContext(actor, { source, month: frozen.month, historyCursor: frozen.historyCursor })
+    results.push(...deterministicFeedFindings(frozen, source.content, request.locale))
     const retained = results.filter(finding => finding.evidence.every(ref => Object.values(current.dimensions).some(d => d.sources.some(item => item.id === ref.sourceId && Object.values(frozen.dimensions).some(old => old.sources.some(previous => previous.id === item.id && previous.hash === item.hash))))))
     for (const dimension of FEED_REVIEW_DIMENSIONS) if (frozen.dimensions[dimension].sources.some(item => !current.dimensions[dimension].sources.some(now => now.id === item.id && now.hash === item.hash))) coverage[dimension] = { ...coverage[dimension]!, state: 'partial', reviewed: 0, limits: [...(coverage[dimension]?.limits ?? []), 'source_changed_or_unavailable'] }
     await persistFeedReview(run, mergeFeedReviewFindings(retained), coverage, Boolean(interrupted))
@@ -121,7 +127,7 @@ async function persistFeedReview(run: FeedEditorialRun, findings: FeedReviewFind
     const copy = await readFeedCopy(client, actor.sessionId); if (!copy) throw new FeedCollaborationError(409, 'working_copy_required')
     const commands: FeedCommand[] = []
     for (const finding of findings) {
-      const sources = Object.values(run.result.parts).flatMap(part => (part as CheckResult).sources ?? [])
+      const sources = [...Object.values(run.result.parts).flatMap(part => (part as CheckResult).sources ?? []), ...Object.values((run.context as FeedReviewContext).dimensions).flatMap(dimension => dimension.sources)]
       const evidenceHash = feedEditorialHash(finding.evidence.map(ref => ({ ...ref, hash: sources.find(item => item.id === ref.sourceId)?.hash })).sort((left, right) => canonicalFeedValue(left).localeCompare(canonicalFeedValue(right))))
       const issueKey = feedEditorialHash({ issue: finding.issueKey, target: finding.target })
       const findingKey = feedEditorialHash({ issueKey, evidenceHash })
@@ -171,4 +177,20 @@ const reviewStates = {
   ja: { checked: '確認済み', partial: '一部確認', unavailable: '利用不可', not_applicable: '対象外', failed: '失敗' },
   zh: { checked: '已檢查', partial: '部分檢查', unavailable: '無法使用', not_applicable: '不適用', failed: '失敗' },
   'zh-cn': { checked: '已检查', partial: '部分检查', unavailable: '不可用', not_applicable: '不适用', failed: '失败' },
+}
+
+export function deterministicFeedFindings(context: FeedReviewContext, content: StructuredFeedContent, locale: FeedReviewRequest['locale']): FeedReviewFinding[] {
+  const copy = deterministicCopy[locale]; const composition = context.dimensions.content.sources.find(source => source.kind === 'composition')
+  const result: FeedReviewFinding[] = feedOutputProjection(content, context.platform).issues.map(issue => ({ issueKey: `readiness_${issue.code}`, dimensions: ['content'], priority: 'high', target: issue.target, issue: copy[issue.code], nextStep: copy.repair, evidence: composition ? [{ sourceId: composition.id }] : [] }))
+  const brand = context.dimensions.memory.sources.find(source => source.kind === 'brand')
+  if (brand) { try {
+    for (const flag of brandCopyFlags(JSON.parse(brand.body) as BrandRecord, composition?.body ?? '')) result.push({ issueKey: `brand_${feedEditorialHash(flag)}`, dimensions: ['memory'], priority: 'medium', target: { kind: 'post' }, issue: `${copy.brand}: ${flag.phrase}`, nextStep: copy.brandRepair, evidence: [{ sourceId: brand.id, quote: JSON.stringify(flag.phrase) }] })
+  } catch { /* Invalid brand sources never manufacture a warning. */ } }
+  return result
+}
+const deterministicCopy = {
+  en: { unfinished_slot: 'This generation slot is unfinished.', empty_post: 'The post has no accepted content.', text_limit: 'This segment exceeds the destination text limit.', media_limit: 'The post exceeds the destination image limit.', duplicate_media: 'The same image is attached more than once.', unsupported_format: 'This format is unavailable for the destination.', invalid_thread: 'An X thread needs 2 to 25 nonempty posts.', article_fields: 'The article link needs a source URL and title.', repair: 'Open this target and finish or adjust it before confirmation.', brand: 'The approved brand record warns against this phrase', brandRepair: 'Review the brand evidence and propose an alternative if appropriate.' },
+  ja: { unfinished_slot: 'この生成枠は未完成です。', empty_post: '投稿に採用済みの内容がありません。', text_limit: 'この段落は投稿先の文字数制限を超えています。', media_limit: '画像数が投稿先の上限を超えています。', duplicate_media: '同じ画像が複数回添付されています。', unsupported_format: 'この形式は投稿先で利用できません。', invalid_thread: 'Xスレッドには空でない投稿が2〜25件必要です。', article_fields: '記事リンクにはURLとタイトルが必要です。', repair: 'この箇所を開き、確定前に完成または調整してください。', brand: '承認済みのブランド記録で避けるよう指定された表現です', brandRepair: 'ブランドの根拠を確認し、必要に応じて代案を提案してください。' },
+  zh: { unfinished_slot: '這個生成區塊尚未完成。', empty_post: '貼文沒有已採用的內容。', text_limit: '此段落超過發布平台的字數上限。', media_limit: '圖片數量超過發布平台的上限。', duplicate_media: '同一圖片被重複附加。', unsupported_format: '發布平台不支援此格式。', invalid_thread: 'X串文需要2至25則非空貼文。', article_fields: '文章連結需要來源網址及標題。', repair: '開啟此處，在確認前完成或調整內容。', brand: '已核准的品牌記錄提醒避免此用語', brandRepair: '檢視品牌依據，並在適當時提出替代方案。' },
+  'zh-cn': { unfinished_slot: '这个生成区块尚未完成。', empty_post: '帖子没有已采用的内容。', text_limit: '此段落超过发布平台的字数上限。', media_limit: '图片数量超过发布平台的上限。', duplicate_media: '同一图片被重复附加。', unsupported_format: '发布平台不支持此格式。', invalid_thread: 'X串文需要2至25条非空帖子。', article_fields: '文章链接需要来源网址及标题。', repair: '打开此处，在确认前完成或调整内容。', brand: '已批准的品牌记录提醒避免此用语', brandRepair: '查看品牌依据，并在适当时提出替代方案。' },
 }

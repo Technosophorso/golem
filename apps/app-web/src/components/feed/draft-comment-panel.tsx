@@ -1,4 +1,7 @@
 "use client";
+import { Button } from '@/components/ui/button';
+import { Tooltip } from '@/components/ui/tooltip';
+import { Check, CheckCheck, MessageSquarePlus, PencilLine, Send, Sparkles, Undo2, X } from 'lucide-react';
 /** Anchored discussion and reviewed edits share the composition command path. [COMP:app-web/feed-composition-editor] */
 import { useEffect, useState, type ReactNode } from 'react';
 import type { FeedAnchor, FeedCommand, FeedComposition, FeedEdit, FeedTarget } from '@use-brian/shared';
@@ -9,7 +12,6 @@ import { feedCollaborationCacheKey } from '@/lib/surface-prefetch';
 import { feedCachedJson, feedPaintFirst, readFeedCachedJson } from '@/lib/offline/feed-cache';
 import { feedCollaborationPath, type FeedCollaborationSnapshot, type FeedCommentThread, type FeedDraftSuggestion } from '@/lib/feed-collaboration';
 import { Skeleton } from '@/components/skeleton';
-import { TuningChatPanel } from './tuning-chat-panel';
 export type FeedCommentComposer = { kind: 'comment' | 'suggest'; anchor: FeedAnchor; parentId?: string; threadId?: string };
 export type FeedCommentPanelProps = {
   workspaceId: string; assistantId: string; assistantName: string; sessionId: string;
@@ -17,55 +19,53 @@ export type FeedCommentPanelProps = {
   loading?: boolean; error?: unknown; pending: boolean; offline: boolean; readOnly: boolean;
   composer: FeedCommentComposer | null; onComposer: (value: FeedCommentComposer | null) => void;
   selectedThread: string | null; onThread: (id: string) => void; selection?: FeedTarget;
+  onAskBrian: (threadId: string) => void;
   onCommand: (commands: FeedCommand[], optimisticEdits?: FeedEdit[]) => Promise<boolean>;
+  focused?: boolean;
   onRefresh: () => void; reviewHeader?: ReactNode;
 };
-const control = 'min-h-11 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50';
 export function DraftCommentPanel(props: FeedCommentPanelProps) {
   const t = useT().feedCollaboration; const tr = useT().feedReview;
   const [filter, setFilter] = useState<'open' | 'resolved' | 'all'>('open');
-  const [brianThreads, setBrianThreads] = useState<string[]>([]);
   const threads = props.snapshot?.threads ?? [];
   const active = threads.find(thread => thread.id === props.selectedThread);
   const canWrite = !props.readOnly && !props.pending;
   useEffect(() => { if (active?.resolved) setFilter('all'); }, [active?.id, active?.resolved]);
-  const visible = threads.filter(thread => filter === 'all' || thread.resolved === (filter === 'resolved'));
-  return <section aria-label={t.review} className="h-full overflow-y-auto overscroll-contain p-4 space-y-4" data-feed-review-panel>
+  const suggestions = (props.snapshot?.suggestions ?? []).filter(item => !props.focused || item.threadId === props.selectedThread);
+  const visible = threads.filter(thread => props.focused ? thread.id === props.selectedThread : filter === 'all' || thread.resolved === (filter === 'resolved'));
+  return <section aria-label={t.comments} className="space-y-4" data-feed-review-panel>
     {props.reviewHeader}
-    <div className="flex flex-wrap gap-2" role="group" aria-label={t.review}>
-      {(['open', 'resolved', 'all'] as const).map(value => <button key={value} type="button" aria-pressed={filter === value} className={control} onClick={() => setFilter(value)}>{t[value]}</button>)}
-      <button className={control} disabled={!canWrite} onClick={() => props.onComposer({ kind: 'comment', anchor: { target: { kind: 'post' }, quote: '', sourceRevision: props.revision, state: 'attached' } })}>{t.comment}</button>
-    </div>
+    {!props.focused ? <div className="flex items-center gap-2">
+      <div className="flex flex-1 rounded-lg border border-border bg-muted/60 p-0.5" role="group" aria-label={t.comments}>
+        {(['open', 'resolved', 'all'] as const).map(value => <Button key={value} type="button" aria-pressed={filter === value} variant="ghost" size="sm" className="min-h-11 md:min-h-8 flex-1 rounded-md px-2 text-xs text-muted-foreground aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-xs" onClick={() => setFilter(value)}>{t[value]}</Button>)}
+      </div>
+      <Tooltip label={t.comment}><Button type="button" variant="outline" size="icon" aria-label={t.comment} className="size-11 md:size-9" disabled={!canWrite} onClick={() => props.onComposer({ kind: 'comment', anchor: { target: { kind: 'post' }, quote: '', sourceRevision: props.revision, state: 'attached' } })}><MessageSquarePlus className="size-4" aria-hidden /></Button></Tooltip>
+    </div> : null}
     {props.pending ? <p role="status" className="text-sm text-muted-foreground">{t.pending}</p> : null}
-    {props.error ? <div role="alert" className="text-sm"><p>{t.loadFailed}</p><button className={control} onClick={props.onRefresh}>{t.retry}</button></div> : null}
+    {props.error ? <div role="alert" className="text-sm"><p>{t.loadFailed}</p><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={props.onRefresh}>{t.retry}</Button></div> : null}
     {props.loading && !props.snapshot ? <Skeleton className="h-36 w-full" /> : null}
     {props.composer ? <CommentComposer key={`${props.composer.parentId ?? ''}:${props.composer.kind}`} {...props} composer={props.composer} /> : null}
     {!visible.length && props.snapshot ? <p className="text-sm text-muted-foreground">{t.noComments}</p> : null}
-    {visible.map(thread => <article key={thread.id} data-feed-comment-id={thread.id} className={`rounded-lg border p-3 space-y-3 ${active?.id === thread.id ? 'border-ring' : 'border-border'}`}>
-      <button type="button" className="w-full min-h-11 text-left text-sm" onClick={() => props.onThread(thread.id)}>
+    {visible.map(thread => <article key={thread.id} data-feed-comment-id={thread.id} className={`rounded-xl border bg-background p-3 space-y-3 shadow-xs ${active?.id === thread.id ? 'border-ring' : 'border-border'}`}>
+      <button type="button" className="w-full min-h-11 rounded-md text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => props.onThread(thread.id)}>
         <span className="font-medium">{thread.authorKind === 'assistant' ? t.brian : (thread.authorName ?? `${t.author} ${thread.authorUserId.slice(0, 8)}`)}</span>
         <blockquote className="mt-2 line-clamp-3 whitespace-pre-wrap border-l-2 pl-2">{thread.anchor.quote || t.post}</blockquote>
       </button>
       {props.snapshot?.reviewFindings?.filter(item => item.threadId === thread.id).map(item => <div className="text-xs text-muted-foreground space-y-1" key={item.runId}><p>{tr[item.finding.priority]} · {item.finding.dimensions.map(dimension => tr[dimension]).join(', ')}</p>{item.finding.sources?.map(source => <p key={source.id}>{source.link && /^https?:\/\//i.test(source.link) ? <a href={source.link} target="_blank" rel="noopener noreferrer" className="underline">{source.title}</a> : source.title}{source.date ? ` (${source.date.slice(0, 10)})` : ''}</p>)}</div>)}
-      {thread.anchor.state !== 'attached' ? <p className="text-sm text-amber-700 dark:text-amber-400">{thread.anchor.state === 'detached' ? t.detached : t.stale}</p> : null}
+      {thread.anchor.state !== 'attached' ? <p className="inline-flex rounded-md bg-amber-100/70 px-2 py-1 text-xs font-medium text-amber-800 dark:bg-amber-900/30 dark:text-amber-300">{thread.anchor.state === 'detached' ? t.detached : t.stale}</p> : null}
       {active?.id === thread.id ? <>
         <ThreadMessages {...props} thread={thread} />
-        <div className="flex flex-wrap gap-2">
-          <button className={control} disabled={!canWrite} onClick={() => void props.onCommand([{ kind: 'resolve', threadId: thread.id, resolved: !thread.resolved }])}>{thread.resolved ? t.reopen : t.resolve}</button>
-          {thread.anchor.state !== 'attached' ? <button className={control} disabled={!canWrite || !props.selection || props.selection.kind === 'post'} onClick={() => props.selection && void props.onCommand([{ kind: 'reattach', threadId: thread.id, target: props.selection }])}>{t.reattach}</button> : null}
-          <button className={control} disabled={!canWrite || props.offline} onClick={() => setBrianThreads(current => current.includes(thread.id) ? current : [...current, thread.id])}>{t.askBrian}</button>
-          <button className={control} disabled={!canWrite || thread.anchor.state !== 'attached'} onClick={() => props.onComposer({ kind: 'suggest', anchor: thread.anchor, threadId: thread.id })}>{t.suggest}</button>
+        <div className="flex items-center gap-2 border-t border-border/60 pt-3">
+          <Button variant="default" size="sm" className="min-h-11 md:min-h-8" disabled={!canWrite || props.offline} onClick={() => props.onAskBrian(thread.id)}><Sparkles aria-hidden />{t.askBrian}</Button>
+          <Tooltip label={t.suggest}><Button variant="outline" size="icon" className="size-11 md:size-8" aria-label={t.suggest} disabled={!canWrite || thread.anchor.state !== 'attached'} onClick={() => props.onComposer({ kind: 'suggest', anchor: thread.anchor, threadId: thread.id })}><PencilLine className="size-4" aria-hidden /></Button></Tooltip>
+          <Tooltip label={thread.resolved ? t.reopen : t.resolve}><Button variant="ghost" size="icon" className="ml-auto size-11 md:size-8 text-muted-foreground" aria-label={thread.resolved ? t.reopen : t.resolve} disabled={!canWrite} onClick={() => void props.onCommand([{ kind: 'resolve', threadId: thread.id, resolved: !thread.resolved }])}>{thread.resolved ? <Undo2 className="size-4" aria-hidden /> : <CheckCheck className="size-4" aria-hidden />}</Button></Tooltip>
         </div>
+        {thread.anchor.state !== 'attached' ? <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 w-full whitespace-normal" disabled={!canWrite || !props.selection || props.selection.kind === 'post'} onClick={() => props.selection && void props.onCommand([{ kind: 'reattach', threadId: thread.id, target: props.selection }])}>{t.reattach}</Button> : null}
       </> : null}
     </article>)}
     <h3 className="text-sm font-semibold">{t.suggestions}</h3>
-    {(props.snapshot?.suggestions ?? []).map(suggestion => <Suggestion key={suggestion.id} {...props} suggestion={suggestion} />)}
-    {props.snapshot && !props.snapshot.suggestions.length ? <p className="text-sm text-muted-foreground">{t.noSuggestions}</p> : null}
-    {/* A thread's active stream stays mounted when another thread is selected. */}
-    {brianThreads.map(threadId => { const thread = threads.find(item => item.id === threadId); return thread ? <div key={threadId} hidden={active?.id !== threadId} className="h-[min(32rem,70dvh)]" data-feed-thread-chat>
-      <TuningChatPanel docked assistantId={props.assistantId} assistantName={props.assistantName} workspaceId={props.workspaceId} sessionId={thread.transcriptSessionId} ready={canWrite && !props.offline}
-        feedTarget={{ sessionId: props.sessionId, revision: props.revision, threadId }} title={t.askBrian} onTurnComplete={props.onRefresh} />
-    </div> : null; })}
+    {suggestions.map(suggestion => <Suggestion key={suggestion.id} {...props} suggestion={suggestion} />)}
+    {props.snapshot && !suggestions.length ? <p className="text-sm text-muted-foreground">{t.noSuggestions}</p> : null}
   </section>;
 }
 function CommentComposer(props: FeedCommentPanelProps & { composer: FeedCommentComposer }) {
@@ -86,7 +86,7 @@ function CommentComposer(props: FeedCommentPanelProps & { composer: FeedCommentC
     {composer.kind === 'suggest' ? <textarea className="w-full min-h-20 rounded-md border bg-background p-2 text-base" aria-label={t.reasonPlaceholder} placeholder={t.reasonPlaceholder} value={reason} onChange={event => setReason(event.target.value)} /> : null}
     {blocked ? <p role="status" className="text-sm">{t.syncFirst}</p> : null}
     {error ? <p role="alert" className="text-sm">{t.loadFailed}</p> : null}
-    <div className="flex gap-2"><button type="submit" className={control} disabled={blocked || (composer.kind === 'comment' && !text.trim())}>{t.send}</button><button type="button" className={control} onClick={() => props.onComposer(null)}>{t.cancel}</button></div>
+    <div className="flex gap-2"><Button type="submit" variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={blocked || (composer.kind === 'comment' && !text.trim())}><Send aria-hidden />{t.send}</Button><Button type="button" variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => props.onComposer(null)}>{t.cancel}</Button></div>
   </form>;
 }
 type ThreadMessage = { id: string; role: string; content: Array<{ type: string; text?: string }>; senderUserId?: string; senderName?: string; sequence: number };
@@ -99,12 +99,12 @@ function ThreadMessages(props: FeedCommentPanelProps & { thread: FeedCommentThre
   const messages = [...new Map([...older, ...(resource.data?.messages ?? [])].map(message => [message.id, message])).values()].sort((a, b) => a.sequence - b.sequence);
   return <div className="space-y-3">
     {resource.loading && !resource.data ? <Skeleton className="h-24 w-full" /> : null}
-    {resource.error ? <p role="alert" className="text-sm">{t.loadFailed}<button className={control} onClick={() => void resource.refresh()}>{t.retry}</button></p> : null}
-    {messages.length >= 50 && messages[0]!.sequence > 1 ? <button className={control} onClick={() => void feedCachedJson<{ messages: ThreadMessage[] }>(`${path}?before=${messages[0]!.sequence}`).then(result => setOlder(current => [...result.messages, ...current]))}>{t.earlier}</button> : null}
+    {resource.error ? <p role="alert" className="text-sm">{t.loadFailed}<Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => void resource.refresh()}>{t.retry}</Button></p> : null}
+    {messages.length >= 50 && messages[0]!.sequence > 1 ? <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => void feedCachedJson<{ messages: ThreadMessage[] }>(`${path}?before=${messages[0]!.sequence}`).then(result => setOlder(current => [...result.messages, ...current]))}>{t.earlier}</Button> : null}
     {messages.map(message => <div key={message.id} className="text-sm"><p className="font-medium">{message.role === 'assistant' ? t.brian : message.senderName ?? `${t.author} ${message.senderUserId?.slice(0, 8) ?? ''}`}</p><p className="whitespace-pre-wrap break-words">{message.content.filter(block => block.type === 'text').map(block => block.text ?? '').join('\n')}</p></div>)}
     <form onSubmit={event => { event.preventDefault(); void props.onCommand([{ kind: 'reply', threadId: props.thread.id, text: reply }]).then(ok => { if (ok) setReply(''); }); }} className="space-y-2">
       <textarea className="w-full min-h-20 rounded-md border bg-background p-2 text-base" aria-label={t.reply} value={reply} onChange={event => setReply(event.target.value)} />
-      <button className={control} disabled={props.readOnly || props.pending || !reply.trim()}>{t.reply}</button>
+      <Button type="submit" variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={props.readOnly || props.pending || !reply.trim()}><Send aria-hidden />{t.reply}</Button>
     </form>
   </div>;
 }
@@ -116,15 +116,15 @@ function Suggestion(props: FeedCommentPanelProps & { suggestion: FeedDraftSugges
   const blocked = props.readOnly || props.pending; const proposed = ['proposed', 'deferred'].includes(suggestion.status);
   return <article className="space-y-3 rounded-lg border p-3" data-feed-suggestion={suggestion.id}>
     <p className="text-sm font-medium">{suggestion.authorKind === 'assistant' ? t.brian : t.author}</p>
-    <div className="text-sm"><p className="font-medium">{t.before}</p><p className="whitespace-pre-wrap break-words">{before}</p></div>
-    <div className="text-sm"><p className="font-medium">{t.after}</p><p className="whitespace-pre-wrap break-words">{after}</p></div>
+    <div className="rounded-lg border border-border bg-muted/40 p-3 text-sm"><p className="mb-1 text-xs font-semibold text-muted-foreground">{t.before}</p><p className="whitespace-pre-wrap break-words">{before}</p></div>
+    <div className="rounded-lg border border-emerald-200/70 bg-emerald-50/40 p-3 text-sm dark:border-emerald-900 dark:bg-emerald-950/20"><p className="mb-1 text-xs font-semibold text-emerald-700 dark:text-emerald-400">{t.after}</p><p className="whitespace-pre-wrap break-words">{after}</p></div>
     {suggestion.sourceProposal?.imageBrief ? <div className="text-sm"><p className="font-medium">{t.imageBrief}</p><p className="whitespace-pre-wrap">{suggestion.sourceProposal.imageBrief}</p></div> : null}
     {suggestion.rationale ? <p className="text-sm whitespace-pre-wrap">{suggestion.rationale}</p> : null}
     <div className="flex flex-wrap gap-2">
-      {proposed ? <><button className={control} disabled={blocked} onClick={() => void props.onCommand([{ kind: 'decide', suggestionId: suggestion.id, outcome: 'accepted', reasonThreadId: suggestion.threadId ?? undefined }], suggestion.edits)}>{t.accept}</button>
-        <button className={control} disabled={blocked} onClick={() => void props.onCommand([{ kind: 'decide', suggestionId: suggestion.id, outcome: 'rejected', reasonThreadId: suggestion.threadId ?? undefined }])}>{t.reject}</button>
-        <button className={control} disabled={blocked} onClick={() => props.onComposer({ kind: 'suggest', anchor: { target, quote: before, sourceRevision: props.revision, state: 'attached' }, parentId: suggestion.id, threadId: suggestion.threadId ?? undefined })}>{t.refine}</button></> : <p className="text-sm">{suggestion.status === 'accepted' ? t.accepted : suggestion.status === 'rejected' ? t.rejected : t.undone}</p>}
-      {suggestion.status === 'accepted' && suggestion.acceptanceReceipt ? <button className={control} disabled={blocked} onClick={() => void props.onCommand([{ kind: 'undo', revision: suggestion.acceptanceReceipt!.revision }])}>{t.undo}</button> : null}
+      {proposed ? <><Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={blocked} onClick={() => void props.onCommand([{ kind: 'decide', suggestionId: suggestion.id, outcome: 'accepted', reasonThreadId: suggestion.threadId ?? undefined }], suggestion.edits)}><Check aria-hidden />{t.accept}</Button>
+        <Button variant="destructive" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={blocked} onClick={() => void props.onCommand([{ kind: 'decide', suggestionId: suggestion.id, outcome: 'rejected', reasonThreadId: suggestion.threadId ?? undefined }])}><X aria-hidden />{t.reject}</Button>
+        <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={blocked} onClick={() => props.onComposer({ kind: 'suggest', anchor: { target, quote: before, sourceRevision: props.revision, state: 'attached' }, parentId: suggestion.id, threadId: suggestion.threadId ?? undefined })}><PencilLine aria-hidden />{t.refine}</Button></> : <p className="text-sm">{suggestion.status === 'accepted' ? t.accepted : suggestion.status === 'rejected' ? t.rejected : t.undone}</p>}
+      {suggestion.status === 'accepted' && suggestion.acceptanceReceipt ? <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={blocked} onClick={() => void props.onCommand([{ kind: 'undo', revision: suggestion.acceptanceReceipt!.revision }])}><Undo2 aria-hidden />{t.undo}</Button> : null}
     </div>
   </article>;
 }

@@ -7,7 +7,7 @@ import { en } from "@/lib/i18n/dictionaries/en";
 const state = vi.hoisted(() => ({ data: new Map<string, unknown>(), push: vi.fn(), canDraft: true }));
 vi.mock("@/lib/user", () => ({ getUserInfo: () => ({ id: "viewer-a" }) }));
 vi.mock("@/lib/auth-fetch", () => ({ authFetch: vi.fn(async () => { throw new Error("offline"); }) }));
-vi.mock("@/lib/i18n/client", async () => { const { en } = await import("@/lib/i18n/dictionaries/en"); return { useT: () => en }; });
+vi.mock("@/lib/i18n/client", async () => { const { en } = await import("@/lib/i18n/dictionaries/en"); return { useT: () => en, useLocale: () => "en" }; });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: state.push }) }));
 vi.mock("@/lib/offline/use-offline-sync", () => ({ useIsOffline: () => true }));
 vi.mock("@/lib/recorder/dock-recorder-bridge", () => ({ useGlobalDockRecorder: () => null }));
@@ -41,6 +41,11 @@ async function type(element: HTMLInputElement | HTMLTextAreaElement, value: stri
     Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(element, value);
     element.dispatchEvent(new Event("input", { bubbles: true }));
   });
+}
+async function openDetails() {
+  await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${en.feedCollaboration.postActions}"]`)!.click());
+  const item = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node => node.textContent === en.feedCollaboration.details)!;
+  await act(async () => item.click());
 }
 async function remount() {
   await act(async () => root.unmount());
@@ -105,10 +110,12 @@ describe("[COMP:app-web/feed-offline] offline editor lifecycle", () => {
   it("restores unfinished article fields without requiring a valid URL", async () => {
     const post = await createLocalFeedPost("assistant-1", "linkedin", { ...blankFeedContent(), postFormat: "article" });
     await render(post.session.id, "linkedin");
-    await type(container.querySelector<HTMLInputElement>('input[type="url"]')!, "https://exam");
-    await type(container.querySelector<HTMLInputElement>(`input[placeholder="${en.feedPage.postEditor.articleTitlePlaceholder}"]`)!, "An unfinished headline");
-    await remount(); await render(post.session.id, "linkedin");
-    expect(container.querySelector<HTMLInputElement>('input[type="url"]')?.value).toBe("https://exam");
+    expect(container.querySelector('input[type="url"]')).toBeNull();
+    await openDetails();
+    await type(document.querySelector<HTMLInputElement>('input[type="url"]')!, "https://exam");
+    await type(document.querySelector<HTMLInputElement>(`input[placeholder="${en.feedPage.postEditor.articleTitlePlaceholder}"]`)!, "An unfinished headline");
+    await remount(); await render(post.session.id, "linkedin"); await openDetails();
+    expect(document.querySelector<HTMLInputElement>('input[type="url"]')?.value).toBe("https://exam");
     expect((await readLocalFeedPost("assistant-1", post.session.id))?.content.article.title).toBe("An unfinished headline");
   });
   it("restores incomplete threads and title edits after navigation", async () => {

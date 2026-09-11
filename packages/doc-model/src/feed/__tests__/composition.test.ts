@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { randomUUID } from 'node:crypto'
 import type { FeedComposition, FeedEdit, FeedInline, FeedNode } from '@use-brian/shared'
-import { applyFeedEdits, diffFeedComposition, proposeFeedReplacement, createFeedAnchor, duplicateFeedNode, feedParagraph, feedSchema, feedTargetQuote, feedText, importLegacyFeed, projectFeed, sliceFeedInline, validateFeedComposition, walkFeed } from '../model.js'
+import { applyFeedEdits, insertFeedPlaceholder, diffFeedComposition, proposeFeedReplacement, createFeedAnchor, duplicateFeedNode, feedParagraph, feedSchema, feedTargetQuote, feedText, importLegacyFeed, projectFeed, sliceFeedInline, validateFeedComposition, walkFeed } from '../model.js'
 const inline = (text: string): FeedInline[] => text ? [{ type: 'text', text }] : []
 const imported = (text = 'A first paragraph.\n\nThe same phrase.\n\nThe same phrase.') => importLegacyFeed({ text, postFormat: 'post', threadSegments: [], media: [] })
 function replace(composition: FeedComposition, block: number, from: number, to: number, text: string): FeedEdit {
@@ -138,5 +138,26 @@ describe('[COMP:feed/composition-model] retained object identity in alternatives
     expect(applied.anchors).toEqual([anchor]); expect(projectFeed(applied.composition).media).toHaveLength(1)
     expect(projectFeed(applied.composition).text).toBe('Replacement body')
     expect(applyFeedEdits(applied.composition, applied.inverse).composition).toEqual(composition)
+  })
+})
+
+
+describe('[COMP:feed/composition-model] typed placeholder authoring', () => {
+  it('scenario 4: caret insertion splits formatted text and Undo restores exact source', () => {
+    const composition = imported('Before **after**.'); const segment = composition.segments[0]!; const blockId = segment.content[0]!.attrs.id
+    const edits = insertFeedPlaceholder(composition, { target: { kind: 'block', segmentId: segment.id, blockId }, caret: { segmentId: segment.id, blockId, offset: 7 } }, 'text')
+    const changed = applyFeedEdits(composition, edits)
+    expect(changed.composition.segments[0]!.content.map(n => n.type)).toEqual(['paragraph', 'generationPlaceholder', 'paragraph'])
+    expect(projectFeed(changed.composition).text).toContain('**after**')
+    expect(applyFeedEdits(changed.composition, changed.inverse).composition).toEqual(composition)
+  })
+  it('scenarios 4 and 6: converts only the selected duplicate notes and duplicates get new slot IDs', () => {
+    const composition = imported('[notes] then [notes].'); const segment = composition.segments[0]!; const blockId = segment.content[0]!.attrs.id
+    const changed = applyFeedEdits(composition, insertFeedPlaceholder(composition, { target: { kind: 'range', spans: [{ segmentId: segment.id, blockId, from: 13, to: 20 }] } }, 'image', true))
+    const placeholder = walkFeed(changed.composition).find(n => n.node.type === 'generationPlaceholder')!.node
+    expect(placeholder).toMatchObject({ type: 'generationPlaceholder', attrs: { kind: 'image', brief: '[notes]', briefRevision: 0 } })
+    expect(feedText(changed.composition.segments[0]!.content[0]!)).toBe('[notes] then ')
+    expect(duplicateFeedNode(placeholder).attrs.id).not.toBe(placeholder.attrs.id)
+    expect(projectFeed(composition).text).toBe('[notes] then [notes].')
   })
 })

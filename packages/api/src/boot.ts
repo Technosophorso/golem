@@ -1,3 +1,4 @@
+import { createFeedReviewContextLoader } from './content-planning/review-context.js'
 /**
  * bootOpenApi — the OPEN composition root for the Use Brian HTTP API.
  *
@@ -173,7 +174,10 @@ import {
 import { contentPlanRoutes } from './routes/content-plan.js'
 import { contentIdeasRoutes } from './routes/content-ideas.js'
 import { postWorkingCopiesRoutes } from './routes/post-working-copies.js'
-import { createFeedEditorialModelResolver } from './content-planning/editorial-model.js'
+import { createFeedLearningHandler, reconcileFeedLearning } from './content-planning/learning.js'
+import { createFeedEditorialModelResolver, createFeedLearningModelResolver } from './content-planning/editorial-model.js'
+import { createFeedGenerationPort } from './content-planning/generation-port.js'
+import { createFeedGenerationService } from './content-planning/generation.js'
 import { createFeedReviewHandler } from './content-planning/review.js'
 import { createFeedEditorialWorker } from './workers/feed-editorial-worker.js'
 import { feedCollaborationRoutes } from './routes/feed-collaboration.js'
@@ -907,8 +911,10 @@ export interface EpisodeIngestorDeps {
  * connectors absent.
  */
 export interface OpenApiPorts {
+  feedHistorySql?: string;
   // ── Billing — open default: allow-all / no-op ──
   /** Real DB credit gate; default allows every turn. */
+  feedImage?: { config?: import('@use-brian/shared').FeedImageConfig; billing?: import('./content-planning/generation-port.js').FeedGenerationBilling };
   checkCreditBudget?: CreditBudgetGate
   /** Edition-local DB usage recorder; default no-op for bespoke compositions. */
   usageStore?: UsageStore
@@ -4643,7 +4649,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       })
     : null
 
+  const feedReviewContext = createFeedReviewContextLoader(ports.feedHistorySql)
+  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' }), { transport: vertexTx ?? (env.GEMINI_API_KEY ? aiStudioTransport(env.GEMINI_API_KEY) : undefined), resolveWorkspaceKey: resolveWorkspaceByoGeminiKey, files: filesApi ?? undefined, usageStore, config: ports.feedImage?.config, billing: ports.feedImage?.billing }), feedReviewContext)
   app.use('/api/chat', optionalAuth(env.JWT_SECRET), chatRoutes({
+    feedGeneration,
+    feedReviewContext,
     provider,
     artifactPromoter,
     checkCreditBudget: ports.checkCreditBudget,
@@ -5040,7 +5050,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // and developing an idea must never require a credential in either edition.
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
-  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes())
+  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration, reviewContext: feedReviewContext, files: filesApi ?? undefined }))
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its
@@ -7310,7 +7320,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // Daily user-scoped projection from minimized, deliberate decision evidence.
   // The store independently enforces thresholds and prohibited output.
   const feedEditorialWorker = createFeedEditorialWorker({ handlers: {
-    review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget })),
+    confirmation_learning: createFeedLearningHandler(createFeedLearningModelResolver({ provider, configuredProviders, resolveBackgroundRuntime, usageStore })),
+    reconcile: reconcileFeedLearning,
+    text_generation: feedGeneration.handler,
+    image_generation: feedGeneration.handler,
+    review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget }), feedReviewContext),
   } })
   if (runWorkers) feedEditorialWorker.start()
 

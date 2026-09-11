@@ -40,3 +40,5 @@ export * from './skill-groups.js'
 export const APP_LEVEL_ASSISTANT_ID = '00000000-0000-0000-0000-000000000000'
 
 export * from './feed-composition.js'
+export * from './feed-capabilities.js'
+export * from './feed-copy.js'

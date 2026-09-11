@@ -65,8 +65,9 @@ describe('[COMP:compaction/full] modelToCompactionTier', () => {
   })
 
   it('maps current and legacy Max Flash models to pro despite the "flash" substring', () => {
-    // Flash 3.7 is the Max-tier default; Flash 3.6 / 3.5 can still appear in
+    // Flash 3.8 is the Max-tier default; older Max Flash ids can still appear in
     // historical sessions. All have a 1M-token frontier window.
+    expect(modelToCompactionTier('gemini-3.8-flash')).toBe('pro')
     expect(modelToCompactionTier('gemini-3.7-flash')).toBe('pro')
     expect(modelToCompactionTier('gemini-3.6-flash')).toBe('pro')
     expect(modelToCompactionTier('gemini-3.5-flash')).toBe('pro')

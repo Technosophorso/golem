@@ -116,7 +116,7 @@ export const feedCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('propose'), sourceRevision: revision.optional(), suggestionId: feedIdSchema, threadId: feedIdSchema.optional(), parentId: feedIdSchema.optional(),
     edits: z.array(feedEditSchema).min(1).max(100), rationale: z.string().max(20_000), sourceMessageId: feedIdSchema.optional(),
     sourceProposal: z.object({ threadSegments: z.array(z.string().max(FEED_CONTENT_LIMIT)).min(1).max(100).optional(), index: z.number().int().min(1).max(99), text: z.string().max(FEED_CONTENT_LIMIT), label: z.string().max(30).optional(), imageBrief: z.string().max(2000).optional() }).strict().optional(),
-    sourceToolCallId: z.string().max(512).optional(), applicationId: feedIdSchema.optional() }).strict(),
+    sourceRunId: feedIdSchema.optional(), sourceToolCallId: z.string().max(512).optional(), applicationId: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('decide'), suggestionId: feedIdSchema, outcome: z.enum(['accepted', 'rejected', 'deferred']), reasonThreadId: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('undo'), revision: revision }).strict(),
   z.object({ kind: z.literal('context'), goalId: feedIdSchema.nullable().optional(), reviewMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
@@ -173,11 +173,82 @@ export type FeedReviewSource = {
 export type FeedReviewContext = {
   version: 1; revision: number; composition: FeedComposition; platform: string; month: string; goalId: string | null;
   historyCursor?: number; brandId: string | null; historyAssistantIds: string[]; contextHash: string;
+  learningScope?: FeedLearningScope;
   dimensions: Record<FeedReviewDimension, { sources: FeedReviewSource[]; coverage: FeedReviewCoverage }>;
 }
 export type FeedEditorialRunSummary = {
   id: string; kind: 'review' | 'text_generation' | 'image_generation' | 'confirmation_learning' | 'reconcile';
   revision: number; status: FeedEditorialStatus; attempts: number; error: string | null; createdAt: string;
   coverage: Partial<Record<FeedReviewDimension, FeedReviewCoverage>>; summaryThreadId: string | null;
-  stale?: boolean; model: string; month?: string; goalTitle?: string;
+  stale?: boolean; model: string; month?: string; goalTitle?: string; generation?: { slotId: string; segmentId: string; briefRevision: number; estimate: FeedGenerationEstimate };
+}
+
+/** Generation never changes a slot until its immutable candidate is accepted. */
+export const FEED_GENERATION_LIMITS = { version: 1, estimateMinutes: 30, textCandidates: 5, imageCandidates: 1, outputCharacters: 20_000, referenceBytes: 160_000, references: 20 } as const
+export const feedGenerationEstimateRequestSchema = z.object({
+  mutationId: feedIdSchema, expectedRevision: revision, segmentId: feedIdSchema, slotId: feedIdSchema,
+  model: z.enum(['standard', 'pro', 'max']).default('standard'), count: z.number().int().min(1).max(5).default(1),
+  locale: z.enum(['en', 'ja', 'zh', 'zh-cn']).default('en'),
+}).strict()
+export type FeedGenerationEstimateRequest = z.infer<typeof feedGenerationEstimateRequestSchema>
+export const feedGenerationRequestSchema = z.object({ mutationId: feedIdSchema, estimateId: feedIdSchema, confirmed: z.literal(true) }).strict()
+export type FeedGenerationRequest = z.infer<typeof feedGenerationRequestSchema>
+export type FeedGenerationCandidate = { applicationId?: string; id: string; runId: string; segmentId: string; slotId: string; sourceRevision: number; briefRevision: number; edits: FeedEdit[]; rationale: string }
+export type FeedGenerationPrice = { currency: 'USD'; maximumUsd: number | null; rateVersion: string; billing: 'included' | 'byo' | 'metered'; credits?: number }
+export type FeedGenerationEstimate = {
+  id: string; expiresAt: string; revision: number; segmentId: string; slot: FeedPlaceholderAttrs; count: number;
+  model: string; tier: string; price: FeedGenerationPrice; inputCharacters: number; maxTokens: number;
+  sources: { id: string; title: string; hash: string }[]; omissions: string[]; confirmationRequired: true;
+}
+
+/** Editorial confirmation is distinct from saving a version or delivery. */
+export const feedConfirmationRequestSchema = z.object({
+  mutationId: feedIdSchema, expectedRevision: revision,
+  reviewRunId: feedIdSchema.optional(), locale: z.enum(['en', 'ja', 'zh', 'zh-cn']).default('en'),
+}).strict()
+export type FeedConfirmationRequest = z.infer<typeof feedConfirmationRequestSchema>
+export type FeedLearningScope = {
+  platform: string; postFormat: 'post' | 'thread' | 'article'; brandId: string | null;
+  sensitivity: 'public' | 'internal' | 'confidential' | 'restricted'; compartments: string[]; projectIds: string[];
+}
+export type FeedConfirmationSummary = {
+  id: string; revision: number; actorUserId: string; createdAt: string;
+  priorConfirmationId: string | null; reviewRunId: string | null; revoked: boolean; current: boolean;
+}
+export const FEED_LEARNING_LIMITS = {
+  detailCharacters: 16500, inputCharacters: 64_000, outputTokens: 6000, actors: 10, excerpts: 50, excerptCharacters: 1000, contextArtifacts: 20 } as const
+
+/** UI and confirmed Brian actions share these selected-artifact commands. */
+export const feedLearningCommandSchema = z.discriminatedUnion('action', [
+  z.object({ action: z.literal('remember'), rule: z.string().trim().min(1).max(280) }).strict(),
+  z.object({ action: z.literal('decideRule'), ruleId: feedIdSchema, decision: z.enum(['approve', 'dismiss', 'forget', 'restore']) }).strict(),
+  z.object({ action: z.literal('editRule'), ruleId: feedIdSchema, rule: z.string().trim().min(1).max(280) }).strict(),
+  z.object({ action: z.literal('scopeRule'), ruleId: feedIdSchema, scope: z.enum(['post', 'brand_voice']) }).strict(),
+  z.object({ action: z.literal('editSummary'), summary: z.string().trim().min(1).max(1200), detail: z.string().trim().max(8000) }).strict(),
+  z.object({ action: z.literal('forgetSummary') }).strict(),
+  z.object({ action: z.literal('scopeSummary'), scope: z.enum(['post','future']) }).strict(),
+  z.object({ action: z.literal('editVoice'), memoryId: feedIdSchema, summary: z.string().trim().min(1).max(280), detail: z.string().trim().max(4000) }).strict(),
+  z.object({ action: z.literal('forgetVoice'), memoryId: feedIdSchema }).strict(),
+  z.object({ action: z.literal('scopeVoice'), memoryId: feedIdSchema, scope: z.enum(['member', 'post']) }).strict(),
+  z.object({ action: z.literal('retractSource'), eventId: feedIdSchema }).strict(),
+  z.object({ action: z.literal('revoke') }).strict(),
+])
+export type FeedLearningCommand = z.infer<typeof feedLearningCommandSchema>
+export const feedLearningCommandRequestSchema = z.object({ mutationId: feedIdSchema, expectedRevision: revision, confirmationId: feedIdSchema, command: feedLearningCommandSchema }).strict()
+export type FeedLearningCommandRequest = z.infer<typeof feedLearningCommandRequestSchema>
+
+export type FeedLearnedArtifact = {
+  id: string; kind: 'rule' | 'voice'; text: string;
+  status: 'suggested' | 'active' | 'rejected' | 'retired' | 'forgotten';
+  actorUserId: string | null; scope: FeedLearningScope; sourceEventIds: string[];
+  canEdit: boolean; canPromote: boolean; erased: boolean;
+}
+export type FeedLearnedDecisions = {
+  canConfirm: boolean; privateSourcesOmitted: boolean;
+  confirmations: Array<FeedConfirmationSummary & {
+    run: FeedEditorialRunSummary | null;
+    summary: { id: string; text: string; sourceEventIds: string[]; postOnly: boolean; correction: string | null; canEdit: boolean; decisions: Array<{ statement: string; sourceIds: string[]; actorUserId: string | null; outcome: string | null }>; conflicts: Array<{ statement: string; sourceIds: string[] }>; unresolved: string[] } | null;
+    artifacts: FeedLearnedArtifact[]; coverage: Record<string, unknown>;
+  }>;
+  sources: Array<{ id: string; sessionId: string | null; actorUserId: string; eventKind: string; actorName: string | null; canRetract: boolean; revision: number | null; outcome: string | null; threadId: string | null }>;
 }

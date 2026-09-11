@@ -6,7 +6,7 @@
  * [COMP:api/decision-playbook-context]
  */
 
-import { PLAYBOOK_BLOCK_CHAR_CAP } from '@use-brian/shared'
+import { PLAYBOOK_BLOCK_CHAR_CAP, type FeedLearningScope } from '@use-brian/shared'
 import type { AnalyticsLogger } from '@use-brian/core'
 
 import {
@@ -25,8 +25,9 @@ const SENSITIVITY_RANK: Record<Sensitivity, number> = {
 }
 
 export type DecisionPlaybookApplicability = {
-  kind: 'email' | 'tool'
+  kind: 'email' | 'tool' | 'feed'
   key?: string | null
+  scope?: FeedLearningScope
 }
 
 export type DecisionPlaybookContext = {
@@ -42,6 +43,11 @@ function isApplicable(
   rule: PlaybookPromptRule,
   operation: DecisionPlaybookApplicability | undefined,
 ): boolean {
+  if (rule.applicabilityKind === 'feed') {
+    const source = rule.feedScope; const target = operation?.scope
+    if (operation?.kind !== 'feed' || !source || !target) return false
+    return feedLearningScopeApplies({ ...source, sensitivity: rule.decisionSensitivity }, target)
+  }
   if (rule.appliesToUserId === null || rule.applicabilityKind === 'general') return true
   // A generic chat turn may invoke any supplied tool, so all user-specific
   // operation rules remain available. A frozen workflow context narrows to
@@ -50,6 +56,14 @@ function isApplicable(
   if (rule.applicabilityKind !== operation.kind) return false
   if (!rule.applicabilityKey) return true
   return Boolean(operation.key) && rule.applicabilityKey === operation.key
+}
+
+/** Feed references and native rules share one applicability boundary. */
+export function feedLearningScopeApplies(source: FeedLearningScope, target: FeedLearningScope): boolean {
+  return source.platform === target.platform && source.postFormat === target.postFormat && source.brandId === target.brandId
+    && source.compartments.every(id => target.compartments.includes(id))
+    && source.projectIds.every(id => target.projectIds.includes(id))
+    && SENSITIVITY_RANK[source.sensitivity] <= SENSITIVITY_RANK[target.sensitivity]
 }
 
 function orderRank(

@@ -391,3 +391,65 @@ export function proposeFeedReplacement(composition: FeedComposition, target: Fee
     { kind: 'replaceBlock', segmentId: first.id, blockId: textNodes[0]!.attrs.id, preimage: textNodes[0]!, replacement: content },
   ]
 }
+
+/** Explicit slot insertion/conversion; ordinary bracketed text is untouched. */
+export function insertFeedPlaceholder(composition: FeedComposition, selection: { target: FeedTarget; caret?: { segmentId: string; blockId: string; offset: number } }, kind: 'text' | 'image', convert = false): FeedEdit[] {
+  const brief = convert ? feedTargetQuote(composition, selection.target) : ''
+  const node: FeedNode = { type: 'generationPlaceholder', attrs: { id: id(), kind, brief, briefRevision: 0, references: [] } }
+  const edits: FeedEdit[] = []
+  let current = composition
+  let caret = selection.caret
+  if (convert && selection.target.kind === 'range') {
+    const spans = selection.target.spans
+    edits.push({ kind: 'replaceText', spans, preimage: spans.map(span => { const found = locateFeedNode(composition, span.segmentId, span.blockId).node; if (!isFeedTextBlock(found)) throw new FeedCompositionError('invalid_target'); return sliceFeedInline(found.content ?? [], span.from, span.to) }), replacement: spans.map(() => []) })
+    current = applyFeedEdits(composition, edits).composition
+    caret = { segmentId: spans[0]!.segmentId, blockId: spans[0]!.blockId, offset: spans[0]!.from }
+  } else if (convert && selection.target.kind === 'block') {
+    const target = selection.target; const before = locateFeedNode(composition, target.segmentId, target.blockId).node
+    if (!isFeedTextBlock(before)) throw new FeedCompositionError('invalid_target')
+    node.attrs.id = before.attrs.id
+    return [{ kind: 'replaceBlock', segmentId: target.segmentId, blockId: target.blockId, preimage: before, replacement: [node] }]
+  }
+  if (caret) {
+    const found = locateFeedNode(current, caret.segmentId, caret.blockId)
+    if (!isFeedTextBlock(found.node)) throw new FeedCompositionError('invalid_target')
+    const length = inlineText(found.node.content ?? []).length
+    if (caret.offset < 0 || caret.offset > length) throw new FeedCompositionError('invalid_target')
+    if (caret.offset === 0) edits.push({ kind: 'insertBlock', segmentId: caret.segmentId, parentId: found.parentId, afterId: found.siblings[found.index - 1]?.attrs.id ?? null, node })
+    else {
+      if (caret.offset < length) {
+        const second = structuredClone(found.node); second.attrs.id = id(); second.content = sliceFeedInline(found.node.content ?? [], caret.offset, length)
+        edits.push({ kind: 'splitBlock', segmentId: caret.segmentId, blockId: caret.blockId, preimage: found.node, first: { ...found.node, content: sliceFeedInline(found.node.content ?? [], 0, caret.offset) }, second })
+      }
+      edits.push({ kind: 'insertBlock', segmentId: caret.segmentId, parentId: found.parentId, afterId: caret.blockId, node })
+    }
+  } else {
+    const target = selection.target
+    const segmentId = target.kind === 'block' ? target.segmentId : composition.segments[0]!.id
+    const found = target.kind === 'block' ? locateFeedNode(current, target.segmentId, target.blockId) : null
+    edits.push({ kind: 'insertBlock', segmentId, afterId: found?.node.attrs.id ?? current.segments[0]!.content.at(-1)!.attrs.id, parentId: found?.parentId, node })
+  }
+  applyFeedEdits(composition, edits)
+  return edits
+}
+
+/** Accepted content only. Callers explicitly provide any image URLs they own. */
+export function feedCompositionHtml(composition: FeedComposition, imageSource?: (fileId: string, mime: string) => string): string {
+  validateFeedComposition(composition)
+  const escape = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+  const inline = (content: FeedInline[] = []) => content.map(part => {
+    if (part.type === 'hardBreak') return '<br>'
+    let value = escape(part.text)
+    for (const mark of part.marks ?? []) value = mark.type === 'bold' ? `<strong>${value}</strong>` : mark.type === 'italic' ? `<em>${value}</em>` : `<a href="${escape(mark.attrs.href)}" rel="noopener noreferrer">${value}</a>`
+    return value
+  }).join('')
+  const node = (item: FeedNode): string => {
+    if (item.type === 'generationPlaceholder') return ''
+    if (item.type === 'image') return imageSource ? `<figure><img src="${escape(imageSource(item.attrs.fileId, item.attrs.mimeType))}" alt="${escape(item.attrs.alt ?? '')}"></figure>` : ''
+    if (item.type === 'paragraph') return `<p>${inline(item.content)}</p>`
+    if (item.type === 'heading') return `<h${item.attrs.level}>${inline(item.content)}</h${item.attrs.level}>`
+    const tag = item.type === 'bulletList' ? 'ul' : item.type === 'orderedList' ? 'ol' : item.type === 'listItem' ? 'li' : 'blockquote'
+    return `<${tag}${item.type === 'orderedList' ? ` start="${item.attrs.start}"` : ''}>${item.content.map(node).join('')}</${tag}>`
+  }
+  return composition.segments.map(segment => `<section>${segment.content.map(node).join('')}</section>`).join('\n')
+}

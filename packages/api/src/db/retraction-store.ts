@@ -10,7 +10,8 @@
  * (for re-extraction supersession).
  *
  * Access model: system-level operator state. The caller is the admin
- * corrections route (`X-Admin-Key`-gated). Every primitive table
+ * corrections route (`X-Admin-Key`-gated), or Feed's member-authorized
+ * correction service supplying its already-authorized transaction. Every primitive table
  * carries a `system_bypass` RLS policy (memories: migration 015;
  * episodes: 129; entity_links: 126; entities: 125), so the bare pool /
  * `SET LOCAL app.system_bypass` path is correct — same posture as
@@ -24,6 +25,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import type pg from 'pg'
 import type {
   EpisodeDerivationSnapshot,
   EpisodeReExtractionRepository,
@@ -66,10 +68,13 @@ function toMemorySnapshot(row: MemoryRetractionRow): MemoryRetractionSnapshot {
   }
 }
 
-export function createMemoryRetractionStore(): MemoryRetractionRepository {
+export function createMemoryRetractionStore(transactionClient?: pg.PoolClient): MemoryRetractionRepository {
+  // Feed's authorized correction command composes native retraction with its
+  // output suppression receipt in the caller-owned domain transaction.
+  const execute = transactionClient ? transactionClient.query.bind(transactionClient) : query
   return {
     async readMemoryForRetraction(workspaceId, memoryId) {
-      const result = await query<MemoryRetractionRow>(
+      const result = await execute<MemoryRetractionRow>(
         `SELECT ${MEMORY_SNAPSHOT_COLS}
            FROM memories
           WHERE id = $1 AND workspace_id = $2`,
@@ -83,7 +88,7 @@ export function createMemoryRetractionStore(): MemoryRetractionRepository {
       // D.3 — retraction stamps `retracted_at` ("was never correct")
       // alongside `valid_to`. A row already superseded keeps its earlier
       // `valid_to`; an active row gets `valid_to = now()`.
-      await query(
+      await execute(
         `UPDATE memories
             SET retracted_at     = $3,
                 retracted_reason = $4,
@@ -98,9 +103,10 @@ export function createMemoryRetractionStore(): MemoryRetractionRepository {
       // The row is about to vanish — record its existence in
       // `correction_audit` (D.7) inside the same transaction as the
       // DELETE so the audit can never be lost to a mid-purge crash.
-      const client = await getPool().connect()
+      const ownedClient = transactionClient ? null : await getPool().connect()
+      const client = transactionClient ?? ownedClient!
       try {
-        await client.query('BEGIN')
+        if (ownedClient) await client.query('BEGIN')
         await client.query(
           `INSERT INTO correction_audit
              (workspace_id, action, primitive, row_id, actor_user_id, reason, row_snapshot)
@@ -127,12 +133,12 @@ export function createMemoryRetractionStore(): MemoryRetractionRepository {
             WHERE primitive = 'memory' AND row_id = $1 AND erased_at IS NULL`,
           [input.memoryId],
         )
-        await client.query('COMMIT')
+        if (ownedClient) await client.query('COMMIT')
       } catch (err) {
-        await client.query('ROLLBACK').catch(() => {})
+        if (ownedClient) await client.query('ROLLBACK').catch(() => {})
         throw err
       } finally {
-        client.release()
+        ownedClient?.release()
       }
     },
 
@@ -140,7 +146,7 @@ export function createMemoryRetractionStore(): MemoryRetractionRepository {
       // D.3 re-extraction guard — a retracted memory for the same
       // source episode + content hash means the candidate must not be
       // re-derived. A non-null result tells Pipeline B to suppress.
-      const result = await query<MemoryRetractionRow>(
+      const result = await execute<MemoryRetractionRow>(
         `SELECT ${MEMORY_SNAPSHOT_COLS}
            FROM memories
           WHERE workspace_id = $1
