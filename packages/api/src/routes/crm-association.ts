@@ -65,6 +65,10 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
   route('post', '/orders/:id/provider-binding', req => ({ kind: 'bind_order_provider', orderId: req.params.id, binding: req.body }), 'order')
   route('post', '/provider-entitlement-events', req => ({ kind: 'reconcile_provider_entitlement', event: req.body }), 'entitlement')
   route('get', '/provider-receipts', req => ({ ...req.query, kind: 'list_provider_receipts' }), 'receipts')
+  route('post', '/provider-receipts/:id/retry', req => {
+    z.object({}).strict().parse(req.body ?? {})
+    return { kind: 'retry_provider_receipt', receiptId: req.params.id }
+  }, 'result')
   return router
 }
 

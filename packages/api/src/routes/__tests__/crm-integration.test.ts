@@ -93,6 +93,13 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
       expect(f.jwtGuard).not.toHaveBeenCalled()
     },
   )
+  it('does not let an integration credential invoke the member receipt retry route', async () => {
+    const f = fixture()
+    const response = await request(f.app).post('/api/crm/integration/association/provider-receipts/00000000-0000-4000-8000-000000000000/retry')
+      .set('Authorization', `Bearer ${token}`).send({})
+    expect(response.status).toBe(403)
+    expect(response.body.error).toBe('integration_scope_denied')
+  })
   it('refuses body workspace/actor authority and command-level credential administration', async () => {
     const f = fixture()
     for (const field of ['workspaceId', 'actor', 'authority']) {
@@ -124,6 +131,19 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect((await request(app).get(`/api/crm/${workspaceId}/association/orders`).set('Authorization', `Bearer ${token}`)).status).toBe(401)
     expect(workspaceStore.getRole).not.toHaveBeenCalled()
     expect(service.execute).not.toHaveBeenCalled()
+  })
+  it('maps the authenticated member receipt retry route to the closed canonical command', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn().mockResolvedValue({ command: 'retry_provider_receipt', record: { id: eventId }, created: false,
+      receipt: { id: credentialId, state: 'applied' } }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const response = await request(app).post(`/api/crm/${workspaceId}/association/provider-receipts/${credentialId}/retry`).send({})
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ result: { id: eventId }, receipt: { id: credentialId, state: 'applied' }, created: false })
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'user', userId } }),
+      { kind: 'retry_provider_receipt', receiptId: credentialId })
   })
   it('keeps member module reads separate from owner/admin actions and credential issuance', async () => {
     const workspaceStore = { getRole: vi.fn().mockResolvedValue('member') } as unknown as WorkspaceStore

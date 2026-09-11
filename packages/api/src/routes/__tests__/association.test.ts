@@ -59,6 +59,7 @@ function fakeStore(): AssociationStore {
     bindOrderProvider: vi.fn(),
     reconcileProviderEntitlement: vi.fn(),
     retryProviderEventReceipt: vi.fn(),
+    resolveProviderReceipt: vi.fn(),
     listProviderReceipts: vi.fn(),
     listEventRegistrations: vi.fn(),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'commerce' }),

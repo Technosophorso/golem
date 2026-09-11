@@ -8,21 +8,28 @@ import { AssociationPrivacyPanel } from "./privacy-panel";
 import { AssociationMailboxPanel } from "./mailbox-panel";
 import { AssociationCredentialsPanel } from "./credentials-panel";
 import { useT } from "@/lib/i18n/client";
-import { AssociationListState,useAssociationPage } from "./operator-controls";
+import { retryAssociationProviderReceipt } from "@/lib/api/association";
+import { AssociationListState,useAssociationAction,useAssociationPage } from "./operator-controls";
 
 export function AssociationOperationsPanel({workspaceId}:{workspaceId:string}) {
   const module=useAssociationModule(workspaceId),[administration,setAdministration]=useState(false);
   const [adminSection,setAdminSection]=useState<"keys"|"mailboxes"|"privacy">("keys");
   const dictionary=useT(),t=dictionary.associationPage,crm=dictionary.crmPage.operations;
   const receipts=useAssociationPage(workspaceId,"receipts"),audit=useAssociationPage(workspaceId,"audit"),deliveries=useAssociationPage(workspaceId,"deliveries");
+  const retry=useAssociationAction(workspaceId);
+  async function retryReceipt(id:string) {
+    const completed=await retry.run(t.manage.retryReceipt,()=>retryAssociationProviderReceipt(workspaceId,id),{description:t.manage.retryReceiptHelp});
+    if(!completed)await receipts.refresh();
+  }
   return <section className="space-y-6"><h2 className="text-lg font-semibold">{t.manage.operations}</h2>
     <section className="space-y-3"><h3 className="font-semibold">{t.manage.providerEvidence}</h3><AssociationListState {...receipts}>
       <div className="divide-y divide-border">{receipts.data?.items.map(row=><article key={row.id} className="space-y-1 break-words py-3 text-sm">
         <p>{row.provider} / {row.eventId}</p><p>{t.manage.options[row.state]} · {t.manage.attempts}: {row.attempts}</p>
         {row.orderId?<p>{t.order}: {row.orderId}</p>:null}{row.entitlementId?<p>{t.manage.memberships}: {row.entitlementId}</p>:null}
         {row.errorCode?<p>{t.manage.errorCode}: {row.errorCode}</p>:null}
+        {module.data?.canManage&&row.state==="needs_reconciliation"?<Button type="button" className="min-h-11" variant="outline" disabled={retry.pending||!!module.error} onClick={()=>void retryReceipt(row.id)}>{t.manage.retryReceipt}</Button>:null}
       </article>)}</div>{receipts.data?.items.length===0?<p>{t.manage.empty}</p>:null}
-    </AssociationListState></section>
+    </AssociationListState>{retry.feedback}</section>
     <section className="space-y-3"><h3 className="font-semibold">{crm.auditChanges}</h3><AssociationListState {...audit}><div className="divide-y divide-border">
       {audit.data?.items.map(row=><article className="space-y-1 break-words py-3 text-sm" key={row.id}><p>{row.action} · {row.actorKind}</p><p className="text-muted-foreground">{row.id}</p></article>)}
     </div>{audit.data?.items.length===0?<p>{crm.auditEmpty}</p>:null}</AssociationListState></section>

@@ -18,6 +18,7 @@ function fixture() {
     bindOrderProvider: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
     reconcileProviderEntitlement: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     listProviderReceipts: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+    resolveProviderReceipt: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'manual', eventId }),
     updateRegistration: vi.fn(), reconcileProviderEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
     expireDueOrder: vi.fn(),
@@ -45,6 +46,17 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     const event = { provider: 'fixture', providerReference: 'fictional-subscription', providerPeriodId: 'period-1', eventId: 'event-1', occurredAt: '2026-09-09T00:00:00Z', command: { kind: 'update_entitlement', entitlementId: orderId, status: 'cancelled' } }
     await expect(f.service.execute({ ...member, authority: { ...member.authority, canReconcileProvider: true } }, command({ kind: 'reconcile_provider_entitlement', event }))).rejects.toMatchObject({ code: 'not_authorized' })
     expect(f.store.reconcileProviderEntitlement).not.toHaveBeenCalled()
+  })
+  it('limits exact receipt retries to owners and admins without granting them payment evidence authority', async () => {
+    const f = fixture(), retry = command({ kind: 'retry_provider_receipt', receiptId: credentialId })
+    await expect(f.service.execute(member, retry)).rejects.toMatchObject({ code: 'not_authorized' })
+    const machine = integration()
+    machine.authority.integration!.grants.push({ operation: 'association.orders.write', selectors: {} })
+    await expect(f.service.execute({ ...machine, authority: { ...machine.authority, role: 'admin', canConfigure: true } }, retry)).rejects.toMatchObject({ code: 'not_authorized' })
+    expect(f.store.resolveProviderReceipt).not.toHaveBeenCalled()
+    await f.service.execute({ ...member, authority: { ...member.authority, role: 'owner', canConfigure: true } }, retry)
+    expect(f.store.resolveProviderReceipt).toHaveBeenCalledWith(workspaceId, credentialId,
+      { credentialKind: 'user', credentialId: userId, actingUserId: userId })
   })
   it('intersects waitlist event and definition read authority before pagination', async () => {
     const f = fixture(), context = integration(), definitionId = randomUUID()

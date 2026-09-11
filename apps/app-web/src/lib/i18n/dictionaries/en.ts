@@ -243,6 +243,8 @@ export const en = {
       "providerEvidence": "Provider evidence",
       "attempts": "Attempts",
       "errorCode": "Review reason",
+      "retryReceipt": "Retry saved evidence",
+      "retryReceiptHelp": "Fix the recorded order, membership or catalogue issue first. Brian will retry the exact saved provider evidence with its original backend identity. If that identity was revoked or its scope changed, make the provider backend resend the same event.",
       "canConfigure": "Only a workspace owner or admin can configure plans and events.",
       "grant": "Grant complimentary membership",
       "adjust": "Adjust membership",

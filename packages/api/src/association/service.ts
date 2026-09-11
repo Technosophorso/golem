@@ -83,6 +83,12 @@ export function createAssociationService(options: {
           return { ...output, ...(await store.listProviderReceipts(workspaceId, { ...pagination(), orderId: command.orderId, entitlementId: command.entitlementId, state: command.state,
             ...(events === 'all' ? {} : { allowedEventIds: events }), ...(plans === 'all' ? {} : { allowedPlanIds: plans }) })) }
         }
+        case 'retry_provider_receipt': {
+          if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
+            throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to retry provider evidence.')
+          }
+          return { ...output, ...(await store.resolveProviderReceipt(workspaceId, command.receiptId, dbActor)) }
+        }
         case 'create_order': return { ...output, ...(await store.createOrder(workspaceId, command.order, dbActor)) }
         case 'get_order': {
           const record = await store.getOrder(workspaceId, command.orderId, dbActor)

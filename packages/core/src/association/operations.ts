@@ -41,6 +41,7 @@ export const AssociationCommandSchema = z.union([
   z.object({ kind: z.literal('reconcile_provider_event'), orderId: Id, event: AssociationProviderEventInputSchema }).strict(),
   z.object({ kind: z.literal('reconcile_provider_entitlement'), event: ProviderEntitlementEventSchema }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_provider_receipts'), orderId: Id.optional(), entitlementId: Id.optional(), state: ProviderReceiptStateSchema.optional() }).strict(),
+  z.object({ kind: z.literal('retry_provider_receipt'), receiptId: Id }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_registrations'), eventId: Id, status: AssociationRegistrationStatusSchema.optional() }).strict(),
   z.object({ kind: z.literal('update_registration'), registrationId: Id, update: AssociationRegistrationUpdateSchema }).strict(),
 ])

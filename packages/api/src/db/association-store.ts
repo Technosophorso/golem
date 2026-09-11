@@ -88,6 +88,7 @@ export type AssociationStore = {
   confirmFreeOrder(workspaceId: string, id: string, actor: AssociationActor): Promise<MutationResult>
   bindOrderProvider(workspaceId: string, orderId: string, input: AssociationProviderBindingInput, actor: AssociationActor): Promise<MutationResult>
   retryProviderEventReceipt(workspaceId: string, receiptId: string): Promise<MutationResult>
+  resolveProviderReceipt(workspaceId: string, receiptId: string, actor: AssociationActor): Promise<MutationResult>
   reconcileProviderEntitlement(workspaceId: string, input: ProviderEntitlementEvent, actor: AssociationActor): Promise<MutationResult>
   listProviderReceipts(workspaceId: string, input: AssociationListInput & { orderId?: string; entitlementId?: string; state?: ProviderReceiptState; allowedEventIds?: readonly string[]; allowedPlanIds?: readonly string[] }): Promise<AssociationPage>
   reconcileProviderEvent(workspaceId: string, orderId: string, input: ProviderEventInput, actor: AssociationActor): Promise<MutationResult>
@@ -1295,6 +1296,35 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
       if (!row) throw new CrmOperationsError('not_found', 'Provider receipt is unavailable.')
       if (row.target_kind === 'entitlement') return createProviderEntitlementInbox(pool).retry(row)
       return receiveProviderInbox(pool, row.normalized_payload, row.execution_actor, workspaceId, providerHandlers(workspaceId), 'worker')
+    },
+    async resolveProviderReceipt(workspaceId, receiptId, actor) {
+      if (actor.credentialKind !== 'user' || !actor.actingUserId) {
+        throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to retry provider evidence.')
+      }
+      const row = await transact(async client => {
+        const current = (await client.query<ProviderInboxRow>(
+          'SELECT * FROM association_integration_events WHERE workspace_id=$1 AND id=$2 FOR UPDATE',
+          [workspaceId, receiptId],
+        )).rows[0]
+        if (!current) throw new CrmOperationsError('not_found', 'Provider receipt is unavailable.')
+        if (!['needs_reconciliation', 'applied'].includes(current.state)) {
+          throw new CrmOperationsError('conflict', 'Only a receipt requiring reconciliation can be retried by an operator.',
+            { reason: 'provider_receipt_not_reconcilable', receiptState: current.state })
+        }
+        if (current.state === 'needs_reconciliation'
+          && !['integration_key', 'provider', 'system_job'].includes(current.execution_actor.credentialKind)) {
+          throw new CrmOperationsError('not_authorized', 'The provider backend must resubmit this exact event with current authority.')
+        }
+        await audit(client, workspaceId, 'provider_receipt.retry_requested', 'provider_receipt', current.id, actor,
+          { provider: current.provider, target: current.target_kind, previousState: current.state, errorCode: current.last_error_code })
+        return current
+      })
+      if (row.target_kind === 'entitlement') {
+        if (row.normalized_payload.target !== 'entitlement') throw new CrmOperationsError('conflict', 'Provider receipt target is inconsistent.')
+        return createProviderEntitlementInbox(pool).submit(workspaceId, row.normalized_payload.event, row.execution_actor)
+      }
+      if (row.normalized_payload.target !== 'order') throw new CrmOperationsError('conflict', 'Provider receipt target is inconsistent.')
+      return receiveProviderInbox(pool, row.normalized_payload, row.execution_actor, workspaceId, providerHandlers(workspaceId))
     },
     async listProviderReceipts(workspaceId, input) {
       return queryCrmPage((sql, params) => pool.query(sql, params), { workspaceId, resource: 'association.provider-receipts', key: 'items',

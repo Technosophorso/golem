@@ -2,7 +2,7 @@ import { beforeEach,describe,expect,it,vi } from "vitest";
 const api=vi.hoisted(()=>({fetch:vi.fn(),contact:vi.fn(),sendability:vi.fn()}));
 vi.mock("@/lib/auth-fetch",()=>({authFetch:api.fetch}));
 vi.mock("@/lib/api/crm",()=>({fetchCrmRecord:api.contact,checkCrmSendability:api.sendability}));
-import { listAssociationPage,exportAssociationAttendees,reserveAssociationOrder,offerAssociationPlace,saveAssociationEvent,saveAssociationPlan,saveAssociationTicket,checkInAssociationAttendee } from "@/lib/api/association";
+import { listAssociationPage,exportAssociationAttendees,reserveAssociationOrder,offerAssociationPlace,retryAssociationProviderReceipt,saveAssociationEvent,saveAssociationPlan,saveAssociationTicket,checkInAssociationAttendee } from "@/lib/api/association";
 const response=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json"}});
 const registration=(id:string,changes={})=>({id,attendeeContactId:`contact-${id}`,attendeeName:`Person ${id}`,attendeeEmail:`person-${id}@example.com`,status:"confirmed",...changes});
 beforeEach(()=>{vi.resetAllMocks();api.sendability.mockResolvedValue({verdict:"allowed"});api.contact.mockImplementation(async(_ws,id)=>({record:{kind:"contact",archivedAt:null,email:`person-${id.replace("contact-","")}@example.com`}}));});
@@ -38,6 +38,13 @@ describe("[COMP:app-web/association] Native member wire contracts",()=>{
     expect(JSON.parse(api.fetch.mock.calls[2][1].body)).toEqual(promotion);
     expect(api.fetch.mock.calls[3]).toEqual([expect.stringContaining("/registrations/stable-registration"),expect.objectContaining({method:"PATCH",body:'{"status":"checked_in"}'})]);
     for(const [,options] of api.fetch.mock.calls) expect(options.headers).toEqual({"Content-Type":"application/json"});
+  });
+  it("retries one encoded provider receipt with an empty closed body",async()=>{
+    api.fetch.mockResolvedValue(response({result:{id:"order"},receipt:{id:"receipt/id",state:"applied"}}));
+    await retryAssociationProviderReceipt("workspace/id","receipt/id");
+    const [url,options]=api.fetch.mock.calls[0];
+    expect(url).toContain("/api/crm/workspace%2Fid/association/provider-receipts/receipt%2Fid/retry");
+    expect(JSON.parse(options.body)).toEqual({});
   });
   it("keeps generic plan/event configuration separate from vertical tickets",async()=>{
     api.fetch.mockImplementation(async()=>response({}));

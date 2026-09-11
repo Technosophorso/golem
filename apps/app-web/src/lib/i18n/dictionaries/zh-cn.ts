@@ -241,6 +241,8 @@ export const zhCN: Dictionary = {
       "providerEvidence": "供应商凭据",
       "attempts": "尝试次数",
       "errorCode": "复核原因",
+      "retryReceipt": "重试已保存凭据",
+      "retryReceiptHelp": "请先修复记录中的订单、会员资格或目录问题。Brian 会使用原有后端身份，重试完全相同的已保存供应商凭据。如果该身份已被撤销或权限范围已更改，请由供应商后端重新发送同一事件。",
       "canConfigure": "只有工作区所有者或管理员可配置方案及活动。",
       "grant": "授予免费会籍",
       "adjust": "调整会籍",

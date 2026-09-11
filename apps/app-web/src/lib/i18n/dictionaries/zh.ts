@@ -230,6 +230,8 @@ export const zh: Dictionary = {
       "providerEvidence": "供應商憑據",
       "attempts": "嘗試次數",
       "errorCode": "覆核原因",
+      "retryReceipt": "重試已儲存憑據",
+      "retryReceiptHelp": "請先修正記錄中的訂單、會籍或目錄問題。Brian 會使用原有後端身分，重試完全相同的已儲存供應商憑據。若該身分已被撤銷或權限範圍已變更，請由供應商後端重新傳送同一事件。",
       "canConfigure": "只有工作區擁有人或管理員可設定方案及活動。",
       "grant": "授予免費會籍",
       "adjust": "調整會籍",

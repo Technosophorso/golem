@@ -69,6 +69,9 @@ export async function listAssociationPage<K extends keyof Rows>(workspaceId:stri
   if(!Array.isArray(items) || (cursor!==null && typeof cursor!=="string")) throw new AssociationApiError("invalid_response",502);
   return {items:items as Rows[K][],nextCursor:cursor};
 }
+export function retryAssociationProviderReceipt(workspaceId:string,receiptId:string) {
+  return request<{result:Record<string,unknown>;receipt:AssociationProviderReceipt}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/provider-receipts/${encodeURIComponent(receiptId)}/retry`,{});
+}
 export type AssociationPlanSave = Omit<AssociationPlan,"id"|"planKey"|"feeMinor"|"provider"|"providerPlanId"> & {key:string;feeMinor:number;provider?:string;providerPlanId?:string};
 export function saveAssociationPlan(workspaceId:string,input:AssociationPlanSave) {
   return request<{record:AssociationPlan}>(`/api/crm/${encodeURIComponent(workspaceId)}/operations/entitlement-plans`,input);
