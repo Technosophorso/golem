@@ -16,6 +16,7 @@ import { feedSchema, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, d
 import type { FeedComposition, FeedTarget, FeedEdit, FeedNode, FeedAnchor } from '@use-brian/shared';
 import { useT } from '@/lib/i18n/client';
 import type { FeedCommentThread } from '@/lib/feed-collaboration';
+import styles from './composition-editor.module.css';
 export type FeedEditorSelection = { target: FeedTarget; quote: string; caret?: { segmentId: string; blockId: string; offset: number } };
 const decorationKey = new PluginKey('feed-comments');
 function cleanNode(node: PMNode): FeedNode {
@@ -161,9 +162,9 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     else if (action === 'deleteBlock') { let position: number | undefined; view.state.doc.descendants((item, pos) => { if (item.attrs.id === blockId) position = pos; }); if (position !== undefined) view.dispatch(view.state.tr.delete(position, position + feedSchema.nodeFromJSON(node).nodeSize)); }
     else if ((action === 'moveUp' && index > 0) || (action === 'moveDown' && index < siblings.length - 1)) latest.current.onEdit([{ kind: 'moveBlock', segmentId: props.segmentId, blockId, parentId, afterId: action === 'moveUp' ? siblings[index - 2]?.attrs.id ?? null : siblings[index + 1]!.attrs.id }]);
   }
-  return <div ref={frameRef} className="relative rounded-xl border border-border bg-card shadow-xs transition-colors focus-within:border-ring [&_:focus-visible]:shadow-none" data-feed-segment-editor>
+  return <div ref={frameRef} className={`${styles.frame} relative rounded-xl border border-border bg-card shadow-xs transition-colors`} data-feed-segment-editor>
     <FeedEditorToolbar disabled={props.readOnly} active={formatting} onFormat={format} onPlaceholder={placeholder} onBlock={blockAction} focusEditor={() => viewRef.current?.focus()} onAction={props.onAction} />
-    <div ref={host} />
+    <div ref={host} className={styles.surface} />
     {selectionTop !== null && !props.readOnly ? <div className="absolute left-2 right-2 z-20" style={{ top: selectionTop }}><FeedSelectionActions onAction={props.onAction} /></div> : null}
     {props.generation ? slotMounts.map(mount => {
       let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }

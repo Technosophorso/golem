@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 import React, { act } from 'react';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from '@tiptap/pm/view';
@@ -17,6 +19,7 @@ vi.mock('@/lib/surface-prefetch', () => ({ feedCollaborationCacheKey: () => 'fix
 vi.mock('../tuning-chat-panel', () => ({ TuningChatPanel: (props: { sessionId: string }) => <div data-chat-session={props.sessionId} /> }));
 import { GenerationPlaceholder, FeedGenerationResults, type FeedGenerationControls } from '../generation-placeholder';
 import { CompositionEditor, FeedCompositionPreview } from '../composition-editor';
+import editorStyles from '../composition-editor.module.css';
 import { DraftCommentPanel, type FeedCommentPanelProps } from '../draft-comment-panel';
 import { FeedReview, type FeedReviewActions } from '../feed-review';
 let host: HTMLDivElement; let root: Root;
@@ -112,6 +115,34 @@ describe('[COMP:app-web/feed-editor-toolbar] selected-passage controls', () => {
 });
 
 describe('[COMP:app-web/feed-composition-editor] authoring and collaboration workflow', () => {
+  it('gives the writing surface and toolbar mutually exclusive focus indicators', () => {
+    act(() => root.render(<CompositionEditor composition={composition()} threads={[]} onEdit={vi.fn()} onSelection={vi.fn()} onAction={vi.fn()} onOpenThread={vi.fn()} />));
+    // Execute the actual CSS selectors against the rendered DOM. A broad
+    // focus-within selector would also match the frame when a button owns focus.
+    const css = readFileSync(resolve(import.meta.dirname, '../composition-editor.module.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]+)\}/g)].map(([, selector, declarations]) => ({
+      // jsdom has no input-modality model; the browser walkthrough checks
+      // :focus-visible with real Tab, arrow and Escape key events.
+      selector: selector!.trim().replace(/:global\(([^)]+)\)/g, '$1').replace(/\.(frame|surface)\b/g, (_, key: string) => `.${editorStyles[key]}`).replaceAll(':focus-visible', ':focus'),
+      declarations: declarations!,
+    }));
+    const frameRule = rules.find(rule => /border-color:\s*var\(--ring\)/.test(rule.declarations))!;
+    const buttonRule = rules.find(rule => /outline:\s*2px solid/.test(rule.declarations))!;
+    const frame = host.querySelector<HTMLElement>('[data-feed-segment-editor]')!;
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    act(() => view.focus());
+    expect(frame.matches(frameRule.selector)).toBe(true);
+    act(() => button(text.bold).focus());
+    expect(frame.matches(frameRule.selector)).toBe(false);
+    expect(button(text.bold).matches(buttonRule.selector)).toBe(true);
+    act(() => button(text.bold).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
+    expect(document.activeElement).toBe(button(text.italic));
+    expect(frame.matches(frameRule.selector)).toBe(false);
+    expect(button(text.italic).matches(buttonRule.selector)).toBe(true);
+    act(() => view.focus());
+    expect(frame.matches(frameRule.selector)).toBe(true);
+    expect(button(text.italic).matches(buttonRule.selector)).toBe(false);
+  });
   it('scenarios 1 and 2: keyboard selection names the second duplicate and comment creation keeps its decoration', async () => {
     const doc = composition(); let selected: FeedTarget | undefined;
     const onSelection = vi.fn((selection) => { selected = selection.target; }); const onAction = vi.fn();

@@ -1,0 +1,20 @@
+/* The document and its controls have separate focus owners. Match the
+   editable itself, not focus-within: node views contain independent inputs. */
+.frame:has(> .surface > :global(.ProseMirror):focus) {
+  border-color: var(--ring);
+}
+
+.surface > :global(.ProseMirror):focus {
+  outline: none;
+  box-shadow: none;
+}
+
+/* Keep a visible keyboard target without stacking the shared Button border,
+   Tailwind ring and global focus halo. Menus retain their own focus behavior. */
+.frame [data-feed-editor-toolbar] button:focus-visible,
+.frame [data-feed-selection-actions] button:focus-visible {
+  border-color: transparent;
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+  box-shadow: none;
+}
