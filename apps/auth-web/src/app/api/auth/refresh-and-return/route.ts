@@ -4,14 +4,10 @@ import { clearAuthCookies, installSession, parseLastCookie, type AuthData } from
 import { portalConfig } from "@/lib/config";
 import { dictionaryFor, normalizeLocale, type Locale } from "@/lib/i18n/server";
 import { loginUrl, safeReturnUrl } from "@/lib/origins";
+import { normalizedRetry } from "./retry";
 
 const rejected = (status: number) => status === 400 || status === 401 || status === 403;
 const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-export function normalizedRetry(raw: string | null): number {
-  const parsed = Number.parseInt(raw ?? "0", 10);
-  return Number.isFinite(parsed) ? Math.min(4, Math.max(0, parsed)) : 0;
-}
 
 function retryResponse(requestUrl: string, next: URL | null, retry: number, locale: Locale) {
   const config = portalConfig();
