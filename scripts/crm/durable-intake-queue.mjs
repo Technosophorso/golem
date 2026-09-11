@@ -100,6 +100,11 @@ export class DurableIntakeQueue {
             response_json TEXT,error_category TEXT,http_status INTEGER,uncertain INTEGER NOT NULL DEFAULT 0,
             UNIQUE(definition_key,source_key));
           CREATE INDEX IF NOT EXISTS receipts_due ON receipts(state,next_attempt_at,created_at,id);
+          CREATE TABLE IF NOT EXISTS continuations(receipt_id TEXT PRIMARY KEY REFERENCES receipts(id) ON DELETE CASCADE,
+            request_hash TEXT NOT NULL,payload_json TEXT,state TEXT NOT NULL CHECK(state IN ('pending','leased','delivered','failed','paused','cancelled')),
+            next_attempt_at INTEGER NOT NULL,attempts INTEGER NOT NULL DEFAULT 0,lease_token TEXT,lease_until INTEGER,
+            error_category TEXT,http_status INTEGER,uncertain INTEGER NOT NULL DEFAULT 0);
+          CREATE INDEX IF NOT EXISTS continuations_due ON continuations(state,next_attempt_at,receipt_id);
           CREATE TABLE IF NOT EXISTS visitor_windows(visitor_hash TEXT PRIMARY KEY,expires_at INTEGER NOT NULL,count INTEGER NOT NULL);`)
         const meta = this.db.prepare('SELECT * FROM queue_meta WHERE id=1').get()
         if (meta && (meta.version !== 1 || meta.configuration !== json(this.config))) fail('queue_configuration_mismatch')
@@ -116,29 +121,44 @@ export class DurableIntakeQueue {
   getReceipt(id, { includePayload = false } = {}) {
     const row = this.db.prepare('SELECT * FROM receipts WHERE id=?').get(id)
     if (!row) return null
+    const continuation = this.db.prepare('SELECT * FROM continuations WHERE receipt_id=?').get(id)
     return { id: row.id, definitionKey: row.definition_key, idempotencyKey: row.source_key,
       state: row.state, createdAt: row.created_at, retryUntil: row.retry_until, nextAttemptAt: row.next_attempt_at,
       attempts: row.attempts, uncertain: row.uncertain === 1,
       error: row.error_category ? { category: row.error_category, status: row.http_status } : null,
       result: row.response_json ? JSON.parse(row.response_json) : null,
-      ...(includePayload ? { payload: row.payload_json ? JSON.parse(row.payload_json) : null } : {}) }
+      continuation: continuation ? {
+        state: continuation.state,nextAttemptAt: continuation.next_attempt_at,attempts: continuation.attempts,
+        uncertain: continuation.uncertain === 1,
+        error: continuation.error_category ? { category: continuation.error_category,status: continuation.http_status } : null,
+      } : null,
+      ...(includePayload ? {
+        payload: row.payload_json ? JSON.parse(row.payload_json) : null,
+        continuationPayload: continuation?.payload_json ? JSON.parse(continuation.payload_json) : null,
+      } : {}) }
   }
-  enqueue({ definitionKey, idempotencyKey, body, visitorId }) {
+  enqueue({ definitionKey, idempotencyKey, body, visitorId, continuation }) {
     if (!stableKey.test(definitionKey) || typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.trim().length > 200) fail('invalid_submission_identity')
     if (typeof visitorId !== 'string' || !visitorId || visitorId.length > 500) fail('trusted_visitor_identifier_required')
     if (!body || typeof body !== 'object' || Array.isArray(body) || !body.fields || typeof body.fields !== 'object' || Array.isArray(body.fields)
       || Object.keys(body).some((key) => !['fields', 'externalIdentity', 'submittedAt', 'identityProof'].includes(key))) fail('invalid_submission_body')
-    const payload = json(body), sourceKey = idempotencyKey.trim()
-    if (Buffer.byteLength(payload) > 1_048_576) fail('payload_too_large', 413)
+    if (continuation !== undefined && (!continuation || typeof continuation !== 'object' || Array.isArray(continuation))) fail('invalid_continuation')
+    const payload = json(body), continuationPayload = continuation === undefined ? null : json(continuation)
+    const sourceKey = idempotencyKey.trim()
+    if (continuationPayload === '{}') fail('invalid_continuation')
+    if (Buffer.byteLength(payload) + Buffer.byteLength(continuationPayload ?? '') > 1_048_576) fail('payload_too_large', 413)
     const hash = createHash('sha256').update(json({ definitionKey, body })).digest('hex')
+    const continuationHash = continuationPayload === null ? null : createHash('sha256').update(continuationPayload).digest('hex')
     const id = this.transaction(() => {
-      const prior = this.db.prepare('SELECT id,request_hash FROM receipts WHERE definition_key=? AND source_key=?').get(definitionKey, sourceKey)
+      const prior = this.db.prepare(`SELECT r.id,r.request_hash,c.request_hash AS continuation_hash
+        FROM receipts r LEFT JOIN continuations c ON c.receipt_id=r.id WHERE r.definition_key=? AND r.source_key=?`).get(definitionKey, sourceKey)
       if (prior) {
-        if (prior.request_hash !== hash) fail('idempotency_conflict', 409)
+        if (prior.request_hash !== hash || (prior.continuation_hash ?? null) !== continuationHash) fail('idempotency_conflict', 409)
         return prior.id
       }
       const now = this.now()
-      if (this.db.prepare('SELECT count(*) AS n FROM receipts WHERE payload_json IS NOT NULL').get().n >= this.config.maxOutstanding) fail('queue_full', 503)
+      if (this.db.prepare(`SELECT count(*) AS n FROM receipts r LEFT JOIN continuations c ON c.receipt_id=r.id
+        WHERE r.payload_json IS NOT NULL OR c.payload_json IS NOT NULL`).get().n >= this.config.maxOutstanding) fail('queue_full', 503)
       this.db.prepare('DELETE FROM visitor_windows WHERE expires_at<=?').run(now)
       const visitor = createHmac('sha256', this.salt).update(visitorId).digest('hex')
       const window = this.db.prepare('SELECT count FROM visitor_windows WHERE visitor_hash=?').get(visitor)
@@ -148,6 +168,10 @@ export class DurableIntakeQueue {
       const receiptId = randomUUID()
       this.db.prepare(`INSERT INTO receipts(id,definition_key,source_key,request_hash,payload_json,state,created_at,retry_until,next_attempt_at)
         VALUES(?,?,?,?,?,'queued',?,?,?)`).run(receiptId, definitionKey, sourceKey, hash, payload, now, now + this.config.replayHorizonMs, now)
+      if (continuationPayload !== null) {
+        this.db.prepare(`INSERT INTO continuations(receipt_id,request_hash,payload_json,state,next_attempt_at)
+          VALUES(?,?,?,'pending',?)`).run(receiptId,continuationHash,continuationPayload,now)
+      }
       return receiptId
     })
     return this.getReceipt(id)
@@ -172,11 +196,17 @@ export class DurableIntakeQueue {
     const now = this.now(), next = now + delay
     if (state === 'queued' && next >= row.retry_until) { state = 'paused'; category = 'replay_deadline_expired' }
     const terminal = ['delivered', 'retired'].includes(state)
-    this.db.prepare(`UPDATE receipts SET state=?,response_json=?,error_category=?,http_status=?,next_attempt_at=?,
-      uncertain=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE uncertain END,
-      payload_json=CASE WHEN ? THEN NULL ELSE payload_json END,lease_token=NULL,lease_until=NULL
-      WHERE id=? AND state='leased' AND lease_token=?`)
-      .run(state, result ? json(result) : null, category, status, next, Number(terminal), Number(uncertain), Number(terminal), row.id, row.lease_token)
+    this.transaction(() => {
+      const changed = this.db.prepare(`UPDATE receipts SET state=?,response_json=?,error_category=?,http_status=?,next_attempt_at=?,
+        uncertain=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE uncertain END,
+        payload_json=CASE WHEN ? THEN NULL ELSE payload_json END,lease_token=NULL,lease_until=NULL
+        WHERE id=? AND state='leased' AND lease_token=?`)
+        .run(state, result ? json(result) : null, category, status, next, Number(terminal), Number(uncertain), Number(terminal), row.id, row.lease_token)
+      if (changed.changes === 1 && state === 'retired') {
+        this.db.prepare(`UPDATE continuations SET state='cancelled',payload_json=NULL,lease_token=NULL,lease_until=NULL,
+          error_category='submission_retired' WHERE receipt_id=? AND state!='delivered'`).run(row.id)
+      }
+    })
     return this.getReceipt(row.id)
   }
   async tick({ getToken, fetchImpl = fetch, signal } = {}) {
@@ -212,6 +242,65 @@ export class DurableIntakeQueue {
       return { processed: true, receipt: this.finish(row, { state: 'queued', category: response ? 'invalid_upstream_response' : 'transport_uncertain', delay, uncertain: true }) }
     }
   }
+  claimContinuation() {
+    return this.transaction(() => {
+      const now = this.now()
+      this.db.prepare(`UPDATE continuations SET state='pending',lease_token=NULL,lease_until=NULL,uncertain=1,error_category='lease_expired'
+        WHERE state='leased' AND lease_until<=?`).run(now)
+      this.db.prepare(`UPDATE continuations SET state='paused',error_category='replay_deadline_expired'
+        WHERE state='pending' AND next_attempt_at<=? AND receipt_id IN (SELECT id FROM receipts WHERE retry_until<=?)`).run(now,now)
+      const row = this.db.prepare(`SELECT c.*,r.definition_key,r.source_key,r.response_json,r.retry_until
+        FROM continuations c JOIN receipts r ON r.id=c.receipt_id
+        WHERE r.state='delivered' AND c.state='pending' AND c.next_attempt_at<=?
+        ORDER BY c.next_attempt_at,r.created_at,c.receipt_id LIMIT 1`).get(now)
+      if (!row) return null
+      const token = randomUUID()
+      this.db.prepare(`UPDATE continuations SET state='leased',lease_token=?,lease_until=?,attempts=attempts+1
+        WHERE receipt_id=? AND state='pending'`).run(token,now+this.config.requestTimeoutMs+5000,row.receipt_id)
+      return { ...row,lease_token: token,attempts: row.attempts+1 }
+    })
+  }
+  finishContinuation(row, { state, category = null, status = null, delay = 0, uncertain = false }) {
+    const now = this.now(), next = now + delay
+    if (state === 'pending' && next >= row.retry_until) { state='paused'; category='replay_deadline_expired' }
+    const terminal = ['delivered','cancelled'].includes(state)
+    this.db.prepare(`UPDATE continuations SET state=?,error_category=?,http_status=?,next_attempt_at=?,
+      uncertain=CASE WHEN ? THEN 0 WHEN ? THEN 1 ELSE uncertain END,
+      payload_json=CASE WHEN ? THEN NULL ELSE payload_json END,lease_token=NULL,lease_until=NULL
+      WHERE receipt_id=? AND state='leased' AND lease_token=?`)
+      .run(state,category,status,next,Number(terminal),Number(uncertain),Number(terminal),row.receipt_id,row.lease_token)
+    return this.getReceipt(row.receipt_id)
+  }
+  async tickContinuation({ deliver, signal } = {}) {
+    if (signal?.aborted) return { processed: false }
+    if (typeof deliver !== 'function') fail('continuation_delivery_required')
+    const row = this.claimContinuation()
+    if (!row) return { processed: false }
+    const delay = Math.min(60_000,Math.round(1000*2**Math.min(row.attempts-1,16)*(1+Math.max(0,Math.min(1,this.random()))*.2)))
+    let response
+    try {
+      response = await deliver({
+        receiptId: row.receipt_id,definitionKey: row.definition_key,idempotencyKey: row.source_key,
+        result: JSON.parse(row.response_json),continuation: JSON.parse(row.payload_json),
+      })
+      if (response?.status === 200 || response?.status === 204) {
+        await response.body?.cancel().catch(() => {})
+        return { processed: true,receipt: this.finishContinuation(row,{ state: 'delivered',status: response.status }) }
+      }
+      await response?.body?.cancel().catch(() => {})
+      const status = Number.isInteger(response?.status) ? response.status : null
+      const transient = status === null || retryable.has(status) || status === 202 || (status >= 500 && status <= 599)
+      const retryAfter = response?.headers?.get('retry-after')
+      const requestedDelay = retryAfter && /^\d+$/.test(retryAfter) ? Number(retryAfter)*1000
+        : retryAfter ? Math.max(0,Date.parse(retryAfter)-this.now()) : 0
+      return { processed: true,receipt: this.finishContinuation(row,{ state: transient ? 'pending' : 'failed',
+        category: transient ? (status === 202 ? 'continuation_pending' : 'continuation_retryable') : 'continuation_rejected',status,
+        delay: transient ? Math.max(delay,Number.isFinite(requestedDelay) ? Math.min(requestedDelay,2147483647000) : 0) : 0,
+        uncertain: status === null || status >= 500 || status === 408 }) }
+    } catch {
+      return { processed: true,receipt: this.finishContinuation(row,{ state: 'pending',category: 'continuation_transport_uncertain',delay,uncertain: true }) }
+    }
+  }
   retry(id) {
     return this.transaction(() => {
       const row = this.getReceipt(id)
@@ -228,6 +317,29 @@ export class DurableIntakeQueue {
       if (['delivered', 'retired'].includes(row.state)) fail('receipt_already_committed', 409)
       this.db.prepare(`UPDATE receipts SET state='cancelled',payload_json=NULL,lease_token=NULL,lease_until=NULL,
         uncertain=CASE WHEN state='leased' OR uncertain=1 THEN 1 ELSE 0 END,error_category='owner_cancelled' WHERE id=?`).run(id)
+      this.db.prepare(`UPDATE continuations SET state='cancelled',payload_json=NULL,lease_token=NULL,lease_until=NULL,
+        uncertain=CASE WHEN state='leased' OR uncertain=1 THEN 1 ELSE 0 END,error_category='owner_cancelled'
+        WHERE receipt_id=? AND state!='delivered'`).run(id)
+      return this.getReceipt(id)
+    })
+  }
+  retryContinuation(id) {
+    return this.transaction(() => {
+      const receipt = this.getReceipt(id)
+      if (!receipt) fail('receipt_not_found',404)
+      if (!receipt.continuation || receipt.continuation.state !== 'failed' || this.now() >= receipt.retryUntil) fail('continuation_not_retryable',409)
+      this.db.prepare(`UPDATE continuations SET state='pending',next_attempt_at=?,error_category=NULL,http_status=NULL WHERE receipt_id=?`).run(this.now(),id)
+      return this.getReceipt(id)
+    })
+  }
+  cancelContinuation(id) {
+    return this.transaction(() => {
+      const receipt = this.getReceipt(id)
+      if (!receipt) fail('receipt_not_found',404)
+      if (!receipt.continuation) fail('continuation_not_found',404)
+      if (receipt.continuation.state === 'delivered') fail('continuation_already_delivered',409)
+      this.db.prepare(`UPDATE continuations SET state='cancelled',payload_json=NULL,lease_token=NULL,lease_until=NULL,
+        uncertain=CASE WHEN state='leased' OR uncertain=1 THEN 1 ELSE 0 END,error_category='owner_cancelled' WHERE receipt_id=?`).run(id)
       return this.getReceipt(id)
     })
   }

@@ -25,7 +25,7 @@ function readJson(req) {
     req.on('error', () => reject(new IntakeQueueError('request_interrupted')))
   })
 }
-export async function startReferenceIntakeBackend({ queue, bearerToken, getIntakeToken, port = 0, runWorker = true }) {
+export async function startReferenceIntakeBackend({ queue, bearerToken, getIntakeToken, deliverContinuation, port = 0, runWorker = true }) {
   if (typeof bearerToken !== 'string' || bearerToken.length < 32 || /\s/.test(bearerToken)) throw new IntakeQueueError('private_backend_token_required')
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new IntakeQueueError('invalid_port')
   const digest = (value) => createHash('sha256').update(value).digest()
@@ -40,8 +40,9 @@ export async function startReferenceIntakeBackend({ queue, bearerToken, getIntak
       const url = new URL(req.url, 'http://localhost'), parts = url.pathname.split('/').filter(Boolean)
       if (req.method === 'POST' && parts[0] === 'submissions' && parts.length === 2) {
         const input = await readJson(req)
-        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['idempotencyKey', 'body'].includes(key))) throw new IntakeQueueError('invalid_submission_body')
+        if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['idempotencyKey', 'body', 'continuation'].includes(key))) throw new IntakeQueueError('invalid_submission_body')
         const receipt = queue.enqueue({ definitionKey: parts[1], idempotencyKey: input.idempotencyKey, body: input.body,
+          ...(input.continuation === undefined ? {} : { continuation: input.continuation }),
           // No forwarded headers: production ingress must supply its own trusted resolver.
           visitorId: req.socket.remoteAddress ?? 'local_unknown' })
         reply(['queued', 'leased'].includes(receipt.state) ? 202 : 200, { receipt })
@@ -56,6 +57,12 @@ export async function startReferenceIntakeBackend({ queue, bearerToken, getIntak
         if (!input || input.confirmed !== true || Object.keys(input).length !== 1) throw new IntakeQueueError('owner_confirmation_required')
         reply(200, { receipt: queue[parts[2]](parts[1]) }); return
       }
+      if (req.method === 'POST' && parts[0] === 'receipts' && parts[2] === 'continuation' && parts.length === 4 && ['retry', 'cancel'].includes(parts[3])) {
+        const input = await readJson(req)
+        if (!input || input.confirmed !== true || Object.keys(input).length !== 1) throw new IntakeQueueError('owner_confirmation_required')
+        const action = parts[3] === 'retry' ? 'retryContinuation' : 'cancelContinuation'
+        reply(200, { receipt: queue[action](parts[1]) }); return
+      }
       reply(404, { error: 'not_found' })
     } catch (error) {
       reply(error instanceof IntakeQueueError ? error.status : 500, { error: error instanceof IntakeQueueError ? error.code : 'reference_backend_failed' })
@@ -66,6 +73,7 @@ export async function startReferenceIntakeBackend({ queue, bearerToken, getIntak
   const worker = runWorker ? (async () => {
     while (!controller.signal.aborted) {
       await queue.tick({ getToken: getIntakeToken, signal: controller.signal })
+      if (deliverContinuation) await queue.tickContinuation({ deliver: deliverContinuation, signal: controller.signal })
       await setTimeout(250, undefined, { signal: controller.signal }).catch(() => {})
     }
   })() : Promise.resolve()
@@ -95,10 +103,11 @@ Usage: node scripts/crm/reference-intake-backend.mjs --db <absolute-path>
 
 Supply secrets only through the named environment variables. The backend token
 must contain at least 32 non-whitespace characters. No .env file is loaded.
-POST /submissions/<definition> with {idempotencyKey,body:{fields,...}} commits
-the queue before 202. GET /receipts/<id> shows state; ?includePayload=true is
-explicit owner inspection. POST /receipts/<id>/retry or /cancel requires
-{confirmed:true}. All routes require the private backend bearer credential.
+POST /submissions/<definition> with {idempotencyKey,body:{fields,...}} and an
+optional opaque continuation commits the queue before 202. GET /receipts/<id>
+shows both states; ?includePayload=true is explicit owner inspection. POST
+/receipts/<id>/retry or /cancel and /receipts/<id>/continuation/retry or
+/cancel require {confirmed:true}. All routes require the private backend bearer.
 The fixture ignores forwarded-IP headers and is not a production website.
 The approved retry horizon must fit Brian's receipt policy. Cancellation of an
 in-flight request is uncertain: inspect Brian before assuming nothing arrived.

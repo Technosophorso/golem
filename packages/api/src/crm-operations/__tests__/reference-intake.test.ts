@@ -25,8 +25,9 @@ function fixture(overrides: Options = {}) {
   return { root,clock,options,open,close }
 }
 const body = { fields: { name: 'Synthetic fixture',message: 'Private fixture content' } }
-const enqueue = (queue: InstanceType<typeof DurableIntakeQueue>, key='fixture_submission', visitor='fixture_visitor') =>
-  queue.enqueue({ definitionKey: 'fixture_form',idempotencyKey: key,body,visitorId: visitor })
+const enqueue = (queue: InstanceType<typeof DurableIntakeQueue>, key='fixture_submission', visitor='fixture_visitor', continuation?: unknown) =>
+  queue.enqueue({ definitionKey: 'fixture_form',idempotencyKey: key,body,visitorId: visitor,
+    ...(continuation === undefined ? {} : { continuation }) })
 const result = (duplicate=false) => ({ submissionId: randomUUID(),contactId: randomUUID(),followUpTaskId: null,duplicate })
 const accepted = () => new Response(JSON.stringify(result()),{ status: 201 })
 async function upstream(handler: (req: IncomingMessage,res: ServerResponse) => void | Promise<void>) {
@@ -86,6 +87,19 @@ describe('[COMP:crm/intake-reference] Durable backend admission and replay', () 
     expect(readFileSync(f.options.databasePath).includes(Buffer.from('private_visitor_identifier'))).toBe(false)
   })
 
+  it('commits an opaque continuation with the intake identity and refuses continuation drift', () => {
+    const f=fixture(),queue=f.open()
+    const continuation={ kind: 'route_replay',payload: { path: '/contact',email: 'private@example.test' } }
+    const first=enqueue(queue,'continued','fixture_visitor',continuation)
+    expect(first.continuation).toMatchObject({ state: 'pending',attempts: 0,uncertain: false,error: null })
+    expect(first).not.toHaveProperty('continuationPayload')
+    expect(enqueue(queue,'continued','fixture_visitor',continuation).id).toBe(first.id)
+    expect(() => enqueue(queue,'continued','fixture_visitor',{ ...continuation,payload: { path: '/enquiry' } }))
+      .toThrow('idempotency_conflict')
+    expect(() => enqueue(queue,'continued')).toThrow('idempotency_conflict')
+    expect(queue.getReceipt(first.id,{ includePayload: true }).continuationPayload).toEqual(continuation)
+  })
+
   it('recovers a two-hour outage after restart with the frozen key/body and clears successful payloads', async () => {
     const f=fixture(),queue=f.open(),first=enqueue(queue)
     const unavailable=vi.fn(async () => { throw new Error('sensitive upstream detail must not persist') })
@@ -104,6 +118,41 @@ describe('[COMP:crm/intake-reference] Durable backend admission and replay', () 
     f.close(recovered)
     expect(readFileSync(f.options.databasePath).includes(Buffer.from(token))).toBe(false)
     expect(readFileSync(f.options.databasePath).includes(Buffer.from('sensitive upstream detail'))).toBe(false)
+  })
+
+  it('delivers a continuation only after Brian acceptance and clears it after an exact acknowledgement', async () => {
+    const f=fixture(),queue=f.open()
+    const continuation={ kind: 'fixture_hook',payload: { email: 'private@example.test' } }
+    const first=enqueue(queue,'continued','fixture_visitor',continuation)
+    expect(await queue.tickContinuation({ deliver: async () => new Response(null,{ status: 200 }) })).toEqual({ processed: false })
+    const acceptedResult=result()
+    await queue.tick({ getToken: () => token,fetchImpl: async () => new Response(JSON.stringify(acceptedResult),{ status: 201 }) })
+    const calls: unknown[]=[]
+    const uncertain=await queue.tickContinuation({ deliver: async (envelope: unknown) => { calls.push(envelope); throw new Error('lost acknowledgement') } })
+    expect(uncertain.receipt).toMatchObject({ state: 'delivered',continuation: { state: 'pending',attempts: 1,uncertain: true,error: { category: 'continuation_transport_uncertain' } } })
+    expect(calls[0]).toEqual({ receiptId: first.id,definitionKey: 'fixture_form',idempotencyKey: 'continued',result: acceptedResult,continuation })
+    const due=uncertain.receipt.continuation.nextAttemptAt
+    f.clock.value=due
+    const completed=await queue.tickContinuation({ deliver: async (envelope: unknown) => { calls.push(envelope); return new Response(null,{ status: 204 }) } })
+    expect(completed.receipt).toMatchObject({ state: 'delivered',continuation: { state: 'delivered',attempts: 2,uncertain: false,error: null } })
+    expect(calls[1]).toEqual(calls[0])
+    expect(queue.getReceipt(first.id,{ includePayload: true })).toMatchObject({ payload: null,continuationPayload: null })
+  })
+
+  it('keeps rejected continuations for operator retry or cancellation without changing intake success', async () => {
+    const f=fixture(),queue=f.open(),first=enqueue(queue,'rejected','fixture_visitor',{ kind: 'fixture_hook' })
+    await queue.tick({ getToken: () => token,fetchImpl: async () => accepted() })
+    const rejected=await queue.tickContinuation({ deliver: async () => new Response('private callback body',{ status: 422 }) })
+    expect(rejected.receipt).toMatchObject({ state: 'delivered',continuation: { state: 'failed',error: { category: 'continuation_rejected',status: 422 } } })
+    expect(JSON.stringify(rejected)).not.toContain('private callback body')
+    expect(queue.retryContinuation(first.id).continuation.state).toBe('pending')
+    expect((await queue.tickContinuation({ deliver: async () => new Response(null,{ status: 200 }) })).receipt.continuation.state).toBe('delivered')
+
+    f.clock.value+=1100
+    const second=enqueue(queue,'cancelled-continuation','another_visitor',{ kind: 'fixture_hook' })
+    await queue.tick({ getToken: () => token,fetchImpl: async () => accepted() })
+    expect(queue.cancelContinuation(second.id)).toMatchObject({ state: 'delivered',continuation: { state: 'cancelled' } })
+    expect(queue.getReceipt(second.id,{ includePayload: true }).continuationPayload).toBeNull()
   })
 
   it.each([401,409,413,422])('does not automatically retry permanent HTTP %s or store provider error text', async (status) => {
@@ -227,7 +276,7 @@ describe('[COMP:crm/intake-reference] Durable backend admission and replay', () 
   })
 
   it('does not let an expired worker overwrite a newer successful lease', async () => {
-    const f=fixture(),left=f.open(),right=f.open(),first=enqueue(left)
+    const f=fixture(),left=f.open(),right=f.open(),first=enqueue(left,'fixture_submission','fixture_visitor',{ kind: 'fixture_hook' })
     let complete!: (value: Response) => void, started!: () => void
     const entered=new Promise<void>((done) => { started=done })
     const pending=new Promise<Response>((done) => { complete=done })
@@ -237,8 +286,11 @@ describe('[COMP:crm/intake-reference] Durable backend admission and replay', () 
     const committed=result(true)
     expect((await right.tick({ getToken: () => token,fetchImpl: async () => new Response(JSON.stringify(committed)) })).receipt)
       .toMatchObject({ id: first.id,state: 'delivered',attempts: 2,result: committed })
-    complete(new Response('',{ status: 503 })); await older
-    expect(right.getReceipt(first.id,{ includePayload: true })).toMatchObject({ state: 'delivered',result: committed,payload: null,uncertain: false })
+    complete(new Response(JSON.stringify({ duplicate: true,outcome: 'submission_retired' }),{ status: 200 })); await older
+    expect(right.getReceipt(first.id,{ includePayload: true })).toMatchObject({
+      state: 'delivered',result: committed,payload: null,uncertain: false,
+      continuation: { state: 'pending' },continuationPayload: { kind: 'fixture_hook' },
+    })
   })
 
   it('refuses unsafe origins, foreign queue configurations, public database files and symlinks', () => {
