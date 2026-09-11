@@ -84,6 +84,28 @@ describe('[COMP:feed/composition-model] canonical conversion and transaction ope
 })
 
 describe('[COMP:feed/composition-model] editor identity and proposal mapping', () => {
+  it('maps comments through simultaneous prefix removal, wrapping, nested typing and inverse reshaping', () => {
+    const before = imported(); const segment = before.segments[0]!;
+    segment.content = [feedParagraph('- Target phrase.'), feedParagraph('Untouched.')];
+    const leaf = segment.content[0]!;
+    const anchor = createFeedAnchor(before, { kind: 'range', spans: [{ segmentId: segment.id, blockId: leaf.attrs.id, from: 2, to: 8 }] }, 1);
+    const after = structuredClone(before);
+    after.segments[0]!.content[0] = { type: 'bulletList', attrs: { id: randomUUID() }, content: [{ type: 'listItem', attrs: { id: randomUUID() }, content: [feedParagraph('Target phrase.', leaf.attrs.id)] }] };
+    const edits = diffFeedComposition(before, after);
+    expect(edits.map(edit => edit.kind)).toEqual(['replaceText', 'reshapeSegment']);
+    const result = applyFeedEdits(before, edits, [anchor]);
+    expect(result.composition).toEqual(after);
+    expect(result.anchors[0]).toMatchObject({ state: 'attached', target: { spans: [{ blockId: leaf.attrs.id, from: 0, to: 6 }] } });
+    const typed = structuredClone(after);
+    const nested = walkFeed(typed).find(row => row.node.attrs.id === leaf.attrs.id)!.node as Extract<FeedNode, { type: 'paragraph' }>;
+    nested.content = inline('Now: Target phrase.');
+    const typedResult = applyFeedEdits(after, diffFeedComposition(after, typed), result.anchors);
+    expect(typedResult.anchors[0]).toMatchObject({ state: 'attached', target: { spans: [{ from: 5, to: 11 }] } });
+    const restored = applyFeedEdits(after, diffFeedComposition(after, before), result.anchors);
+    expect(restored.composition).toEqual(before);
+    expect(restored.anchors).toEqual([anchor]);
+    expect(applyFeedEdits(result.composition, result.inverse).composition).toEqual(before);
+  });
   it('scenario 2: splits and rejoins a highlighted passage without changing its quote or target identity', () => {
     const composition = imported('Before selected passage after.'); const segment = composition.segments[0]!; const block = segment.content[0]!;
     const anchor = createFeedAnchor(composition, { kind: 'range', spans: [{ segmentId: segment.id, blockId: block.attrs.id, from: 7, to: 23 }] }, 2)

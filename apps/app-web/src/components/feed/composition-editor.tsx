@@ -11,6 +11,8 @@ import { wrapInList, splitListItem, liftListItem, sinkListItem } from '@tiptap/p
 import { promptDialog } from '@/components/ui/prompt-dialog';
 import { keymap } from '@tiptap/pm/keymap';
 import { history, undo, redo } from '@tiptap/pm/history';
+import { undoInputRule } from '@tiptap/pm/inputrules';
+import { feedMarkdownInputRules, feedMarkdownPaste } from './editor-markdown';
 import type { Node as PMNode } from '@tiptap/pm/model';
 import { feedSchema, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, diffFeedComposition, validateFeedComposition, feedTargetQuote } from '@use-brian/doc-model';
 import type { FeedComposition, FeedTarget, FeedEdit, FeedNode, FeedAnchor } from '@use-brian/shared';
@@ -21,8 +23,13 @@ export type FeedEditorSelection = { target: FeedTarget; quote: string; caret?: {
 const decorationKey = new PluginKey('feed-comments');
 function cleanNode(node: PMNode): FeedNode {
   const json = node.toJSON();
-  if (node.isTextblock && !json.content) json.content = [];
-  const clean = (value: unknown): unknown => Array.isArray(value) ? value.map(clean) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([key, v]) => v !== null && !(key === 'marks' && Array.isArray(v) && !v.length)).map(([key, v]) => [key, clean(v)])) : value;
+  const clean = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(clean);
+    if (!value || typeof value !== 'object') return value;
+    const result = Object.fromEntries(Object.entries(value).filter(([key, v]) => v !== null && !(key === 'marks' && Array.isArray(v) && !v.length)).map(([key, v]) => [key, clean(v)]));
+    if ((result.type === 'paragraph' || result.type === 'heading') && !result.content) result.content = [];
+    return result;
+  };
   return clean(json) as FeedNode;
 }
 function feedSelectionFromEditor(state: EditorState, segmentId: string, composition: FeedComposition): FeedEditorSelection {
@@ -39,6 +46,7 @@ function feedSelectionFromEditor(state: EditorState, segmentId: string, composit
 }
 export function CompositionEditor(props: {
   generation?: FeedGenerationControls; composition: FeedComposition; readOnly?: boolean; threads: FeedCommentThread[]; draftAnchor?: FeedAnchor | null;
+  pendingLocalSave?: boolean;
   onEdit: (edits: FeedEdit[]) => void; onSelection: (selection: FeedEditorSelection) => void;
   onAction: (action: 'comment' | 'suggest' | 'ask') => void; onOpenThread: (threadId: string) => void;
 }) {
@@ -54,6 +62,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   const [selectionTop, setSelectionTop] = useState<number | null>(null);
   const [formatting, setFormatting] = useState<Partial<Record<FeedFormatAction, boolean>>>({});
   const local = useRef(props.composition); const lastEmitted = useRef('');
+  const hasLocalTyping = useRef(false);
   const decorations = (doc: PMNode) => {
     const output: Decoration[] = [];
     const anchors = [...latest.current.threads.filter(thread => !thread.resolved).map(thread => ({ id: thread.id, anchor: thread.anchor })), ...(latest.current.draftAnchor ? [{ id: 'draft', anchor: latest.current.draftAnchor }] : [])];
@@ -72,7 +81,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     const segment = latest.current.composition.segments.find(s => s.id === props.segmentId)!;
     local.current = latest.current.composition;
     const view = new EditorView(host.current, {
-      state: EditorState.create({ schema: feedSchema, doc: feedSchema.nodeFromJSON({ type: 'doc', content: segment.content }), plugins: [history(), keymap({ 'Mod-b': toggleMark(feedSchema.marks.bold!), 'Mod-i': toggleMark(feedSchema.marks.italic!), 'Mod-z': undo, 'Mod-Shift-z': redo, ...baseKeymap, Enter: (state, dispatch, view) => {
+      state: EditorState.create({ schema: feedSchema, doc: feedSchema.nodeFromJSON({ type: 'doc', content: segment.content }), plugins: [history(), feedMarkdownInputRules(), feedMarkdownPaste(), keymap({ 'Mod-b': toggleMark(feedSchema.marks.bold!), 'Mod-i': toggleMark(feedSchema.marks.italic!), 'Mod-z': undo, 'Mod-Shift-z': redo, ...baseKeymap, Backspace: (state, dispatch, view) => undoInputRule(state, dispatch) || baseKeymap.Backspace!(state, dispatch, view), 'Shift-Enter': (state, dispatch) => { dispatch?.(state.tr.replaceSelectionWith(feedSchema.nodes.hardBreak!.create()).scrollIntoView()); return true; }, Enter: (state, dispatch, view) => {
           const block = state.selection.$from.parent; const shortcut = /^\/(text|image)$/.exec(block.textContent);
           if (shortcut && state.selection.empty && block.type.name === 'paragraph' && !latest.current.readOnly) {
             const node: FeedNode = { type: 'generationPlaceholder', attrs: { id: block.attrs.id, kind: shortcut[1] as 'text' | 'image', brief: '', briefRevision: 0, references: [] } };
@@ -90,16 +99,18 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
         return { dom, update(next) { return next.type.name === 'image' && next.attrs.id === blockId; }, ignoreMutation: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
       } } : undefined,
       editable: () => !latest.current.readOnly,
-      attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-[max(20rem,calc(100dvh-16rem))] bg-card p-5 pr-14 md:pr-5 text-base leading-relaxed outline-none [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
+      attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-[max(20rem,calc(100dvh-16rem))] p-5 pr-14 md:pr-5 text-base leading-relaxed outline-none [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_h3]:text-lg [&_h4]:font-semibold [&_h5]:font-semibold [&_h6]:font-semibold [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
       handleClick(_view, _pos, event) { const hit = (event.target as HTMLElement).closest<HTMLElement>('[data-feed-thread]'); if (hit?.dataset.feedThread && hit.dataset.feedThread !== 'draft') latest.current.onOpenThread(hit.dataset.feedThread); return false; },
       handleDOMEvents: { blur() { setSelectionTop(null); return false; } },
       dispatchTransaction(transaction: Transaction) {
-        let next = view.state.apply(transaction);
+        if (transaction.docChanged && latest.current.readOnly) return;
         if (transaction.docChanged) {
-          const seen = new Set<string>(); const identity = next.tr;
-          next.doc.descendants((node, pos) => { if (!node.isBlock) return; let blockId = node.attrs.id as string | null; if (!blockId || seen.has(blockId)) { blockId = crypto.randomUUID(); identity.setNodeMarkup(pos, undefined, { ...node.attrs, id: blockId }); } seen.add(blockId); });
-          if (identity.docChanged) next = next.apply(identity);
+          // Keep identity steps inside the input-rule transaction so Backspace
+          // can reverse the complete shortcut, including its new containers.
+          const seen = new Set<string>();
+          transaction.doc.descendants((node, pos) => { if (!node.isBlock) return; let blockId = node.attrs.id as string | null; if (!blockId || seen.has(blockId)) { blockId = crypto.randomUUID(); transaction.setNodeMarkup(pos, undefined, { ...node.attrs, id: blockId }); } seen.add(blockId); });
         }
+        const next = view.state.apply(transaction);
         view.updateState(next);
         if (next.selection.empty || latest.current.readOnly || !view.hasFocus()) setSelectionTop(null);
         else {
@@ -120,7 +131,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
         if (transaction.docChanged) {
           const content: FeedNode[] = []; next.doc.forEach(node => content.push(cleanNode(node)));
           const before = local.current; const composition = validateFeedComposition({ ...before, segments: before.segments.map(s => s.id === props.segmentId ? { ...s, content } : s) });
-          const edits = diffFeedComposition(before, composition); local.current = composition; lastEmitted.current = JSON.stringify(composition);
+          const edits = diffFeedComposition(before, composition); local.current = composition; lastEmitted.current = JSON.stringify(composition); hasLocalTyping.current = true;
           if (edits.length) latest.current.onEdit(edits);
         }
         latest.current.onSelection(feedSelectionFromEditor(next, props.segmentId, local.current));
@@ -132,13 +143,16 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   useEffect(() => {
     const view = viewRef.current; if (!view) return;
     const serialized = JSON.stringify(props.composition);
-    if (serialized !== lastEmitted.current && serialized !== JSON.stringify(local.current)) {
+    const preserveTyping = props.pendingLocalSave && hasLocalTyping.current;
+    if (!preserveTyping && serialized !== lastEmitted.current && serialized !== JSON.stringify(local.current)) {
       const segment = props.composition.segments.find(s => s.id === props.segmentId); if (!segment) return;
       const doc = feedSchema.nodeFromJSON({ type: 'doc', content: segment.content });
       if (!doc.eq(view.state.doc)) view.updateState(EditorState.create({ schema: feedSchema, doc, plugins: view.state.plugins }));
     }
-    local.current = props.composition; view.setProps({ editable: () => !latest.current.readOnly }); view.dispatch(view.state.tr.setMeta(decorationKey, true));
-  }, [props.composition, props.threads, props.draftAnchor, props.readOnly, props.segmentId]);
+    if (!preserveTyping) local.current = props.composition;
+    if (!props.pendingLocalSave) hasLocalTyping.current = false;
+    view.setProps({ editable: () => !latest.current.readOnly }); view.dispatch(view.state.tr.setMeta(decorationKey, true));
+  }, [props.composition, props.threads, props.draftAnchor, props.readOnly, props.pendingLocalSave, props.segmentId]);
   function format(action: FeedFormatAction) {
     const view = viewRef.current; if (!view) return;
     if (action === 'link') { void (async () => { const view = viewRef.current; if (!view) return; const href = await promptDialog({ title: t.link, placeholder: t.linkPlaceholder, confirmLabel: t.accept, cancelLabel: t.cancel, allowEmpty: true }); if (href === null || (href && !/^https?:\/\//i.test(href))) return; try { if (href) new URL(href); else { view.dispatch(view.state.tr.removeMark(view.state.selection.from, view.state.selection.to, feedSchema.marks.link!)); return; } toggleMark(feedSchema.marks.link!, { href })(view.state, view.dispatch); view.focus(); } catch { /* Invalid URL leaves the selected content unchanged. */ } })(); return; }
@@ -162,7 +176,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     else if (action === 'deleteBlock') { let position: number | undefined; view.state.doc.descendants((item, pos) => { if (item.attrs.id === blockId) position = pos; }); if (position !== undefined) view.dispatch(view.state.tr.delete(position, position + feedSchema.nodeFromJSON(node).nodeSize)); }
     else if ((action === 'moveUp' && index > 0) || (action === 'moveDown' && index < siblings.length - 1)) latest.current.onEdit([{ kind: 'moveBlock', segmentId: props.segmentId, blockId, parentId, afterId: action === 'moveUp' ? siblings[index - 2]?.attrs.id ?? null : siblings[index + 1]!.attrs.id }]);
   }
-  return <div ref={frameRef} className={`${styles.frame} relative rounded-xl border border-border bg-card shadow-xs transition-colors`} data-feed-segment-editor>
+  return <div ref={frameRef} className={`${styles.canvas} relative`} data-feed-segment-editor>
     <FeedEditorToolbar disabled={props.readOnly} active={formatting} onFormat={format} onPlaceholder={placeholder} onBlock={blockAction} focusEditor={() => viewRef.current?.focus()} onAction={props.onAction} />
     <div ref={host} className={styles.surface} />
     {selectionTop !== null && !props.readOnly ? <div className="absolute left-2 right-2 z-20" style={{ top: selectionTop }}><FeedSelectionActions onAction={props.onAction} /></div> : null}

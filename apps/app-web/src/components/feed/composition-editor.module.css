@@ -1,7 +1,7 @@
-/* The document and its controls have separate focus owners. Match the
-   editable itself, not focus-within: node views contain independent inputs. */
-.frame:has(> .surface > :global(.ProseMirror):focus) {
-  border-color: var(--ring);
+/* A page-sized writing surface uses the caret, not an enclosing focus frame. */
+.surface > :global(.ProseMirror) {
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
 }
 
 .surface > :global(.ProseMirror):focus {
@@ -11,8 +11,8 @@
 
 /* Keep a visible keyboard target without stacking the shared Button border,
    Tailwind ring and global focus halo. Menus retain their own focus behavior. */
-.frame [data-feed-editor-toolbar] button:focus-visible,
-.frame [data-feed-selection-actions] button:focus-visible {
+.canvas [data-feed-editor-toolbar] button:focus-visible,
+.canvas [data-feed-selection-actions] button:focus-visible {
   border-color: transparent;
   outline: 2px solid var(--ring);
   outline-offset: -2px;

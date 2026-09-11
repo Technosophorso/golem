@@ -115,33 +115,67 @@ describe('[COMP:app-web/feed-editor-toolbar] selected-passage controls', () => {
 });
 
 describe('[COMP:app-web/feed-composition-editor] authoring and collaboration workflow', () => {
-  it('gives the writing surface and toolbar mutually exclusive focus indicators', () => {
+  it('keeps the writing surface borderless while toolbar controls retain keyboard focus', () => {
     act(() => root.render(<CompositionEditor composition={composition()} threads={[]} onEdit={vi.fn()} onSelection={vi.fn()} onAction={vi.fn()} onOpenThread={vi.fn()} />));
-    // Execute the actual CSS selectors against the rendered DOM. A broad
-    // focus-within selector would also match the frame when a button owns focus.
+    // Execute the scoped CSS selectors against the rendered DOM.
     const css = readFileSync(resolve(import.meta.dirname, '../composition-editor.module.css'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]+)\}/g)].map(([, selector, declarations]) => ({
       // jsdom has no input-modality model; the browser walkthrough checks
       // :focus-visible with real Tab, arrow and Escape key events.
-      selector: selector!.trim().replace(/:global\(([^)]+)\)/g, '$1').replace(/\.(frame|surface)\b/g, (_, key: string) => `.${editorStyles[key]}`).replaceAll(':focus-visible', ':focus'),
+      selector: selector!.trim().replace(/:global\(([^)]+)\)/g, '$1').replace(/\.(canvas|surface)\b/g, (_, key: string) => `.${editorStyles[key]}`).replaceAll(':focus-visible', ':focus'),
       declarations: declarations!,
     }));
-    const frameRule = rules.find(rule => /border-color:\s*var\(--ring\)/.test(rule.declarations))!;
+    expect(rules.some(rule => /border-color:\s*var\(--ring\)/.test(rule.declarations))).toBe(false);
+    const surfaceRule = rules.find(rule => /ProseMirror.*:focus/.test(rule.selector))!;
+    expect(surfaceRule.declarations).toMatch(/box-shadow:\s*none/);
+    expect(surfaceRule.declarations).toMatch(/outline:\s*none/);
     const buttonRule = rules.find(rule => /outline:\s*2px solid/.test(rule.declarations))!;
     const frame = host.querySelector<HTMLElement>('[data-feed-segment-editor]')!;
     const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    expect(frame.className).not.toMatch(/border|shadow|ring|rounded/);
     act(() => view.focus());
-    expect(frame.matches(frameRule.selector)).toBe(true);
+    expect(view.dom.matches(surfaceRule.selector)).toBe(true);
     act(() => button(text.bold).focus());
-    expect(frame.matches(frameRule.selector)).toBe(false);
+    expect(view.dom.matches(surfaceRule.selector)).toBe(false);
     expect(button(text.bold).matches(buttonRule.selector)).toBe(true);
     act(() => button(text.bold).dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
     expect(document.activeElement).toBe(button(text.italic));
-    expect(frame.matches(frameRule.selector)).toBe(false);
+    expect(view.dom.matches(surfaceRule.selector)).toBe(false);
     expect(button(text.italic).matches(buttonRule.selector)).toBe(true);
+    expect(frame.className).not.toMatch(/border|shadow|ring|rounded/);
     act(() => view.focus());
-    expect(frame.matches(frameRule.selector)).toBe(true);
+    expect(view.dom.matches(surfaceRule.selector)).toBe(true);
     expect(button(text.italic).matches(buttonRule.selector)).toBe(false);
+  });
+  it('retains newer typing and caret through intermediate save acknowledgements and a local save failure', () => {
+    const doc = composition(); const emitted: FeedEdit[][] = [];
+    const props = { composition: doc, threads: [], onEdit: (edits: FeedEdit[]) => emitted.push(edits), onSelection: vi.fn(), onAction: vi.fn(), onOpenThread: vi.fn() };
+    act(() => root.render(<CompositionEditor {...props} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    act(() => { view.focus(); view.dispatch(view.state.tr.insertText('New ', 1)); });
+    const first = applyFeedEdits(doc, emitted[0]!).composition;
+    act(() => view.dispatch(view.state.tr.insertText('draft ', 5)));
+    const latest = applyFeedEdits(first, emitted[1]!).composition;
+    const caret = view.state.selection.from;
+    act(() => root.render(<CompositionEditor {...props} composition={first} pendingLocalSave />));
+    expect(view.state.doc.textContent).toContain('New draft First');
+    expect(view.state.selection.from).toBe(caret);
+    // Failed persistence also keeps the pending flag until recovery succeeds.
+    act(() => root.render(<CompositionEditor {...props} composition={doc} pendingLocalSave />));
+    expect(view.state.doc.textContent).toContain('New draft First');
+    act(() => root.render(<CompositionEditor {...props} composition={latest} pendingLocalSave={false} />));
+    expect(view.state.selection.from).toBe(caret);
+    act(() => view.dispatch(view.state.tr.insertText('kept ', caret)));
+    expect(() => applyFeedEdits(latest, emitted[2]!)).not.toThrow();
+  });
+  it('immediately displays queued toolbar changes when there is no unacknowledged typing', () => {
+    const doc = composition(); const props = { composition: doc, threads: [], onEdit: vi.fn(), onSelection: vi.fn(), onAction: vi.fn(), onOpenThread: vi.fn() };
+    act(() => root.render(<CompositionEditor {...props} />));
+    const changed = structuredClone(doc);
+    const first = changed.segments[0]!.content[0]!;
+    changed.segments[0]!.content[0] = { type: 'heading', attrs: { id: first.attrs.id, level: 2 }, content: [{ type: 'text', text: 'Queued heading' }] };
+    act(() => root.render(<CompositionEditor {...props} composition={changed} pendingLocalSave />));
+    expect(host.querySelector('h2')?.textContent).toBe('Queued heading');
   });
   it('scenarios 1 and 2: keyboard selection names the second duplicate and comment creation keeps its decoration', async () => {
     const doc = composition(); let selected: FeedTarget | undefined;

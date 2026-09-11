@@ -22,7 +22,7 @@ export function FeedEditorPanel({ open, title, anchor, passage = false, onClose,
           aria-label={title} hidden={!open} inert={!open}
           className="flex w-96 max-w-[calc(100vw-1.5rem)] max-h-[min(76dvh,var(--available-height))] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-xl outline-none" data-feed-editor-panel>
           <header className="flex shrink-0 items-center justify-between gap-2 border-b px-4 py-2">
-            <h2 ref={heading} tabIndex={-1} className="text-sm font-semibold outline-none">{title}</h2>
+            <h2 ref={heading} tabIndex={-1} className="text-sm font-semibold outline-none focus-visible:shadow-none">{title}</h2>
             <Popover.Close render={<Button type="button" variant="ghost" size="icon" className="size-11 md:size-8" aria-label={t.closePanel} />}><X className="size-4" aria-hidden /></Popover.Close>
           </header>
           <div className="min-h-0 overflow-y-auto overscroll-contain p-4">{children}</div>

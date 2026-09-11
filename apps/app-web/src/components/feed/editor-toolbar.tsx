@@ -35,7 +35,7 @@ export function FeedEditorToolbar(props: {
     props.focusEditor();
     return false;
   };
-  return <div role="toolbar" aria-label={t.editor} className="flex flex-wrap items-center gap-1 border-b border-border bg-muted/60 p-1.5" data-feed-editor-toolbar
+  return <div role="toolbar" aria-label={t.editor} className="flex flex-wrap items-center gap-1 border-b border-border p-1.5" data-feed-editor-toolbar
     onKeyDown={event => {
       if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key) || !event.currentTarget.contains(event.target as Node)) return;
       const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
