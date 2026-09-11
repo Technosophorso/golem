@@ -46,6 +46,7 @@ import {
   type MembershipRescueStatus,
   type MembershipUpdateInput,
   type OrderCreateInput,
+  type SourceOrderImportInput,
   type AssociationOrderFinancialSummary,
   type AssociationOperationalRosterRow,
   type CheckInCorrectionInput,
@@ -95,6 +96,7 @@ export type AssociationStore = {
   listWaitlist(workspaceId: string, input: WaitlistListInput): Promise<AssociationPage>
   offerWaitlistPlace(workspaceId: string, input: AssociationWaitlistOfferInput, actor: AssociationActor): Promise<MutationResult>
   createOrder(workspaceId: string, input: OrderCreateInput, actor: AssociationActor): Promise<MutationResult>
+  importSourceOrder(workspaceId: string, input: SourceOrderImportInput, actor: AssociationActor): Promise<MutationResult>
   getOrder(workspaceId: string, id: string, actor?: AssociationActor): Promise<AssociationRecord | null>
   listOrders(workspaceId: string, input: AssociationListInput & { status?: OrderStatus; eventId?: string; contactId?: string; allowedEventIds?: readonly string[] }): Promise<AssociationPage & { total: number; financialSummary: AssociationOrderFinancialSummary[] }>
   expireDueOrder(workspaceId:string,id:string,actor:AssociationActor):Promise<MutationResult>
@@ -249,7 +251,10 @@ const ORDER_SELECT = `
   subtotal_minor::text AS "subtotalMinor", discount_minor::text AS "discountMinor",
   total_minor::text AS "totalMinor", reservation_expires_at AS "reservationExpiresAt",
   provider, provider_reference AS "providerReference", refunded_minor::text AS "refundedMinor",
-  refund_state AS "refundState", dispute_state AS "disputeState", metadata,
+  refund_state AS "refundState", dispute_state AS "disputeState",
+  source_system AS "sourceSystem", source_site AS "sourceSite",
+  source_order_id AS "sourceOrderId", source_occurred_at AS "sourceOccurredAt",
+  source_order_status AS "sourceOrderStatus", source_import AS "sourceImport", metadata,
   created_at AS "createdAt", updated_at AS "updatedAt"`
 const REGISTRATION_SELECT = `
   id, workspace_id AS "workspaceId", order_id AS "orderId",
@@ -311,6 +316,20 @@ async function requireFinanceActor(client: PoolClient, workspaceId: string, acto
   )
   if (!['owner', 'admin'].includes(member.rows[0]?.role ?? '')) {
     throw new CrmOperationsError('not_authorized', 'A current workspace owner or admin must review offline payment evidence.')
+  }
+  return actor.actingUserId
+}
+
+async function requireSourceOrderImportActor(client: PoolClient, workspaceId: string, actor: AssociationActor): Promise<string> {
+  if (actor.credentialKind !== 'import' || !actor.actingUserId) {
+    throw new CrmOperationsError('not_authorized', 'Source orders are only available to a confirmed owner/admin import job.')
+  }
+  const member = await client.query<{ role: string }>(
+    `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR KEY SHARE`,
+    [workspaceId, actor.actingUserId],
+  )
+  if (!['owner', 'admin'].includes(member.rows[0]?.role ?? '')) {
+    throw new CrmOperationsError('not_authorized', 'Source order imports require a current workspace owner or admin.')
   }
   return actor.actingUserId
 }
@@ -1376,6 +1395,184 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
       order => createAssociationStore(pool, client).createOrder(workspaceId, order, actor),
       id => getOrderRecord(client, workspaceId, id))),
 
+    async importSourceOrder(workspaceId, input, actor) {
+      return transact(async (client) => {
+        const reviewer = await requireSourceOrderImportActor(client, workspaceId, actor)
+        const { importJobId, importRow, ...evidence } = input
+        const fingerprint = associationFingerprint(evidence)
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('association-source-order:'||$1::text||':'||$2||':'||$3||':'||$4,0))",
+          [workspaceId, input.source, input.sourceSite, input.sourceOrderId],
+        )
+        const existing = (await client.query<{ id: string; request_fingerprint: string }>(
+          `SELECT id,request_fingerprint FROM association_orders
+            WHERE workspace_id=$1 AND source_system=$2 AND source_site=$3
+              AND source_order_id=$4 FOR UPDATE`,
+          [workspaceId, input.source, input.sourceSite, input.sourceOrderId],
+        )).rows[0]
+        if (existing) {
+          if (existing.request_fingerprint !== fingerprint) {
+            throw new AssociationError('conflict', 'Source order identity was already used with different evidence.')
+          }
+          return { record: (await getOrderRecord(client, workspaceId, existing.id))!, created: false }
+        }
+
+        const module = await lockAssociationModule(client, workspaceId)
+        requireAssociationAdmission(module)
+        await requirePerson(client, workspaceId, input.contactId)
+        const timing = (await client.query<{ admitted_at: string; occurred_valid: boolean; expiry_valid: boolean; check_ins_valid: boolean }>(
+          `SELECT clock_timestamp()::text admitted_at,
+             $1::timestamptz<=clock_timestamp() occurred_valid,
+             ($2::timestamptz IS NULL OR $2::timestamptz>clock_timestamp()) expiry_valid,
+             NOT EXISTS(SELECT 1 FROM jsonb_array_elements($3::jsonb) line,
+               jsonb_array_elements(line->'attendees') attendee
+               WHERE attendee ? 'checkedInAt' AND (attendee->>'checkedInAt')::timestamptz>clock_timestamp()) check_ins_valid`,
+          [input.occurredAt, input.reservationExpiresAt ?? null, JSON.stringify(input.lines)],
+        )).rows[0]
+        if (!timing.occurred_valid || !timing.check_ins_valid) {
+          throw new AssociationError('conflict', 'Source order evidence cannot be dated in the future.')
+        }
+        if (input.status === 'pending' && !timing.expiry_valid) {
+          throw new AssociationError('not_available', 'Expired source reservations must be archived or reconciled before import.')
+        }
+
+        if (input.provider && input.providerReference) {
+          await client.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended('association-provider-object:'||$1::text||':'||$2||':'||$3,0))",
+            [workspaceId, input.provider, input.providerReference],
+          )
+          const providerOrder = await client.query(
+            `SELECT 1 FROM association_orders WHERE workspace_id=$1 AND provider=$2 AND provider_reference=$3`,
+            [workspaceId, input.provider, input.providerReference],
+          )
+          if (providerOrder.rowCount) throw new AssociationError('conflict', 'The source provider object is already bound to another order.')
+        }
+
+        const ticketIds = input.lines.map((line) => line.ticketId)
+        const inventoryEvents = await lockAssociationInventory(client, workspaceId, { ticketIds })
+        const ticketsResult = await client.query<{
+          id: string; event_id: string; currency: string; capacity: number | null;
+          event_capacity: number | null; event_status: string; event_ended: boolean;
+        }>(
+          `SELECT t.id,t.event_id,t.currency,t.capacity,e.capacity event_capacity,
+             e.status event_status,e.ends_at<=$3::timestamptz event_ended
+           FROM association_ticket_types t JOIN association_events e
+             ON e.workspace_id=t.workspace_id AND e.id=t.event_id
+           WHERE t.workspace_id=$1 AND t.id=ANY($2::uuid[]) ORDER BY t.id`,
+          [workspaceId, ticketIds, timing.admitted_at],
+        )
+        if (ticketsResult.rows.length !== ticketIds.length) {
+          throw new AssociationError('not_found', 'one or more source order ticket types were not found')
+        }
+        const tickets = new Map(ticketsResult.rows.map((ticket) => [ticket.id, ticket]))
+        if (ticketsResult.rows.some((ticket) => ticket.currency !== input.currency)) {
+          throw new AssociationError('conflict', 'Source order currency must match every mapped ticket.')
+        }
+
+        const occupiedStatus = (status: string) => status === 'reserved' || status === 'confirmed' || status === 'checked_in'
+        const requestedByTicket = new Map<string, number>()
+        const requestedByEvent = new Map<string, number>()
+        for (const line of input.lines) {
+          const ticket = tickets.get(line.ticketId)!
+          const occupied = ticket.event_ended ? 0 : line.attendees.filter((attendee) => occupiedStatus(attendee.status)).length
+          if (occupied && ticket.event_status !== 'published') {
+            throw new AssociationError('not_available', 'An active source booking requires a published event.', { eventId: ticket.event_id })
+          }
+          requestedByTicket.set(ticket.id, occupied)
+          requestedByEvent.set(ticket.event_id, (requestedByEvent.get(ticket.event_id) ?? 0) + occupied)
+        }
+        const inventory = await client.query<{ ticket_id: string; event_id: string; used: number }>(
+          `SELECT ticket_id,event_id,count(*)::int used FROM association_registrations
+           WHERE workspace_id=$1 AND NOT historical_import
+             AND (status IN('confirmed','checked_in','registered','attended')
+               OR (status='reserved' AND reservation_expires_at>$4::timestamptz))
+             AND (ticket_id=ANY($2::uuid[]) OR event_id=ANY($3::uuid[]))
+           GROUP BY ticket_id,event_id`,
+          [workspaceId, ticketIds, inventoryEvents, timing.admitted_at],
+        )
+        const ticketUsed = new Map<string, number>()
+        const eventUsed = new Map<string, number>()
+        for (const row of inventory.rows) {
+          ticketUsed.set(row.ticket_id, (ticketUsed.get(row.ticket_id) ?? 0) + row.used)
+          eventUsed.set(row.event_id, (eventUsed.get(row.event_id) ?? 0) + row.used)
+        }
+        for (const ticket of ticketsResult.rows) {
+          if (ticket.capacity !== null
+            && (ticketUsed.get(ticket.id) ?? 0) + (requestedByTicket.get(ticket.id) ?? 0) > ticket.capacity) {
+            throw new AssociationError('not_available', 'Source order exceeds current ticket capacity.', { ticketId: ticket.id })
+          }
+          if (ticket.event_capacity !== null
+            && (eventUsed.get(ticket.event_id) ?? 0) + (requestedByEvent.get(ticket.event_id) ?? 0) > ticket.event_capacity) {
+            throw new AssociationError('not_available', 'Source order exceeds current event capacity.', { eventId: ticket.event_id })
+          }
+        }
+
+        const refundState = input.refundedMinor === input.totalMinor && input.status === 'refunded'
+          ? 'full' : input.refundedMinor > 0 ? 'partial' : 'none'
+        const order = (await client.query<{ id: string }>(
+          `INSERT INTO association_orders(
+             workspace_id,contact_id,idempotency_key,request_fingerprint,status,currency,
+             subtotal_minor,discount_minor,total_minor,refunded_minor,refund_state,dispute_state,
+             reservation_expires_at,provider,provider_reference,metadata,
+             source_system,source_site,source_order_id,source_occurred_at,source_order_status,source_import,
+             created_at,updated_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'none',$12,$13,$14,$15,$16,$17,$18,$19,$20,true,$19,$19)
+           RETURNING id`,
+          [workspaceId, input.contactId, `source-order:${fingerprint}`, fingerprint,
+            input.status, input.currency, input.subtotalMinor, input.discountMinor,
+            input.totalMinor, input.refundedMinor, refundState,
+            input.reservationExpiresAt ?? null, input.provider ?? null, input.providerReference ?? null,
+            { ...input.metadata, historicalSource: { source: input.source, site: input.sourceSite, orderId: input.sourceOrderId } },
+            input.source, input.sourceSite, input.sourceOrderId, input.occurredAt, input.status],
+        )).rows[0]
+        await client.query("SELECT set_config('app.association_source_order_actor',$1,true)", [reviewer])
+        for (const line of input.lines) {
+          const ticket = tickets.get(line.ticketId)!
+          const lineId = (await client.query<{ id: string }>(
+            `INSERT INTO association_order_lines(
+               workspace_id,order_id,ticket_id,quantity,unit_price_minor,discount_minor,
+               line_total_minor,pricing_basis,created_at)
+             VALUES($1,$2,$3,$4,$5,$6,$7,'source',$8) RETURNING id`,
+            [workspaceId, order.id, line.ticketId, line.quantity, line.unitPriceMinor,
+              line.discountMinor, line.lineTotalMinor, input.occurredAt],
+          )).rows[0].id
+          for (const attendee of line.attendees) {
+            if (attendee.contactId) await requirePerson(client, workspaceId, attendee.contactId)
+            const sourceId = associationFingerprint({
+              source: input.source, sourceSite: input.sourceSite,
+              sourceOrderId: input.sourceOrderId, sourceRegistrationId: attendee.sourceRegistrationId,
+            })
+            const registrationFingerprint = associationFingerprint({
+              sourceOrder: fingerprint, ticketId: line.ticketId, attendee,
+            })
+            await client.query(
+              `INSERT INTO association_registrations(
+                 workspace_id,order_id,order_line_id,event_id,ticket_id,attendee_contact_id,
+                 attendee_name,attendee_email,attendee_metadata,status,reservation_expires_at,
+                 checked_in_at,source_kind,source_id,request_fingerprint,historical_import,
+                 created_at,updated_at)
+               VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'source_order',$13,$14,$15,$16,$16)`,
+              [workspaceId, order.id, lineId, ticket.event_id, line.ticketId,
+                attendee.contactId ?? null, attendee.name, attendee.email ?? null,
+                { ...attendee.metadata, historicalSource: {
+                  source: input.source, site: input.sourceSite, orderId: input.sourceOrderId,
+                  registrationId: attendee.sourceRegistrationId,
+                } }, attendee.status,
+                attendee.status === 'reserved' ? input.reservationExpiresAt ?? null : null,
+                attendee.checkedInAt ?? null, sourceId, registrationFingerprint,
+                ticket.event_ended, input.occurredAt],
+            )
+          }
+        }
+        await refreshAssociationInventory(client, workspaceId, inventoryEvents, actor.credentialKind, { emitEvents: false })
+        await audit(client, workspaceId, 'order.source_imported', 'order', order.id, actor, {
+          source: input.source, sourceSite: input.sourceSite, sourceOrderId: input.sourceOrderId,
+          sourceStatus: input.status, importJobId, importRow,
+        })
+        return { record: (await getOrderRecord(client, workspaceId, order.id))!, created: true }
+      })
+    },
+
     async createOrder(workspaceId, input, actor) {
       return transact(async (client) => {
         const integration = await lockIntegrationActor(client, workspaceId, actor)
@@ -1654,12 +1851,15 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         const module = await lockAssociationModule(client, workspaceId)
         await authorizeOrderIntegration(client, workspaceId, orderId, actor, 'association.provider_events.write', input.provider, integration)
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended('association-provider-object:'||$1::text||':'||$2||':'||$3,0))", [workspaceId, input.provider, input.providerReference])
-        const order = (await client.query<ProviderOrderIdentity>('SELECT status,provider,provider_reference,currency,total_minor::text,refunded_minor::text FROM association_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [workspaceId, orderId])).rows[0]
+        const order = (await client.query<ProviderOrderIdentity & { source_import: boolean }>('SELECT status,provider,provider_reference,currency,total_minor::text,refunded_minor::text,source_import FROM association_orders WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [workspaceId, orderId])).rows[0]
         if (!order) throw new AssociationError('not_found', 'order not found')
         requireProviderOrderMoney(order, input)
         if (order.provider_reference) {
           requireBoundProviderOrder(order, input)
           return { record: (await getOrderRecord(client, workspaceId, orderId))!, created: false }
+        }
+        if (order.source_import) {
+          throw new AssociationError('invalid_transition', 'An imported source order cannot start a new provider checkout.')
         }
         requireAssociationAdmission(module)
         if (order.status !== 'pending' || !(await client.query<{ available: boolean }>('SELECT reservation_expires_at>clock_timestamp() available FROM association_orders WHERE workspace_id=$1 AND id=$2', [workspaceId, orderId])).rows[0]?.available)
@@ -1799,7 +1999,7 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         )
         const registration = current.rows[0]
         if (!registration) throw new AssociationError('not_found', 'registration not found')
-        if (registration.source_kind !== 'commerce') throw new AssociationError('invalid_transition', 'Non-commerce participation uses CRM participation commands.')
+        if (!['commerce', 'source_order'].includes(registration.source_kind)) throw new AssociationError('invalid_transition', 'Non-commerce participation uses CRM participation commands.')
         if (!mayTransitionRegistration(registration.status, input.status)) {
           throw new AssociationError(
             'invalid_transition',
@@ -1833,7 +2033,7 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
             WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, [workspaceId, id],
         )).rows[0]
         if (!current) throw new AssociationError('not_found', 'registration not found')
-        if (current.sourceKind !== 'commerce') throw new AssociationError('invalid_transition', 'Non-commerce participation uses CRM participation commands.')
+        if (!['commerce', 'source_order'].includes(current.sourceKind)) throw new AssociationError('invalid_transition', 'Non-commerce participation uses CRM participation commands.')
         if (input.expectedStatus !== 'checked_in' || current.status !== input.expectedStatus) {
           throw new AssociationError('conflict', 'Registration status no longer matches the expected check-in state.',
             { expectedStatus: input.expectedStatus, currentStatus: current.status })

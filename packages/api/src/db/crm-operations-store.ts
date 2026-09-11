@@ -1272,7 +1272,7 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
       )
       const participation = current.rows[0]
       if (!participation) return null
-      if (participation.sourceKind === 'commerce') {
+      if (['commerce', 'source_order'].includes(participation.sourceKind)) {
         throw new CrmOperationsError(
           'conflict',
           'Commerce participation must be changed through Association order or registration operations.',
@@ -1309,7 +1309,7 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
       )
       const participation = current.rows[0]
       if (!participation) return null
-      if (participation.sourceKind === 'commerce') throw new CrmOperationsError('conflict',
+      if (['commerce', 'source_order'].includes(participation.sourceKind)) throw new CrmOperationsError('conflict',
         'Commerce participation must be corrected through Association registration operations.', { commerceManaged: true })
       if (participation.status !== expectedStatus) throw new CrmOperationsError('conflict',
         'Participation status no longer matches the expected check-in state.', { expectedStatus, currentStatus: participation.status })

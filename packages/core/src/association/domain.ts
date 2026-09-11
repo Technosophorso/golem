@@ -265,6 +265,106 @@ export type AssociationOrderCreateInput = z.infer<typeof AssociationOrderCreateS
 export const AssociationOrderStatusSchema = z.enum(['pending', 'paid', 'failed', 'cancelled', 'refunded'])
 export type AssociationOrderStatus = z.infer<typeof AssociationOrderStatusSchema>
 
+const AssociationSourceOrderRegistrationStatusSchema = z.enum([
+  'reserved', 'confirmed', 'cancelled', 'refunded', 'checked_in',
+])
+
+export const AssociationSourceOrderAttendeeSchema = z.object({
+  sourceRegistrationId: z.string().trim().min(1).max(500),
+  contactId: UUID.optional(),
+  name: z.string().trim().min(1).max(200),
+  email: z.string().trim().email().max(320).optional(),
+  status: AssociationSourceOrderRegistrationStatusSchema,
+  checkedInAt: Instant.optional(),
+  metadata: boundedObject(4_000).default({}),
+}).strict().refine(
+  (value) => (value.status === 'checked_in') === (value.checkedInAt !== undefined),
+  'checkedInAt must be supplied exactly when status is checked_in',
+)
+
+export const AssociationSourceOrderLineSchema = z.object({
+  ticketId: UUID,
+  quantity: z.number().int().positive().max(1_000),
+  unitPriceMinor: NonNegativeMinor,
+  discountMinor: NonNegativeMinor.default(0),
+  lineTotalMinor: NonNegativeMinor,
+  attendees: z.array(AssociationSourceOrderAttendeeSchema).min(1).max(1_000),
+}).strict().superRefine((value, ctx) => {
+  if (value.quantity !== value.attendees.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['attendees'], message: 'quantity must equal attendees length' })
+  }
+  const gross = value.unitPriceMinor * value.quantity
+  if (!Number.isSafeInteger(gross) || value.discountMinor > gross
+    || value.lineTotalMinor !== gross - value.discountMinor) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['lineTotalMinor'], message: 'line money must reconcile exactly' })
+  }
+  if (new Set(value.attendees.map((attendee) => attendee.sourceRegistrationId)).size !== value.attendees.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['attendees'], message: 'source registration IDs must be unique within a line' })
+  }
+})
+
+/** Immutable source evidence admitted only by the confirmed production importer. */
+export const AssociationSourceOrderImportSchema = z.object({
+  importJobId: UUID,
+  importRow: z.number().int().positive(),
+  contactId: UUID,
+  source: StableKey,
+  sourceSite: z.string().trim().min(1).max(500),
+  sourceOrderId: z.string().trim().min(1).max(500),
+  occurredAt: Instant,
+  status: AssociationOrderStatusSchema,
+  currency: Currency,
+  subtotalMinor: NonNegativeMinor,
+  discountMinor: NonNegativeMinor,
+  totalMinor: NonNegativeMinor,
+  refundedMinor: NonNegativeMinor.default(0),
+  reservationExpiresAt: Instant.optional(),
+  provider: ProviderKey.optional(),
+  providerReference: z.string().trim().min(1).max(500).optional(),
+  lines: z.array(AssociationSourceOrderLineSchema).min(1).max(50),
+  metadata: boundedObject(16_000).default({}),
+}).strict().superRefine((value, ctx) => {
+  if ((value.provider === undefined) !== (value.providerReference === undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['provider'], message: 'provider and providerReference must be supplied together' })
+  }
+  if ((value.status === 'pending') !== (value.reservationExpiresAt !== undefined)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reservationExpiresAt'], message: 'only a pending source order has a reservation expiry' })
+  }
+  if (new Set(value.lines.map((line) => line.ticketId)).size !== value.lines.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['lines'], message: 'each ticket may appear only once per order' })
+  }
+  const registrationIds = value.lines.flatMap((line) => line.attendees.map((attendee) => attendee.sourceRegistrationId))
+  if (new Set(registrationIds).size !== registrationIds.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['lines'], message: 'source registration IDs must be unique within an order' })
+  }
+  const subtotal = value.lines.reduce((sum, line) => sum + line.unitPriceMinor * line.quantity, 0)
+  const discount = value.lines.reduce((sum, line) => sum + line.discountMinor, 0)
+  const total = value.lines.reduce((sum, line) => sum + line.lineTotalMinor, 0)
+  if (![subtotal, discount, total].every(Number.isSafeInteger)
+    || subtotal !== value.subtotalMinor || discount !== value.discountMinor
+    || total !== value.totalMinor || total !== subtotal - discount) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['totalMinor'], message: 'order and line money must reconcile exactly' })
+  }
+  if (value.refundedMinor > value.totalMinor
+    || (value.status === 'refunded' && value.refundedMinor !== value.totalMinor)
+    || (value.status !== 'paid' && value.status !== 'refunded' && value.refundedMinor !== 0)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['refundedMinor'], message: 'refund total does not match the source order state' })
+  }
+  const allowed: Record<AssociationOrderStatus, ReadonlySet<string>> = {
+    pending: new Set(['reserved', 'cancelled']),
+    paid: new Set(['confirmed', 'checked_in', 'cancelled', 'refunded']),
+    failed: new Set(['cancelled']),
+    cancelled: new Set(['cancelled']),
+    refunded: new Set(['refunded', 'cancelled']),
+  }
+  value.lines.forEach((line, lineIndex) => line.attendees.forEach((attendee, attendeeIndex) => {
+    if (!allowed[value.status].has(attendee.status)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['lines', lineIndex, 'attendees', attendeeIndex, 'status'], message: 'attendee state conflicts with the source order state' })
+    }
+  }))
+})
+export type AssociationSourceOrderImportInput = z.infer<typeof AssociationSourceOrderImportSchema>
+
 const AggregateMinor = z.string().regex(/^(0|[1-9]\d*)$/)
 export const AssociationOrderFinancialSummarySchema = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/),

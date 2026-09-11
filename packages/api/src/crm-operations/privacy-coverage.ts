@@ -419,6 +419,12 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "reservation_expires_at",
       "provider",
       "provider_reference",
+      "source_system",
+      "source_site",
+      "source_order_id",
+      "source_occurred_at",
+      "source_order_status",
+      "source_import",
       "metadata",
       "created_at",
       "updated_at"
@@ -431,6 +437,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "contact_id": "CASE WHEN t.contact_id=$2 THEN t.contact_id ELSE NULL END",
       "metadata": "'{}'::jsonb",
       "provider_reference": "CASE WHEN t.contact_id=$2 THEN t.provider_reference ELSE NULL END",
+      "source_order_id": "CASE WHEN t.contact_id=$2 THEN t.source_order_id ELSE NULL END",
       "idempotency_key": "NULL",
       "request_fingerprint": "NULL"
     },

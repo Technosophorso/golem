@@ -7,6 +7,9 @@ import { createDbCrmOperationsStore } from '../crm-operations-store.js'
 import { createCrmOperationsService } from '../../crm-operations/service.js'
 import { createCrmProductionImportService, type CrmImportEntityKind } from '../../crm-operations/import-service.js'
 import { getPool } from '../client.js'
+import { createAssociationService } from '../../association/service.js'
+import { createAssociationStore } from '../association-store.js'
+import { EventInputSchema, TicketInputSchema } from '../../association/domain.js'
 
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
@@ -16,7 +19,10 @@ const filesApi = { readBytes: async (_ctx: unknown, id: string) => ({ ok: true, 
 const operations = createCrmOperationsService(createDbCrmOperationsStore(pool))
 type Hook = (client: pg.PoolClient, command: CrmOperationsCommand) => Promise<void>
 function importer(hook?: Hook, entityLinks?: EntityLinksStore) {
-  return createCrmProductionImportService({ pool, filesApi, entityLinks, operationsForTransaction: (client) => {
+  return createCrmProductionImportService({ pool, filesApi, entityLinks, associationForTransaction: (client) => {
+    const crmService = createCrmOperationsService(createDbCrmOperationsStore(pool, client))
+    return createAssociationService({ store: createAssociationStore(pool, client), crmService })
+  }, operationsForTransaction: (client) => {
     const service = createCrmOperationsService(createDbCrmOperationsStore(pool, client))
     return {
       importHistoricalSubmission: service.importHistoricalSubmission,
@@ -33,6 +39,8 @@ async function fixture() {
   await pool.query('INSERT INTO users (id,auth_provider_id) VALUES ($1::uuid,$1::text)', [userId])
   await pool.query(`INSERT INTO workspaces (id,name,owner_user_id) VALUES ($1,'Atomic import fixture',$2)`, [workspaceId, userId])
   await pool.query(`INSERT INTO workspace_members (workspace_id,user_id,role) VALUES ($1,$2,'owner')`, [workspaceId, userId])
+  await pool.query(`UPDATE workspace_modules SET state='enabled',enabled_at=clock_timestamp(),disabled_at=NULL
+    WHERE workspace_id=$1 AND module_key='association'`, [workspaceId])
   const context: CrmOperationsContext = { workspaceId, actor: { kind: 'user', userId }, authority: { role: 'owner', canWrite: true, canConfigure: true, trustedIdentitySources: [] } }
   await operations.execute(context, CrmOperationsCommandSchema.parse({ kind: 'save_consent_purpose', purposeKey: 'updates', label: 'Fixture updates', wording: 'Fixture wording', wordingVersion: '1' }))
   async function entity(kind: string, name: string, attributes = {}) {
@@ -193,6 +201,147 @@ describe('[COMP:crm/production-import] Atomic rows and serialized chunk recovery
     await expect(importer().dryRun(member, { stagedFileId: nextId, entityKind: 'operations',
       mapping: { columns: Object.fromEntries(columns.map((column, index) => [index, column])) } }))
       .rejects.toMatchObject({ code: 'not_authorized' })
+  })
+
+  it('imports source orders silently, reconciles capacity once, and protects source evidence across jobs', async () => {
+    const f = await fixture()
+    const buyerId = await f.entity('person', 'Source order buyer', { email: 'buyer@example.com' })
+    const attendeeId = await f.entity('person', 'Source order attendee', { email: 'attendee@example.com' })
+    const association = createAssociationStore(pool)
+    const actor = { credentialKind: 'user' as const, credentialId: f.userId, actingUserId: f.userId }
+    const event = await association.upsertEvent(f.workspaceId, EventInputSchema.parse({
+      slug: `source-order-${f.workspaceId.slice(0, 8)}`, title: 'Future source booking',
+      startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z',
+      timezone: 'UTC', mode: 'venue', status: 'published', capacity: 2,
+    }), actor)
+    const ticket = await association.upsertTicket(f.workspaceId, String(event.record.id), TicketInputSchema.parse({
+      key: 'standard', name: 'Standard', currency: 'HKD', priceMinor: 1_000,
+      capacity: 2, status: 'closed',
+    }), actor)
+    const columns = [
+      'contactId', 'sourceOrderSource', 'sourceOrderSite', 'sourceOrderId',
+      'sourceOrderOccurredAt', 'sourceOrderStatus', 'sourceOrderCurrency',
+      'sourceOrderSubtotalMinor', 'sourceOrderDiscountMinor', 'sourceOrderTotalMinor',
+      'sourceOrderRefundedMinor', 'sourceOrderProvider', 'sourceOrderProviderReference',
+      'sourceOrderLinesJson', 'sourceOrderMetadataJson',
+    ]
+    const lines = JSON.stringify([{ ticketId: ticket.record.id, quantity: 2,
+      unitPriceMinor: 1_000, discountMinor: 400, lineTotalMinor: 1_600, attendees: [
+        { sourceRegistrationId: 'booking-1', contactId: buyerId, name: 'Source order buyer', status: 'confirmed' },
+        { sourceRegistrationId: 'booking-2', contactId: attendeeId, name: 'Source order attendee', email: 'attendee@example.com', status: 'confirmed' },
+      ] }])
+    const original = [buyerId, 'wix', 'oasahk_org', 'wix-order-42',
+      '2026-08-01T10:00:00.123456Z', 'paid', 'HKD', '2000', '400', '1600', '200',
+      'stripe', 'pi_wix_order_42', lines, '{"channel":"web"}']
+    const counts = async () => (await pool.query(`SELECT
+      (SELECT count(*) FROM association_orders WHERE workspace_id=$1 AND source_import)::int orders,
+      (SELECT count(*) FROM association_registrations WHERE workspace_id=$1 AND source_kind='source_order')::int registrations,
+      (SELECT count(*) FROM association_audit_log WHERE workspace_id=$1 AND action='order.source_imported')::int audit,
+      (SELECT count(*) FROM association_notification_outbox WHERE workspace_id=$1)::int notifications,
+      (SELECT count(*) FROM association_provider_events WHERE workspace_id=$1)::int provider_events,
+      (SELECT count(*) FROM crm_domain_event_outbox WHERE workspace_id=$1)::int domain_events,
+      (SELECT count(*) FROM crm_delivery_receipts WHERE workspace_id=$1)::int deliveries,
+      (SELECT count(*) FROM association_consent_events WHERE workspace_id=$1)::int consent,
+      (SELECT count(*) FROM tasks WHERE workspace_id=$1)::int tasks,
+      COALESCE((SELECT used FROM association_inventory_boundaries WHERE workspace_id=$1 AND event_id=$2 AND ticket_id IS NULL),0)::int used`,
+      [f.workspaceId, event.record.id])).rows[0]
+
+    const first = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, first.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    const saved = (await pool.query(`SELECT source_system,source_site,source_order_id,source_order_status,
+      status,currency,subtotal_minor::text,discount_minor::text,total_minor::text,refunded_minor::text,
+      refund_state,provider,provider_reference,source_import,
+      to_char(source_occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') source_occurred_at
+      FROM association_orders WHERE workspace_id=$1 AND source_import`, [f.workspaceId])).rows[0]
+    expect(saved).toMatchObject({ source_system: 'wix', source_site: 'oasahk_org', source_order_id: 'wix-order-42',
+      source_order_status: 'paid', status: 'paid', currency: 'HKD', subtotal_minor: '2000',
+      discount_minor: '400', total_minor: '1600', refunded_minor: '200', refund_state: 'partial',
+      provider: 'stripe', provider_reference: 'pi_wix_order_42', source_import: true,
+      source_occurred_at: '2026-08-01T10:00:00.123456Z' })
+    expect((await pool.query(`SELECT pricing_basis,quantity,unit_price_minor::text,discount_minor::text,line_total_minor::text
+      FROM association_order_lines WHERE workspace_id=$1`, [f.workspaceId])).rows)
+      .toEqual([{ pricing_basis: 'source', quantity: 2, unit_price_minor: '1000', discount_minor: '400', line_total_minor: '1600' }])
+    expect((await pool.query(`SELECT status,source_kind,historical_import FROM association_registrations
+      WHERE workspace_id=$1 ORDER BY attendee_name`, [f.workspaceId])).rows)
+      .toEqual([{ status: 'confirmed', source_kind: 'source_order', historical_import: false },
+        { status: 'confirmed', source_kind: 'source_order', historical_import: false }])
+    await expect(pool.query(`UPDATE association_orders SET source_order_id='changed'
+      WHERE workspace_id=$1 AND source_order_id='wix-order-42'`, [f.workspaceId]))
+      .rejects.toMatchObject({ code: '23514' })
+    await expect(pool.query(`INSERT INTO association_registrations(
+        workspace_id,order_id,order_line_id,event_id,ticket_id,attendee_name,status,
+        source_kind,source_id,request_fingerprint,historical_import)
+      SELECT o.workspace_id,o.id,l.id,t.event_id,l.ticket_id,'Spoofed source attendee','confirmed',
+        'source_order','spoofed-source-registration',repeat('a',64),false
+      FROM association_orders o JOIN association_order_lines l
+        ON l.workspace_id=o.workspace_id AND l.order_id=o.id
+      JOIN association_ticket_types t
+        ON t.workspace_id=l.workspace_id AND t.id=l.ticket_id
+      WHERE o.workspace_id=$1 AND o.source_order_id='wix-order-42'`, [f.workspaceId]))
+      .rejects.toMatchObject({ code: '23514' })
+    expect(await counts()).toMatchObject({ orders: 1, registrations: 2, audit: 1, notifications: 0,
+      provider_events: 0, domain_events: 0, deliveries: 0, consent: 0, tasks: 0, used: 2 })
+
+    const replay = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, replay.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    expect(await counts()).toMatchObject({ orders: 1, registrations: 2, audit: 1, used: 2 })
+
+    const changedLines = JSON.stringify([{ ...JSON.parse(lines)[0], discountMinor: 500, lineTotalMinor: 1_500 }])
+    const changed = [...original]
+    changed[8] = '500'; changed[9] = '1500'; changed[13] = changedLines
+    const conflict = await f.job(columns, [changed], 'operations')
+    expect(await importer().resume(f.context, conflict.id)).toMatchObject({ status: 'completed', succeededRows: 0, failedRows: 1 })
+    expect((await pool.query(`SELECT message FROM crm_import_errors WHERE job_id=$1`, [conflict.id])).rows)
+      .toEqual([{ message: 'Source order identity was already used with different evidence.' }])
+
+    const overflowLines = JSON.stringify([{ ticketId: ticket.record.id, quantity: 1,
+      unitPriceMinor: 1_000, discountMinor: 0, lineTotalMinor: 1_000,
+      attendees: [{ sourceRegistrationId: 'booking-3', name: 'Overflow attendee', status: 'confirmed' }] }])
+    const overflow = [...original]
+    overflow[3] = 'wix-order-43'; overflow[7] = '1000'; overflow[8] = '0'; overflow[9] = '1000';
+    overflow[10] = '0'; overflow[12] = 'pi_wix_order_43'; overflow[13] = overflowLines
+    const capacity = await f.job(columns, [overflow], 'operations')
+    expect(await importer().resume(f.context, capacity.id)).toMatchObject({ status: 'completed', succeededRows: 0, failedRows: 1 })
+    expect((await pool.query(`SELECT message FROM crm_import_errors WHERE job_id=$1`, [capacity.id])).rows[0].message)
+      .toBe('Source order exceeds current ticket capacity.')
+    expect(await counts()).toMatchObject({ orders: 1, registrations: 2, audit: 1, used: 2 })
+  })
+
+  it('keeps ended source bookings historical and rechecks owner authority at commit', async () => {
+    const f = await fixture(), contactId = await f.entity('person', 'Historical booking person')
+    const association = createAssociationStore(pool)
+    const actor = { credentialKind: 'user' as const, credentialId: f.userId, actingUserId: f.userId }
+    const event = await association.upsertEvent(f.workspaceId, EventInputSchema.parse({
+      slug: `past-source-${f.workspaceId.slice(0, 8)}`, title: 'Past source booking',
+      startsAt: '2020-01-01T12:00:00Z', endsAt: '2020-01-01T14:00:00Z',
+      timezone: 'UTC', mode: 'venue', status: 'completed', capacity: 1,
+    }), actor)
+    const ticket = await association.upsertTicket(f.workspaceId, String(event.record.id), TicketInputSchema.parse({
+      key: 'archive', name: 'Archive', currency: 'HKD', priceMinor: 500, capacity: 1, status: 'closed',
+    }), actor)
+    const columns = ['contactId', 'sourceOrderSource', 'sourceOrderSite', 'sourceOrderId',
+      'sourceOrderOccurredAt', 'sourceOrderStatus', 'sourceOrderCurrency', 'sourceOrderSubtotalMinor',
+      'sourceOrderTotalMinor', 'sourceOrderProvider', 'sourceOrderProviderReference', 'sourceOrderLinesJson']
+    const row = [contactId, 'wix', 'oasahk_org', 'past-order-1', '2019-12-01T00:00:00Z',
+      'paid', 'HKD', '500', '500', 'stripe', 'pi_past_order_1', JSON.stringify([{
+        ticketId: ticket.record.id, quantity: 1, unitPriceMinor: 500, lineTotalMinor: 500,
+        attendees: [{ sourceRegistrationId: 'past-booking-1', contactId, name: 'Historical booking person',
+          status: 'checked_in', checkedInAt: '2020-01-01T12:15:00Z' }],
+      }])]
+    const historical = await f.job(columns, [row], 'operations')
+    expect(await importer().resume(f.context, historical.id)).toMatchObject({ succeededRows: 1, failedRows: 0 })
+    expect((await pool.query(`SELECT historical_import,status,checked_in_at IS NOT NULL checked_in
+      FROM association_registrations WHERE workspace_id=$1 AND event_id=$2`, [f.workspaceId, event.record.id])).rows)
+      .toEqual([{ historical_import: true, status: 'checked_in', checked_in: true }])
+    expect((await pool.query(`SELECT used FROM association_inventory_boundaries
+      WHERE workspace_id=$1 AND event_id=$2 AND ticket_id IS NULL`, [f.workspaceId, event.record.id])).rows[0].used).toBe(0)
+
+    const pending = [...row]
+    pending[3] = 'past-order-2'; pending[10] = 'pi_past_order_2'
+    const authority = await f.job(columns, [pending], 'operations')
+    await pool.query(`UPDATE workspace_members SET role='member' WHERE workspace_id=$1 AND user_id=$2`, [f.workspaceId, f.userId])
+    expect(await importer().resume(f.context, authority.id)).toMatchObject({ status: 'completed', succeededRows: 0, failedRows: 1 })
+    expect((await pool.query(`SELECT count(*)::int count FROM association_orders WHERE workspace_id=$1 AND source_order_id='past-order-2'`, [f.workspaceId])).rows[0].count).toBe(0)
   })
 
   it('finishes file I/O before borrowing the only transaction connection', async () => {

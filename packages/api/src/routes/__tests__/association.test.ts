@@ -55,6 +55,7 @@ function fakeStore(): AssociationStore {
     listWaitlist: vi.fn(),
     offerWaitlistPlace: vi.fn(),
     createOrder: vi.fn(),
+    importSourceOrder: vi.fn(),
     getOrder: vi.fn(),
     listOrders: vi.fn(),
     expireDueOrder: vi.fn(),

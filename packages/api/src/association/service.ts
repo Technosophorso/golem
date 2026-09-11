@@ -5,6 +5,7 @@ import {
   actorAuditIdentity, crmIntegrationResourceSelection,
   requireCrmIntegrationOperation, requireCrmIntegrationResources,
   type AssociationActor, type AssociationContext, type AssociationServicePort,
+  AssociationSourceOrderImportSchema, type AssociationSourceOrderImportPort,
   type CrmIntegrationOperation, type CrmOperationsServicePort,
 } from '@use-brian/core'
 import { createAssociationStore, type AssociationStore } from '../db/association-store.js'
@@ -21,11 +22,22 @@ export function createAssociationService(options: {
   crmService: CrmOperationsServicePort
   store?: AssociationStore
   modules?: WorkspaceModulesStore
-}): AssociationServicePort {
+}): AssociationServicePort & AssociationSourceOrderImportPort {
   const store = options.store ?? createAssociationStore()
   // Resolve the default lazily so pure command tests never open a database.
   const modules = () => options.modules ?? createWorkspaceModulesStore()
   return {
+    async importSourceOrder(rawContext, rawInput) {
+      const context = AssociationContextSchema.parse(rawContext)
+      const input = AssociationSourceOrderImportSchema.parse(rawInput)
+      if (context.actor.kind !== 'import' || context.actor.jobId !== input.importJobId
+        || !context.authority.canWrite || !context.authority.canConfigure
+        || !['owner', 'admin'].includes(context.authority.role)) {
+        throw new CrmOperationsError('not_authorized', 'Source orders require the current owner/admin production import job.')
+      }
+      const saved = await store.importSourceOrder(context.workspaceId, input, actor(context))
+      return { record: saved.record, created: saved.created, duplicate: !saved.created }
+    },
     async execute(rawContext, rawCommand) {
       const context = AssociationContextSchema.parse(rawContext)
       const command = AssociationCommandSchema.parse(rawCommand)
@@ -162,7 +174,7 @@ export function createAssociationService(options: {
           const management = await store.getRegistrationManagement(workspaceId, command.registrationId)
           if (!management) throw new AssociationError('not_found', 'registration not found')
           if (integration) requireCrmIntegrationResources(integration, operation, { eventIds: management.eventId ?? null })
-          if (management.sourceKind === 'commerce') return { ...output, record: await store.updateRegistration(workspaceId, command.registrationId, command.update, dbActor) }
+          if (['commerce', 'source_order'].includes(management.sourceKind)) return { ...output, record: await store.updateRegistration(workspaceId, command.registrationId, command.update, dbActor) }
           const result = await options.crmService.execute(context, { kind: 'update_participation', participationId: command.registrationId,
             status: command.update.status === 'checked_in' ? 'attended' : 'cancelled' })
           const { contactId, metadata, ...rest } = result.record
@@ -176,7 +188,7 @@ export function createAssociationService(options: {
           }
           const management = await store.getRegistrationManagement(workspaceId, command.registrationId)
           if (!management) throw new AssociationError('not_found', 'registration not found')
-          if (management.sourceKind === 'commerce') {
+          if (['commerce', 'source_order'].includes(management.sourceKind)) {
             if (command.correction.expectedStatus !== 'checked_in') throw new AssociationError('conflict', 'Commerce check-in correction expects checked_in.')
             return { ...output, record: await store.correctRegistrationCheckIn(workspaceId, command.registrationId, command.correction, dbActor) }
           }

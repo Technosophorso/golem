@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { AssociationCommandSchema, type AssociationContext, type CrmOperationsServicePort } from '@use-brian/core'
+import { AssociationCommandSchema, AssociationSourceOrderImportSchema, type AssociationContext, type CrmOperationsServicePort } from '@use-brian/core'
 import { createAssociationService } from '../service.js'
 import type { AssociationStore } from '../../db/association-store.js'
 import type { WorkspaceModulesStore } from '../../db/workspace-modules-store.js'
@@ -17,6 +17,7 @@ function fixture() {
     listOperationalRoster: vi.fn().mockResolvedValue({ items: [{ id: orderId }], nextCursor: null }),
     listWaitlist: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     offerWaitlistPlace: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
+    importSourceOrder: vi.fn().mockResolvedValue({ record: { id: orderId, sourceImport: true }, created: true }),
     bindOrderProvider: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
     reconcileProviderEntitlement: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     listProviderReceipts: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
@@ -45,6 +46,28 @@ function integration(): AssociationContext {
 }
 
 describe('[COMP:crm/association-service] Canonical authority and adapters', () => {
+  it('keeps source order assertions inside the matching owner/admin import job', async () => {
+    const f = fixture(), jobId = randomUUID()
+    const input = AssociationSourceOrderImportSchema.parse({
+      importJobId: jobId, importRow: 1, contactId: userId, source: 'wix',
+      sourceSite: 'oasahk_org', sourceOrderId: 'source-1', occurredAt: '2026-08-01T00:00:00Z',
+      status: 'paid', currency: 'HKD', subtotalMinor: 100, discountMinor: 0, totalMinor: 100,
+      lines: [{ ticketId: eventId, quantity: 1, unitPriceMinor: 100, discountMinor: 0,
+        lineTotalMinor: 100, attendees: [{ sourceRegistrationId: 'booking-1', name: 'Example', status: 'confirmed' }] }],
+    })
+    const ownerImport: AssociationContext = { ...member,
+      actor: { kind: 'import', jobId, userId },
+      authority: { ...member.authority, role: 'owner', canConfigure: true } }
+    expect(await f.service.importSourceOrder(ownerImport, input)).toMatchObject({ created: true, duplicate: false })
+    expect(f.store.importSourceOrder).toHaveBeenCalledWith(workspaceId, input,
+      expect.objectContaining({ credentialKind: 'import', actingUserId: userId }))
+    for (const context of [
+      { ...ownerImport, actor: { kind: 'import' as const, jobId: randomUUID(), userId } },
+      { ...ownerImport, authority: { ...ownerImport.authority, role: 'member' as const, canConfigure: false } },
+      { ...ownerImport, actor: { kind: 'user' as const, userId } },
+    ]) await expect(f.service.importSourceOrder(context, input)).rejects.toMatchObject({ code: 'not_authorized' })
+    expect(f.store.importSourceOrder).toHaveBeenCalledTimes(1)
+  })
   it('intersects receipt read scope with entitlement plan ceilings and never upgrades members to payment authority', async () => {
     const f = fixture(), context = integration(), planId = randomUUID()
     await f.service.execute(context, command({ kind: 'list_provider_receipts' }))

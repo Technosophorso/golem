@@ -151,7 +151,7 @@ export const ParticipationQuery = CrmPageQuerySchema.extend({
   contactId: CrmOperationsUuidSchema.optional(),
   eventId: CrmOperationsUuidSchema.optional(),
   status: ParticipationStatus.optional(),
-  sourceKind: z.enum(['commerce', 'manual', 'form', 'workflow', 'import']).optional(),
+  sourceKind: z.enum(['commerce', 'source_order', 'manual', 'form', 'workflow', 'import']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 }).strict()
 const GrantEntitlementBody = z.object({

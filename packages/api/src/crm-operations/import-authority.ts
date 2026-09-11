@@ -50,6 +50,11 @@ export function requireImportRowAuthority(context: CrmOperationsContext, kind: s
     && (context.actor.kind !== 'user' || !['owner', 'admin'].includes(context.authority.role))) {
     throw new CrmOperationsError('not_authorized', 'Historical submission imports require a current workspace owner or admin.')
   }
+  if (values.sourceOrderSource
+    && (integration || context.actor.kind !== 'user' || !context.authority.canConfigure
+      || !['owner', 'admin'].includes(context.authority.role))) {
+    throw new CrmOperationsError('not_authorized', 'Source order imports require a current workspace owner or admin using a member file.')
+  }
   if (!integration) return
   if (trustedIdentitySource) throw new CrmOperationsError('not_authorized', 'Integration imports cannot acknowledge trusted identity sources.')
   const resources = (operation: CrmIntegrationOperation, selected: Parameters<typeof requireCrmIntegrationResources>[2]) => {

@@ -16,6 +16,7 @@ import type {
   CrmOperationsContext,
   CrmOperationsServicePort,
   CrmHistoricalSubmissionImportPort,
+  AssociationSourceOrderImportPort,
   EntityLinksStore,
   FilesApi,
   StableExternalIdentity,
@@ -23,7 +24,7 @@ import type {
   CrmPage,
   CrmPageQuery,
 } from '@use-brian/core'
-import { CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
+import { AssociationSourceOrderImportSchema, CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
 import { createCompany, createContact, createDeal, updateContact, type CrmWriteTransaction } from '../db/crm.js'
 import { updateCrmCustomFields } from '../db/crm-r2.js'
 import { getEntityById, updateEntity } from '../db/entities-store.js'
@@ -55,6 +56,12 @@ const BASE_TARGETS = new Set([
   'historicalSubmissionId', 'historicalSubmissionOccurredAt', 'historicalSubmissionStatus',
   'historicalSubmissionFieldsJson', 'historicalSubmissionSubject',
   'historicalSubmissionMessage', 'historicalSubmissionQueueKey',
+  'sourceOrderSource', 'sourceOrderSite', 'sourceOrderId',
+  'sourceOrderOccurredAt', 'sourceOrderStatus', 'sourceOrderCurrency',
+  'sourceOrderSubtotalMinor', 'sourceOrderDiscountMinor', 'sourceOrderTotalMinor',
+  'sourceOrderRefundedMinor', 'sourceOrderReservationExpiresAt',
+  'sourceOrderProvider', 'sourceOrderProviderReference', 'sourceOrderLinesJson',
+  'sourceOrderMetadataJson',
 ])
 
 function validTarget(target: string): boolean {
@@ -275,6 +282,38 @@ function historicalSubmissionFields(raw: string | undefined): Record<string, unk
   return result.data
 }
 
+function jsonValue(raw: string | undefined, label: string, fallback?: unknown): unknown {
+  if (!raw) {
+    if (fallback !== undefined) return fallback
+    throw new Error(`${label} is required.`)
+  }
+  try { return JSON.parse(raw) }
+  catch { throw new Error(`${label} must contain valid JSON.`) }
+}
+
+function sourceOrderInput(values: Record<string, string>, importJobId: string, importRow: number) {
+  return AssociationSourceOrderImportSchema.parse({
+    importJobId,
+    importRow,
+    contactId: values.contactId,
+    source: values.sourceOrderSource,
+    sourceSite: values.sourceOrderSite,
+    sourceOrderId: values.sourceOrderId,
+    occurredAt: values.sourceOrderOccurredAt,
+    status: values.sourceOrderStatus,
+    currency: values.sourceOrderCurrency,
+    subtotalMinor: Number(values.sourceOrderSubtotalMinor),
+    discountMinor: Number(values.sourceOrderDiscountMinor ?? '0'),
+    totalMinor: Number(values.sourceOrderTotalMinor),
+    refundedMinor: Number(values.sourceOrderRefundedMinor ?? '0'),
+    reservationExpiresAt: values.sourceOrderReservationExpiresAt,
+    provider: values.sourceOrderProvider,
+    providerReference: values.sourceOrderProviderReference,
+    lines: jsonValue(values.sourceOrderLinesJson, 'Source order lines'),
+    metadata: jsonValue(values.sourceOrderMetadataJson, 'Source order metadata', {}),
+  })
+}
+
 function validateMappedRow(
   kind: CrmImportEntityKind,
   row: { row: number; cells: string[]; malformedReason?: string },
@@ -401,6 +440,24 @@ function validateMappedRow(
     try { historicalSubmissionFields(values.historicalSubmissionFieldsJson) }
     catch (error) { add('invalid_submission_data', error instanceof Error ? error.message : 'Historical submission data is invalid.', 'historicalSubmissionFieldsJson') }
   }
+  const sourceOrderFields = [
+    values.sourceOrderSource, values.sourceOrderSite, values.sourceOrderId,
+    values.sourceOrderOccurredAt, values.sourceOrderStatus, values.sourceOrderCurrency,
+    values.sourceOrderSubtotalMinor, values.sourceOrderDiscountMinor, values.sourceOrderTotalMinor,
+    values.sourceOrderRefundedMinor, values.sourceOrderReservationExpiresAt,
+    values.sourceOrderProvider, values.sourceOrderProviderReference,
+    values.sourceOrderLinesJson, values.sourceOrderMetadataJson,
+  ]
+  const hasSourceOrder = sourceOrderFields.some(Boolean)
+  if (hasSourceOrder && !(
+    values.sourceOrderSource && values.sourceOrderSite && values.sourceOrderId
+    && values.sourceOrderOccurredAt && values.sourceOrderStatus && values.sourceOrderCurrency
+    && values.sourceOrderSubtotalMinor && values.sourceOrderTotalMinor && values.sourceOrderLinesJson
+  )) add('incomplete_source_order', 'Source order source, site, ID, time, state, currency, subtotal, total, and line JSON are required together.', 'sourceOrderSource')
+  if (hasSourceOrder) {
+    try { sourceOrderInput(values, '00000000-0000-4000-8000-000000000000', row.row) }
+    catch (error) { add('invalid_source_order', error instanceof Error ? error.message : 'Source order evidence is invalid.', 'sourceOrderLinesJson') }
+  }
   if (values.currencyCode && !/^[a-z]{3}$/i.test(values.currencyCode)) {
     add('invalid_currency', 'Currency must be a three-letter ISO code.', 'currencyCode')
   }
@@ -412,8 +469,8 @@ function validateMappedRow(
   if (kind === 'operations' && !isUuid(values.contactId)) {
     add('required_field', 'Operations rows require a contact UUID.', 'contactId')
   }
-  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation || hasHistoricalSubmission)) {
-    add('required_operation', 'An operations row must contain consent, suppression, entitlement, participation, or historical submission evidence.')
+  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation || hasHistoricalSubmission || hasSourceOrder)) {
+    add('required_operation', 'An operations row must contain consent, suppression, entitlement, participation, historical submission, or source order evidence.')
   }
   return errors
 }
@@ -435,6 +492,7 @@ export function createCrmProductionImportService(deps: {
   filesApi?: FilesApi
   sources?: CrmImportSources
   operationsForTransaction: (client: PoolClient) => CrmOperationsServicePort & CrmHistoricalSubmissionImportPort
+  associationForTransaction?: (client: PoolClient) => AssociationSourceOrderImportPort
   pool?: Pool
   entityLinks?: EntityLinksStore
 }) {
@@ -704,6 +762,7 @@ export function createCrmProductionImportService(deps: {
     customCatalog: ReadonlyMap<string, ImportCustomDefinition>,
     transaction: CrmWriteTransaction,
     operations: CrmOperationsServicePort & CrmHistoricalSubmissionImportPort,
+    association?: AssociationSourceOrderImportPort,
   ): Promise<string | null> {
     const values = mappedValues(row.cells, job.mapping)
     requireImportRowAuthority(context, job.entityKind, values, job.mapping.trustedIdentitySource)
@@ -874,6 +933,14 @@ export function createCrmProductionImportService(deps: {
         queueKey: values.historicalSubmissionQueueKey ?? 'general',
       })
     }
+    if (contactId && values.sourceOrderSource) {
+      if (!association) throw new Error('Association source order importer is unavailable.')
+      await association.importSourceOrder({
+        workspaceId: context.workspaceId,
+        actor: importContext.actor,
+        authority: { ...context.authority, canRead: true, canReconcileProvider: false },
+      }, sourceOrderInput(values, job.id, row.row))
+    }
     return entityId ?? contactId ?? null
   }
 
@@ -954,7 +1021,9 @@ export function createCrmProductionImportService(deps: {
         await client.query('SAVEPOINT crm_import_row')
         try {
           if (validation.length > 0) throw new Error(validation.map((error) => error.message).join(' '))
-          const entityId = await executeRow(context, job, row, customCatalog, { client, afterCommit: (effect) => { effects.push(effect) } }, deps.operationsForTransaction(client))
+          const entityId = await executeRow(context, job, row, customCatalog,
+            { client, afterCommit: (effect) => { effects.push(effect) } },
+            deps.operationsForTransaction(client), deps.associationForTransaction?.(client))
           await client.query(
             `INSERT INTO crm_import_rows (workspace_id,job_id,row_number,input_hash,status,entity_id)
              VALUES ($1,$2,$3,$4,'completed',$5)

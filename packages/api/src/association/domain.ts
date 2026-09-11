@@ -38,6 +38,8 @@ export {
   AssociationOrderLineInputSchema as OrderLineInputSchema,
   AssociationOrderCreateSchema as OrderCreateSchema,
   type AssociationOrderCreateInput as OrderCreateInput,
+  AssociationSourceOrderImportSchema as SourceOrderImportSchema,
+  type AssociationSourceOrderImportInput as SourceOrderImportInput,
   AssociationOrderStatusSchema as OrderStatusSchema,
   type AssociationOrderStatus as OrderStatus,
   AssociationOrderFinancialSummarySchema as OrderFinancialSummarySchema,

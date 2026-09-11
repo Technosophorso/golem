@@ -4851,7 +4851,13 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const crmImportSources = createCrmImportSources()
   const crmProductionImports = createCrmProductionImportService({
     filesApi: filesApi ?? undefined, sources: crmImportSources,
-    operationsForTransaction: (client) => createCrmOperationsService(createDbCrmOperationsStore(getPool(), client)), entityLinks: entityLinksStore,
+    operationsForTransaction: (client) => createCrmOperationsService(createDbCrmOperationsStore(getPool(), client)),
+    associationForTransaction: (client) => createAssociationService({
+      store: createAssociationStore(getPool(), client),
+      modules: workspaceModulesStore,
+      crmService: createCrmOperationsService(createDbCrmOperationsStore(getPool(), client)),
+    }),
+    entityLinks: entityLinksStore,
   })
   app.use('/api/crm/integration', crmIntegrationRoutes({
     deliveries: crmDeliveries,
