@@ -154,6 +154,15 @@ export const ja: Dictionary = {
     "low": "優先度: 低"
 },
   feedCollaboration: {
+    details: "詳細",
+    postActions: "投稿の操作",
+    openComments: "{n}件のコメントを開く",
+    closePanel: "パネルを閉じる",
+    allComments: "すべてのコメント",
+    documentActions: "コメントとチャットの操作",
+    showChat: "チャットを表示",
+    hideChat: "チャットを非表示",
+    resetChatWidth: "チャットの幅をリセット",
     formatting: "書式",
     insert: "挿入",
     blockMenu: "ブロック操作",

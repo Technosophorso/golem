@@ -119,12 +119,27 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     act(() => root.render(<CompositionEditor {...props} />));
     const node = host.querySelector<HTMLElement>('[contenteditable=true]')!; const view = editorView(node)!;
     let pos = 0; view.state.doc.forEach((child, offset, index) => { if (index === 2) pos = offset + 1; });
-    act(() => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos + 4, pos + 15))));
+    act(() => { view.focus(); view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos + 4, pos + 15))); });
     expect(selected).toEqual({ kind: 'range', spans: [{ segmentId: doc.segments[0]!.id, blockId: doc.segments[0]!.content[2]!.attrs.id, from: 4, to: 15 }] });
     await click(text.comment); expect(onAction).toHaveBeenCalledWith('comment');
     act(() => root.render(<CompositionEditor {...props} draftAnchor={createFeedAnchor(doc, selected!, 2)} />));
     expect(host.querySelector('[data-feed-thread=draft]')?.textContent).toBe('same phrase');
     expect(host.querySelectorAll('[data-feed-thread=draft]')).toHaveLength(1);
+  });
+  it('shows passage actions only for a focused selection, with a persistent toolbar fallback', async () => {
+    const onAction = vi.fn();
+    act(() => root.render(<CompositionEditor composition={composition()} threads={[]} onEdit={vi.fn()} onSelection={vi.fn()} onAction={onAction} onOpenThread={vi.fn()} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    act(() => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 6))));
+    expect(host.querySelector('[data-feed-selection-actions]')).toBeNull();
+    act(() => { view.focus(); view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 6))); });
+    expect(host.querySelector('[data-feed-selection-actions]')).not.toBeNull();
+    act(() => view.dom.blur());
+    expect(host.querySelector('[data-feed-selection-actions]')).toBeNull();
+    await click(text.documentActions);
+    const action = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node => node.textContent === text.comment)!;
+    await act(async () => action.click());
+    expect(onAction).toHaveBeenCalledWith('comment');
   });
   it('scenario 1: typing emits preimage commands that preserve formatted unselected content', () => {
     const doc = composition(); const onEdit = vi.fn();
@@ -170,6 +185,16 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     expect(host.textContent).toContain(text.detached); await click(text.reattach);
     expect(props.onCommand).toHaveBeenCalledWith([{ kind: 'reattach', threadId: thread.id, target }]);
     await click(text.resolve); expect(props.onCommand).toHaveBeenLastCalledWith([{ kind: 'resolve', threadId: thread.id, resolved: true }]);
+  });
+  it('a focused comment shows only its discussion and related suggestions', () => {
+    const props = panel(); const first = { id: 'first', transcriptSessionId: 'first-chat', anchor: createFeedAnchor(props.composition, { kind: 'post' }, 2), resolved: false, authorUserId: 'member', authorKind: 'user' as const, createdAt: '' };
+    const edits = proposeFeedReplacement(props.composition, { kind: 'post' }, 'A proposal');
+    const suggestion = { id: 'proposal', edits, rationale: 'Use a concrete point', status: 'proposed', threadId: 'first', parentId: null, sourceRevision: 2, authorUserId: 'member', authorKind: 'assistant' as const };
+    act(() => root.render(<DraftCommentPanel {...props} focused selectedThread="first" snapshot={{ ...props.snapshot!, threads: [first, { ...first, id: 'second' }], suggestions: [suggestion, { ...suggestion, id: 'unrelated', threadId: 'second' }] }} />));
+    expect(host.querySelectorAll('[data-feed-comment-id]')).toHaveLength(1);
+    expect(host.querySelectorAll('[data-feed-suggestion]')).toHaveLength(1);
+    expect(host.querySelector('[data-feed-suggestion="unrelated"]')).toBeNull();
+    expect(host.querySelector('[role="group"][aria-label="Comments"]')).toBeNull();
   });
   it('the styled Reply button submits the attributed comment form', async () => {
     const props = panel();

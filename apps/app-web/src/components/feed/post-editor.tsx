@@ -26,6 +26,10 @@ import {
   Copy,
   ClipboardCheck,
   FileDown,
+  Info,
+  MoreHorizontal,
+  PanelRightClose,
+  PanelRightOpen,
   Heart,
   Link2,
   MessageCircle,
@@ -36,6 +40,10 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { FeedEditorPanel } from "./editor-panel";
+import { FeedDocumentAnnotations } from "./document-annotations";
+import { FeedDetachedGenerationResults } from "./generation-placeholder";
 import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/client";
@@ -431,7 +439,7 @@ function PostPane({
     width: railWidth,
     resizing: railResizing,
     handleProps: railHandleProps,
-  } = usePeekResize("feed:refine-rail-width");
+  } = usePeekResize("feed:refine-rail-width", { minWidth: 320 });
 
   const [session, setSession] = useState<FeedDraftSessionSummary | null>(null);
   const [drafts, setDrafts] = useState<FeedSavedDraft[]>([]);
@@ -456,11 +464,18 @@ function PostPane({
   const offline = useIsOffline();
   const [localPost, setLocalPost] = useState<LocalFeedPost | null>(null);
   const [localSaveError, setLocalSaveError] = useState(false);
-  const [reviewOpen, setReviewOpen] = useState(false);
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const [editorPanel, setEditorPanel] = useState<'comments' | 'thread' | 'details' | 'review' | 'learning' | null>(null);
+  const lastPanel = useRef<typeof editorPanel>(null);
+  const panelMode = editorPanel ?? lastPanel.current;
+  const [panelAnchor, setPanelAnchor] = useState<HTMLElement | null>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+  const documentRef = useRef<HTMLDivElement>(null);
+  const commentsButtonRef = useRef<HTMLButtonElement>(null);
+  const actionsButtonRef = useRef<HTMLButtonElement>(null);
   const [chatThreadId, setChatThreadId] = useState<string | null>(null);
   const [chatThreadIds, setChatThreadIds] = useState<string[]>([]);
   const commentsRef = useRef<HTMLDivElement>(null);
-  const commentsHeadingRef = useRef<HTMLHeadingElement>(null);
   const [selection, setSelection] = useState<FeedEditorSelection | null>(null);
   const [composer, setComposer] = useState<FeedCommentComposer | null>(null);
   const [selectedThread, setSelectedThread] = useState<string | null>(null);
@@ -635,37 +650,35 @@ function PostPane({
       await runCommands([{ kind: 'upgrade', seed: crypto.randomUUID() }]);
     } finally { setBusy(false); }
   }
+  function showPanel(kind: Exclude<typeof editorPanel, null>, anchor?: HTMLElement | null) {
+    setPanelAnchor(anchor ?? actionsButtonRef.current);
+    lastPanel.current = kind;
+    setEditorPanel(kind);
+    setRefineOpen(false);
+  }
   function openThread(threadId: string) {
     setSelectedThread(threadId);
-    setReviewOpen(false);
-    requestAnimationFrame(() => {
-      commentsRef.current?.querySelector<HTMLElement>(`[data-feed-comment-id="${threadId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    });
-    const thread = collaboration.data?.threads.find(item => item.id === threadId);
-    const target = thread?.anchor.target;
-    const blockId = target?.kind === 'block' ? target.blockId : target?.kind === 'range' ? target.spans[0]?.blockId : null;
-    if (blockId) document.querySelector(`[data-block-id="${blockId}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const marker = [...(workspaceRef.current?.querySelectorAll<HTMLElement>('[data-feed-comment-marker]') ?? [])].find(item => item.dataset.feedCommentMarker === threadId);
+    showPanel('thread', marker ?? commentsButtonRef.current);
   }
   function showComments() {
-    commentsRef.current?.scrollTo({ top: 0 });
-    commentsHeadingRef.current?.focus({ preventScroll: true });
-    commentsRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    showPanel('comments', commentsButtonRef.current);
   }
   function askBrianInThread(threadId: string) {
     setChatThreadIds(current => current.includes(threadId) ? current : [...current, threadId]);
-    setChatThreadId(threadId); setRefineOpen(true);
+    setChatThreadId(threadId); setChatCollapsed(false); setRefineOpen(true); setEditorPanel(null);
   }
   function selectionAction(action: 'comment' | 'suggest' | 'ask') {
     if (!localPost?.content.composition) return;
     const target = selection?.target ?? { kind: 'post' as const };
     if (action === 'ask') {
-      setChatThreadId(null); setRefineOpen(true);
+      setChatThreadId(null); setChatCollapsed(false); setRefineOpen(true); setEditorPanel(null);
       requestAnimationFrame(() => mainChatRef.current?.insertPrompt(''));
       return;
     }
-    setReviewOpen(false);
+    setSelectedThread(null);
     setComposer({ kind: action, anchor: createFeedAnchor(localPost.content.composition, target, localPost.revision) });
-    requestAnimationFrame(() => commentsRef.current?.querySelector('form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+    showComments();
   }
 
 
@@ -941,21 +954,23 @@ function PostPane({
 
   return (
     <div
+      data-feed-document-layout
       style={
         railWidth !== null
           ? ({ "--feed-refine-rail": `${railWidth}px` } as React.CSSProperties)
           : undefined
       }
       className={cn(
-        "grid min-h-full lg:h-full lg:min-h-0 lg:grid-cols-[minmax(0,1fr)_var(--feed-refine-rail,390px)] 2xl:grid-cols-[minmax(0,1fr)_var(--feed-refine-rail,420px)]",
+        "grid min-h-full lg:h-full lg:min-h-0",
+        chatCollapsed ? "lg:grid-cols-[minmax(0,1fr)_0px]" : "lg:grid-cols-[minmax(0,1fr)_minmax(0,min(var(--feed-refine-rail,320px),45%))]",
         railResizing && "select-none",
       )}
     >
-      <main className="@container/feed-editor min-w-0 bg-background lg:overflow-y-auto" data-feed-editor-workspace>
-        <div className="min-h-full p-4 pb-24 sm:p-5 lg:pb-5">
-          <div className="space-y-6">
-            <header className="flex flex-wrap items-center gap-3 border-b border-border/60 pb-4">
-              <div className="flex min-w-[min(100%,14rem)] flex-1 items-center gap-2.5">
+      <main ref={workspaceRef} className="@container/feed-editor relative min-w-0 bg-background lg:overflow-y-auto" data-feed-editor-workspace>
+        <div className="mx-auto min-h-full max-w-5xl p-3 pb-24 sm:p-5 lg:pb-5">
+          <div className="space-y-4">
+            <header className="flex flex-wrap items-center gap-2 border-b border-border/60 pb-3" data-feed-document-header>
+              <div className="flex min-w-[min(100%,12rem)] flex-1 items-center gap-2">
                 <span className="inline-flex size-8 items-center justify-center rounded-xl border border-border/60 bg-muted/40">
                   <PlatformIcon platform={platform} className="size-4" />
                 </span>
@@ -1004,10 +1019,12 @@ function PostPane({
                   ) : (
                     <h1 className="truncate text-[15px] font-semibold">{te.newPost}</h1>
                   )}
-                  <p className="mt-0.5 text-[11px] text-muted-foreground">
+                  <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
                     {session?.replyTarget
                       ? format(te.replyingTo, { handle: session.replyTarget.authorHandle })
                       : t.platformLabels[platform]}
+                    <span className="mx-1.5" aria-hidden>·</span>
+                    <span role="status">{localSaveError ? te.localSaveFailed : localSaving ? te.saving : localPost?.error === "conflict" ? te.syncConflict : localPost?.error ? te.syncBlocked : localPost?.dirty ? te.savedLocally : te.synced}</span>
                   </p>
                 </div>
               </div>
@@ -1033,9 +1050,7 @@ function PostPane({
                   </Button>
                 ))}
               </div>
-              {structured ? <Button type="button" variant="outline" size="sm" onClick={showComments}><MessageSquareText className="size-3.5" aria-hidden />{tc.comments}</Button> : null}
-              {structured ? <Button type="button" variant="outline" size="sm" disabled={readOnly || !localPost || localPost.dirty || localSaving > 0 || offline || review.busy || collaboration.data?.runs?.some(run => run.status === 'pending' || run.status === 'running')} onClick={() => { setReviewOpen(true); showComments(); void review.start(); }}><ClipboardCheck aria-hidden />{tc.review}</Button> : null}
-              <StatusLabel status={status} label={t.posts.status[status]} />
+              {structured ? <Tooltip label={tc.comments}><Button ref={commentsButtonRef} type="button" variant="outline" size="icon" className="size-11 md:size-9 gap-1" aria-label={tc.comments} aria-expanded={editorPanel === 'comments' || editorPanel === 'thread'} onClick={showComments}><MessageSquareText className="size-4" aria-hidden /><span className="text-[10px]">{collaboration.data?.threads.filter(thread => !thread.resolved).length || ''}</span></Button></Tooltip> : null}
               <div className="flex flex-wrap items-center justify-end gap-1.5">
                 {status === "drafting" ? (
                   <Button
@@ -1060,7 +1075,7 @@ function PostPane({
                         {te.saveChanges}
                       </Button>
                     ) : null}
-                    <Button
+                    {!compositionDirty ? <Button
                       size="sm"
                       type="button"
                       onClick={() => void act("approve")}
@@ -1070,11 +1085,7 @@ function PostPane({
                     >
                       <Check className="size-3.5" aria-hidden />
                       {te.approve}
-                    </Button>
-                    <Button size="sm" variant="outline" type="button" onClick={() => void act("reject")} disabled={busy || remoteBlocked}>
-                      <X className="size-3.5" aria-hidden />
-                      {te.reject}
-                    </Button>
+                    </Button> : null}
                   </>
                 ) : status === "ready" ? (
                   <Button
@@ -1087,29 +1098,27 @@ function PostPane({
                     {te.markPosted}
                   </Button>
                 ) : null}
-                <Tooltip label={copied ? te.copied : te.copyCaption}>
-                  <Button size="icon" variant="outline" type="button" className="size-11 md:size-8" aria-label={copied ? te.copied : te.copyCaption} onClick={() => void copyCaption()} disabled={!compositionText}>
-                    {copied ? <Check className="size-4" aria-hidden /> : <Copy className="size-4" aria-hidden />}
-                  </Button>
-                </Tooltip>
-                {structured ? <Tooltip label={tg.exportArticle}><Button size="icon" variant="outline" type="button" className="size-11 md:size-8" aria-label={tg.exportArticle} disabled={busy || remoteBlocked} onClick={() => void exportArticle()}><FileDown className="size-4" aria-hidden /></Button></Tooltip> : null}
-                <Tooltip label={te.delete}><Button variant="ghost" size="icon" type="button" onClick={() => void removePost()} disabled={busy || remoteBlocked} aria-label={te.delete} className="size-11 md:size-8 text-muted-foreground hover:bg-destructive/10 hover:text-destructive">
-                  <Trash2 className="size-4" aria-hidden />
-                </Button></Tooltip>
+                <DropdownMenu>
+                  <DropdownMenuTrigger render={<Button ref={actionsButtonRef} type="button" variant="ghost" size="icon" className="size-11 md:size-9" aria-label={tc.postActions} />}><MoreHorizontal className="size-4" aria-hidden /></DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" finalFocus={() => editorPanel ? false : actionsButtonRef.current}>
+                    <DropdownMenuItem className="min-h-11 md:min-h-9" onClick={() => showPanel('details')}><Info aria-hidden />{tc.details}</DropdownMenuItem>
+                    {structured ? <><DropdownMenuItem className="min-h-11 md:min-h-9" onClick={() => showPanel('review')}><ClipboardCheck aria-hidden />{tc.review}</DropdownMenuItem>
+                    <DropdownMenuItem className="min-h-11 md:min-h-9" onClick={() => showPanel('learning')}>{tl.title}</DropdownMenuItem></> : null}
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem className="min-h-11 md:min-h-9" disabled={!compositionText} onClick={() => void copyCaption()}><Copy aria-hidden />{copied ? te.copied : te.copyCaption}</DropdownMenuItem>
+                    {structured ? <DropdownMenuItem className="min-h-11 md:min-h-9" disabled={busy || remoteBlocked} onClick={() => void exportArticle()}><FileDown aria-hidden />{tg.exportArticle}</DropdownMenuItem> : null}
+                    <DropdownMenuItem className="min-h-11 md:min-h-9" onClick={railHandleProps.onDoubleClick}>{tc.resetChatWidth}</DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    {status === 'review' ? <DropdownMenuItem variant="destructive" className="min-h-11 md:min-h-9" disabled={busy || remoteBlocked} onClick={() => void act('reject')}><X aria-hidden />{te.reject}</DropdownMenuItem> : null}
+                    <DropdownMenuItem variant="destructive" className="min-h-11 md:min-h-9" disabled={busy || remoteBlocked} onClick={() => void removePost()}><Trash2 aria-hidden />{te.delete}</DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Tooltip label={isLg && !chatCollapsed ? tc.hideChat : tc.showChat}><Button type="button" variant="ghost" size="icon" className="size-11 md:size-9" aria-label={isLg && !chatCollapsed ? tc.hideChat : tc.showChat} aria-expanded={isLg ? !chatCollapsed : refineOpen} onClick={() => { setEditorPanel(null); if (isLg) setChatCollapsed(value => !value); else setRefineOpen(true); }}>{isLg && !chatCollapsed ? <PanelRightClose className="size-4" aria-hidden /> : <PanelRightOpen className="size-4" aria-hidden />}</Button></Tooltip>
               </div>
             </header>
 
             {missingSlots.length ? <div role="status" className="flex flex-wrap gap-2 rounded-xl border p-3"><span className="py-3 text-sm">{tg.unfinished}</span>{missingSlots.map((id, index) => <button key={id} className="min-h-11 rounded-md border px-3 text-sm" onClick={() => { setViewMode('edit'); requestAnimationFrame(() => { const target = document.querySelector<HTMLElement>(`[data-placeholder-id="${id}"]`); target?.scrollIntoView({ block: 'center' }); target?.querySelector<HTMLTextAreaElement>('textarea')?.focus(); }); }}>{tg.openSlot} {index + 1}</button>)}</div> : null}
-            <div role="status" className="text-xs text-muted-foreground">
-              {localSaveError ? te.localSaveFailed : localSaving ? te.saving :
-                localPost?.error === "conflict" ? te.syncConflict : localPost?.error ? te.syncBlocked :
-                localPost?.dirty ? te.savedLocally : te.synced}
-              {(localPost?.error || (readOnly && localPost?.dirty)) && workspace.canDraft ? (
-                <Button type="button" variant="outline" className="ml-3" onClick={() => void saveAsNewPost()}>
-                  {te.saveAsNewPost}
-                </Button>
-              ) : null}
-            </div>
+            {(localPost?.error || (readOnly && localPost?.dirty)) && workspace.canDraft ? <Button type="button" variant="outline" onClick={() => void saveAsNewPost()}>{te.saveAsNewPost}</Button> : null}
 
             {error ? (
               <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
@@ -1117,45 +1126,11 @@ function PostPane({
               </div>
             ) : null}
 
-            {privateBrief ? (
-              <details className="rounded-xl border border-border/60 bg-muted/15">
-                <summary className="min-h-11 cursor-pointer px-3 py-3 text-xs font-medium text-muted-foreground">
-                  <span className="mr-2 font-semibold text-foreground">
-                    {te.privateBriefBadge}
-                  </span>
-                  {te.privateBriefNotice}
-                </summary>
-                <p className="whitespace-pre-wrap px-3 pb-3 text-sm leading-relaxed text-foreground/80">
-                  {privateBrief}
-                </p>
-              </details>
-            ) : null}
-
-            <div className={cn("grid min-w-0 gap-5", structured && "@[44rem]/feed-editor:grid-cols-[minmax(0,1fr)_18rem]")}>
+            <div className="relative min-w-0">
+            <div ref={documentRef} className={cn("min-w-0", structured && "md:pr-12")}>
             <section className="min-w-0 space-y-4">
               {viewMode === "edit" ? (
                 <>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <span className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-                    {te.editorLabel}
-                  </span>
-                  {!readOnly ? (
-                    <FormatPicker
-                      platform={platform}
-                      value={postFormat}
-                      onChange={(next) => {
-                        setPostFormat(next);
-                        void persist({ postFormat: next });
-                        if (next === "thread" && threadSegments.every((part) => !part)) {
-                          setThreadSegments([selected?.text ?? "", ""]);
-                          void persist({ threadSegments: [selected?.text ?? "", ""] });
-                        }
-                      }}
-                      compact
-                    />
-                  ) : null}
-                </div>
-
                 {!structured && versions.length > 1 && postFormat !== "thread" ? (
                   <div className="flex flex-wrap items-center gap-1.5">
                     <span className="mr-1 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
@@ -1214,14 +1189,6 @@ function PostPane({
                   </div>
                 )}
 
-                {postFormat === "article" ? (
-                  <ArticleFields
-                    value={article}
-                    readOnly={readOnly}
-                    onChange={(next) => { setArticle(next); void persist({ article: next }); }}
-                  />
-                ) : null}
-
                 {postFormat === "thread" ? (
                   <p className="text-[11px] leading-relaxed text-muted-foreground">
                     {te.threadHint}
@@ -1242,7 +1209,7 @@ function PostPane({
                   }
                 />
 
-                <PostMediaTray
+                {media.length ? <div className="rounded-xl border border-border bg-card p-4"><PostMediaTray
                   workspaceId={workspaceId}
                   platform={platform}
                   media={media}
@@ -1252,7 +1219,7 @@ function PostPane({
                     setMedia(next);
                     void persist({ media: next });
                   }}
-                />
+                /></div> : null}
                 </>
               ) : (
                 <div className="mx-auto w-full max-w-4xl space-y-3">
@@ -1264,7 +1231,7 @@ function PostPane({
                         : te.manualDelivery}
                     </span>
                   </div>
-                  {structured && localPost?.content.composition ? <FeedCompositionPreview composition={localPost.content.composition} workspaceId={workspaceId} /> : <PlatformPostPreview
+                  {structured && localPost?.content.composition ? <div className="pr-12 md:pr-0"><FeedCompositionPreview composition={localPost.content.composition} workspaceId={workspaceId} /></div> : <PlatformPostPreview
                     platform={platform}
                     postFormat={postFormat}
                     text={selected?.text ?? ""}
@@ -1283,35 +1250,51 @@ function PostPane({
                 ) : null}
               </div>
             </section>
-            {structured && localPost?.content.composition ? (
-              <div ref={commentsRef} className="min-w-0 scroll-mt-4 rounded-xl border border-border/60 bg-muted/15 @[44rem]/feed-editor:sticky @[44rem]/feed-editor:top-4 @[44rem]/feed-editor:max-h-[calc(100dvh-8rem)] @[44rem]/feed-editor:self-start @[44rem]/feed-editor:overflow-y-auto" data-feed-comments>
-                <div className="sticky top-0 z-10 border-b bg-background px-3 py-3">
-                  <h2 ref={commentsHeadingRef} tabIndex={-1} className="text-sm font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring">{tc.comments}</h2>
-                </div>
-                <div className="space-y-3 p-3">
-                  <details open={reviewOpen} onToggle={event => setReviewOpen(event.currentTarget.open)} className="rounded-lg border bg-background">
-                    <summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-medium">{tc.review}</summary>
-                    <div className="px-2 pb-2"><FeedReview workspaceId={workspaceId} revision={localPost.revision} snapshot={collaboration.data} disabled={readOnly || localPost.dirty || localSaving > 0} offline={offline} goalId={localPost.content.goalId} month={localPost.content.reviewMonth} actions={review} onCommand={runCommands} onThread={openThread} /></div>
-                  </details>
-                  <DraftCommentPanel workspaceId={workspaceId} assistantId={assistantId} assistantName={assistantName} sessionId={sessionId}
-                    composition={localPost.content.composition} revision={localPost.revision} snapshot={collaboration.data} loading={collaboration.loading} error={collaboration.error}
-                    pending={localPost.dirty || localSaving > 0} offline={offline} readOnly={readOnly} composer={composer}
-                    onComposer={next => {
-                      setComposer(next);
-                      if (next) requestAnimationFrame(() => commentsRef.current?.querySelector('form')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
-                    }}
-                    selectedThread={selectedThread} onThread={openThread} onAskBrian={askBrianInThread} selection={selection?.target}
-                    onCommand={runCommands} onRefresh={() => void collaboration.refresh()} />
-                  <details className="rounded-lg border bg-background">
-                    <summary className="min-h-11 cursor-pointer px-3 py-3 text-sm font-medium">{tl.title}</summary>
-                    <div className="px-2 pb-2"><FeedLearnedDecisions key={sessionId} workspaceId={workspaceId} sessionId={sessionId} platform={platform} revision={localPost.revision} data={learning.data} loading={learning.loading} error={learning.error} disabled={readOnly || localPost.dirty || localSaving > 0} offline={offline} unfinished={missingSlots.length > 0} reviewRunId={collaboration.data?.runs?.find(run => run.kind === 'review' && run.revision === localPost.revision && run.status === 'succeeded')?.id} actions={learningActions} onRefresh={() => void learning.refresh()} onThread={openThread} /></div>
-                  </details>
-                </div>
-              </div>
-            ) : null}
+            </div>
+            {structured ? <FeedDocumentAnnotations documentRef={documentRef} threads={collaboration.data?.threads ?? []} onThread={openThread} /> : null}
             </div>
           </div>
         </div>
+        <FeedEditorPanel open={editorPanel !== null} title={panelMode === 'details' ? tc.details : panelMode === 'review' ? tc.review : panelMode === 'learning' ? tl.title : tc.comments} anchor={panelAnchor} passage={panelMode === 'thread'} onClose={() => setEditorPanel(null)}>
+          <div hidden={panelMode !== 'details'} inert={panelMode !== 'details'} className="space-y-5" data-feed-details>
+            <StatusLabel status={status} label={t.posts.status[status]} />
+            {privateBrief ? <section className="space-y-2"><h3 className="text-sm font-semibold">{te.privateBriefBadge}</h3><p className="text-xs text-muted-foreground">{te.privateBriefNotice}</p><p className="whitespace-pre-wrap text-sm leading-relaxed">{privateBrief}</p></section> : null}
+            {!readOnly ? <FormatPicker platform={platform} value={postFormat} onChange={next => { setPostFormat(next); void persist({ postFormat: next }); if (next === 'thread' && threadSegments.every(part => !part)) { const parts = [selected?.text ?? '', '']; setThreadSegments(parts); void persist({ threadSegments: parts }); } }} /> : null}
+                {postFormat === "article" ? (
+                  <ArticleFields
+                    value={article}
+                    readOnly={readOnly}
+                    onChange={(next) => { setArticle(next); void persist({ article: next }); }}
+                  />
+                ) : null}
+
+                <PostMediaTray
+                  workspaceId={workspaceId}
+                  platform={platform}
+                  media={media}
+                  imageBrief={selected?.imageBrief ?? null}
+                  readOnly={readOnly || offline}
+                  onChange={(next) => {
+                    setMedia(next);
+                    void persist({ media: next });
+                  }}
+                />
+
+            {structured && localPost ? <FeedDetachedGenerationResults controls={{ workspaceId, assistantId, sessionId, revision: localPost.revision, offline, pending: Boolean(remoteBlocked), readOnly, article: postFormat === 'article', snapshot: collaboration.data, onCommand: runCommands, onRefresh: () => void collaboration.refresh() }} /> : null}
+          </div>
+          {structured && localPost?.content.composition ? <>
+            <div hidden={panelMode !== 'review'} inert={panelMode !== 'review'}><FeedReview workspaceId={workspaceId} revision={localPost.revision} snapshot={collaboration.data} disabled={readOnly || localPost.dirty || localSaving > 0} offline={offline} goalId={localPost.content.goalId} month={localPost.content.reviewMonth} actions={review} onCommand={runCommands} onThread={openThread} /></div>
+            <div ref={commentsRef} hidden={panelMode !== 'comments' && panelMode !== 'thread'} inert={panelMode !== 'comments' && panelMode !== 'thread'} data-feed-comments>
+              {panelMode === 'thread' ? <Button type="button" variant="ghost" size="sm" className="mb-3 min-h-11 md:min-h-8" onClick={showComments}>{tc.allComments}</Button> : null}
+              <DraftCommentPanel workspaceId={workspaceId} assistantId={assistantId} assistantName={assistantName} sessionId={sessionId}
+                composition={localPost.content.composition} revision={localPost.revision} snapshot={collaboration.data} loading={collaboration.loading} error={collaboration.error}
+                pending={localPost.dirty || localSaving > 0} offline={offline} readOnly={readOnly} composer={composer} focused={panelMode === 'thread'}
+                onComposer={setComposer} selectedThread={selectedThread} onThread={openThread} onAskBrian={askBrianInThread} selection={selection?.target}
+                onCommand={runCommands} onRefresh={() => void collaboration.refresh()} />
+            </div>
+            <div hidden={panelMode !== 'learning'} inert={panelMode !== 'learning'}><FeedLearnedDecisions key={sessionId} workspaceId={workspaceId} sessionId={sessionId} platform={platform} revision={localPost.revision} data={learning.data} loading={learning.loading} error={learning.error} disabled={readOnly || localPost.dirty || localSaving > 0} offline={offline} unfinished={missingSlots.length > 0} reviewRunId={collaboration.data?.runs?.find(run => run.kind === 'review' && run.revision === localPost.revision && run.status === 'succeeded')?.id} actions={learningActions} onRefresh={() => void learning.refresh()} onThread={openThread} /></div>
+          </> : null}
+        </FeedEditorPanel>
       </main>
 
       {/* The refine chat, hosted ONCE: the resizable rail at `lg+`, and below
@@ -1359,7 +1342,7 @@ function PostPane({
           dockRecorder={dockRecorder ?? undefined}
           onWholePost={() => { setChatThreadId(null); setSelection(null); }} onRefresh={() => void collaboration.refresh()} />;
         return isLg ? (
-          <aside className="relative hidden border-border/60 lg:block lg:h-auto lg:min-h-0 lg:border-l">
+          <aside hidden={chatCollapsed} inert={chatCollapsed} data-feed-chat-rail className="relative min-w-0 border-border/60 lg:h-auto lg:min-h-0 lg:border-l">
             <PeekResizeHandle resizing={railResizing} {...railHandleProps} />
             {refinePanel}
           </aside>
@@ -1367,7 +1350,7 @@ function PostPane({
           <div className="lg:hidden" data-post-refine-mobile-host>
             <button
               type="button"
-              onClick={() => setRefineOpen(true)}
+              onClick={() => { setEditorPanel(null); setRefineOpen(true); }}
               aria-label={te.refineOpenAria}
               aria-expanded={refineOpen}
               className={cn(

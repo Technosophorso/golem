@@ -154,6 +154,15 @@ export const zh: Dictionary = {
     "low": "低優先度"
 },
   feedCollaboration: {
+    details: "詳細資料",
+    postActions: "貼文操作",
+    openComments: "開啟 {n} 則留言",
+    closePanel: "關閉面板",
+    allComments: "所有留言",
+    documentActions: "留言與聊天操作",
+    showChat: "顯示聊天",
+    hideChat: "隱藏聊天",
+    resetChatWidth: "重設聊天寬度",
     formatting: "格式",
     insert: "插入",
     blockMenu: "區塊操作",

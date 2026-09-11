@@ -167,6 +167,15 @@ export const en = {
     "low": "Low priority"
 },
   feedCollaboration: {
+    details: "Details",
+    postActions: "Post actions",
+    openComments: "Open {n} comments",
+    closePanel: "Close panel",
+    allComments: "All comments",
+    documentActions: "Comment and chat actions",
+    showChat: "Show chat",
+    hideChat: "Hide chat",
+    resetChatWidth: "Reset chat width",
     formatting: "Formatting",
     insert: "Insert",
     blockMenu: "Block actions",

@@ -165,6 +165,15 @@ export const zhCN: Dictionary = {
     "low": "低优先级"
 },
   feedCollaboration: {
+    details: "详细信息",
+    postActions: "帖子操作",
+    openComments: "打开 {n} 条评论",
+    closePanel: "关闭面板",
+    allComments: "所有评论",
+    documentActions: "评论与聊天操作",
+    showChat: "显示聊天",
+    hideChat: "隐藏聊天",
+    resetChatWidth: "重置聊天宽度",
     formatting: "格式",
     insert: "插入",
     blockMenu: "区块操作",

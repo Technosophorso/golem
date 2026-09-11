@@ -1,11 +1,9 @@
 "use client";
 /** Feed ProseMirror authoring with stable target decorations. [COMP:app-web/feed-composition-editor] */
 import { useEffect, useRef, useState } from 'react';
-import { MessageSquarePlus, PencilLine, Sparkles } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { FeedEditorToolbar, type FeedFormatAction, type FeedPlaceholderAction, type FeedBlockAction } from './editor-toolbar';
+import { FeedEditorToolbar, FeedSelectionActions, type FeedFormatAction, type FeedPlaceholderAction, type FeedBlockAction } from './editor-toolbar';
 import { createPortal } from 'react-dom';
-import { GenerationPlaceholder, FeedDetachedGenerationResults, FeedGenerationImage, type FeedGenerationControls } from './generation-placeholder';
+import { GenerationPlaceholder, FeedGenerationImage, type FeedGenerationControls } from './generation-placeholder';
 import { EditorState, NodeSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
 import { EditorView, Decoration, DecorationSet } from '@tiptap/pm/view';
 import { baseKeymap, toggleMark, setBlockType, wrapIn } from '@tiptap/pm/commands';
@@ -43,20 +41,16 @@ export function CompositionEditor(props: {
   onEdit: (edits: FeedEdit[]) => void; onSelection: (selection: FeedEditorSelection) => void;
   onAction: (action: 'comment' | 'suggest' | 'ask') => void; onOpenThread: (threadId: string) => void;
 }) {
-  const t = useT().feedCollaboration;
   return <div className="space-y-4" data-feed-composition>
     {props.composition.segments.map(segment => <FeedSegmentEditor key={segment.id} {...props} segmentId={segment.id} />)}
-    {props.generation ? <FeedDetachedGenerationResults controls={props.generation} /> : null}
-    <div role="group" aria-label={t.blockActions} className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-muted/25 p-2">
-      <Button type="button" variant="outline" size="sm" className="min-h-11 md:min-h-8" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction('comment')}><MessageSquarePlus aria-hidden />{t.comment}</Button>
-      <Button type="button" variant="outline" size="sm" className="min-h-11 md:min-h-8" aria-label={t.suggest} disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction('suggest')}><PencilLine aria-hidden />{t.suggestShort}</Button>
-      <Button type="button" size="sm" className="ml-auto min-h-11 md:min-h-8" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction('ask')}><Sparkles aria-hidden />{t.askBrian}</Button>
-    </div>
   </div>;
 }
+
 function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { segmentId: string }) {
   const t = useT().feedCollaboration; const host = useRef<HTMLDivElement>(null); const viewRef = useRef<EditorView | null>(null); const latest = useRef(props); latest.current = props;
   const [slotMounts, setSlotMounts] = useState<{ id: string; dom: HTMLElement }[]>([]);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const [selectionTop, setSelectionTop] = useState<number | null>(null);
   const [formatting, setFormatting] = useState<Partial<Record<FeedFormatAction, boolean>>>({});
   const local = useRef(props.composition); const lastEmitted = useRef('');
   const decorations = (doc: PMNode) => {
@@ -86,17 +80,18 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
           return splitListItem(feedSchema.nodes.listItem!)(state, dispatch) || baseKeymap.Enter!(state, dispatch, view);
         }, Tab: sinkListItem(feedSchema.nodes.listItem!), 'Shift-Tab': liftListItem(feedSchema.nodes.listItem!) }), new Plugin({ key: decorationKey, props: { decorations: state => decorations(state.doc) } })] }),
       nodeViews: props.generation ? { generationPlaceholder(node) {
-        const dom = document.createElement('div'); const slotId = String(node.attrs.id); dom.contentEditable = 'false'; dom.dataset.placeholderId = slotId;
+        const dom = document.createElement('div'); const slotId = String(node.attrs.id); dom.contentEditable = 'false'; dom.dataset.placeholderId = slotId; dom.dataset.blockId = slotId;
         setSlotMounts(mounts => [...mounts.filter(item => item.id !== slotId), { id: slotId, dom }]);
         return { dom, update(next) { return next.type.name === 'generationPlaceholder' && next.attrs.id === slotId; }, ignoreMutation: () => true, stopEvent: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
       }, image(node) {
-        const dom = document.createElement('div'); const blockId = String(node.attrs.id); dom.contentEditable = 'false';
+        const dom = document.createElement('div'); const blockId = String(node.attrs.id); dom.contentEditable = 'false'; dom.dataset.blockId = blockId;
         setSlotMounts(mounts => [...mounts.filter(item => item.id !== blockId), { id: blockId, dom }]);
         return { dom, update(next) { return next.type.name === 'image' && next.attrs.id === blockId; }, ignoreMutation: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
       } } : undefined,
       editable: () => !latest.current.readOnly,
-      attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-64 bg-card p-5 text-base leading-relaxed outline-none [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
+      attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-[max(20rem,calc(100dvh-16rem))] bg-card p-5 pr-14 md:pr-5 text-base leading-relaxed outline-none [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
       handleClick(_view, _pos, event) { const hit = (event.target as HTMLElement).closest<HTMLElement>('[data-feed-thread]'); if (hit?.dataset.feedThread && hit.dataset.feedThread !== 'draft') latest.current.onOpenThread(hit.dataset.feedThread); return false; },
+      handleDOMEvents: { blur() { setSelectionTop(null); return false; } },
       dispatchTransaction(transaction: Transaction) {
         let next = view.state.apply(transaction);
         if (transaction.docChanged) {
@@ -105,6 +100,12 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
           if (identity.docChanged) next = next.apply(identity);
         }
         view.updateState(next);
+        if (next.selection.empty || latest.current.readOnly || !view.hasFocus()) setSelectionTop(null);
+        else {
+          let top = 48;
+          try { top = view.coordsAtPos(next.selection.to).bottom - (frameRef.current?.getBoundingClientRect().top ?? 0) + 8; } catch { /* A DOM-less editor still exposes toolbar actions. */ }
+          setSelectionTop(top);
+        }
         const active: Partial<Record<FeedFormatAction, boolean>> = {};
         for (const mark of ['bold', 'italic', 'link'] as const) {
           const type = feedSchema.marks[mark]!;
@@ -160,9 +161,10 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     else if (action === 'deleteBlock') { let position: number | undefined; view.state.doc.descendants((item, pos) => { if (item.attrs.id === blockId) position = pos; }); if (position !== undefined) view.dispatch(view.state.tr.delete(position, position + feedSchema.nodeFromJSON(node).nodeSize)); }
     else if ((action === 'moveUp' && index > 0) || (action === 'moveDown' && index < siblings.length - 1)) latest.current.onEdit([{ kind: 'moveBlock', segmentId: props.segmentId, blockId, parentId, afterId: action === 'moveUp' ? siblings[index - 2]?.attrs.id ?? null : siblings[index + 1]!.attrs.id }]);
   }
-  return <div className="overflow-hidden rounded-xl border border-border bg-card shadow-xs transition-colors focus-within:border-ring [&_:focus-visible]:shadow-none" data-feed-segment-editor>
-    <FeedEditorToolbar disabled={props.readOnly} active={formatting} onFormat={format} onPlaceholder={placeholder} onBlock={blockAction} focusEditor={() => viewRef.current?.focus()} />
+  return <div ref={frameRef} className="relative rounded-xl border border-border bg-card shadow-xs transition-colors focus-within:border-ring [&_:focus-visible]:shadow-none" data-feed-segment-editor>
+    <FeedEditorToolbar disabled={props.readOnly} active={formatting} onFormat={format} onPlaceholder={placeholder} onBlock={blockAction} focusEditor={() => viewRef.current?.focus()} onAction={props.onAction} />
     <div ref={host} />
+    {selectionTop !== null && !props.readOnly ? <div className="absolute left-2 right-2 z-20" style={{ top: selectionTop }}><FeedSelectionActions onAction={props.onAction} /></div> : null}
     {props.generation ? slotMounts.map(mount => {
       let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }
       if (found.node.type === 'image') return createPortal(<FeedGenerationImage workspaceId={props.generation!.workspaceId} fileId={found.node.attrs.fileId} alt={found.node.attrs.alt ?? ''} />, mount.dom, mount.id);
@@ -184,13 +186,13 @@ export function FeedCompositionPreview({ composition, workspaceId }: { compositi
   });
   const render = (node: FeedNode): import('react').ReactNode => {
     if (node.type === 'generationPlaceholder') return null;
-    if (node.type === 'image') return <figure key={node.attrs.id}><FeedGenerationImage workspaceId={workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} /></figure>;
-    if (node.type === 'paragraph') return <p key={node.attrs.id}>{renderInline(node)}</p>;
-    if (node.type === 'heading') return <div key={node.attrs.id} role="heading" aria-level={node.attrs.level} className="text-xl font-semibold">{renderInline(node)}</div>;
-    if (node.type === 'bulletList') return <ul className="list-disc pl-5" key={node.attrs.id}>{node.content.map(render)}</ul>;
-    if (node.type === 'orderedList') return <ol className="list-decimal pl-5" start={node.attrs.start} key={node.attrs.id}>{node.content.map(render)}</ol>;
-    if (node.type === 'listItem') return <li key={node.attrs.id}>{node.content.map(render)}</li>;
-    return <blockquote className="border-l-2 pl-4" key={node.attrs.id}>{node.content.map(render)}</blockquote>;
+    if (node.type === 'image') return <figure key={node.attrs.id} data-block-id={node.attrs.id}><FeedGenerationImage workspaceId={workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} /></figure>;
+    if (node.type === 'paragraph') return <p key={node.attrs.id} data-block-id={node.attrs.id}>{renderInline(node)}</p>;
+    if (node.type === 'heading') return <div key={node.attrs.id} data-block-id={node.attrs.id} role="heading" aria-level={node.attrs.level} className="text-xl font-semibold">{renderInline(node)}</div>;
+    if (node.type === 'bulletList') return <ul className="list-disc pl-5" key={node.attrs.id} data-block-id={node.attrs.id}>{node.content.map(render)}</ul>;
+    if (node.type === 'orderedList') return <ol className="list-decimal pl-5" start={node.attrs.start} key={node.attrs.id} data-block-id={node.attrs.id}>{node.content.map(render)}</ol>;
+    if (node.type === 'listItem') return <li key={node.attrs.id} data-block-id={node.attrs.id}>{node.content.map(render)}</li>;
+    return <blockquote className="border-l-2 pl-4" key={node.attrs.id} data-block-id={node.attrs.id}>{node.content.map(render)}</blockquote>;
   };
   return <div className="space-y-6 break-words [&_p]:my-3 [&_figure]:my-4">{composition.segments.map(segment => <section key={segment.id}>{segment.content.map(render)}</section>)}</div>;
 }

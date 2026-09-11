@@ -21,6 +21,7 @@ export type FeedCommentPanelProps = {
   selectedThread: string | null; onThread: (id: string) => void; selection?: FeedTarget;
   onAskBrian: (threadId: string) => void;
   onCommand: (commands: FeedCommand[], optimisticEdits?: FeedEdit[]) => Promise<boolean>;
+  focused?: boolean;
   onRefresh: () => void; reviewHeader?: ReactNode;
 };
 export function DraftCommentPanel(props: FeedCommentPanelProps) {
@@ -30,15 +31,16 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
   const active = threads.find(thread => thread.id === props.selectedThread);
   const canWrite = !props.readOnly && !props.pending;
   useEffect(() => { if (active?.resolved) setFilter('all'); }, [active?.id, active?.resolved]);
-  const visible = threads.filter(thread => filter === 'all' || thread.resolved === (filter === 'resolved'));
+  const suggestions = (props.snapshot?.suggestions ?? []).filter(item => !props.focused || item.threadId === props.selectedThread);
+  const visible = threads.filter(thread => props.focused ? thread.id === props.selectedThread : filter === 'all' || thread.resolved === (filter === 'resolved'));
   return <section aria-label={t.comments} className="space-y-4" data-feed-review-panel>
     {props.reviewHeader}
-    <div className="flex items-center gap-2">
+    {!props.focused ? <div className="flex items-center gap-2">
       <div className="flex flex-1 rounded-lg border border-border bg-muted/60 p-0.5" role="group" aria-label={t.comments}>
         {(['open', 'resolved', 'all'] as const).map(value => <Button key={value} type="button" aria-pressed={filter === value} variant="ghost" size="sm" className="min-h-11 md:min-h-8 flex-1 rounded-md px-2 text-xs text-muted-foreground aria-pressed:bg-background aria-pressed:text-foreground aria-pressed:shadow-xs" onClick={() => setFilter(value)}>{t[value]}</Button>)}
       </div>
       <Tooltip label={t.comment}><Button type="button" variant="outline" size="icon" aria-label={t.comment} className="size-11 md:size-9" disabled={!canWrite} onClick={() => props.onComposer({ kind: 'comment', anchor: { target: { kind: 'post' }, quote: '', sourceRevision: props.revision, state: 'attached' } })}><MessageSquarePlus className="size-4" aria-hidden /></Button></Tooltip>
-    </div>
+    </div> : null}
     {props.pending ? <p role="status" className="text-sm text-muted-foreground">{t.pending}</p> : null}
     {props.error ? <div role="alert" className="text-sm"><p>{t.loadFailed}</p><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={props.onRefresh}>{t.retry}</Button></div> : null}
     {props.loading && !props.snapshot ? <Skeleton className="h-36 w-full" /> : null}
@@ -62,8 +64,8 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
       </> : null}
     </article>)}
     <h3 className="text-sm font-semibold">{t.suggestions}</h3>
-    {(props.snapshot?.suggestions ?? []).map(suggestion => <Suggestion key={suggestion.id} {...props} suggestion={suggestion} />)}
-    {props.snapshot && !props.snapshot.suggestions.length ? <p className="text-sm text-muted-foreground">{t.noSuggestions}</p> : null}
+    {suggestions.map(suggestion => <Suggestion key={suggestion.id} {...props} suggestion={suggestion} />)}
+    {props.snapshot && !suggestions.length ? <p className="text-sm text-muted-foreground">{t.noSuggestions}</p> : null}
   </section>;
 }
 function CommentComposer(props: FeedCommentPanelProps & { composer: FeedCommentComposer }) {
