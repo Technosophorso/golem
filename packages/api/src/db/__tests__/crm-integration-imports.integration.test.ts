@@ -79,12 +79,24 @@ describe('[COMP:crm/production-import] Actual machine source, job and row author
     expect((await f.post(`imports/${id}/resume`, rotated.key.oneTimeSecret).send({})).body).toEqual(completed.body)
     expect((await pool.query('SELECT id FROM entities WHERE workspace_id=$1 AND valid_to IS NULL', [f.workspaceId])).rowCount).toBe(1)
     expect((await pool.query('SELECT id FROM crm_import_rows WHERE job_id=$1', [id])).rowCount).toBe(1)
+    const receipt = (await pool.query('SELECT input_hash,result_refs FROM crm_import_rows WHERE job_id=$1', [id])).rows[0]
+    expect(receipt.input_hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(receipt.result_refs).toEqual([
+      { kind: 'contact', id: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+      { kind: 'consent', id: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+    ])
     const audit = await pool.query(`SELECT actor_kind,actor_credential_id FROM association_audit_log WHERE workspace_id=$1 AND actor_kind='integration_key'`, [f.workspaceId])
     expect(audit.rows).toHaveLength(1)
     expect(audit.rows[0]).toMatchObject({ actor_credential_id: rotated.principal.credentialId })
     const inspection = await f.issue(reading)
     expect(await imports.get(inspection.context, id)).toMatchObject({ id, status: 'completed' })
     expect((await imports.list(inspection.context)).jobs.map((job) => job.id)).toEqual([id])
+    expect(await imports.resultsCsv(inspection.context, id)).toContain(`2,completed,${receipt.input_hash},`)
+    const downloaded = await request(f.app).get(`/api/crm/integration/operations/imports/${id}/results.csv`)
+      .set('Authorization', `Bearer ${inspection.key.oneTimeSecret}`)
+    expect(downloaded.status).toBe(200)
+    expect(downloaded.headers['content-disposition']).toContain('crm-import-results.csv')
+    expect(downloaded.text).toBe(await imports.resultsCsv(inspection.context, id))
     await expect(imports.resume(inspection.context, id)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await expect(pool.query(`UPDATE crm_import_jobs SET mapping='{}'::jsonb WHERE id=$1`, [id])).rejects.toThrow('immutable')
   })
@@ -149,6 +161,7 @@ describe('[COMP:crm/production-import] Actual machine source, job and row author
     await expect(imports.resume(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await expect(imports.cancel(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await expect(imports.errorsCsv(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
+    await expect(imports.resultsCsv(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     const foreign = await fixture(), foreignKey = await foreign.issue()
     expect(await imports.get(foreignKey.context, job.id)).toBeNull()
   })

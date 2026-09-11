@@ -53,7 +53,7 @@ function build(role: 'owner' | 'admin' | 'member' = 'owner') {
     }),
     confirm: vi.fn().mockResolvedValue({ id: IMPORT_JOB_ID, status: 'ready', totalRows: 1 }),
     resume: vi.fn().mockResolvedValue({ id: IMPORT_JOB_ID, status: 'completed', totalRows: 1, processedRows: 1 }),
-    cancel: vi.fn(), list: vi.fn().mockResolvedValue({ jobs: [], nextCursor: null }), get: vi.fn(), errorsCsv: vi.fn(),
+    cancel: vi.fn(), list: vi.fn().mockResolvedValue({ jobs: [], nextCursor: null }), get: vi.fn(), errorsCsv: vi.fn(), resultsCsv: vi.fn(),
   }
   const app = express()
   app.use(express.json())

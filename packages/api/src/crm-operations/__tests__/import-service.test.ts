@@ -79,7 +79,7 @@ describe('[COMP:crm/production-import] production CRM import', () => {
     mocks.createContact.mockResolvedValue({ id: entityId })
     mocks.updateContact.mockResolvedValue({ id: entityId })
     operations.execute.mockResolvedValue({
-      command: 'record_consent', record: {}, created: true, duplicate: false, emittedEventIds: [],
+      command: 'record_consent', record: { id: entityId }, created: true, duplicate: false, emittedEventIds: [],
     })
   })
 
@@ -181,6 +181,11 @@ describe('[COMP:crm/production-import] production CRM import', () => {
       email: 'ada@example.test',
       externalRef: expect.objectContaining({ import_key: `${jobId}:2` }),
     }), undefined, expect.objectContaining({ client: expect.anything(), afterCommit: expect.any(Function) }))
+    const receiptInsert = mocks.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO crm_import_rows'))
+    expect(receiptInsert?.[1]).toEqual([
+      workspaceId, jobId, 2, expect.stringMatching(/^[0-9a-f]{64}$/), entityId,
+      JSON.stringify([{ kind: 'contact', id: entityId }]),
+    ])
 
     mocks.query.mockResolvedValueOnce({ rows: [job('completed')] }).mockResolvedValueOnce({ rows: [job('completed')] })
     await expect(service.resume(context, jobId)).resolves.toMatchObject({ status: 'completed' })
@@ -293,6 +298,26 @@ describe('[COMP:crm/production-import] production CRM import', () => {
       if (occurredAt) expect(command).toHaveProperty('occurredAt', occurredAt)
       else expect(command).not.toHaveProperty('occurredAt')
     }
+    const receiptInsert = mocks.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO crm_import_rows'))
+    expect(JSON.parse(String(receiptInsert?.[1]?.[5]))).toEqual([
+      { kind: 'contact', id: entityId },
+      { kind: 'consent', id: entityId },
+      { kind: 'suppression', id: entityId },
+    ])
+  })
+
+  it('exports ordered result receipts after checking read authority', async () => {
+    const service = createCrmProductionImportService({ filesApi, operationsForTransaction: () => operations as never })
+    mocks.query
+      .mockResolvedValueOnce({ rows: [job('completed')] })
+      .mockResolvedValueOnce({ rows: [{
+        rowNumber: 2, status: 'completed', inputHash: 'b'.repeat(64),
+        resultRefs: [{ kind: 'contact', id: entityId }],
+      }] })
+    await expect(service.resultsCsv(context, jobId)).resolves.toBe([
+      'row,status,input_hash,result_refs',
+      `2,completed,${'b'.repeat(64)},"[{""kind"":""contact"",""id"":""${entityId}""}]"`,
+    ].join('\r\n'))
   })
 
   it.each(['consentOccurredAt', 'suppressionOccurredAt'])('validates %s in preflight without discarding invalid historical evidence', async (target) => {

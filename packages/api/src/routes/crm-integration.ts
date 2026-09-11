@@ -102,6 +102,11 @@ export function crmIntegrationRoutes(options: {
     if (csv === null) { res.status(404).json({ error: 'not_found' }); return }
     res.type('text/csv').attachment('crm-import-errors.csv').send(csv)
   }))
+  router.get('/operations/imports/:id/results.csv', endpoint(async (req, res) => {
+    const csv = await imports().resultsCsv(crmIntegrationContext(principal(res)), UUID.parse(req.params.id))
+    if (csv === null) { res.status(404).json({ error: 'not_found' }); return }
+    res.type('text/csv').attachment('crm-import-results.csv').send(csv)
+  }))
   for (const [path, list] of [['audit', listCrmOperationsAudit], ['event-delivery', listCrmEventDelivery]] as const) {
     router.get(`/operations/${path}`, endpoint(async (req, res) => {
       requireCrmIntegrationOperation(principal(res), 'crm.audit.read')

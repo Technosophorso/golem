@@ -195,7 +195,7 @@ export async function redactCrmOperationsForContact(
     [workspaceId, contactId],
   )
   await client.query(
-    `UPDATE crm_import_rows SET entity_id=NULL
+    `UPDATE crm_import_rows SET entity_id=NULL,result_refs='[]'::jsonb
       WHERE workspace_id=$1 AND entity_id=$2`,
     [workspaceId, contactId],
   )

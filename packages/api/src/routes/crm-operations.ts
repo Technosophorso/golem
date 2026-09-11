@@ -860,6 +860,28 @@ export function crmOperationsRoutes(options: Options): Router {
       res.send(csv)
     } catch (error) { writeError(res, error) }
   })
+  router.get('/:workspaceId/operations/imports/:jobId/results.csv', async (req, res) => {
+    const ctx = await context(req, res)
+    if (!ctx) return
+    if (!options.importService) {
+      res.status(503).json({ error: 'import_unavailable' })
+      return
+    }
+    const jobId = CrmOperationsUuidSchema.safeParse(req.params.jobId)
+    if (!jobId.success) {
+      res.status(400).json({ error: 'invalid_input', issues: jobId.error.issues })
+      return
+    }
+    try {
+      const csv = await options.importService.resultsCsv(ctx, jobId.data)
+      if (csv === null) {
+        res.status(404).json({ error: 'not_found' })
+        return
+      }
+      res.type('text/csv').setHeader('Content-Disposition', `attachment; filename="crm-import-${jobId.data}-results.csv"`)
+      res.send(csv)
+    } catch (error) { writeError(res, error) }
+  })
 
   router.get('/:workspaceId/operations/audit', async (req, res) => {
     const ctx = await context(req, res)

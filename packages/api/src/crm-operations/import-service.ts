@@ -169,6 +169,51 @@ type ImportCustomDefinition = {
 
 type ImportServiceContext = CrmOperationsContext
 
+const IMPORT_RESULT_KINDS = [
+  'contact', 'company', 'deal', 'consent', 'suppression', 'entitlement',
+  'participation', 'submission', 'order', 'registration',
+] as const
+type ImportResultKind = typeof IMPORT_RESULT_KINDS[number]
+type ImportResultRef = { kind: ImportResultKind; id: string; sourceId?: string }
+type ImportRowResult = { entityId: string | null; resultRefs: ImportResultRef[] }
+
+const ImportResultIdSchema = z.string().uuid()
+
+function resultId(record: Record<string, unknown>, label: string): string {
+  const parsed = ImportResultIdSchema.safeParse(record.id)
+  if (!parsed.success) throw new Error(`${label} did not return a stable id.`)
+  return parsed.data
+}
+
+function resultRef(kind: ImportResultKind, record: Record<string, unknown>, sourceId?: unknown): ImportResultRef {
+  const ref: ImportResultRef = { kind, id: resultId(record, kind) }
+  if (sourceId !== undefined) {
+    if (typeof sourceId !== 'string' || sourceId.length < 1 || sourceId.length > 500) {
+      throw new Error(`${kind} did not return a valid source id.`)
+    }
+    ref.sourceId = sourceId
+  }
+  return ref
+}
+
+function sourceRegistrationId(record: Record<string, unknown>): unknown {
+  const metadata = record.attendeeMetadata
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined
+  const historical = (metadata as Record<string, unknown>).historicalSource
+  if (!historical || typeof historical !== 'object' || Array.isArray(historical)) return undefined
+  return (historical as Record<string, unknown>).registrationId
+}
+
+function uniqueResultRefs(refs: ImportResultRef[]): ImportResultRef[] {
+  const seen = new Set<string>()
+  return refs.filter((ref) => {
+    const key = JSON.stringify([ref.kind, ref.id, ref.sourceId ?? null])
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 function hashBytes(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
 }
@@ -798,7 +843,7 @@ export function createCrmProductionImportService(deps: {
     transaction: CrmWriteTransaction,
     operations: CrmOperationsServicePort & CrmHistoricalSubmissionImportPort,
     association?: AssociationSourceOrderImportPort,
-  ): Promise<string | null> {
+  ): Promise<ImportRowResult> {
     const values = mappedValues(row.cells, job.mapping)
     requireImportRowAuthority(context, job.entityKind, values, job.mapping.trustedIdentitySource)
     const attributionUserId = context.actor.kind === 'user' ? context.actor.userId : await sources().attributionUser(context, transaction.client)
@@ -811,6 +856,7 @@ export function createCrmProductionImportService(deps: {
     }
     const importKey = `${job.id}:${row.row}`
     let entityId = await findImportedEntity(context.workspaceId, importKey, transaction.client)
+    const resultRefs: ImportResultRef[] = []
     if (!entityId && job.entityKind === 'contact') {
       let stableIdentity: StableExternalIdentity | undefined
       if (job.mapping.trustedIdentitySource && values.identityProvider && values.identityProviderInstance && values.identitySubject) {
@@ -899,6 +945,8 @@ export function createCrmProductionImportService(deps: {
     }
 
     const contactId = job.entityKind === 'contact' ? entityId : values.contactId
+    if (entityId && job.entityKind !== 'operations') resultRefs.push({ kind: job.entityKind, id: entityId })
+    if (contactId && job.entityKind === 'operations') resultRefs.push({ kind: 'contact', id: contactId })
     const importContext: CrmOperationsContext = {
       ...context,
       actor: context.actor.kind === 'user' ? { kind: 'import', jobId: job.id, userId: context.actor.userId } : context.actor,
@@ -910,16 +958,17 @@ export function createCrmProductionImportService(deps: {
       })
     }
     if (contactId && values.consentPurposeKey) {
-      await operations.execute(importContext, {
+      const saved = await operations.execute(importContext, {
         kind: 'record_consent', contactId, purposeKey: values.consentPurposeKey,
         action: values.consentAction as 'granted' | 'withdrawn', source: values.consentSource,
         provider: 'import', providerEventId: `${job.id}:${row.row}:consent:${values.consentPurposeKey}`,
         ...(values.consentOccurredAt ? { occurredAt: values.consentOccurredAt } : {}),
         metadata: { importJobId: job.id, importRow: row.row },
       })
+      resultRefs.push(resultRef('consent', saved.record))
     }
     if (contactId && values.suppressionChannel) {
-      await operations.execute(importContext, {
+      const saved = await operations.execute(importContext, {
         kind: 'record_suppression', contactId,
         channel: values.suppressionChannel as 'all' | 'email' | 'sms' | 'phone' | 'whatsapp' | 'telegram' | 'slack',
         action: values.suppressionAction as 'suppressed' | 'released',
@@ -929,9 +978,10 @@ export function createCrmProductionImportService(deps: {
         ...(values.suppressionOccurredAt ? { occurredAt: values.suppressionOccurredAt } : {}),
         metadata: { importJobId: job.id, importRow: row.row },
       })
+      resultRefs.push(resultRef('suppression', saved.record))
     }
     if (contactId && values.entitlementPlanId) {
-      await operations.execute(importContext, {
+      const saved = await operations.execute(importContext, {
         kind: 'grant_entitlement', contactId, planId: values.entitlementPlanId,
         idempotencyKey: values.entitlementIdempotencyKey,
         status: (values.entitlementStatus || 'pending') as 'pending' | 'active' | 'expired' | 'cancelled',
@@ -939,9 +989,10 @@ export function createCrmProductionImportService(deps: {
         endsAt: values.entitlementEndsAt || undefined,
         renewalMode: (values.entitlementRenewalMode || 'none') as 'none' | 'manual' | 'auto',
       })
+      resultRefs.push(resultRef('entitlement', saved.record))
     }
     if (contactId && values.participationEventId) {
-      await operations.execute(importContext, {
+      const saved = await operations.execute(importContext, {
         kind: 'record_participation', contactId, eventId: values.participationEventId,
         sourceKind: 'import', sourceId: values.participationSourceId,
         ...(values.participationHistoricalImport === 'true' ? { historicalImport: true } : {}),
@@ -950,9 +1001,10 @@ export function createCrmProductionImportService(deps: {
         attendeeEmail: values.participantEmail,
         metadata: { importJobId: job.id, importRow: row.row },
       })
+      resultRefs.push(resultRef('participation', saved.record, values.participationSourceId))
     }
     if (contactId && values.historicalSubmissionSource) {
-      await operations.importHistoricalSubmission(importContext, {
+      const saved = await operations.importHistoricalSubmission(importContext, {
         importJobId: job.id,
         importRow: row.row,
         contactId,
@@ -967,16 +1019,27 @@ export function createCrmProductionImportService(deps: {
         message: values.historicalSubmissionMessage ?? 'Imported historical form submission.',
         queueKey: values.historicalSubmissionQueueKey ?? 'general',
       })
+      resultRefs.push(resultRef('submission', saved.record, values.historicalSubmissionId))
     }
     if (contactId && values.sourceOrderSource) {
       if (!association) throw new Error('Association source order importer is unavailable.')
-      await association.importSourceOrder({
+      const saved = await association.importSourceOrder({
         workspaceId: context.workspaceId,
         actor: importContext.actor,
         authority: { ...context.authority, canRead: true, canReconcileProvider: false },
       }, sourceOrderInput(values, job.id, row.row))
+      resultRefs.push(resultRef('order', saved.record, values.sourceOrderId))
+      const registrations = saved.record.registrations
+      if (!Array.isArray(registrations)) throw new Error('Source order did not return its registrations.')
+      for (const registration of registrations) {
+        if (!registration || typeof registration !== 'object' || Array.isArray(registration)) {
+          throw new Error('Source order returned an invalid registration.')
+        }
+        const record = registration as Record<string, unknown>
+        resultRefs.push(resultRef('registration', record, sourceRegistrationId(record)))
+      }
     }
-    return entityId ?? contactId ?? null
+    return { entityId: entityId ?? contactId ?? null, resultRefs: uniqueResultRefs(resultRefs) }
   }
 
   async function resume(context: ImportServiceContext, jobId: string): Promise<CrmImportJob> {
@@ -1056,14 +1119,14 @@ export function createCrmProductionImportService(deps: {
         await client.query('SAVEPOINT crm_import_row')
         try {
           if (validation.length > 0) throw new Error(validation.map((error) => error.message).join(' '))
-          const entityId = await executeRow(context, job, row, customCatalog,
+          const rowResult = await executeRow(context, job, row, customCatalog,
             { client, afterCommit: (effect) => { effects.push(effect) } },
             deps.operationsForTransaction(client), deps.associationForTransaction?.(client))
           await client.query(
-            `INSERT INTO crm_import_rows (workspace_id,job_id,row_number,input_hash,status,entity_id)
-             VALUES ($1,$2,$3,$4,'completed',$5)
+            `INSERT INTO crm_import_rows (workspace_id,job_id,row_number,input_hash,status,entity_id,result_refs)
+             VALUES ($1,$2,$3,$4,'completed',$5,$6::jsonb)
              ON CONFLICT (job_id,row_number) DO NOTHING`,
-            [context.workspaceId, job.id, row.row, inputHash, entityId],
+            [context.workspaceId, job.id, row.row, inputHash, rowResult.entityId, JSON.stringify(rowResult.resultRefs)],
           )
           await client.query('RELEASE SAVEPOINT crm_import_row')
           succeeded += 1
@@ -1182,5 +1245,21 @@ export function createCrmProductionImportService(deps: {
     ].join('\r\n')
   }
 
-  return { dryRun, confirm, resume, cancel, list, get, errorsCsv }
+  async function resultsCsv(context: ImportServiceContext, jobId: string): Promise<string | null> {
+    requireImportOperation(context, 'crm.imports.read')
+    const job = await loadJob(context.workspaceId, jobId)
+    if (!job) return null
+    jobContext(context, job, 'read')
+    const result = await query<{ rowNumber: number; status: string; inputHash: string; resultRefs: ImportResultRef[] }>(
+      `SELECT row_number AS "rowNumber",status,input_hash AS "inputHash",result_refs AS "resultRefs"
+         FROM crm_import_rows WHERE workspace_id=$1 AND job_id=$2 ORDER BY row_number`,
+      [context.workspaceId, jobId],
+    )
+    return [
+      ['row', 'status', 'input_hash', 'result_refs'].join(','),
+      ...result.rows.map((row) => [row.rowNumber, row.status, row.inputHash, JSON.stringify(row.resultRefs)].map(csvCell).join(',')),
+    ].join('\r\n')
+  }
+
+  return { dryRun, confirm, resume, cancel, list, get, errorsCsv, resultsCsv }
 }

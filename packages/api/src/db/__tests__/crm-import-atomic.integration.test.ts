@@ -143,6 +143,11 @@ describe('[COMP:crm/production-import] Atomic rows and serialized chunk recovery
 
     const first = await f.job(columns, [original], 'operations')
     expect(await importer().resume(f.context, first.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    expect((await pool.query(`SELECT result_refs FROM crm_import_rows
+      WHERE workspace_id=$1 AND job_id=$2 AND row_number=2`, [f.workspaceId, first.id])).rows[0].result_refs).toEqual([
+      { kind: 'contact', id: contactId },
+      { kind: 'submission', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'wix-submission-42' },
+    ])
     const saved = (await pool.query(`SELECT contact_id,source,source_site,source_form,source_submission_id,
       status,queue_key,subject,submitted_data,historical_import,
       to_char(submitted_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS submitted_at
@@ -248,6 +253,13 @@ describe('[COMP:crm/production-import] Atomic rows and serialized chunk recovery
 
     const first = await f.job(columns, [original], 'operations')
     expect(await importer().resume(f.context, first.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    expect((await pool.query(`SELECT result_refs FROM crm_import_rows
+      WHERE workspace_id=$1 AND job_id=$2 AND row_number=2`, [f.workspaceId, first.id])).rows[0].result_refs).toEqual([
+      { kind: 'contact', id: buyerId },
+      { kind: 'order', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'wix-order-42' },
+      { kind: 'registration', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'booking-1' },
+      { kind: 'registration', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'booking-2' },
+    ])
     const saved = (await pool.query(`SELECT source_system,source_site,source_order_id,source_order_status,
       status,currency,subtotal_minor::text,discount_minor::text,total_minor::text,refunded_minor::text,
       refund_state,provider,provider_reference,source_import,
