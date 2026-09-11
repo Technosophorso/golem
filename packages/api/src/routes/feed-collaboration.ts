@@ -1,13 +1,14 @@
 /** Authenticated shared Feed collaboration routes. [COMP:feed/draft-comments] */
+import type { FeedGenerationService } from '../content-planning/generation.js'
 import { Router } from 'express'
 import { z } from 'zod'
-import { feedCommandRequestSchema, feedReviewRequestSchema } from '@use-brian/shared'
+import { feedCommandRequestSchema, feedReviewRequestSchema, feedGenerationEstimateRequestSchema, feedGenerationRequestSchema } from '@use-brian/shared'
 import { feedCommand, readReviewedFeedCollaboration } from '../content-planning/collaboration-service.js'
 import { getFeedThreadMessages, FeedCollaborationError, withFeedTransaction, type FeedActor } from '../db/feed-collaboration-store.js'
 import { requestFeedReview } from '../content-planning/review.js'
 import { getFeedRun, summarizeFeedRun, cancelFeedRun, retryFeedRun } from '../db/feed-editorial-runs-store.js'
 const uuid = z.string().uuid()
-export function feedCollaborationRoutes(): Router {
+export function feedCollaborationRoutes(options: { generation?: FeedGenerationService } = {}): Router {
   const router = Router(); const base = '/:assistantId/draft-sessions/:sessionId'
   router.all(`${base}/{*rest}`, async (req, res, next) => {
     if (!req.userId) { res.status(401).json({ error: 'Unauthorized' }); return }
@@ -39,6 +40,18 @@ export function feedCollaborationRoutes(): Router {
   router.post(`${base}/reviews`, async (req, res) => {
     try { res.json({ run: summarizeFeedRun(await requestFeedReview({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedReviewRequestSchema.parse(req.body))) }) }
     catch (error) { replyError(res, error) }
+  })
+  router.post(`${base}/generations/estimate`, async (req, res) => {
+    try {
+      if (!options.generation) throw new FeedCollaborationError(503, 'generation_unavailable')
+      res.json({ estimate: await options.generation.estimate({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedGenerationEstimateRequestSchema.parse(req.body)) })
+    } catch (error) { replyError(res, error) }
+  })
+  router.post(`${base}/generations`, async (req, res) => {
+    try {
+      if (!options.generation) throw new FeedCollaborationError(503, 'generation_unavailable')
+      res.json({ run: summarizeFeedRun(await options.generation.dispatch({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedGenerationRequestSchema.parse(req.body))) })
+    } catch (error) { replyError(res, error) }
   })
   router.get(`${base}/runs/:runId`, async (req, res) => {
     try { res.json({ run: summarizeFeedRun(await getFeedRun({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, uuid.parse(req.params.runId))) }) }

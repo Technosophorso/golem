@@ -396,3 +396,131 @@ describe('[COMP:feed/draft-comments] authenticated HTTP command boundary', () =>
     } finally { server.closeAllConnections(); await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())) }
   })
 })
+
+import { createFeedGenerationService } from '../generation.js'
+import type { FeedGenerationPort } from '../generation-port.js'
+async function generationFixture() {
+  const f = await fixture('Opening paragraph.'); const content = await f.upgrade()
+  const segmentId = content.composition.segments[0]!.id; const slotId = randomUUID()
+  const slot = { id: slotId, kind: 'text' as const, brief: 'Explain irrigation with a measured example.', briefRevision: 0, references: [] }
+  await f.command([{ kind: 'edit', edits: [{ kind: 'insertBlock', segmentId, afterId: content.composition.segments[0]!.content[0]!.attrs.id, node: { type: 'generationPlaceholder', attrs: slot } }] }])
+  const call = vi.fn(async () => ({ text: JSON.stringify({ candidates: [{ markdown: 'Candidate one.\n\nMeasured example.', rationale: 'A clear example.' }, { markdown: 'Candidate two.', rationale: 'A shorter opening.' }] }), usage: { inputTokens: 100, outputTokens: 50 } }))
+  const port: FeedGenerationPort = { resolve: vi.fn(async () => ({ model: 'fixture', tier: 'standard', identity: 'fixture:v1', inputCharacters: 160_000, maxTokens: 6000, call, price: () => ({ currency: 'USD' as const, maximumUsd: 0.01, rateVersion: 'fixture:v1', billing: 'included' as const }) })), readReference: vi.fn(async () => ({ omission: 'fixture_unavailable' })) }
+  const service = createFeedGenerationService(port)
+  const request = { mutationId: randomUUID(), expectedRevision: 3, segmentId, slotId, model: 'standard' as const, count: 2, locale: 'en' as const }
+  return { ...f, slot, slotId, segmentId, call, port, service, request }
+}
+describe('[COMP:feed/draft-generation] real database generation lifecycle', () => {
+  it('scenarios 4 and 7: binds a cheap estimate, dispatches once, stores candidates and accepts only the exact slot with Undo', async () => {
+    const f = await generationFixture(); const estimate = await f.service.estimate(f.actor, f.request)
+    expect(f.call).not.toHaveBeenCalled(); expect(estimate).toMatchObject({ slot: f.slot, count: 2, confirmationRequired: true, price: { maximumUsd: 0.01 } })
+    expect(await f.service.estimate(f.actor, f.request)).toEqual(estimate)
+    await expect(f.service.estimate(f.other, f.request)).rejects.toMatchObject({ code: 'mutation_id_reused' })
+    const request = { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true as const }
+    const [one, duplicate] = await Promise.all([f.service.dispatch(f.actor, request), f.service.dispatch(f.actor, request)])
+    expect(one.id).toBe(duplicate.id)
+    await expect(f.service.dispatch(f.actor, { ...request, mutationId: randomUUID() })).rejects.toMatchObject({ code: 'generation_estimate_already_used' })
+    const active = await claimFeedRun(['text_generation']); expect(active?.id).toBe(one.id)
+    await f.service.handler(active!, new AbortController().signal)
+    expect(f.call).toHaveBeenCalledTimes(1)
+    const snapshot = await getFeedCollaboration(f.actor); expect(snapshot.copy!.revision).toBe(3); expect(snapshot.suggestions).toHaveLength(2)
+    const candidate = snapshot.suggestions[0]!
+    expect(candidate).toMatchObject({ sourceRunId: one.id, sourceRevision: 3 })
+    await f.command([{ kind: 'decide', suggestionId: candidate.id, outcome: 'accepted' }], 3)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.text).toContain('Candidate')
+    await f.command([{ kind: 'undo', revision: 4 }], 4)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: f.slot })
+    expect((await f.service.dispatch(f.actor, request)).id).toBe(one.id)
+    const copy = (await getFeedCollaboration(f.actor)).copy!
+    await pool.query("UPDATE feed_editorial_runs SET status='pending' WHERE id=$1", [one.id])
+    const recovered = await claimFeedRun(['text_generation']); vi.mocked(f.port.resolve).mockRejectedValue(new Error('Provider removed'))
+    await f.service.handler(recovered!, new AbortController().signal)
+    expect(f.call).toHaveBeenCalledTimes(1); expect((await getFeedCollaboration(f.actor)).copy!.content).toEqual(copy.content)
+    expect((await getFeedCollaboration(f.actor)).suggestions).toHaveLength(2)
+  })
+  it('scenarios 5 and 8: retains a late cancelled candidate after target deletion without changing text', async () => {
+    const f = await generationFixture(); const estimate = await f.service.estimate(f.actor, f.request)
+    const queued = await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
+    f.call.mockImplementationOnce(async () => {
+      await cancelFeedRun(f.actor, queued.id)
+      await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [] }] }])
+      return { text: JSON.stringify({ candidates: [{ markdown: 'Late retained candidate.', rationale: 'Original brief.' }] }), usage: { inputTokens: 100, outputTokens: 50 } }
+    })
+    const active = await claimFeedRun(['text_generation']); await f.service.handler(active!, new AbortController().signal)
+    const completed = await getFeedRun(f.actor, queued.id)
+    expect(completed.status).toBe('cancelled'); expect(completed.result.parts.generation).toBeTruthy(); expect(completed.usage.generation).toBeTruthy()
+    const snapshot = await getFeedCollaboration(f.actor); expect(snapshot.copy!.content.text).toBe('Opening paragraph.'); expect(snapshot.suggestions).toHaveLength(1)
+    await expect(f.command([{ kind: 'decide', suggestionId: snapshot.suggestions[0]!.id, outcome: 'accepted' }])).rejects.toBeTruthy()
+    expect((await getFeedCollaboration(f.actor)).copy!.content).toEqual(snapshot.copy!.content)
+  })
+  it('scenario 8: uncertain dispatch cannot resend, while an expired lease can retain a known late response', async () => {
+    const f = await generationFixture(); const estimate = await f.service.estimate(f.actor, f.request)
+    const queued = await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
+    const active = await claimFeedRun(['text_generation'])
+    f.call.mockImplementationOnce(async () => { await failFeedRun(active!, 'provider_timeout'); await expect(retryFeedRun(f.actor, queued.id)).rejects.toMatchObject({ code: 'fresh_explicit_attempt_required' }); return { text: JSON.stringify({ candidates: [{ markdown: 'Known late response.', rationale: 'Retained receipt.' }] }), usage: { inputTokens: 100, outputTokens: 50 } } })
+    await f.service.handler(active!, new AbortController().signal)
+    expect((await getFeedRun(f.actor, queued.id)).status).toBe('succeeded'); expect(f.call).toHaveBeenCalledTimes(1)
+    const nextEstimate = await f.service.estimate(f.actor, { ...f.request, mutationId: randomUUID() })
+    const next = await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: nextEstimate.id, confirmed: true }); const failing = await claimFeedRun(['text_generation'])
+    f.call.mockRejectedValueOnce(new Error('Timed out after dispatch'))
+    await expect(f.service.handler(failing!, new AbortController().signal)).rejects.toThrow('Timed out')
+    await failFeedRun(failing!, 'provider_timeout')
+    await expect(retryFeedRun(f.actor, next.id)).rejects.toMatchObject({ code: 'fresh_explicit_attempt_required' })
+    expect(f.call).toHaveBeenCalledTimes(2)
+  })
+  it('scenarios 7 and 8: refuses changed estimates/configuration and revoked queued actors before any model call', async () => {
+    const f = await generationFixture(); const estimate = await f.service.estimate(f.actor, f.request)
+    const request = { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true as const }
+    await f.command([{ kind: 'context', title: 'Changed draft title' }])
+    await expect(f.service.dispatch(f.actor, request)).rejects.toMatchObject({ code: 'revision_conflict' })
+    const nextRequest = { ...f.request, expectedRevision: 4, mutationId: randomUUID() }
+    const nextEstimate = await f.service.estimate(f.actor, nextRequest)
+    const resolved = await f.port.resolve({ ...f.actor, workspaceId: f.workspaceId }, 'text', 'standard')
+    vi.mocked(f.port.resolve).mockResolvedValueOnce({ ...resolved, identity: 'changed-configuration' })
+    await expect(f.service.dispatch(f.actor, { ...request, estimateId: nextEstimate.id })).rejects.toMatchObject({ code: 'generation_configuration_changed' })
+    const next = await f.service.dispatch(f.actor, { ...request, estimateId: nextEstimate.id })
+    await pool.query('DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2', [f.workspaceId, f.actor.userId])
+    const active = await claimFeedRun(['text_generation']); expect(active?.id).toBe(next.id)
+    await expect(f.service.handler(active!, new AbortController().signal)).rejects.toMatchObject({ code: 'draft_access_required' })
+    await failFeedRun(active!, 'draft_access_required')
+    expect(f.call).not.toHaveBeenCalled()
+    await expect(f.service.dispatch(f.actor, { ...request, estimateId: nextEstimate.id })).rejects.toMatchObject({ code: 'draft_access_required' })
+  })
+})
+
+
+describe('[COMP:feed/draft-generation] scoped tools and decision provenance', () => {
+  it('scenarios 6 and 7: Brian edits the selected slot through shared commands and duplicates never inherit a run', async () => {
+    const f = await generationFixture()
+    const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 3, target: { kind: 'block', segmentId: f.segmentId, blockId: f.slotId } })
+    const tools = buildFeedCollaborationTools(context!, undefined, f.service)
+    const change = tools.find(tool => tool.name === 'editFeedPlaceholder')!
+    expect(change.requiresConfirmation).toBe(true)
+    await change.execute({ mutationId: randomUUID(), action: 'update', patch: { brief: 'Use an example without numbers.' } }, {} as ToolContext)
+    const copy = (await getFeedCollaboration(f.actor)).copy!
+    const node = copy.content.composition!.segments[0]!.content[1]!
+    expect(node).toMatchObject({ attrs: { id: f.slotId, briefRevision: 1, brief: 'Use an example without numbers.' } })
+    await expect(f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: node, replacement: [{ type: 'generationPlaceholder', attrs: { ...f.slot, brief: 'Missing revision increment.', briefRevision: 1 } }] }] }])).rejects.toMatchObject({ code: 'placeholder_brief_revision_conflict' })
+    const refreshed = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 4, target: { kind: 'block', segmentId: f.segmentId, blockId: f.slotId } })
+    await buildFeedCollaborationTools(refreshed!, undefined, f.service).find(tool => tool.name === 'editFeedPlaceholder')!.execute({ mutationId: randomUUID(), action: 'duplicate' }, {} as ToolContext)
+    const slots = (await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content.filter(node => node.type === 'generationPlaceholder')
+    expect(slots).toHaveLength(2); expect(slots[0]!.attrs.id).not.toBe(slots[1]!.attrs.id); expect((await getFeedCollaboration(f.actor)).runs).toHaveLength(0); expect(f.call).not.toHaveBeenCalled()
+  })
+  it('scenarios 7 and 11: generation uses exact application provenance, retains changed-brief candidates and scopes estimate RLS', async () => {
+    const f = await generationFixture(); const foreign = await fixture(); await foreign.upgrade()
+    await pool.query('DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2', [f.workspaceId, f.other.userId])
+    const rule = (await pool.query("INSERT INTO assistant_playbook_rules(assistant_id,rule,status,created_by,applies_to_user_id) VALUES($1,'Use a concrete example.','active','decision_reflection',$2) RETURNING id", [f.actor.assistantId, f.actor.userId])).rows[0].id
+    const estimate = await f.service.estimate(f.actor, f.request)
+    expect((await queryWithRLS(foreign.actor.userId, 'SELECT id FROM feed_generation_estimates WHERE id=$1', [estimate.id])).rows).toHaveLength(0)
+    expect((await queryWithRLS(f.actor.userId, 'SELECT id FROM feed_generation_estimates WHERE id=$1', [estimate.id])).rows).toHaveLength(1)
+    const queued = await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
+    await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [{ type: 'generationPlaceholder', attrs: { ...f.slot, brief: 'A different direction.', briefRevision: 1 } }] }] }])
+    const active = await claimFeedRun(['text_generation']); await f.service.handler(active!, new AbortController().signal)
+    const applications = (await pool.query("SELECT id,operation_id,artifact_refs FROM decision_applications WHERE assistant_id=$1 AND operation_kind='feed_generation'", [f.actor.assistantId])).rows
+    expect(applications).toHaveLength(1); expect(applications[0]).toMatchObject({ operation_id: queued.id, artifact_refs: [{ kind: 'assistant_playbook_rule', id: rule }] })
+    const snapshot = await getFeedCollaboration(f.actor); expect(snapshot.suggestions).toHaveLength(2); expect(snapshot.suggestions[0]!.applicationId).toBe(applications[0].id)
+    await expect(f.command([{ kind: 'decide', suggestionId: snapshot.suggestions[0]!.id, outcome: 'accepted' }])).rejects.toMatchObject({ code: 'proposal_target_changed' })
+    await expect(pool.query('UPDATE feed_draft_suggestions SET source_run_id=NULL WHERE id=$1', [snapshot.suggestions[0]!.id])).rejects.toThrow('immutable')
+    expect((await getFeedCollaboration(f.actor)).copy!.content).toEqual(snapshot.copy!.content)
+  })
+})

@@ -116,7 +116,7 @@ export const feedCommandSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('propose'), sourceRevision: revision.optional(), suggestionId: feedIdSchema, threadId: feedIdSchema.optional(), parentId: feedIdSchema.optional(),
     edits: z.array(feedEditSchema).min(1).max(100), rationale: z.string().max(20_000), sourceMessageId: feedIdSchema.optional(),
     sourceProposal: z.object({ threadSegments: z.array(z.string().max(FEED_CONTENT_LIMIT)).min(1).max(100).optional(), index: z.number().int().min(1).max(99), text: z.string().max(FEED_CONTENT_LIMIT), label: z.string().max(30).optional(), imageBrief: z.string().max(2000).optional() }).strict().optional(),
-    sourceToolCallId: z.string().max(512).optional(), applicationId: feedIdSchema.optional() }).strict(),
+    sourceRunId: feedIdSchema.optional(), sourceToolCallId: z.string().max(512).optional(), applicationId: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('decide'), suggestionId: feedIdSchema, outcome: z.enum(['accepted', 'rejected', 'deferred']), reasonThreadId: feedIdSchema.optional() }).strict(),
   z.object({ kind: z.literal('undo'), revision: revision }).strict(),
   z.object({ kind: z.literal('context'), goalId: feedIdSchema.nullable().optional(), reviewMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/).optional(),
@@ -179,5 +179,23 @@ export type FeedEditorialRunSummary = {
   id: string; kind: 'review' | 'text_generation' | 'image_generation' | 'confirmation_learning' | 'reconcile';
   revision: number; status: FeedEditorialStatus; attempts: number; error: string | null; createdAt: string;
   coverage: Partial<Record<FeedReviewDimension, FeedReviewCoverage>>; summaryThreadId: string | null;
-  stale?: boolean; model: string; month?: string; goalTitle?: string;
+  stale?: boolean; model: string; month?: string; goalTitle?: string; generation?: { slotId: string; segmentId: string; briefRevision: number; estimate: FeedGenerationEstimate };
+}
+
+/** Generation never changes a slot until its immutable candidate is accepted. */
+export const FEED_GENERATION_LIMITS = { version: 1, estimateMinutes: 30, textCandidates: 5, imageCandidates: 1, outputCharacters: 20_000, referenceBytes: 160_000, references: 20 } as const
+export const feedGenerationEstimateRequestSchema = z.object({
+  mutationId: feedIdSchema, expectedRevision: revision, segmentId: feedIdSchema, slotId: feedIdSchema,
+  model: z.enum(['standard', 'pro', 'max']).default('standard'), count: z.number().int().min(1).max(5).default(1),
+  locale: z.enum(['en', 'ja', 'zh', 'zh-cn']).default('en'),
+}).strict()
+export type FeedGenerationEstimateRequest = z.infer<typeof feedGenerationEstimateRequestSchema>
+export const feedGenerationRequestSchema = z.object({ mutationId: feedIdSchema, estimateId: feedIdSchema, confirmed: z.literal(true) }).strict()
+export type FeedGenerationRequest = z.infer<typeof feedGenerationRequestSchema>
+export type FeedGenerationCandidate = { applicationId?: string; id: string; runId: string; segmentId: string; slotId: string; sourceRevision: number; briefRevision: number; edits: FeedEdit[]; rationale: string }
+export type FeedGenerationPrice = { currency: 'USD'; maximumUsd: number | null; rateVersion: string; billing: 'included' | 'byo' | 'metered'; credits?: number }
+export type FeedGenerationEstimate = {
+  id: string; expiresAt: string; revision: number; segmentId: string; slot: FeedPlaceholderAttrs; count: number;
+  model: string; tier: string; price: FeedGenerationPrice; inputCharacters: number; maxTokens: number;
+  sources: { id: string; title: string; hash: string }[]; omissions: string[]; confirmationRequired: true;
 }

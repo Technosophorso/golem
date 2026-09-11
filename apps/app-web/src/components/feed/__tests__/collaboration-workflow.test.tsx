@@ -4,14 +4,17 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from '@tiptap/pm/view';
 import { TextSelection } from '@tiptap/pm/state';
-import type { FeedCommand, FeedEdit, FeedTarget } from '@use-brian/shared';
+import type { FeedCommand, FeedEdit, FeedTarget, FeedPlaceholderAttrs, FeedGenerationEstimate } from '@use-brian/shared';
 import { applyFeedEdits, createFeedAnchor, importLegacyFeed, projectFeed, proposeFeedReplacement } from '@use-brian/doc-model';
 import { en } from '@/lib/i18n/dictionaries/en';
-const state = vi.hoisted(() => ({ messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
+const state = vi.hoisted(() => ({ http: vi.fn(), upload: vi.fn(), messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
+vi.mock('@/lib/auth-fetch', () => ({ authFetch: (...args: unknown[]) => state.http(...args) }));
+vi.mock('@/lib/use-post-media', () => ({ usePostMedia: () => ({ upload: state.upload, resolve: vi.fn(), uploading: false }) }));
 vi.mock('@/lib/i18n/client', () => ({ useT: () => en, useLocale: () => 'en' }));
 vi.mock('@/lib/surface-cache', () => ({ useCachedResource: () => state.messages }));
 vi.mock('@/lib/surface-prefetch', () => ({ feedCollaborationCacheKey: () => 'fixture-collaboration', goalsCacheKey: () => 'fixture-goals' }));
 vi.mock('../tuning-chat-panel', () => ({ TuningChatPanel: (props: { sessionId: string }) => <div data-chat-session={props.sessionId} /> }));
+import { GenerationPlaceholder, FeedGenerationResults, type FeedGenerationControls } from '../generation-placeholder';
 import { CompositionEditor } from '../composition-editor';
 import { DraftCommentPanel, type FeedCommentPanelProps } from '../draft-comment-panel';
 import { FeedReview, type FeedReviewActions } from '../feed-review';
@@ -125,5 +128,58 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     expect(host.querySelector('[role=alert]')?.textContent).toContain(text.loadFailed);
     act(() => root.render(<DraftCommentPanel {...props} loading={false} snapshot={{ copy: null, threads: [], suggestions: [] }} offline pending />));
     expect(host.textContent).toContain(text.pending); expect(button(text.comment).disabled).toBe(true);
+  });
+});
+
+
+function generationControls(): FeedGenerationControls { return { workspaceId: crypto.randomUUID(), assistantId: crypto.randomUUID(), sessionId: crypto.randomUUID(), revision: 2, offline: false, pending: false, readOnly: false, article: false, snapshot: { copy: null, threads: [], suggestions: [] }, onCommand: vi.fn(async () => true), onRefresh: vi.fn() }; }
+const generationSlot = (): FeedPlaceholderAttrs => ({ id: crypto.randomUUID(), kind: 'text', brief: 'Explain irrigation.', briefRevision: 0, references: [] });
+describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
+  it('scenarios 4 and 10: manual fill works offline, advances typed history, and never calls a model', async () => {
+    const slot = generationSlot(); const onEdit = vi.fn(); const controls = { ...generationControls(), offline: true };
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={controls} onEdit={onEdit} onSelect={vi.fn()} onAction={vi.fn()} />));
+    expect(button(en.feedGeneration.generate).disabled).toBe(true);
+    const field = host.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${en.feedGeneration.manualText}"]`)!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'A hand-written explanation.'); field.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(en.feedGeneration.fillText);
+    expect(onEdit).toHaveBeenCalledWith([expect.objectContaining({ kind: 'replaceBlock', blockId: slot.id, replacement: [expect.objectContaining({ type: 'paragraph', attrs: { id: slot.id } })] })]);
+    expect(state.http).not.toHaveBeenCalled();
+  });
+  it('scenarios 4 and 8: displays the estimate before dispatch and reuses its mutation ID after a lost response', async () => {
+    const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();
+    const estimate: FeedGenerationEstimate = { id: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), revision: 2, segmentId, slot, count: 1, model: 'fixture-model', tier: 'standard', price: { currency: 'USD', maximumUsd: 0.012, rateVersion: 'fixture', billing: 'included' }, inputCharacters: 500, maxTokens: 1000, sources: [], omissions: ['source_unavailable'], confirmationRequired: true };
+    state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ estimate }) });
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} onAction={vi.fn()} />));
+    await click(en.feedGeneration.generate);
+    expect(state.http).toHaveBeenCalledTimes(1); expect(state.http.mock.calls[0]![0]).toContain('/generations/estimate');
+    expect(host.textContent).toContain('$0.012'); expect(host.textContent).toContain(en.feedGeneration.referenceOmissions); expect(host.textContent).toContain(slot.brief);
+    state.http.mockRejectedValueOnce(new Error('Lost response'));
+    await click(en.feedGeneration.confirm);
+    const first = JSON.parse(state.http.mock.calls[1]![1].body);
+    expect(first).toMatchObject({ estimateId: estimate.id, confirmed: true });
+    state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ run: { id: 'retained' } }) });
+    await click(en.feedGeneration.confirm);
+    expect(JSON.parse(state.http.mock.calls[2]![1].body)).toEqual(first);
+    expect(controls.onCommand).not.toHaveBeenCalled();
+  });
+  it('scenarios 5 and 8: stale candidates remain visible with Keep for later and cannot overwrite a changed slot', async () => {
+    const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();
+    const candidate = { id: crypto.randomUUID(), sourceRunId: crypto.randomUUID(), sourceRevision: 1, edits: [{ kind: 'replaceBlock' as const, segmentId, blockId: slot.id, preimage: { type: 'generationPlaceholder' as const, attrs: { ...slot, brief: 'Older brief.' } }, replacement: [{ type: 'paragraph' as const, attrs: { id: slot.id }, content: [{ type: 'text' as const, text: 'Retained candidate.' }] }] }], rationale: 'Earlier request.', status: 'proposed', threadId: null, parentId: null, authorUserId: 'fixture', authorKind: 'assistant' as const };
+    act(() => root.render(<FeedGenerationResults controls={controls} runs={[]} candidates={[candidate]} slot={slot} onRunAction={vi.fn()} />));
+    expect(host.textContent).toContain('Retained candidate.'); expect(host.textContent).toContain(en.feedGeneration.stale); expect(button(en.feedCollaboration.accept).disabled).toBe(true);
+    await click(en.feedGeneration.keepLater);
+    expect(controls.onCommand).toHaveBeenCalledWith([{ kind: 'decide', suggestionId: candidate.id, outcome: 'deferred' }]);
+  });
+  it('scenarios 4 and 6: the slash shortcut creates a real slot and the portal preserves block selection for touch controls', async () => {
+    const doc = importLegacyFeed({ text: '/text', postFormat: 'post', threadSegments: [], media: [] }); const onEdit = vi.fn(); const onSelection = vi.fn(); const controls = generationControls();
+    act(() => root.render(<CompositionEditor composition={doc} threads={[]} generation={controls} onEdit={onEdit} onSelection={onSelection} onAction={vi.fn()} onOpenThread={vi.fn()} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    act(() => { view.someProp('handleKeyDown', handler => handler(view, new KeyboardEvent('keydown', { key: 'Enter' }))); });
+    expect(onEdit).toHaveBeenCalledOnce(); const changed = applyFeedEdits(doc, onEdit.mock.calls[0]![0]).composition;
+    act(() => root.render(<CompositionEditor composition={changed} threads={[]} generation={controls} onEdit={onEdit} onSelection={onSelection} onAction={vi.fn()} onOpenThread={vi.fn()} />));
+    const field = host.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${en.feedGeneration.brief}"]`)!; expect(field).toBeTruthy();
+    act(() => field.focus());
+    expect(onSelection).toHaveBeenLastCalledWith(expect.objectContaining({ target: { kind: 'block', segmentId: changed.segments[0]!.id, blockId: changed.segments[0]!.content[0]!.attrs.id } }));
+    expect(state.http).not.toHaveBeenCalled();
   });
 });

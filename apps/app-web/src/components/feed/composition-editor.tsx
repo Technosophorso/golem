@@ -1,7 +1,9 @@
 "use client";
 /** Feed ProseMirror authoring with stable target decorations. [COMP:app-web/feed-composition-editor] */
-import { useEffect, useRef } from 'react';
-import { EditorState, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { GenerationPlaceholder, FeedDetachedGenerationResults, type FeedGenerationControls } from './generation-placeholder';
+import { EditorState, NodeSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
 import { EditorView, Decoration, DecorationSet } from '@tiptap/pm/view';
 import { baseKeymap, toggleMark, setBlockType, wrapIn } from '@tiptap/pm/commands';
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
@@ -9,7 +11,7 @@ import { promptDialog } from '@/components/ui/prompt-dialog';
 import { keymap } from '@tiptap/pm/keymap';
 import { history, undo, redo } from '@tiptap/pm/history';
 import type { Node as PMNode } from '@tiptap/pm/model';
-import { feedSchema, locateFeedNode, duplicateFeedNode, diffFeedComposition, validateFeedComposition, feedTargetQuote } from '@use-brian/doc-model';
+import { feedSchema, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, diffFeedComposition, validateFeedComposition, feedTargetQuote } from '@use-brian/doc-model';
 import type { FeedComposition, FeedTarget, FeedEdit, FeedNode, FeedAnchor } from '@use-brian/shared';
 import { useT } from '@/lib/i18n/client';
 import type { FeedCommentThread } from '@/lib/feed-collaboration';
@@ -34,20 +36,22 @@ function feedSelectionFromEditor(state: EditorState, segmentId: string, composit
   return { target, quote: feedTargetQuote(composition, target), ...(found?.text ? { caret: { segmentId, blockId: found.id, offset: Math.max(0, from - found.pos - 1) } } : {}) };
 }
 export function CompositionEditor(props: {
-  composition: FeedComposition; readOnly?: boolean; threads: FeedCommentThread[]; draftAnchor?: FeedAnchor | null;
+  generation?: FeedGenerationControls; composition: FeedComposition; readOnly?: boolean; threads: FeedCommentThread[]; draftAnchor?: FeedAnchor | null;
   onEdit: (edits: FeedEdit[]) => void; onSelection: (selection: FeedEditorSelection) => void;
   onAction: (action: 'comment' | 'suggest' | 'ask') => void; onOpenThread: (threadId: string) => void;
 }) {
   const t = useT().feedCollaboration;
   return <div className="space-y-4" data-feed-composition>
     {props.composition.segments.map(segment => <FeedSegmentEditor key={segment.id} {...props} segmentId={segment.id} />)}
+    {props.generation ? <FeedDetachedGenerationResults controls={props.generation} /> : null}
     <div role="toolbar" aria-label={t.blockActions} className="flex flex-wrap gap-2">
       {(['comment', 'suggest', 'ask'] as const).map(action => <button type="button" key={action} disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => props.onAction(action)} className="min-h-11 rounded-md border px-3 text-sm hover:bg-muted disabled:opacity-50">{action === 'comment' ? t.comment : action === 'suggest' ? t.suggest : t.askBrian}</button>)}
     </div>
   </div>;
 }
 function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { segmentId: string }) {
-  const t = useT().feedCollaboration; const host = useRef<HTMLDivElement>(null); const viewRef = useRef<EditorView | null>(null); const latest = useRef(props); latest.current = props;
+  const t = useT().feedCollaboration; const tg = useT().feedGeneration; const host = useRef<HTMLDivElement>(null); const viewRef = useRef<EditorView | null>(null); const latest = useRef(props); latest.current = props;
+  const [slotMounts, setSlotMounts] = useState<{ id: string; dom: HTMLElement }[]>([]);
   const local = useRef(props.composition); const lastEmitted = useRef('');
   const decorations = (doc: PMNode) => {
     const output: Decoration[] = [];
@@ -67,7 +71,19 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     const segment = latest.current.composition.segments.find(s => s.id === props.segmentId)!;
     local.current = latest.current.composition;
     const view = new EditorView(host.current, {
-      state: EditorState.create({ schema: feedSchema, doc: feedSchema.nodeFromJSON({ type: 'doc', content: segment.content }), plugins: [history(), keymap({ 'Mod-b': toggleMark(feedSchema.marks.bold!), 'Mod-i': toggleMark(feedSchema.marks.italic!), 'Mod-z': undo, 'Mod-Shift-z': redo, ...baseKeymap, Enter: (state, dispatch, view) => splitListItem(feedSchema.nodes.listItem!)(state, dispatch) || baseKeymap.Enter!(state, dispatch, view), Tab: sinkListItem(feedSchema.nodes.listItem!), 'Shift-Tab': liftListItem(feedSchema.nodes.listItem!) }), new Plugin({ key: decorationKey, props: { decorations: state => decorations(state.doc) } })] }),
+      state: EditorState.create({ schema: feedSchema, doc: feedSchema.nodeFromJSON({ type: 'doc', content: segment.content }), plugins: [history(), keymap({ 'Mod-b': toggleMark(feedSchema.marks.bold!), 'Mod-i': toggleMark(feedSchema.marks.italic!), 'Mod-z': undo, 'Mod-Shift-z': redo, ...baseKeymap, Enter: (state, dispatch, view) => {
+          const block = state.selection.$from.parent; const shortcut = /^\/(text|image)$/.exec(block.textContent);
+          if (shortcut && state.selection.empty && block.type.name === 'paragraph' && !latest.current.readOnly) {
+            const node: FeedNode = { type: 'generationPlaceholder', attrs: { id: block.attrs.id, kind: shortcut[1] as 'text' | 'image', brief: '', briefRevision: 0, references: [] } };
+            latest.current.onEdit([{ kind: 'replaceBlock', segmentId: props.segmentId, blockId: block.attrs.id, preimage: cleanNode(block), replacement: [node] }]); return true;
+          }
+          return splitListItem(feedSchema.nodes.listItem!)(state, dispatch) || baseKeymap.Enter!(state, dispatch, view);
+        }, Tab: sinkListItem(feedSchema.nodes.listItem!), 'Shift-Tab': liftListItem(feedSchema.nodes.listItem!) }), new Plugin({ key: decorationKey, props: { decorations: state => decorations(state.doc) } })] }),
+      nodeViews: props.generation ? { generationPlaceholder(node) {
+        const dom = document.createElement('div'); const slotId = String(node.attrs.id); dom.contentEditable = 'false'; dom.dataset.placeholderId = slotId;
+        setSlotMounts(mounts => [...mounts.filter(item => item.id !== slotId), { id: slotId, dom }]);
+        return { dom, update(next) { return next.type.name === 'generationPlaceholder' && next.attrs.id === slotId; }, ignoreMutation: () => true, stopEvent: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
+      } } : undefined,
       editable: () => !latest.current.readOnly,
       attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-44 rounded-xl border border-border/60 bg-card p-5 text-base leading-relaxed outline-none focus:border-ring [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
       handleClick(_view, _pos, event) { const hit = (event.target as HTMLElement).closest<HTMLElement>('[data-feed-thread]'); if (hit?.dataset.feedThread && hit.dataset.feedThread !== 'draft') latest.current.onOpenThread(hit.dataset.feedThread); return false; },
@@ -108,6 +124,19 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
       <button type="button" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => { void (async () => { const view = viewRef.current; if (!view) return; const href = await promptDialog({ title: t.link, placeholder: t.linkPlaceholder, confirmLabel: t.accept, cancelLabel: t.cancel, allowEmpty: true }); if (href === null || (href && !/^https?:\/\//i.test(href))) return; try { if (href) new URL(href); else { view.dispatch(view.state.tr.removeMark(view.state.selection.from, view.state.selection.to, feedSchema.marks.link!)); return; } toggleMark(feedSchema.marks.link!, { href })(view.state, view.dispatch); view.focus(); } catch { /* Invalid URL leaves the selected content unchanged. */ } })(); }} className="min-h-11 rounded-md border px-3 text-sm hover:bg-muted">{t.link}</button>
     </div>
     <div ref={host} />
+    {props.generation ? slotMounts.map(mount => {
+      let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }
+      if (found.node.type !== 'generationPlaceholder') return null;
+      return createPortal(<GenerationPlaceholder slot={found.node.attrs} segmentId={props.segmentId} controls={props.generation!} onEdit={props.onEdit}
+        onSelect={() => { const view = viewRef.current; if (!view) return; let position: number | undefined; view.state.doc.descendants((node, pos) => { if (node.attrs.id === mount.id) position = pos; }); if (position !== undefined && (!(view.state.selection instanceof NodeSelection) || view.state.selection.from !== position)) view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, position))); }} onAction={props.onAction} />, mount.dom, mount.id);
+    }) : null}
+    <div role="toolbar" aria-label={tg.advanced} className="flex flex-wrap gap-2">
+      {(['insertText', 'insertImage', 'convertText', 'convertImage'] as const).map(action => <button key={action} className="min-h-11 rounded-md border px-3 text-sm" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => {
+        const view = viewRef.current; if (!view) return;
+        const selected = feedSelectionFromEditor(view.state, props.segmentId, local.current); const convert = action.startsWith('convert'); if (convert && selected.target.kind === 'post') return;
+        try { latest.current.onEdit(insertFeedPlaceholder(local.current, selected, action.endsWith('Image') ? 'image' : 'text', convert)); } catch { /* Non-text atoms cannot be converted to notes. */ }
+      }}>{tg[action]}</button>)}
+    </div>
     <div role="toolbar" aria-label={t.blockActions} className="flex flex-wrap gap-2">
       {(['moveUp', 'moveDown', 'duplicate', 'deleteBlock'] as const).map(action => <button key={action} type="button" className="min-h-11 rounded-md border px-3 text-sm hover:bg-muted" disabled={props.readOnly} onMouseDown={event => event.preventDefault()} onClick={() => {
         const view = viewRef.current; if (!view) return;

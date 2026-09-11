@@ -174,6 +174,8 @@ import { contentPlanRoutes } from './routes/content-plan.js'
 import { contentIdeasRoutes } from './routes/content-ideas.js'
 import { postWorkingCopiesRoutes } from './routes/post-working-copies.js'
 import { createFeedEditorialModelResolver } from './content-planning/editorial-model.js'
+import { createFeedGenerationPort } from './content-planning/generation-port.js'
+import { createFeedGenerationService } from './content-planning/generation.js'
 import { createFeedReviewHandler } from './content-planning/review.js'
 import { createFeedEditorialWorker } from './workers/feed-editorial-worker.js'
 import { feedCollaborationRoutes } from './routes/feed-collaboration.js'
@@ -4643,7 +4645,9 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       })
     : null
 
+  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' })))
   app.use('/api/chat', optionalAuth(env.JWT_SECRET), chatRoutes({
+    feedGeneration,
     provider,
     artifactPromoter,
     checkCreditBudget: ports.checkCreditBudget,
@@ -5040,7 +5044,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // and developing an idea must never require a credential in either edition.
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
-  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes())
+  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration }))
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its
@@ -7310,6 +7314,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // Daily user-scoped projection from minimized, deliberate decision evidence.
   // The store independently enforces thresholds and prohibited output.
   const feedEditorialWorker = createFeedEditorialWorker({ handlers: {
+    text_generation: feedGeneration.handler,
     review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget })),
   } })
   if (runWorkers) feedEditorialWorker.start()

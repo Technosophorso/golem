@@ -1,14 +1,15 @@
+import type { FeedGenerationService } from './generation.js'
 /** Selection-bound Feed tools use the UI's domain service. [COMP:feed/draft-suggestions] */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { buildTool, type Tool } from '@use-brian/core'
-import { feedCommandRequestSchema, feedEditSchema, feedTargetSchema, feedReviewRequestSchema, type FeedEdit } from '@use-brian/shared'
-import { proposeFeedReplacement } from '@use-brian/doc-model'
+import { feedCommandRequestSchema, feedEditSchema, feedTargetSchema, feedReviewRequestSchema, feedGenerationEstimateRequestSchema, feedGenerationRequestSchema, feedPlaceholderAttrsSchema, feedMediaSchema, type FeedEdit } from '@use-brian/shared'
+import { proposeFeedReplacement, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, feedParagraph } from '@use-brian/doc-model'
 import { feedCommand, readReviewedFeedCollaboration, type FeedTurnContext } from './collaboration-service.js'
 import { FeedCollaborationError } from '../db/feed-collaboration-store.js'
 import { buildProposeDraftsTool } from './draft-tool.js'
 import { requestFeedReview } from './review.js'
-import { summarizeFeedRun } from '../db/feed-editorial-runs-store.js'
+import { summarizeFeedRun, getFeedRun, cancelFeedRun, retryFeedRun } from '../db/feed-editorial-runs-store.js'
 const uuid = z.string().uuid()
 function selectedEdits(context: FeedTurnContext, edits: FeedEdit[]) {
   const target = context.reference.target
@@ -19,7 +20,7 @@ function selectedEdits(context: FeedTurnContext, edits: FeedEdit[]) {
     } else if (edit.kind === 'joinBlocks' || !('blockId' in edit) || edit.segmentId !== target.segmentId || edit.blockId !== target.blockId) throw new FeedCollaborationError(403, 'selection_scope_mismatch')
   }
 }
-export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMessageId?: string): Tool[] {
+export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMessageId?: string, generation?: FeedGenerationService): Tool[] {
   const live = async () => {
     const current = await readReviewedFeedCollaboration(context.actor)
     if (!current.copy || current.copy.revision !== context.reference.revision) throw new FeedCollaborationError(409, 'draft_context_changed')
@@ -28,6 +29,35 @@ export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMess
   }
   const common = { requiresCapability: 'feed', homeAppToolSet: { app: 'feed' as const, set: 'write' as const }, isConcurrencySafe: false, timeoutMs: 15_000 }
   return [
+    ...(generation ? [
+      buildTool({ ...common, name: 'estimateFeedGeneration', description: 'Prepare a cheap estimate for the selected saved text or image slot. Returns the exact brief, source coverage, model, bounded output and server price. Show these to the user before asking for generation confirmation. No model work is dispatched.', inputSchema: feedGenerationEstimateRequestSchema, isReadOnly: false, requiresConfirmation: false,
+        async execute(input) { await live(); if (input.expectedRevision !== context.reference.revision) throw new FeedCollaborationError(409, 'draft_context_changed'); const target = context.reference.target; if (target && target.kind !== 'post' && (target.kind !== 'block' || target.blockId !== input.slotId || target.segmentId !== input.segmentId)) throw new FeedCollaborationError(403, 'selection_scope_mismatch'); return { data: await generation.estimate(context.actor, input) } } }),
+      buildTool({ ...common, name: 'generateFeedSlot', description: 'After the user confirms the estimate cost and exact output brief, dispatch that server-issued estimate. Requires explicit confirmation. Creates candidates for review; never fills, approves or publishes the slot automatically.', inputSchema: feedGenerationRequestSchema, isReadOnly: false, requiresConfirmation: true,
+        async execute(input) { await live(); const estimate = await generation.inspectEstimate(context.actor, input.estimateId); const target = context.reference.target; if (estimate.revision !== context.reference.revision || (target && target.kind !== 'post' && (target.kind !== 'block' || target.blockId !== estimate.slot.id || target.segmentId !== estimate.segmentId))) throw new FeedCollaborationError(403, 'selection_scope_mismatch'); return { data: summarizeFeedRun(await generation.dispatch(context.actor, input)) } } }),
+    ] : []),
+    buildTool({ ...common, name: 'manageFeedEditorialRun', description: 'Read, cancel or safely retry a draft Review or generation run. Unknown charged outcomes cannot retry; get a new generation estimate and explicit confirmation instead. A saved response repairs without another model call.', inputSchema: z.object({ runId: uuid, action: z.enum(['read', 'cancel', 'retry']) }).strict(), isReadOnly: false, requiresConfirmation: true,
+      async execute(input) { await live(); return { data: summarizeFeedRun(await (input.action === 'read' ? getFeedRun : input.action === 'cancel' ? cancelFeedRun : retryFeedRun)(context.actor, input.runId)) } } }),
+    buildTool({ ...common, name: 'editFeedPlaceholder', description: 'Apply an explicitly requested operation to the selected Feed slot: insert at a caret, convert selected notes, update its brief/options, fill manually, move, duplicate or remove. Requires confirmation. Uses the same typed edit and history transaction as the editor. Never starts generation or publication.',
+      inputSchema: z.object({ mutationId: uuid, action: z.enum(['insert', 'convert', 'update', 'fillText', 'fillImage', 'moveUp', 'moveDown', 'duplicate', 'remove']), kind: z.enum(['text', 'image']).optional(), offset: z.number().int().nonnegative().optional(), patch: feedPlaceholderAttrsSchema.omit({ id: true, briefRevision: true }).partial().optional(), text: z.string().min(1).max(100_000).optional(), image: feedMediaSchema.optional() }).strict(), isReadOnly: false, requiresConfirmation: true,
+      async execute(input) {
+        const current = await live(); const composition = current.copy!.content.composition!; const target = context.reference.target ?? { kind: 'post' as const }; let edits: FeedEdit[];
+        if (input.action === 'insert' || input.action === 'convert') {
+          if (!input.kind || (input.action === 'convert' && target.kind === 'post')) throw new FeedCollaborationError(400, 'placeholder_target_required')
+          const caret = input.offset !== undefined && target.kind === 'block' ? { segmentId: target.segmentId, blockId: target.blockId, offset: input.offset } : undefined
+          edits = insertFeedPlaceholder(composition, { target, caret }, input.kind, input.action === 'convert')
+        } else {
+          if (target.kind !== 'block') throw new FeedCollaborationError(400, 'placeholder_target_required')
+          const found = locateFeedNode(composition, target.segmentId, target.blockId); const node = found.node
+          if (node.type !== 'generationPlaceholder') throw new FeedCollaborationError(409, 'generation_slot_required')
+          if (input.action === 'update') { if (!input.patch) throw new FeedCollaborationError(400, 'placeholder_patch_required'); edits = [{ kind: 'replaceBlock', segmentId: target.segmentId, blockId: target.blockId, preimage: node, replacement: [{ type: 'generationPlaceholder', attrs: { ...node.attrs, ...input.patch, briefRevision: node.attrs.briefRevision + 1 } }] }] }
+          else if (input.action === 'fillText') { if (node.attrs.kind !== 'text' || !input.text) throw new FeedCollaborationError(400, 'text_fill_required'); edits = proposeFeedReplacement(composition, target, input.text) }
+          else if (input.action === 'fillImage') { if (node.attrs.kind !== 'image' || !input.image) throw new FeedCollaborationError(400, 'image_fill_required'); edits = [{ kind: 'replaceBlock', segmentId: target.segmentId, blockId: target.blockId, preimage: node, replacement: [{ type: 'image', attrs: { ...input.image, id: node.attrs.id, placement: current.copy!.content.postFormat === 'article' ? 'inline' : 'attachment' } }] }] }
+          else if (input.action === 'duplicate') edits = [{ kind: 'insertBlock', segmentId: target.segmentId, parentId: found.parentId, afterId: target.blockId, node: duplicateFeedNode(node) }]
+          else if (input.action === 'remove') edits = [...(found.siblings.length === 1 ? [{ kind: 'insertBlock' as const, segmentId: target.segmentId, parentId: found.parentId, afterId: target.blockId, node: feedParagraph('') }] : []), { kind: 'replaceBlock', segmentId: target.segmentId, blockId: target.blockId, preimage: node, replacement: [] }]
+          else { const up = input.action === 'moveUp'; if ((up && found.index === 0) || (!up && found.index === found.siblings.length - 1)) throw new FeedCollaborationError(409, 'placeholder_at_boundary'); edits = [{ kind: 'moveBlock', segmentId: target.segmentId, blockId: target.blockId, parentId: found.parentId, afterId: up ? found.siblings[found.index - 2]?.attrs.id ?? null : found.siblings[found.index + 1]!.attrs.id }] }
+        }
+        return { data: await feedCommand({ ...context.actor, kind: 'user' }, { mutationId: input.mutationId, expectedRevision: context.reference.revision, commands: [{ kind: 'edit', edits, reasonThreadId: context.reference.threadId }] }) }
+      } }),
     buildTool({ ...common, name: 'reviewFeedDraft', description: 'Request five bounded editorial checks for the current Feed draft. Results appear as comments with source coverage. This does not edit, approve, publish, change Goals or save memory. Reuse mutationId to check the same request; an uncertain call requires an explicit new attempt.', inputSchema: feedReviewRequestSchema, isReadOnly: false, requiresConfirmation: false,
       async execute(input) { await live(); if (input.expectedRevision !== context.reference.revision) throw new FeedCollaborationError(409, 'draft_context_changed'); return { data: summarizeFeedRun(await requestFeedReview(context.actor, input)) } } }),
     buildTool({ ...common, name: 'readFeedDraft', description: 'Read the current authorized composition, comments and suggestions for this Feed draft. Returns its exact content revision.', inputSchema: z.object({}).strict(), isReadOnly: true, requiresConfirmation: false,

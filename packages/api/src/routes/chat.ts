@@ -1,3 +1,4 @@
+import type { FeedGenerationService } from '../content-planning/generation.js'
 import { resolveFeedTurnContext, formatFeedTurnContext } from '../content-planning/collaboration-service.js'
 import { buildFeedCollaborationTools } from '../content-planning/collaboration-tools.js'
 import { createHash } from 'node:crypto'
@@ -352,6 +353,7 @@ function resolveRunChannel(session: {
 }
 
 type WebChatOptions = {
+  feedGeneration?: FeedGenerationService
   provider: LLMProvider
   /**
    * Workspace BYO LLM key store. When set together with `buildWorkspaceProvider`
@@ -5400,7 +5402,7 @@ export function chatRoutes(options: WebChatOptions): Router {
         }
       }
 
-      if (feedTurnContext) for (const tool of buildFeedCollaborationTools(feedTurnContext, storedUserMsg.id)) allTools.set(tool.name, tool)
+      if (feedTurnContext) for (const tool of buildFeedCollaborationTools(feedTurnContext, storedUserMsg.id, options.feedGeneration)) allTools.set(tool.name, tool)
 
       // Pages the AI wrote this turn (filled by the doc tools' onEvent
       // below). Drives the post-turn auto-title pass (migration 218).

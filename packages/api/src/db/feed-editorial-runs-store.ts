@@ -27,7 +27,7 @@ export async function listFeedRuns(actor: FeedActor) {
   return withFeedTransaction(actor, async client => (await client.query<FeedEditorialRun>(`SELECT ${COLUMNS} FROM feed_editorial_runs WHERE session_id=$1 ORDER BY created_at DESC LIMIT 30`, [actor.sessionId])).rows, false)
 }
 export function summarizeFeedRun(run: FeedEditorialRun): FeedEditorialRunSummary {
-  return { id: run.id, kind: run.kind, revision: run.revision, status: run.status, attempts: run.attempts, error: run.error, createdAt: run.createdAt.toISOString(), coverage: run.coverage, summaryThreadId: run.summaryThreadId, model: run.model, ...(run.kind === 'review' ? { month: (run.context as FeedReviewContext).month, goalTitle: (run.context as FeedReviewContext).dimensions.post_goal.sources[0]?.title } : {}) }
+  return { id: run.id, kind: run.kind, revision: run.revision, status: run.status, attempts: run.attempts, error: run.error, createdAt: run.createdAt.toISOString(), coverage: run.coverage, summaryThreadId: run.summaryThreadId, model: run.model, ...(['text_generation', 'image_generation'].includes(run.kind) ? { generation: { slotId: (run.context as { slot: { id: string } }).slot.id, segmentId: (run.context as { segmentId: string }).segmentId, briefRevision: (run.context as { slot: { briefRevision: number } }).slot.briefRevision, estimate: (run.context as { estimate: import('@use-brian/shared').FeedGenerationEstimate }).estimate } } : {}), ...(run.kind === 'review' ? { month: (run.context as FeedReviewContext).month, goalTitle: (run.context as FeedReviewContext).dimensions.post_goal.sources[0]?.title } : {}) }
 }
 export async function enqueueFeedRun(actor: FeedActor, input: {
   requestId: string; revision: number; kind: FeedEditorialKind; request: unknown; context: unknown; model: string;
@@ -63,13 +63,17 @@ export async function renewFeedLease(run: FeedEditorialRun): Promise<boolean> {
   return (await query(`UPDATE feed_editorial_runs SET lease_until=now()+($3::int*interval '1 millisecond') WHERE id=$1 AND lease_id=$2 AND status='running'`, [run.id, run.leaseId, FEED_EDITORIAL_LIMITS.leaseMs])).rowCount === 1
 }
 export async function markFeedDispatch(run: FeedEditorialRun, part: string, estimate?: unknown): Promise<void> {
-  const changed = await withFeedTransaction(editorialActor(run), client => client.query(`UPDATE feed_editorial_runs SET dispatched_part=$3,result=result||jsonb_build_object('estimates',coalesce(result->'estimates','{}'::jsonb)||jsonb_build_object($3::text,$4::jsonb)),updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running' AND dispatched_part IS NULL`, [run.id, run.leaseId, part, JSON.stringify(estimate ?? null)]))
+  const dispatchId = randomUUID()
+  const changed = await withFeedTransaction(editorialActor(run), client => client.query(`UPDATE feed_editorial_runs SET dispatched_part=$3,result=result||jsonb_build_object('estimates',coalesce(result->'estimates','{}'::jsonb)||jsonb_build_object($3::text,$4::jsonb),'dispatches',coalesce(result->'dispatches','{}'::jsonb)||jsonb_build_object($3::text,$5::text)),updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running' AND dispatched_part IS NULL`, [run.id, run.leaseId, part, JSON.stringify(estimate ?? null), dispatchId]))
   if (changed.rowCount !== 1) throw new FeedCollaborationError(409, 'run_no_longer_active')
   run.dispatchedPart = part
+  run.result.dispatches = { ...(run.result.dispatches as Record<string, string> ?? {}), [part]: dispatchId }
   notifyWorkspaceChange(run.workspaceId, 'session', 'update', run.sessionId)
 }
 export async function saveFeedPart(run: FeedEditorialRun, part: string, result: unknown, usage?: unknown): Promise<void> {
-  const saved = await withFeedTransaction(editorialActor(run), client => client.query(`UPDATE feed_editorial_runs SET result=jsonb_set(result,ARRAY['parts',$3],$4::jsonb,true),usage=jsonb_set(usage,ARRAY[$3],$5::jsonb,true),dispatched_part=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running' AND dispatched_part=$3`, [run.id, run.leaseId, part, JSON.stringify(result), JSON.stringify(usage ?? null)]))
+  const generation = run.kind === 'text_generation' || run.kind === 'image_generation'
+  const dispatchId = (run.result.dispatches as Record<string, string> | undefined)?.[part]
+  const saved = await withFeedTransaction(editorialActor(run), client => client.query(`UPDATE feed_editorial_runs SET result=jsonb_set(result,ARRAY['parts',$3],$4::jsonb,true),usage=jsonb_set(usage,ARRAY[$3],$5::jsonb,true),dispatched_part=NULL,updated_at=now() WHERE id=$1 AND dispatched_part=$3 AND NOT(result->'parts' ? $3) AND ((lease_id=$2 AND status='running') OR ($6::boolean AND status IN ('cancelled','unknown_outcome') AND result->'dispatches'->>$3=$7))`, [run.id, run.leaseId, part, JSON.stringify(result), JSON.stringify(usage ?? null), generation, dispatchId ?? null]))
   if (saved.rowCount !== 1) throw new FeedCollaborationError(409, 'run_no_longer_active')
   run.result.parts[part] = result; run.dispatchedPart = null
 }
