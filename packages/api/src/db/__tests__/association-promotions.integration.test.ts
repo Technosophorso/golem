@@ -3,7 +3,8 @@ import { afterAll, describe, expect, it } from 'vitest'
 import { getAppPool, getPool } from '../client.js'
 import { createAssociationStore } from '../association-store.js'
 import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
-import { EventInputSchema, MembershipInputSchema, OrderCreateSchema, PlanInputSchema, PromotionImportSchema, PromotionInputSchema, TicketInputSchema } from '../../association/domain.js'
+import { EventInputSchema, MembershipCheckoutCreateSchema, MembershipCheckoutProviderBindingSchema, MembershipInputSchema, OrderCreateSchema, PlanInputSchema, PromotionImportSchema, PromotionInputSchema, TicketInputSchema } from '../../association/domain.js'
+import { ProviderEntitlementEventSchema } from '@use-brian/core'
 
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
@@ -74,6 +75,58 @@ describe('[COMP:crm/association-promotions] canonical discount authority', () =>
     expect((await pool.query('SELECT state FROM association_promotion_uses WHERE order_id=$1', [first.record.id])).rows[0].state)
       .toBe('redeemed')
     await expect(f.order()).rejects.toMatchObject({ code: 'promotion_exhausted' })
+  })
+
+  it('reserves a recurring plan discount, binds exact provider evidence and redeems it with the entitlement grant', async () => {
+    const f = await fixture()
+    const plan = await commerce.upsertPlan(f.workspaceId, PlanInputSchema.parse({
+      key: 'student-recurring', name: 'Student recurring', currency: 'HKD', feeMinor: 78_000,
+      billingPeriod: 'annual', published: true, provider: 'stripe', providerPlanId: 'price_fixture_student',
+    }), f.actor)
+    const promotion = await commerce.upsertPromotion(f.workspaceId, PromotionInputSchema.parse({
+      key: 'student-support', name: 'Student support', code: 'STUDENT-FIXTURE', discountType: 'fixed_amount',
+      amountMinor: 39_000, currency: 'HKD', targetKind: 'plan', targetIds: [String(plan.record.id)],
+      recurrenceMode: 'repeating', recurrenceCycles: 2, applyMode: 'once_per_order',
+      maxUses: 2, maxUsesPerContact: 1, status: 'active',
+    }), f.actor)
+    const idempotencyKey = randomUUID()
+    const reserved = await commerce.reserveMembershipCheckout(f.workspaceId, MembershipCheckoutCreateSchema.parse({
+      contactId: f.buyerId, planId: String(plan.record.id), idempotencyKey, reservationMinutes: 35,
+      promotionCode: ' student-fixture ',
+    }), f.actor)
+    expect(reserved.record).toMatchObject({
+      contactId: f.buyerId, planId: plan.record.id, status: 'reserved', currency: 'HKD',
+      subtotalMinor: '78000', discountMinor: '39000', totalMinor: '39000', promotionId: promotion.record.id,
+      promotionSnapshot: { recurrenceMode: 'repeating', recurrenceCycles: 2, durationMonths: 24 },
+    })
+    expect(JSON.stringify(reserved.record)).not.toContain('STUDENT-FIXTURE')
+    const replay = await commerce.reserveMembershipCheckout(f.workspaceId, MembershipCheckoutCreateSchema.parse({
+      contactId: f.buyerId, planId: String(plan.record.id), idempotencyKey, reservationMinutes: 35,
+      promotionCode: 'STUDENT-FIXTURE',
+    }), f.actor)
+    expect(replay.created).toBe(false)
+
+    const backend = { credentialKind: 'brain_key' as const, credentialId: randomUUID() }
+    const checkoutId = String(reserved.record.id)
+    const binding = MembershipCheckoutProviderBindingSchema.parse({ provider: 'stripe',
+      providerReference: 'cs_fixture_student', providerCouponReference: 'coupon_fixture_student',
+      amountMinor: 39_000, currency: 'HKD' })
+    await commerce.bindMembershipCheckoutProvider(f.workspaceId, checkoutId, binding, backend)
+    const now = new Date()
+    const startsAt = now.toISOString(), endsAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1_000).toISOString()
+    const granted = await commerce.reconcileProviderEntitlement(f.workspaceId, ProviderEntitlementEventSchema.parse({
+      provider: 'stripe', eventId: randomUUID(), providerReference: 'sub_fixture_student',
+      providerPeriodId: 'checkout:cs_fixture_student', occurredAt: now.toISOString(),
+      membershipCheckout: { id: checkoutId, providerCheckoutReference: 'cs_fixture_student',
+        providerCouponReference: 'coupon_fixture_student', amountMinor: 39_000, currency: 'HKD' },
+      command: { kind: 'grant_entitlement', contactId: f.buyerId, planId: String(plan.record.id),
+        idempotencyKey: 'stripe:cs_fixture_student', status: 'active', startsAt, endsAt,
+        renewalMode: 'auto', provider: 'stripe', providerEntitlementId: 'sub_fixture_student',
+        providerPeriodId: 'checkout:cs_fixture_student' },
+    }), backend)
+    expect(granted.record).toMatchObject({ contactId: f.buyerId, planId: plan.record.id, status: 'active' })
+    expect((await pool.query('SELECT status FROM association_membership_checkouts WHERE id=$1', [checkoutId])).rows[0].status).toBe('paid')
+    expect((await pool.query('SELECT state FROM association_promotion_uses WHERE membership_checkout_id=$1', [checkoutId])).rows[0].state).toBe('redeemed')
   })
 
   it('applies approved buy-one-get-one terms only when quantity qualifies', async () => {

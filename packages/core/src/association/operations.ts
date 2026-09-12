@@ -8,6 +8,7 @@ import { WORKSPACE_MODULE_ACTIONS } from '@use-brian/shared'
 import { CrmOperationsActorSchema, CrmOperationsAuthoritySchema } from '../crm/operations-types.js'
 import {
   AssociationTicketInputSchema, AssociationOrderCreateSchema, AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema, AssociationProviderBindingInputSchema,
+  AssociationMembershipCheckoutCreateSchema, AssociationMembershipCheckoutProviderBindingSchema,
   AssociationRegistrationUpdateSchema, AssociationOrderStatusSchema, AssociationRegistrationStatusSchema,
   AssociationCheckInCorrectionSchema,
   AssociationMembershipRescueCreateSchema, AssociationMembershipRescueSettlementSchema,
@@ -38,6 +39,8 @@ export const AssociationCommandSchema = z.union([
   AssociationListPageSchema.extend({ kind: z.literal('list_waitlist'), eventId: Id.optional(), includeClosed: z.boolean().default(false) }).strict(),
   z.object({ kind: z.literal('offer_waitlist_place'), offer: AssociationWaitlistOfferInputSchema }).strict(),
   z.object({ kind: z.literal('create_order'), order: AssociationOrderCreateSchema }).strict(),
+  z.object({ kind: z.literal('reserve_membership_checkout'), checkout: AssociationMembershipCheckoutCreateSchema }).strict(),
+  z.object({ kind: z.literal('bind_membership_checkout_provider'), checkoutId: Id, binding: AssociationMembershipCheckoutProviderBindingSchema }).strict(),
   z.object({ kind: z.literal('get_order'), orderId: Id }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_orders'), eventId: Id.optional(),
     contactId: Id.optional(), status: AssociationOrderStatusSchema.optional() }).strict(),

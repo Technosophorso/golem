@@ -61,7 +61,8 @@ export function createAssociationService(options: {
       if (context.actor.kind === 'integration_key' && integration?.credentialId !== context.actor.credentialId) throw new CrmIntegrationScopeError('association.read')
       const operation: CrmIntegrationOperation = read ? 'association.read'
         : ['save_ticket', 'save_promotion'].includes(command.kind) ? 'crm.catalog.configure'
-        : ['reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider'].includes(command.kind) ? 'association.provider_events.write' : 'association.orders.write'
+        : command.kind === 'reserve_membership_checkout' ? 'crm.entitlements.write'
+        : ['reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'bind_membership_checkout_provider'].includes(command.kind) ? 'association.provider_events.write' : 'association.orders.write'
       if (integration) {
         if (command.kind === 'module_action') throw new CrmOperationsError('not_authorized', 'A member owner or admin is required for module actions.')
         requireCrmIntegrationOperation(integration, operation)
@@ -152,6 +153,7 @@ export function createAssociationService(options: {
           return { ...output, ...(await store.cancelMembershipRescue(workspaceId, command.rescueId, command.cancellation, dbActor)) }
         }
         case 'create_order': return { ...output, ...(await store.createOrder(workspaceId, command.order, dbActor)) }
+        case 'reserve_membership_checkout': return { ...output, ...(await store.reserveMembershipCheckout(workspaceId, command.checkout, dbActor)) }
         case 'get_order': {
           const record = await store.getOrder(workspaceId, command.orderId, dbActor)
           if (!record) throw new AssociationError('not_found', 'order not found')
@@ -172,17 +174,21 @@ export function createAssociationService(options: {
         case 'cancel_order': return { ...output, ...(await store.cancelOrder(workspaceId, command.orderId, dbActor)) }
         case 'confirm_free_order': return { ...output, ...(await store.confirmFreeOrder(workspaceId, command.orderId, dbActor)) }
         case 'bind_order_provider':
+        case 'bind_membership_checkout_provider':
         case 'reconcile_provider_entitlement':
         case 'reconcile_provider_financial_event':
         case 'reconcile_provider_event': {
           if (!authority.canReconcileProvider || !['brain_key', 'oauth_token', 'integration_key', 'provider', 'system_job'].includes(context.actor.kind)) {
             throw new CrmOperationsError('not_authorized', 'Verified backend payment evidence is required; member and assistant commands cannot mark a checkout paid.')
           }
-          if (context.actor.kind === 'provider' && (command.kind === 'bind_order_provider' || context.actor.provider !== command.event.provider || context.actor.eventId !== command.event.eventId)) {
+          if (context.actor.kind === 'provider' && (command.kind === 'bind_order_provider' || command.kind === 'bind_membership_checkout_provider'
+            || context.actor.provider !== command.event.provider || context.actor.eventId !== command.event.eventId)) {
             throw new CrmOperationsError('not_authorized', 'Provider evidence does not match the authenticated provider event.')
           }
           return { ...output, ...(command.kind === 'bind_order_provider'
             ? await store.bindOrderProvider(workspaceId, command.orderId, command.binding, dbActor)
+            : command.kind === 'bind_membership_checkout_provider'
+              ? await store.bindMembershipCheckoutProvider(workspaceId, command.checkoutId, command.binding, dbActor)
             : command.kind === 'reconcile_provider_entitlement' ? await store.reconcileProviderEntitlement(workspaceId, command.event, dbActor)
             : command.kind === 'reconcile_provider_financial_event' ? await store.reconcileProviderFinancialEvent(workspaceId, command.orderId, command.event, dbActor)
             : await store.reconcileProviderEvent(workspaceId, command.orderId, command.event, dbActor)) }

@@ -84,6 +84,11 @@ describe('[COMP:crm/association-domain] bounded domain contracts', () => {
     expect(PromotionInputSchema.safeParse({ ...base, percentageBasisPoints: null }).success).toBe(false)
     expect(PromotionInputSchema.safeParse({ ...base, discountType: 'full', percentageBasisPoints: 1_000 }).success).toBe(false)
     expect(PromotionInputSchema.safeParse({ ...base, discountType: 'buy_x_get_y', percentageBasisPoints: undefined, buyQuantity: 1, getQuantity: 1 }).success).toBe(true)
+    expect(PromotionInputSchema.safeParse({ ...base, discountType: 'fixed_amount', percentageBasisPoints: undefined,
+      amountMinor: 2_500, currency: 'HKD', targetKind: 'plan', recurrenceMode: 'repeating', recurrenceCycles: 3,
+      applyMode: 'once_per_order' }).success).toBe(true)
+    expect(PromotionInputSchema.safeParse({ ...base, targetKind: 'plan', recurrenceMode: 'repeating' }).success).toBe(false)
+    expect(PromotionInputSchema.safeParse({ ...base, targetKind: 'event', recurrenceMode: 'forever' }).success).toBe(false)
     expect(PromotionInputSchema.safeParse({ ...base, codeDigest: 'a'.repeat(64) }).success).toBe(false)
   })
 

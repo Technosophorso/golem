@@ -68,8 +68,9 @@ export function changeAssociationOrder(workspaceId: string, orderId: string, act
 export type AssociationPlan = { id:string;planKey:string;name:string;currency:string;feeMinor:string;billingPeriod:"one_time"|"monthly"|"annual"|"lifetime"|"manual";benefits:string[];eligibilityNote:string|null;published:boolean;activeFrom:string|null;activeTo:string|null;provider:string|null;providerPlanId:string|null };
 export type AssociationEvent = {id:string;slug:string;title:string;description:string;startsAt:string;endsAt:string;timezone:string;mode:"venue"|"online"|"hybrid";venue:string|null;onlineUrl:string|null;registrationOpensAt:string|null;registrationClosesAt:string|null;capacity:number|null;status:"draft"|"published"|"cancelled"|"completed";canonicalUrl:string|null;programmeKey:string|null;metadata:Record<string,unknown>};
 export type AssociationTicket = {id:string;key:string;name:string;currency:string;priceMinor:string;memberPriceMinor:string|null;eligiblePlanKeys:string[];eligibilityRequired:boolean;eligibilityScope:"buyer"|"attendees"|"buyer_and_attendees";capacity:number|null;perOrderLimit:number;saleStartsAt:string|null;saleEndsAt:string|null;status:"draft"|"on_sale"|"sold_out"|"closed";reservedCount:number;available:number|null};
-export type AssociationPromotion = {id:string;key:string;name:string;discountType:"percentage"|"full"|"buy_x_get_y";
-  percentageBasisPoints:number|null;buyQuantity:number|null;getQuantity:number|null;targetKind:"event"|"ticket";targetIds:string[];
+export type AssociationPromotion = {id:string;key:string;name:string;discountType:"percentage"|"fixed_amount"|"full"|"buy_x_get_y";
+  percentageBasisPoints:number|null;amountMinor:string|null;currency:string|null;buyQuantity:number|null;getQuantity:number|null;targetKind:"event"|"ticket"|"plan";targetIds:string[];
+  recurrenceMode:"once"|"forever"|"repeating";recurrenceCycles:number|null;applyMode:"once_per_order"|"each_eligible_item";
   validFrom:string|null;validTo:string|null;maxUses:number|null;maxUsesPerContact:number|null;combinesWithMemberPrice:boolean;
   releaseOnFullRefund:boolean;status:"draft"|"active"|"disabled";hasCode:boolean;reservedUses:number;redeemedUses:number;
   createdAt:string;updatedAt:string};
@@ -125,8 +126,8 @@ export function saveAssociationEvent(workspaceId:string,input:Omit<AssociationEv
 export function saveAssociationTicket(workspaceId:string,eventId:string,input:Omit<AssociationTicket,"id"|"priceMinor"|"memberPriceMinor"|"reservedCount"|"available"> & {priceMinor:number;memberPriceMinor:number|null}) {
   return request<{ticket:AssociationTicket}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/events/${encodeURIComponent(eventId)}/tickets`,input);
 }
-export type AssociationPromotionSave = Omit<AssociationPromotion,"id"|"hasCode"|"reservedUses"|"redeemedUses"|"createdAt"|"updatedAt"|"percentageBasisPoints"|"buyQuantity"|"getQuantity"|"maxUses"|"maxUsesPerContact"> & {
-  code?:string;percentageBasisPoints:number|null;buyQuantity:number|null;getQuantity:number|null;maxUses:number|null;maxUsesPerContact:number|null;
+export type AssociationPromotionSave = Omit<AssociationPromotion,"id"|"hasCode"|"reservedUses"|"redeemedUses"|"createdAt"|"updatedAt"|"percentageBasisPoints"|"amountMinor"|"buyQuantity"|"getQuantity"|"maxUses"|"maxUsesPerContact"> & {
+  code?:string;percentageBasisPoints:number|null;amountMinor:number|null;buyQuantity:number|null;getQuantity:number|null;maxUses:number|null;maxUsesPerContact:number|null;
 };
 export function saveAssociationPromotion(workspaceId:string,input:AssociationPromotionSave) {
   return request<{promotion:AssociationPromotion}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/promotions`,input);

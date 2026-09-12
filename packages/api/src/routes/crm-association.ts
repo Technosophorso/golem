@@ -33,7 +33,7 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
         if (!context) return
         const input = AssociationCommandSchema.parse(command(req))
         const result = await options.service.execute(context, input)
-        const createsResource = ['save_ticket', 'save_promotion', 'create_order', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'offer_waitlist_place', 'create_membership_rescue'].includes(input.kind)
+        const createsResource = ['save_ticket', 'save_promotion', 'create_order', 'reserve_membership_checkout', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'bind_membership_checkout_provider', 'offer_waitlist_place', 'create_membership_rescue'].includes(input.kind)
         res.status(result.created && createsResource ? 201 : 200).json({
           [key]: result.items ?? result.record, ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
           ...(result.created !== undefined ? { created: result.created } : {}),
@@ -59,6 +59,8 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
   route('post', '/waitlist/:id/offer', req => ({ kind: 'offer_waitlist_place', offer: { ...req.body, submissionId: req.params.id } }), 'offer')
   route('get', '/orders', (req) => ({ ...req.query, kind: 'list_orders' }), 'orders')
   route('post', '/orders', (req) => ({ kind: 'create_order', order: req.body }), 'order')
+  route('post', '/membership-checkouts', (req) => ({ kind: 'reserve_membership_checkout', checkout: req.body }), 'checkout')
+  route('post', '/membership-checkouts/:id/provider-binding', (req) => ({ kind: 'bind_membership_checkout_provider', checkoutId: req.params.id, binding: req.body }), 'checkout')
   route('get', '/orders/:id', (req) => ({ kind: 'get_order', orderId: req.params.id }), 'order')
   for (const [path, kind] of [['cancel', 'cancel_order'], ['confirm-free', 'confirm_free_order']] as const) {
     route('post', `/orders/:id/${path}`, (req) => {

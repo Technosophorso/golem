@@ -81,8 +81,9 @@ export function AssociationPromotionForm({workspaceId,promotion,disabled,onSaved
   const [code,setCode]=useState("");
   const [form,setForm]=useState<AssociationPromotionSave>(()=>({
     key:promotion?.key ?? "",name:promotion?.name ?? "",discountType:promotion?.discountType ?? "percentage",
-    percentageBasisPoints:promotion?.percentageBasisPoints ?? 1000,buyQuantity:promotion?.buyQuantity ?? null,
-    getQuantity:promotion?.getQuantity ?? null,targetKind:promotion?.targetKind ?? "event",targetIds:promotion?.targetIds ?? [],
+    percentageBasisPoints:promotion?.percentageBasisPoints ?? 1000,amountMinor:promotion?.amountMinor===null||promotion?.amountMinor===undefined?null:Number(promotion.amountMinor),currency:promotion?.currency ?? null,
+    buyQuantity:promotion?.buyQuantity ?? null,getQuantity:promotion?.getQuantity ?? null,targetKind:promotion?.targetKind ?? "event",targetIds:promotion?.targetIds ?? [],
+    recurrenceMode:promotion?.recurrenceMode ?? "once",recurrenceCycles:promotion?.recurrenceCycles ?? null,applyMode:promotion?.applyMode ?? "each_eligible_item",
     validFrom:associationLocalTime(promotion?.validFrom),validTo:associationLocalTime(promotion?.validTo),
     maxUses:promotion?.maxUses ?? null,maxUsesPerContact:promotion?.maxUsesPerContact ?? null,
     combinesWithMemberPrice:promotion?.combinesWithMemberPrice ?? false,releaseOnFullRefund:promotion?.releaseOnFullRefund ?? false,
@@ -96,18 +97,27 @@ export function AssociationPromotionForm({workspaceId,promotion,disabled,onSaved
       validFrom:associationInstant(form.validFrom ?? ""),validTo:associationInstant(form.validTo ?? ""),
       ...(code.trim()?{code:code.trim()}:{}),
       percentageBasisPoints:form.discountType==="percentage"?form.percentageBasisPoints:null,
+      amountMinor:form.discountType==="fixed_amount"?form.amountMinor:null,
+      currency:form.discountType==="fixed_amount"?form.currency:null,
       buyQuantity:form.discountType==="buy_x_get_y"?form.buyQuantity:null,
       getQuantity:form.discountType==="buy_x_get_y"?form.getQuantity:null,
+      recurrenceMode:form.targetKind==="plan"?form.recurrenceMode:"once",
+      recurrenceCycles:form.targetKind==="plan"&&form.recurrenceMode==="repeating"?form.recurrenceCycles:null,
+      applyMode:form.discountType==="buy_x_get_y"?"each_eligible_item":form.applyMode,
     });setCode("");onSaved();},{description:t.promotionReview});}}>
     <h3 className="font-semibold">{promotion?t.edit:t.newPromotion}</h3><fieldset disabled={disabled||action.pending} className="grid min-w-0 gap-3 md:grid-cols-2">
       <Field label={t.key} value={form.key} onChange={v=>set("key",v)} required disabled={!!promotion} maxLength={63}/>
       <Field label={t.name} value={form.name} onChange={v=>set("name",v)} required maxLength={200}/>
       <Field label={promotion?t.replacementCode:t.promotionCode} value={code} onChange={setCode} required={!promotion} autoComplete="off" minLength={3} maxLength={100}/>
-      <Choice label={t.discountType} value={form.discountType} values={["percentage","full","buy_x_get_y"]} onChange={v=>set("discountType",v as typeof form.discountType)}/>
+      <Choice label={t.discountType} value={form.discountType} values={["percentage","fixed_amount","full","buy_x_get_y"]} onChange={v=>set("discountType",v as typeof form.discountType)}/>
       {form.discountType==="percentage"?<Field label={t.percentageDiscount} type="number" min={0.01} max={100} step={0.01} value={percentage} onChange={v=>set("percentageBasisPoints",v?Math.round(Number(v)*100):null)} required/>:null}
+      {form.discountType==="fixed_amount"?<><Field label={t.fixedAmountMinor} type="number" min={1} step={1} value={form.amountMinor===null?"":String(form.amountMinor)} onChange={v=>set("amountMinor",v?Number(v):null)} required/><Field label={t.currency} value={form.currency ?? ""} onChange={v=>set("currency",v.toUpperCase())} required maxLength={3}/></>:null}
       {form.discountType==="buy_x_get_y"?<><Field label={t.buyQuantity} type="number" min={1} max={1000} value={form.buyQuantity===null?"":String(form.buyQuantity)} onChange={v=>set("buyQuantity",v?Number(v):null)} required/><Field label={t.getQuantity} type="number" min={1} max={1000} value={form.getQuantity===null?"":String(form.getQuantity)} onChange={v=>set("getQuantity",v?Number(v):null)} required/></>:null}
-      <Choice label={t.promotionTarget} value={form.targetKind} values={["event","ticket"]} onChange={v=>set("targetKind",v as typeof form.targetKind)}/>
+      <Choice label={t.promotionTarget} value={form.targetKind} values={["event","ticket","plan"]} onChange={v=>set("targetKind",v as typeof form.targetKind)}/>
       <Field label={t.targetIds} multiline value={form.targetIds.join("\n")} onChange={v=>set("targetIds",v.split(/[\n,]/))} required maxLength={4000}/>
+      {form.targetKind==="plan"?<Choice label={t.recurrenceMode} value={form.recurrenceMode} values={["once","forever","repeating"]} onChange={v=>set("recurrenceMode",v as typeof form.recurrenceMode)}/>:null}
+      {form.targetKind==="plan"&&form.recurrenceMode==="repeating"?<Field label={t.recurrenceCycles} type="number" min={2} max={120} value={form.recurrenceCycles===null?"":String(form.recurrenceCycles)} onChange={v=>set("recurrenceCycles",v?Number(v):null)} required/>:null}
+      {form.discountType!=="buy_x_get_y"?<Choice label={t.applyMode} value={form.applyMode} values={["once_per_order","each_eligible_item"]} onChange={v=>set("applyMode",v as typeof form.applyMode)}/>:null}
       <Field label={t.activeFrom} type="datetime-local" value={form.validFrom ?? ""} onChange={v=>set("validFrom",v)}/>
       <Field label={t.activeTo} type="datetime-local" value={form.validTo ?? ""} onChange={v=>set("validTo",v)}/>
       <Field label={t.maxUses} type="number" min={1} max={1000000} value={form.maxUses===null?"":String(form.maxUses)} onChange={v=>set("maxUses",v?Number(v):null)}/>

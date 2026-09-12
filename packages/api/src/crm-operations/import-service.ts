@@ -65,7 +65,9 @@ const BASE_TARGETS = new Set([
   'sourceOrderMetadataJson',
   'promotionSource', 'promotionSite', 'promotionId', 'promotionKey', 'promotionName',
   'promotionCodeDigest', 'promotionDiscountType', 'promotionPercentageBasisPoints',
-  'promotionBuyQuantity', 'promotionGetQuantity', 'promotionTargetKind', 'promotionTargetIdsJson',
+  'promotionAmountMinor', 'promotionCurrency', 'promotionBuyQuantity', 'promotionGetQuantity',
+  'promotionTargetKind', 'promotionTargetIdsJson', 'promotionRecurrenceMode',
+  'promotionRecurrenceCycles', 'promotionApplyMode',
   'promotionValidFrom', 'promotionValidTo', 'promotionMaxUses', 'promotionMaxUsesPerContact',
   'promotionCombinesWithMemberPrice', 'promotionReleaseOnFullRefund', 'promotionStatus',
   'promotionSourceRedeemedUses', 'promotionSourceContactUsesJson',
@@ -392,10 +394,15 @@ function promotionImportInput(values: Record<string, string>, importJobId: strin
       name: values.promotionName,
       discountType: values.promotionDiscountType,
       percentageBasisPoints: optionalNumber(values.promotionPercentageBasisPoints),
+      amountMinor: optionalNumber(values.promotionAmountMinor),
+      currency: values.promotionCurrency,
       buyQuantity: optionalNumber(values.promotionBuyQuantity),
       getQuantity: optionalNumber(values.promotionGetQuantity),
       targetKind: values.promotionTargetKind,
       targetIds: jsonValue(values.promotionTargetIdsJson, 'Promotion target IDs'),
+      recurrenceMode: values.promotionRecurrenceMode,
+      recurrenceCycles: optionalNumber(values.promotionRecurrenceCycles),
+      applyMode: values.promotionApplyMode,
       validFrom: values.promotionValidFrom,
       validTo: values.promotionValidTo,
       maxUses: optionalNumber(values.promotionMaxUses),
@@ -556,8 +563,10 @@ function validateMappedRow(
   const promotionFields = [
     values.promotionSource, values.promotionSite, values.promotionId, values.promotionKey,
     values.promotionName, values.promotionCodeDigest, values.promotionDiscountType,
-    values.promotionPercentageBasisPoints, values.promotionBuyQuantity, values.promotionGetQuantity,
-    values.promotionTargetKind, values.promotionTargetIdsJson, values.promotionValidFrom,
+    values.promotionPercentageBasisPoints, values.promotionAmountMinor, values.promotionCurrency,
+    values.promotionBuyQuantity, values.promotionGetQuantity, values.promotionTargetKind,
+    values.promotionTargetIdsJson, values.promotionRecurrenceMode, values.promotionRecurrenceCycles,
+    values.promotionApplyMode, values.promotionValidFrom,
     values.promotionValidTo, values.promotionMaxUses, values.promotionMaxUsesPerContact,
     values.promotionCombinesWithMemberPrice, values.promotionReleaseOnFullRefund,
     values.promotionStatus, values.promotionSourceRedeemedUses, values.promotionSourceContactUsesJson,
@@ -567,6 +576,7 @@ function validateMappedRow(
     values.promotionSource && values.promotionSite && values.promotionId
     && values.promotionKey && values.promotionName && values.promotionCodeDigest
     && values.promotionDiscountType && values.promotionTargetKind && values.promotionTargetIdsJson
+    && values.promotionRecurrenceMode && values.promotionApplyMode
     && values.promotionCombinesWithMemberPrice && values.promotionReleaseOnFullRefund
     && values.promotionStatus && values.promotionSourceRedeemedUses !== undefined
   )) add('incomplete_promotion', 'Source, site, promotion ID, key, name, digest, rule, targets, policies, status, and redeemed usage are required together.', 'promotionSource')

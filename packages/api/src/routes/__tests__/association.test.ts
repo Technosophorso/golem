@@ -55,6 +55,8 @@ function fakeStore(): AssociationStore {
     upsertPromotion: vi.fn(),
     importPromotion: vi.fn(),
     listPromotions: vi.fn(),
+    reserveMembershipCheckout: vi.fn(),
+    bindMembershipCheckoutProvider: vi.fn(),
     listWaitlist: vi.fn(),
     offerWaitlistPlace: vi.fn(),
     createOrder: vi.fn(),

@@ -147,13 +147,16 @@ describe('[COMP:crm/production-import] production CRM import', () => {
     const columns = [
       'promotionSource', 'promotionSite', 'promotionId', 'promotionKey', 'promotionName',
       'promotionCodeDigest', 'promotionDiscountType', 'promotionPercentageBasisPoints',
-      'promotionTargetKind', 'promotionTargetIdsJson', 'promotionMaxUses', 'promotionMaxUsesPerContact',
+      'promotionAmountMinor', 'promotionCurrency', 'promotionBuyQuantity', 'promotionGetQuantity',
+      'promotionTargetKind', 'promotionTargetIdsJson',
+      'promotionRecurrenceMode', 'promotionRecurrenceCycles', 'promotionApplyMode',
+      'promotionMaxUses', 'promotionMaxUsesPerContact',
       'promotionCombinesWithMemberPrice', 'promotionReleaseOnFullRefund', 'promotionStatus',
       'promotionSourceRedeemedUses', 'promotionSourceContactUsesJson',
     ]
     const row = [
       'wix', 'oasahk.org', 'coupon-1', 'member-ten', 'Member 10%', 'a'.repeat(64),
-      'percentage', '1000', 'event', JSON.stringify([fileId]), '20', '2', 'false', 'false',
+      'percentage', '1000', '', '', '', '', 'event', JSON.stringify([fileId]), 'once', '', 'each_eligible_item', '20', '2', 'false', 'false',
       'active', '2', JSON.stringify([{ contactId: entityId, uses: 2 }]),
     ]
     const cell = (value: string) => /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value
@@ -165,11 +168,11 @@ describe('[COMP:crm/production-import] production CRM import', () => {
     await expect(service.dryRun(context, input)).resolves.toMatchObject({ totalRows: 1, validRows: 1, failedRows: 0 })
     await expect(service.dryRun(context, {
       ...input,
-      mapping: { columns: { ...input.mapping.columns, 17: 'promotionCode' } },
+      mapping: { columns: { ...input.mapping.columns, [columns.length]: 'promotionCode' } },
     })).rejects.toThrow('unknown import target')
 
     const incomplete = [...row]
-    incomplete[16] = '[]'
+    incomplete[columns.indexOf('promotionSourceContactUsesJson')] = '[]'
     readBytes.mockResolvedValueOnce({ ok: true, value: { file: { id: fileId }, bytes: Buffer.from(
       `${columns.join(',')}\n${incomplete.map(cell).join(',')}\n`,
     ) } })

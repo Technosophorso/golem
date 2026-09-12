@@ -255,12 +255,17 @@ export const AssociationPromotionInputSchema = z.object({
   // Omit code on an update to preserve the existing secret. A new promotion
   // must supply one; the store persists only its keyed digest.
   code: PromotionCode.optional(),
-  discountType: z.enum(['percentage', 'full', 'buy_x_get_y']),
+  discountType: z.enum(['percentage', 'fixed_amount', 'full', 'buy_x_get_y']),
   percentageBasisPoints: z.number().int().min(1).max(10_000).nullable().optional(),
+  amountMinor: NonNegativeMinor.nullable().optional(),
+  currency: Currency.nullable().optional(),
   buyQuantity: z.number().int().min(1).max(1_000).nullable().optional(),
   getQuantity: z.number().int().min(1).max(1_000).nullable().optional(),
-  targetKind: z.enum(['event', 'ticket']),
+  targetKind: z.enum(['event', 'ticket', 'plan']),
   targetIds: z.array(UUID).min(1).max(100),
+  recurrenceMode: z.enum(['once', 'forever', 'repeating']).default('once'),
+  recurrenceCycles: z.number().int().min(2).max(120).nullable().optional(),
+  applyMode: z.enum(['once_per_order', 'each_eligible_item']).default('each_eligible_item'),
   validFrom: Instant.nullable().optional(),
   validTo: Instant.nullable().optional(),
   maxUses: z.number().int().positive().max(1_000_000).nullable().optional(),
@@ -276,8 +281,15 @@ export const AssociationPromotionInputSchema = z.object({
     if (value.percentageBasisPoints == null) {
       ctx.addIssue({ code: 'custom', path: ['percentageBasisPoints'], message: 'percentage discount needs basis points' })
     }
-    if (value.buyQuantity != null || value.getQuantity != null) {
+    if (value.amountMinor != null || value.currency != null || value.buyQuantity != null || value.getQuantity != null) {
       ctx.addIssue({ code: 'custom', path: ['buyQuantity'], message: 'percentage discount cannot define quantity terms' })
+    }
+  } else if (value.discountType === 'fixed_amount') {
+    if (value.amountMinor == null || value.amountMinor <= 0 || value.currency == null) {
+      ctx.addIssue({ code: 'custom', path: ['amountMinor'], message: 'fixed discount needs a positive amount and currency' })
+    }
+    if (value.percentageBasisPoints != null || value.buyQuantity != null || value.getQuantity != null) {
+      ctx.addIssue({ code: 'custom', path: ['discountType'], message: 'fixed discount cannot define percentage or quantity terms' })
     }
   } else if (value.discountType === 'buy_x_get_y') {
     if (value.buyQuantity == null || value.getQuantity == null) {
@@ -286,8 +298,23 @@ export const AssociationPromotionInputSchema = z.object({
     if (value.percentageBasisPoints != null) {
       ctx.addIssue({ code: 'custom', path: ['percentageBasisPoints'], message: 'quantity discount cannot define a percentage' })
     }
-  } else if (value.percentageBasisPoints != null || value.buyQuantity != null || value.getQuantity != null) {
+    if (value.amountMinor != null || value.currency != null) {
+      ctx.addIssue({ code: 'custom', path: ['amountMinor'], message: 'quantity discount cannot define a fixed amount' })
+    }
+  } else if (value.percentageBasisPoints != null || value.amountMinor != null || value.currency != null || value.buyQuantity != null || value.getQuantity != null) {
     ctx.addIssue({ code: 'custom', path: ['discountType'], message: 'full discount cannot define percentage or quantity terms' })
+  }
+  if (value.targetKind !== 'plan' && (value.recurrenceMode !== 'once' || value.recurrenceCycles != null)) {
+    ctx.addIssue({ code: 'custom', path: ['recurrenceMode'], message: 'event and ticket promotions are one-time purchases' })
+  }
+  if ((value.recurrenceMode === 'repeating') !== (value.recurrenceCycles != null)) {
+    ctx.addIssue({ code: 'custom', path: ['recurrenceCycles'], message: 'repeating promotions need an exact cycle count' })
+  }
+  if (value.targetKind === 'plan' && value.discountType === 'buy_x_get_y') {
+    ctx.addIssue({ code: 'custom', path: ['discountType'], message: 'plan promotions cannot use quantity discounts' })
+  }
+  if (value.discountType === 'buy_x_get_y' && value.applyMode !== 'each_eligible_item') {
+    ctx.addIssue({ code: 'custom', path: ['applyMode'], message: 'quantity discounts apply to each eligible item group' })
   }
 })
 export type AssociationPromotionInput = z.infer<typeof AssociationPromotionInputSchema>
@@ -336,6 +363,24 @@ export const AssociationPromotionImportSchema = z.object({
   }
 })
 export type AssociationPromotionImportInput = z.infer<typeof AssociationPromotionImportSchema>
+
+export const AssociationMembershipCheckoutCreateSchema = z.object({
+  contactId: UUID,
+  planId: UUID,
+  idempotencyKey: z.string().trim().min(1).max(200),
+  reservationMinutes: z.number().int().min(1).max(120).default(30),
+  promotionCode: PromotionCode,
+}).strict()
+export type AssociationMembershipCheckoutCreateInput = z.infer<typeof AssociationMembershipCheckoutCreateSchema>
+
+export const AssociationMembershipCheckoutProviderBindingSchema = z.object({
+  provider: ProviderKey,
+  providerReference: z.string().trim().min(1).max(500),
+  providerCouponReference: z.string().trim().min(1).max(500),
+  amountMinor: NonNegativeMinor,
+  currency: Currency,
+}).strict()
+export type AssociationMembershipCheckoutProviderBindingInput = z.infer<typeof AssociationMembershipCheckoutProviderBindingSchema>
 
 export const AssociationOrderAttendeeSchema = z.object({
   contactId: UUID.optional(),
