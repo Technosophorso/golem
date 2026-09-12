@@ -1700,9 +1700,8 @@ export function mayResolveRoomConfirmation(params: {
  * per-session bus. Extracted to `../session-live-publisher.ts` (Live §5.2)
  * so the background lanes share the exact mirror gate + NOTIFY-size cap;
  * re-exported here because this route is its original home and the room
- * suites import it from here. `mirror` at the chat call site is
- * `isRoomSession || clientGone` (rooms mirror throughout; a personal turn
- * mirrors only once its direct stream is dead, 2026-08-24).
+ * suites import it from here. Chat mirrors throughout every turn: proxy cuts
+ * can leave the upstream POST open, so disconnect detection cannot gate it.
  */
 export { publishRoomTurnActivity }
 
@@ -2339,7 +2338,7 @@ export function chatRoutes(options: WebChatOptions): Router {
     res.setHeader('X-Accel-Buffering', 'no') // Disable nginx buffering
     res.flushHeaders()
 
-    // Set true by `req.on('close')` when the client disconnects (a page
+    // Set true by `res.on('close')` when the client disconnects (a page
     // refresh, a proxy cutting the response). Every turn keeps running after
     // this (2026-08-24: a disconnect is not a stop), so every later SSE write
     // must no-op — writing to the dead socket would otherwise throw and tear
@@ -3019,17 +3018,14 @@ export function chatRoutes(options: WebChatOptions): Router {
       sessionIdForError = session.id
 
       const isRoomSession = isSharedChatSession(session)
-      // Activity mirror gate, evaluated PER CALL: rooms mirror throughout;
-      // every other session mirrors only once its direct stream is dead, so a
-      // reconnected client (GET /api/sessions/:id/stream) sees the same tool
-      // steps and confirmation card the direct stream carried (2026-08-24).
-      // `clientGone` flips thousands of lines below this closure's creation,
-      // so it must be read inside the arrow body, never captured here.
+      // A proxy can sever the browser stream while its upstream POST stays open.
+      // Publish every turn's capped activity so an authenticated reconnect sees
+      // ongoing tools even when this server never observed a disconnect.
       const publishRoomActivity = (
         event: string,
         data: Record<string, unknown>,
       ) => publishRoomTurnActivity({
-        mirror: isRoomSession || clientGone,
+        mirror: true,
         sessionId: session.id,
         senderUserId: user.id,
         event,
@@ -3047,8 +3043,8 @@ export function chatRoutes(options: WebChatOptions): Router {
       // Human control events are rare and may originate from a second client
       // (the focused Live view) while the original chat POST is still open.
       // Mirror these unconditionally so every authority-checked control
-      // surface observes the decision/acknowledgement. High-volume status,
-      // tool, and token activity keeps the room-or-disconnected gate above.
+      // surface observes the decision/acknowledgement. Token snapshots are
+      // throttled separately by the shared publisher.
       const sendControlActivityEvent = (
         event: string,
         data: Record<string, unknown>,
@@ -6614,7 +6610,7 @@ export function chatRoutes(options: WebChatOptions): Router {
       // See docs/architecture/features/doc-comments.md → "Live turn reconnect".
       const isBackgroundTurn = true
       const turnStartedAt = Date.now()
-      req.on('close', () => {
+      res.on('close', () => {
         clientGone = true
         // Node also fires `close` after a normal completion; only a body that
         // closed while the response was still open is a mid-turn disconnect.
@@ -6627,32 +6623,15 @@ export function chatRoutes(options: WebChatOptions): Router {
         })
       })
 
-      // Live snapshot publishing for the reconnect stream and for room
-      // viewers. Non-room turns (personal web, doc_thread, notification)
-      // publish only after the original client disconnected (while the SSE is
-      // alive the bus is pure overhead — one watcher, one stream); since
-      // 2026-08-24 that is every non-room turn, not just `doc_thread`, because
-      // every turn now outlives its stream. Room turns publish THROUGHOUT
-      // (multiplayer chat T13): the non-senders are watching live from the
-      // start, over the per-session bus, while the sender streams over their
-      // own POST. The snapshot carries the full reply-so-far (capped to the
-      // NOTIFY budget) so a subscriber joining mid-turn has no missed-prefix
-      // gap; published throttled so a streamed reply can't NOTIFY-storm the
-      // bus. Rooms also carry the live reasoning tail — viewers fold it
-      // through the same reducer the sender's client uses.
-      // The throttle/cap/snapshot machinery lives in the shared publisher
-      // (../session-live-publisher.ts, Live §5.2) — the background lanes
-      // publish through the same discipline. The gates stay HERE and are
-      // evaluated per call (`clientGone` flips long after this line):
-      // rooms publish throughout; everything else only once the direct
-      // stream is dead. Rooms also attribute (reasoning tail + sender +
-      // assistant, T13); personal snapshots stay bare `{text, activity}`.
+      // Every turn publishes bounded snapshots, including while the direct
+      // stream is connected. Proxy disconnects need not reach this process;
+      // clientGone therefore cannot be the gate for reconnect publication.
+      // The shared publisher throttles at 150ms and caps text/reasoning tails.
       const turnStream = createTurnStreamPublisher({
         sessionId: session.id,
         publishSessionEvent,
-        shouldPublish: () => isRoomSession || (isBackgroundTurn && clientGone),
         attribution: () =>
-          isRoomSession ? { senderUserId: user.id, assistantId: assistant.id } : null,
+          ({ senderUserId: user.id, assistantId: assistant.id }),
       })
 
       // ── Persistence buffer ────────────────────────────────────
@@ -7239,8 +7218,7 @@ export function chatRoutes(options: WebChatOptions): Router {
           if (event.type === 'text_delta') {
             sendEvent('text_delta', { text: event.text })
             // Mirror onto the session bus (throttled) so a reconnected client
-            // sees the reply stream after a dropped connection. Off rooms it
-            // is a no-op until the direct stream is dead (2026-08-24).
+            // sees the reply stream even when a proxy hides the disconnect.
             turnStream.onTextDelta(event.text)
           }
           // Verbatim model reasoning streamed live (the model's own words
@@ -7249,11 +7227,8 @@ export function chatRoutes(options: WebChatOptions): Router {
           // docs/architecture/engine/live-streaming.md.
           if (event.type === 'thinking_delta') {
             sendEvent('reasoning', { text: event.text })
-            // Room viewers get the reasoning tail via the throttled snapshot
-            // (T13) — same reducer, snapshot semantics instead of deltas.
-            if (isRoomSession) {
-              turnStream.onReasoningDelta(event.text)
-            }
+            // Every authenticated reconnect receives the live reasoning tail.
+            turnStream.onReasoningDelta(event.text)
           }
           if (event.type === 'tool_start') {
             sendActivityEvent('tool_start', { id: event.id, name: event.name })
@@ -7549,6 +7524,7 @@ export function chatRoutes(options: WebChatOptions): Router {
                   mode: event.mode,
                   messageId: storedQueued.id,
                 })
+                turnStream.resetAnswer()
                 if (session.mode === 'draft' || isSharedChatSession(session)) {
                   publishSessionEvent({
                     kind: 'user_message_saved',
