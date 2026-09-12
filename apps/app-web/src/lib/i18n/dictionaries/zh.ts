@@ -54,6 +54,12 @@ export const zh: Dictionary = {
     "revoke": "撤銷確認"
 },
   feedGeneration: {
+    briefHint: "描述這裡要放的內容…",
+    openDetails: "編輯或生成",
+    closeDetails: "返回草稿",
+    draftFirst: "繼續撰寫這個佔位區塊前後的內容，準備好時再生成。",
+    reviewReady: "可供審閱",
+    draftSlots: "留待稍後",
     unfinished: "確認前請填寫或移除未完成的區塊。",
     openSlot: "開啟區塊",
 

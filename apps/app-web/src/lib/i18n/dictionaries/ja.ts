@@ -54,6 +54,12 @@ export const ja: Dictionary = {
     "revoke": "確定を取り消す"
 },
   feedGeneration: {
+    briefHint: "ここに入れる内容をメモ…",
+    openDetails: "編集または生成",
+    closeDetails: "下書きに戻る",
+    draftFirst: "このプレースホルダーの前後で執筆を続けられます。準備ができたら生成してください。",
+    reviewReady: "確認できます",
+    draftSlots: "後で作成",
     unfinished: "確定前に未完成の枠を埋めるか削除してください。",
     openSlot: "枠を開く",
 

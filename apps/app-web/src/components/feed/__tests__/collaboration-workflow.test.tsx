@@ -60,7 +60,7 @@ describe('[COMP:app-web/feed-review] five-check controls', () => {
     expect(actions.start).not.toHaveBeenCalled(); expect(actions.action).not.toHaveBeenCalled();
   });
 });
-function button(label: string) { const found = [...host.querySelectorAll('button')].find(node => (node.getAttribute('aria-label') ?? node.textContent) === label); expect(found, label).toBeDefined(); return found!; }
+function button(label: string) { const found = [...document.querySelectorAll('button')].find(node => (node.getAttribute('aria-label') ?? node.textContent) === label); expect(found, label).toBeDefined(); return found!; }
 async function click(label: string) { await act(async () => button(label).click()); }
 function panel(overrides: Partial<FeedCommentPanelProps> = {}) {
   return { workspaceId: crypto.randomUUID(), assistantId: crypto.randomUUID(), assistantName: 'Fixture Brian', sessionId: crypto.randomUUID(), composition: composition(), revision: 2, snapshot: { copy: null, threads: [], suggestions: [] }, pending: false, offline: false, readOnly: false, composer: null, onComposer: vi.fn(), selectedThread: null, onThread: vi.fn(), onAskBrian: vi.fn(), onCommand: vi.fn(async () => true), onRefresh: vi.fn(), ...overrides } satisfies FeedCommentPanelProps;
@@ -96,7 +96,10 @@ describe('[COMP:app-web/feed-editor-toolbar] selected-passage controls', () => {
     expect(onEdit).not.toHaveBeenCalled();
     await menuItem(en.feedGeneration.convertText);
     expect(onEdit).toHaveBeenCalledOnce();
-    expect(onEdit.mock.calls[0]![0]).toEqual(expect.arrayContaining([expect.objectContaining({ blockId: doc.segments[0]!.content[2]!.attrs.id })]));
+    const converted = applyFeedEdits(doc, onEdit.mock.calls[0]![0]).composition;
+    expect(converted.segments[0]!.content[1]).toEqual(doc.segments[0]!.content[1]);
+    expect(converted.segments[0]!.content.find(node => node.type === 'generationPlaceholder')).toMatchObject({ attrs: { brief: 'same phrase' } });
+    expect(converted.segments[0]!.content.some(node => node.attrs.id === doc.segments[0]!.content[2]!.attrs.id)).toBe(true);
     await vi.waitFor(() => expect(document.activeElement).toBe(view.dom));
   });
   it('the block menu duplicates the selected paragraph rather than the first matching text', async () => {
@@ -320,11 +323,65 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
 function generationControls(): FeedGenerationControls { return { workspaceId: crypto.randomUUID(), assistantId: crypto.randomUUID(), sessionId: crypto.randomUUID(), revision: 2, offline: false, pending: false, readOnly: false, article: false, snapshot: { copy: null, threads: [], suggestions: [] }, onCommand: vi.fn(async () => true), onRefresh: vi.fn() }; }
 const generationSlot = (): FeedPlaceholderAttrs => ({ id: crypto.randomUUID(), kind: 'text', brief: 'Explain irrigation.', briefRevision: 0, references: [] });
 describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
+  it('keeps a saved marker compact while drafting; opening and closing its options never starts generation', async () => {
+    const slot = generationSlot(); const onEdit = vi.fn(); const onContinue = vi.fn();
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={generationControls()} onEdit={onEdit} onSelect={vi.fn()} onContinue={onContinue} onAction={vi.fn()} />));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(host.textContent).not.toContain(en.feedGeneration.generate);
+    const field = host.querySelector<HTMLInputElement>('input')!;
+    expect(field.value).toBe(slot.brief);
+    act(() => { field.focus(); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(field, 'A diagram for later.'); field.dispatchEvent(new Event('input', { bubbles: true })); });
+    expect(onEdit).toHaveBeenCalledWith([expect.objectContaining({ replacement: [expect.objectContaining({ attrs: expect.objectContaining({ brief: 'A diagram for later.', briefRevision: 1 }) })] })]);
+    act(() => field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
+    expect(onContinue).toHaveBeenCalledOnce();
+    await click(en.feedGeneration.openDetails);
+    expect(document.querySelector('[role="dialog"]')).toBeTruthy();
+    expect(button(en.feedGeneration.generate).disabled).toBe(false);
+    await click(en.feedGeneration.closeDetails);
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
+    expect(host.querySelector('[data-feed-slot]')).toBeTruthy();
+    expect(state.http).not.toHaveBeenCalled();
+  });
+  it.each(['text', 'image'] as const)('lets /%s plus a brief mark a gap and continue typing after it without any generation request', kind => {
+    const doc = importLegacyFeed({ text: `Opening paragraph.\n\n/${kind} Explain the framework`, postFormat: 'post', threadSegments: [], media: [] });
+    const onEdit = vi.fn(); const props = { generation: generationControls(), threads: [], onEdit, onSelection: vi.fn(), onAction: vi.fn(), onOpenThread: vi.fn() };
+    act(() => root.render(<CompositionEditor {...props} composition={doc} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    act(() => { view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc))); view.someProp('handleKeyDown', handler => handler(view, new KeyboardEvent('keydown', { key: 'Enter' }))); });
+    const inserted = applyFeedEdits(doc, onEdit.mock.calls[0]![0]).composition;
+    expect(inserted.segments[0]!.content).toHaveLength(3);
+    expect(inserted.segments[0]!.content[0]).toEqual(doc.segments[0]!.content[0]);
+    expect(inserted.segments[0]!.content[1]).toMatchObject({ type: 'generationPlaceholder', attrs: { kind, brief: 'Explain the framework' } });
+    expect(view.state.selection.$from.parent.type.name).toBe('paragraph');
+    act(() => view.dispatch(view.state.tr.insertText('Continue the draft.')));
+    const continued = applyFeedEdits(inserted, onEdit.mock.calls[1]![0]).composition;
+    expect(continued.segments[0]!.content[1]).toEqual(inserted.segments[0]!.content[1]);
+    expect(projectFeed(continued).text).toContain('Continue the draft.');
+    act(() => root.render(<CompositionEditor {...props} composition={continued} />));
+    expect(host.querySelector('input')?.value).toBe('Explain the framework');
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(state.http).not.toHaveBeenCalled();
+  });
+  it('Enter in a saved end-of-document brief creates a following paragraph and leaves the marker intact', () => {
+    const doc = composition(); const slot = generationSlot(); doc.segments[0]!.content = [{ type: 'generationPlaceholder', attrs: slot }];
+    const onEdit = vi.fn();
+    act(() => root.render(<CompositionEditor composition={doc} generation={generationControls()} threads={[]} onEdit={onEdit} onSelection={vi.fn()} onAction={vi.fn()} onOpenThread={vi.fn()} />));
+    const field = host.querySelector<HTMLInputElement>('input')!;
+    act(() => { field.focus(); field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    expect(document.activeElement).toBe(view.dom);
+    expect(view.state.selection.$from.parent.type.name).toBe('paragraph');
+    const changed = applyFeedEdits(doc, onEdit.mock.calls[0]![0]).composition;
+    expect(changed.segments[0]!.content[0]).toEqual(doc.segments[0]!.content[0]);
+    expect(changed.segments[0]!.content[1]).toMatchObject({ type: 'paragraph', content: [] });
+    expect(state.http).not.toHaveBeenCalled();
+  });
   it('scenarios 4 and 10: manual fill works offline, advances typed history, and never calls a model', async () => {
     const slot = generationSlot(); const onEdit = vi.fn(); const controls = { ...generationControls(), offline: true };
     act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={controls} onEdit={onEdit} onSelect={vi.fn()} onAction={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
     expect(button(en.feedGeneration.generate).disabled).toBe(true);
-    const field = host.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${en.feedGeneration.manualText}"]`)!;
+    const field = document.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${en.feedGeneration.manualText}"]`)!;
     act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(field, 'A hand-written explanation.'); field.dispatchEvent(new Event('input', { bubbles: true })); });
     await click(en.feedGeneration.fillText);
     expect(onEdit).toHaveBeenCalledWith([expect.objectContaining({ kind: 'replaceBlock', blockId: slot.id, replacement: [expect.objectContaining({ type: 'paragraph', attrs: { id: slot.id } })] })]);
@@ -335,9 +392,11 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     const estimate: FeedGenerationEstimate = { id: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), revision: 2, segmentId, slot, count: 1, model: 'fixture-model', tier: 'standard', price: { currency: 'USD', maximumUsd: 0.012, rateVersion: 'fixture', billing: 'included' }, inputCharacters: 500, maxTokens: 1000, sources: [], omissions: ['source_unavailable'], confirmationRequired: true };
     state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ estimate }) });
     act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} onAction={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
+    expect(state.http).not.toHaveBeenCalled();
     await click(en.feedGeneration.generate);
     expect(state.http).toHaveBeenCalledTimes(1); expect(state.http.mock.calls[0]![0]).toContain('/generations/estimate');
-    expect(host.textContent).toContain('$0.012'); expect(host.textContent).toContain(en.feedGeneration.referenceOmissions); expect(host.textContent).toContain(slot.brief);
+    expect(document.body.textContent).toContain('$0.012'); expect(document.body.textContent).toContain(en.feedGeneration.referenceOmissions); expect(document.body.textContent).toContain(slot.brief);
     state.http.mockRejectedValueOnce(new Error('Lost response'));
     await click(en.feedGeneration.confirm);
     const first = JSON.parse(state.http.mock.calls[1]![1].body);
@@ -359,10 +418,10 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     const doc = importLegacyFeed({ text: '/text', postFormat: 'post', threadSegments: [], media: [] }); const onEdit = vi.fn(); const onSelection = vi.fn(); const controls = generationControls();
     act(() => root.render(<CompositionEditor composition={doc} threads={[]} generation={controls} onEdit={onEdit} onSelection={onSelection} onAction={vi.fn()} onOpenThread={vi.fn()} />));
     const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
-    act(() => { view.someProp('handleKeyDown', handler => handler(view, new KeyboardEvent('keydown', { key: 'Enter' }))); });
+    act(() => { view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc))); view.someProp('handleKeyDown', handler => handler(view, new KeyboardEvent('keydown', { key: 'Enter' }))); });
     expect(onEdit).toHaveBeenCalledOnce(); const changed = applyFeedEdits(doc, onEdit.mock.calls[0]![0]).composition;
     act(() => root.render(<CompositionEditor composition={changed} threads={[]} generation={controls} onEdit={onEdit} onSelection={onSelection} onAction={vi.fn()} onOpenThread={vi.fn()} />));
-    const field = host.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${en.feedGeneration.brief}"]`)!; expect(field).toBeTruthy();
+    const field = host.querySelector<HTMLInputElement>(`input[aria-label="${en.feedGeneration.brief}"]`)!; expect(field).toBeTruthy();
     act(() => field.focus());
     expect(onSelection).toHaveBeenLastCalledWith(expect.objectContaining({ target: { kind: 'block', segmentId: changed.segments[0]!.id, blockId: changed.segments[0]!.content[0]!.attrs.id } }));
     expect(state.http).not.toHaveBeenCalled();

@@ -67,6 +67,12 @@ export const en = {
     "revoke": "Revoke confirmation"
 },
   feedGeneration: {
+    briefHint: "Describe what belongs here…",
+    openDetails: "Edit or generate",
+    closeDetails: "Back to draft",
+    draftFirst: "Keep drafting around this placeholder. Generate only when you are ready.",
+    reviewReady: "Ready to review",
+    draftSlots: "Saved for later",
     unfinished: "Fill or remove unfinished slots before confirmation.",
     openSlot: "Open slot",
 

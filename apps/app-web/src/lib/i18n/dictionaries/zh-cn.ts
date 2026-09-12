@@ -65,6 +65,12 @@ export const zhCN: Dictionary = {
     "revoke": "撤销确认"
 },
   feedGeneration: {
+    briefHint: "描述这里要放的内容…",
+    openDetails: "编辑或生成",
+    closeDetails: "返回草稿",
+    draftFirst: "继续撰写这个占位块前后的内容，准备好时再生成。",
+    reviewReady: "可供审阅",
+    draftSlots: "留待稍后",
     unfinished: "确认前请填写或移除未完成的区块。",
     openSlot: "打开区块",
 

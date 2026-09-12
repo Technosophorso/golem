@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { FeedEditorToolbar, FeedSelectionActions, type FeedFormatAction, type FeedPlaceholderAction, type FeedBlockAction } from './editor-toolbar';
 import { createPortal } from 'react-dom';
 import { GenerationPlaceholder, FeedGenerationImage, type FeedGenerationControls } from './generation-placeholder';
-import { EditorState, NodeSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
+import { EditorState, NodeSelection, TextSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
 import { EditorView, Decoration, DecorationSet } from '@tiptap/pm/view';
 import { baseKeymap, toggleMark, setBlockType, wrapIn } from '@tiptap/pm/commands';
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
@@ -14,7 +14,7 @@ import { history, undo, redo } from '@tiptap/pm/history';
 import { undoInputRule } from '@tiptap/pm/inputrules';
 import { feedMarkdownInputRules, feedMarkdownPaste } from './editor-markdown';
 import type { Node as PMNode } from '@tiptap/pm/model';
-import { feedSchema, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, diffFeedComposition, validateFeedComposition, feedTargetQuote } from '@use-brian/doc-model';
+import { feedSchema, feedParagraph, applyFeedEdits, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, diffFeedComposition, validateFeedComposition, feedTargetQuote } from '@use-brian/doc-model';
 import type { FeedComposition, FeedTarget, FeedEdit, FeedNode, FeedAnchor } from '@use-brian/shared';
 import { useT } from '@/lib/i18n/client';
 import type { FeedCommentThread } from '@/lib/feed-collaboration';
@@ -83,10 +83,10 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     local.current = latest.current.composition;
     const view = new EditorView(host.current, {
       state: EditorState.create({ schema: feedSchema, doc: feedSchema.nodeFromJSON({ type: 'doc', content: segment.content }), plugins: [history(), feedMarkdownInputRules(), feedMarkdownPaste(), keymap({ 'Mod-b': toggleMark(feedSchema.marks.bold!), 'Mod-i': toggleMark(feedSchema.marks.italic!), 'Mod-z': undo, 'Mod-Shift-z': redo, ...baseKeymap, Backspace: (state, dispatch, view) => undoInputRule(state, dispatch) || baseKeymap.Backspace!(state, dispatch, view), 'Shift-Enter': (state, dispatch) => { dispatch?.(state.tr.replaceSelectionWith(feedSchema.nodes.hardBreak!.create()).scrollIntoView()); return true; }, Enter: (state, dispatch, view) => {
-          const block = state.selection.$from.parent; const shortcut = /^\/(text|image)$/.exec(block.textContent);
-          if (shortcut && state.selection.empty && block.type.name === 'paragraph' && !latest.current.readOnly) {
-            const node: FeedNode = { type: 'generationPlaceholder', attrs: { id: block.attrs.id, kind: shortcut[1] as 'text' | 'image', brief: '', briefRevision: 0, references: [] } };
-            latest.current.onEdit([{ kind: 'replaceBlock', segmentId: props.segmentId, blockId: block.attrs.id, preimage: cleanNode(block), replacement: [node] }]); return true;
+          const block = state.selection.$from.parent; const shortcut = /^\/(text|image)(?:[ \t]+(.*))?$/.exec(block.textContent);
+          if (shortcut && state.selection.empty && state.selection.$from.parentOffset === block.content.size && block.type.name === 'paragraph' && !latest.current.readOnly) {
+            const node: FeedNode = { type: 'generationPlaceholder', attrs: { id: block.attrs.id, kind: shortcut[1] as 'text' | 'image', brief: shortcut[2]?.trim() ?? '', briefRevision: 0, references: [] } };
+            insertSlot([{ kind: 'replaceBlock', segmentId: props.segmentId, blockId: block.attrs.id, preimage: cleanNode(block), replacement: [node] }], node.attrs.id); return true;
           }
           return splitListItem(feedSchema.nodes.listItem!)(state, dispatch) || baseKeymap.Enter!(state, dispatch, view);
         }, Tab: sinkListItem(feedSchema.nodes.listItem!), 'Shift-Tab': liftListItem(feedSchema.nodes.listItem!) }), new Plugin({ key: decorationKey, props: { decorations: state => decorations(state.doc) } })] }),
@@ -169,7 +169,37 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   function placeholder(action: FeedPlaceholderAction) {
     const view = viewRef.current; if (!view) return;
     const selected = feedSelectionFromEditor(view.state, props.segmentId, local.current); const convert = action.startsWith('convert'); if (convert && selected.target.kind === 'post') return;
-    try { latest.current.onEdit(insertFeedPlaceholder(local.current, selected, action.endsWith('Image') ? 'image' : 'text', convert)); } catch { /* Non-text atoms cannot be converted to notes. */ }
+    try {
+      const edits = insertFeedPlaceholder(local.current, selected, action.endsWith('Image') ? 'image' : 'text', convert);
+      const slot = edits.flatMap(edit => edit.kind === 'insertBlock' ? [edit.node] : edit.kind === 'replaceBlock' ? edit.replacement : []).find(node => node.type === 'generationPlaceholder');
+      if (slot) insertSlot(edits, slot.attrs.id);
+    } catch { /* Non-text atoms cannot be converted to notes. */ }
+  }
+  // Insert and continue in one editor transaction, including when there is no
+  // trailing paragraph. The ordinary diff still emits canonical typed edits.
+  function insertSlot(edits: FeedEdit[], slotId: string) {
+    const view = viewRef.current; if (!view || latest.current.readOnly) return;
+    let composition = applyFeedEdits(local.current, edits).composition;
+    const found = locateFeedNode(composition, props.segmentId, slotId);
+    const next = found.siblings[found.index + 1];
+    if (!next || !['paragraph', 'heading'].includes(next.type)) composition = applyFeedEdits(composition, [{ kind: 'insertBlock', segmentId: props.segmentId, parentId: found.parentId, afterId: slotId, node: feedParagraph('') }]).composition;
+    const segment = composition.segments.find(item => item.id === props.segmentId)!;
+    const doc = feedSchema.nodeFromJSON({ type: 'doc', content: segment.content });
+    const tr = view.state.tr.replaceWith(0, view.state.doc.content.size, doc.content);
+    let after = 0;
+    tr.doc.descendants((node, pos) => { if (node.attrs.id === slotId) after = pos + node.nodeSize; });
+    tr.setSelection(TextSelection.create(tr.doc, after + 1));
+    view.dispatch(tr); view.focus();
+  }
+  function continueAfterSlot(slotId: string) {
+    const view = viewRef.current; if (!view || latest.current.readOnly) return;
+    let after: number | undefined;
+    view.state.doc.descendants((node, pos) => { if (node.attrs.id === slotId) after = pos + node.nodeSize; });
+    if (after === undefined) return;
+    const tr = view.state.tr;
+    if (!tr.doc.resolve(after).nodeAfter?.isTextblock) tr.insert(after, feedSchema.nodeFromJSON(feedParagraph('')));
+    tr.setSelection(TextSelection.create(tr.doc, after + 1));
+    view.dispatch(tr); view.focus();
   }
   function blockAction(action: FeedBlockAction) {
     const view = viewRef.current; if (!view) return;
@@ -187,7 +217,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
       let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }
       if (found.node.type === 'image') return createPortal(<FeedGenerationImage workspaceId={props.generation!.workspaceId} fileId={found.node.attrs.fileId} alt={found.node.attrs.alt ?? ''} />, mount.dom, mount.id);
       if (found.node.type !== 'generationPlaceholder') return null;
-      return createPortal(<GenerationPlaceholder slot={found.node.attrs} segmentId={props.segmentId} controls={props.generation!} onEdit={props.onEdit}
+      return createPortal(<GenerationPlaceholder slot={found.node.attrs} segmentId={props.segmentId} controls={props.generation!} onEdit={props.onEdit} onContinue={() => continueAfterSlot(mount.id)}
         onSelect={() => { const view = viewRef.current; if (!view) return; let position: number | undefined; view.state.doc.descendants((node, pos) => { if (node.attrs.id === mount.id) position = pos; }); if (position !== undefined && (!(view.state.selection instanceof NodeSelection) || view.state.selection.from !== position)) view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, position))); }} onAction={props.onAction} />, mount.dom, mount.id);
     }) : null}
 

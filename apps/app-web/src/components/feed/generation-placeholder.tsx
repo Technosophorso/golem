@@ -1,4 +1,6 @@
 "use client";
+import { Dialog } from '@base-ui/react/dialog';
+import { ImagePlus, TextCursorInput, MoreHorizontal, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 /** Typed slot options, explicit preflight and retained candidate review. [COMP:app-web/feed-generation-placeholder] */
 import { useEffect, useRef, useState } from 'react';
@@ -17,8 +19,9 @@ import { feedOwner } from '@/lib/offline/feed-cache';
 import { fetchDocFileBlob } from '@/components/doc/doc-file-url';
 const inputClass = 'min-h-11 w-full rounded-md border bg-background p-2 text-base';
 export type FeedGenerationControls = { workspaceId: string; assistantId: string; sessionId: string; revision: number; offline: boolean; pending: boolean; readOnly: boolean; article: boolean; snapshot?: FeedCollaborationSnapshot | null; onCommand: (commands: FeedCommand[]) => Promise<boolean>; onRefresh: () => void };
-export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segmentId: string; controls: FeedGenerationControls; onEdit: (edits: FeedEdit[]) => void; onSelect: () => void; onAction: (action: 'comment' | 'suggest' | 'ask') => void }) {
+export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segmentId: string; controls: FeedGenerationControls; onEdit: (edits: FeedEdit[]) => void; onSelect: () => void; onContinue?: () => void; onAction: (action: 'comment' | 'suggest' | 'ask') => void }) {
   const t = useT().feedGeneration; const tc = useT().feedCollaboration; const tr = useT().feedReview; const locale = useLocale(); const c = props.controls;
+  const [open, setOpen] = useState(false);
   const [manual, setManual] = useState(''); const [link, setLink] = useState(''); const [files, setFiles] = useState<'reference' | 'image' | null>(null);
   const [model, setModel] = useState<'standard' | 'pro' | 'max'>('standard'); const [count, setCount] = useState(1);
   const [estimate, setEstimate] = useState<FeedGenerationEstimate | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
@@ -51,15 +54,32 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
     if (!parsed.success) { setError(t.imageRequired); return; }
     replace([{ type: 'image', attrs: { ...parsed.data, id: props.slot.id, placement: c.article ? 'inline' : 'attachment' } }]);
   }
-  return <section data-feed-slot={props.slot.id} className="my-3 min-w-0 space-y-3 rounded-xl border border-dashed bg-muted/30 p-3" onPointerDown={props.onSelect} onFocusCapture={props.onSelect}>
-    <div className="flex flex-wrap items-center justify-between gap-2"><strong className="text-sm">{props.slot.kind === 'text' ? t.textSlot : t.imageSlot}</strong><span className="text-xs">{t.unfilled}</span></div>
+  const Icon = props.slot.kind === 'text' ? TextCursorInput : ImagePlus;
+  const label = props.slot.kind === 'text' ? t.textSlot : t.imageSlot;
+  const waiting = candidates.some(candidate => ['proposed', 'deferred'].includes(candidate.status));
+  return <Dialog.Root open={open} onOpenChange={setOpen}>
+    <section data-feed-slot={props.slot.id} className="my-3 flex min-w-0 flex-wrap items-center gap-x-2 rounded-lg bg-muted/40 px-3 py-1" onPointerDown={props.onSelect} onFocusCapture={props.onSelect}>
+      <span className="flex shrink-0 items-center gap-2 text-sm font-medium text-muted-foreground"><Icon className="size-4" aria-hidden />{label}</span>
+      <input aria-label={t.brief} title={props.slot.brief || t.briefHint} placeholder={t.briefHint} value={props.slot.brief} disabled={c.readOnly}
+        className="order-last min-h-11 w-full min-w-0 border-0 bg-transparent text-base shadow-none outline-none focus-visible:shadow-none md:order-none md:w-auto md:flex-1"
+        onChange={event => update({ brief: event.target.value })}
+        onKeyDown={event => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); props.onContinue?.(); } }} />
+      {active || waiting ? <span role="status" className="ml-auto text-xs text-muted-foreground">{active ? tr.running : t.reviewReady}</span> : null}
+      <Dialog.Trigger aria-label={t.openDetails} title={t.openDetails} render={<Button variant="ghost" size="icon" className="ml-auto size-11 shrink-0 md:ml-0" />}><MoreHorizontal className="size-4" aria-hidden /></Dialog.Trigger>
+    </section>
+    <Dialog.Portal>
+      <Dialog.Backdrop className="fixed inset-0 z-[100] bg-black/25" />
+      <Dialog.Popup className="fixed left-1/2 top-1/2 z-[101] max-h-[85dvh] w-[calc(100vw-2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border bg-background p-5 shadow-xl">
+        <div className="mb-2 flex items-center justify-between gap-3"><Dialog.Title className="text-base font-semibold">{label}</Dialog.Title><Dialog.Close aria-label={t.closeDetails} render={<Button variant="ghost" size="icon" className="size-11 shrink-0" />}><X className="size-4" aria-hidden /></Dialog.Close></div>
+        <Dialog.Description className="mb-5 text-sm text-muted-foreground">{t.draftFirst}</Dialog.Description>
+        <div className="space-y-3" onFocusCapture={props.onSelect}>
     <label className="block space-y-1 text-sm"><span>{t.brief}</span><textarea aria-label={t.brief} className={inputClass} value={props.slot.brief} disabled={c.readOnly} rows={3} onChange={e => update({ brief: e.target.value })} /></label>
     <details className="space-y-3"><summary className="min-h-11 cursor-pointer py-3 text-sm">{t.advanced}</summary>
       {props.slot.kind === 'text' ? <>
         <label className="block text-sm">{t.intent}<input className={inputClass} value={props.slot.intent ?? ''} disabled={c.readOnly} onChange={e => update({ intent: e.target.value })} /></label>
         <label className="block text-sm">{t.length}<input type="number" min={1} max={100000} className={inputClass} value={props.slot.length ?? ''} disabled={c.readOnly} onChange={e => { const value = Number(e.target.value); if (!e.target.value || (Number.isInteger(value) && value >= 1 && value <= 100000)) update({ length: e.target.value ? value : undefined }); }} /></label>
       </> : <>
-        <SearchableSelect aria-label={t.aspectRatio} value={props.slot.aspectRatio ?? '1:1'} disabled={c.readOnly} items={['1:1', '16:9', '9:16', '4:3', '3:4'].map(value => ({ value, label: value }))} onValueChange={value => update({ aspectRatio: value as FeedPlaceholderAttrs['aspectRatio'] })} />
+        <SearchableSelect className="min-h-11 text-base" popupClassName="z-[110] [&_[role=option]]:min-h-11 [&_input]:text-base" aria-label={t.aspectRatio} value={props.slot.aspectRatio ?? '1:1'} disabled={c.readOnly} items={['1:1', '16:9', '9:16', '4:3', '3:4'].map(value => ({ value, label: value }))} onValueChange={value => update({ aspectRatio: value as FeedPlaceholderAttrs['aspectRatio'] })} />
         <label className="block text-sm">{t.style}<input className={inputClass} value={props.slot.style ?? ''} disabled={c.readOnly} onChange={e => update({ style: e.target.value })} /></label>
         <label className="block text-sm">{t.altIntent}<input className={inputClass} value={props.slot.altIntent ?? ''} disabled={c.readOnly} onChange={e => update({ altIntent: e.target.value })} /></label>
       </>}
@@ -90,8 +110,11 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
       <Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked || active || estimate.revision !== c.revision} onClick={() => void dispatch()}>{t.confirm}</Button><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => setEstimate(null)}>{tc.cancel}</Button>
     </section> : null}
     <FeedGenerationResults controls={c} runs={runs} candidates={candidates} slot={props.slot} onRunAction={async (id, action) => { try { await request(`/runs/${id}/${action}`, {}); } catch { setError(t.failed); } c.onRefresh(); }} />
-    <div className="flex flex-wrap gap-2">{(['comment', 'suggest', 'ask'] as const).map(action => <Button key={action} variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={c.readOnly} onClick={() => props.onAction(action)}>{action === 'comment' ? tc.comment : action === 'suggest' ? tc.suggest : tc.askBrian}</Button>)}</div>
-  </section>;
+    <div className="flex flex-wrap gap-2">{(['comment', 'suggest', 'ask'] as const).map(action => <Button key={action} variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={c.readOnly} onClick={() => { setOpen(false); props.onAction(action); }}>{action === 'comment' ? tc.comment : action === 'suggest' ? tc.suggest : tc.askBrian}</Button>)}</div>
+        </div>
+      </Dialog.Popup>
+    </Dialog.Portal>
+  </Dialog.Root>;
 }
 function FeedGenerationFilePicker({ controls: c, onPick, onCancel }: { controls: FeedGenerationControls; onPick: (id: string) => Promise<void>; onCancel: () => void }) {
   const t = useT().feedGeneration; const tc = useT().feedCollaboration; const [search, setSearch] = useState('');

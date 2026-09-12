@@ -1117,7 +1117,7 @@ function PostPane({
               </div>
             </header>
 
-            {missingSlots.length ? <div role="status" className="flex flex-wrap gap-2 rounded-xl border p-3"><span className="py-3 text-sm">{tg.unfinished}</span>{missingSlots.map((id, index) => <button key={id} className="min-h-11 rounded-md border px-3 text-sm" onClick={() => { setViewMode('edit'); requestAnimationFrame(() => { const target = document.querySelector<HTMLElement>(`[data-placeholder-id="${id}"]`); target?.scrollIntoView({ block: 'center' }); target?.querySelector<HTMLTextAreaElement>('textarea')?.focus(); }); }}>{tg.openSlot} {index + 1}</button>)}</div> : null}
+            {missingSlots.length ? <div role="status" className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"><span>{tg.draftSlots}</span>{missingSlots.map((id, index) => <button key={id} className="min-h-11 rounded-md px-2 text-xs underline decoration-dotted underline-offset-4 hover:bg-muted" onClick={() => { setViewMode('edit'); requestAnimationFrame(() => { const target = document.querySelector<HTMLElement>(`[data-placeholder-id="${id}"]`); target?.scrollIntoView({ block: 'center' }); target?.querySelector<HTMLInputElement>('input')?.focus(); }); }}>{tg.openSlot} {index + 1}</button>)}</div> : null}
             {(localPost?.error || (readOnly && localPost?.dirty)) && workspace.canDraft ? <Button type="button" variant="outline" onClick={() => void saveAsNewPost()}>{te.saveAsNewPost}</Button> : null}
 
             {error ? (
