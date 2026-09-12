@@ -207,6 +207,45 @@ describe('[COMP:crm/provider-inbox] Actual durable normalized receipts', () => {
     expect(renewed.record).toMatchObject({ predecessorId: id, providerPeriodId: 'period-2', status: 'active' })
     expect(renewed.record.id).not.toBe(id)
   })
+  it('retains verified membership refunds and disputes for policy review without changing the entitlement', async () => {
+    const f = await fixture(), m = await membership(f), granted = await m.submit(), id = String(granted.record.id)
+    await m.submit(ProviderEntitlementEventSchema.parse({
+      ...m.event,
+      eventId: randomUUID(),
+      occurredAt: '2026-09-03T00:00:00Z',
+      command: { kind: 'update_entitlement', entitlementId: id, renewalMode: 'none' },
+    }))
+    const before = await pool.query('SELECT status,ends_at,renewal_mode FROM association_memberships WHERE workspace_id=$1 AND id=$2', [f.workspaceId, id])
+    const review = ProviderEntitlementEventSchema.parse({
+      ...m.event,
+      eventId: randomUUID(),
+      occurredAt: '2026-09-02T00:00:00Z',
+      command: {
+        kind: 'review_entitlement_financial_event', entitlementId: id,
+        adjustmentReference: 'fictional-refund', adjustmentKind: 'refund', adjustmentStatus: 'succeeded',
+        amountMinor: 1000, currency: 'USD', paymentIntentId: 'fictional-payment-intent',
+      },
+    })
+    const reviewed = await m.submit(review)
+    expect(reviewed).toMatchObject({ created: false, record: { id, status: 'active' }, receipt: {
+      state: 'needs_reconciliation', attempts: 1, errorCode: 'membership_refund_policy_pending', entitlementId: id,
+    } })
+    expect((await pool.query('SELECT status,ends_at,renewal_mode FROM association_memberships WHERE workspace_id=$1 AND id=$2', [f.workspaceId, id])).rows)
+      .toEqual(before.rows)
+    expect((await m.submit(review)).receipt).toMatchObject({
+      state: 'needs_reconciliation', attempts: 2, errorCode: 'membership_refund_policy_pending',
+    })
+    expect((await pool.query("SELECT count(*)::int n FROM association_audit_log WHERE workspace_id=$1 AND action='crm.entitlement.changed'", [f.workspaceId])).rows[0].n).toBe(2)
+    const dispute = ProviderEntitlementEventSchema.parse({
+      ...review,
+      eventId: randomUUID(),
+      occurredAt: '2026-09-04T00:00:00Z',
+      command: { ...review.command, adjustmentReference: 'fictional-dispute', adjustmentKind: 'dispute', adjustmentStatus: 'open' },
+    })
+    expect((await m.submit(dispute)).receipt).toMatchObject({
+      state: 'needs_reconciliation', errorCode: 'membership_dispute_policy_pending', entitlementId: id,
+    })
+  })
   it('rejects mismatched periods and out-of-order entitlement changes with durable visible receipts', async () => {
     const f = await fixture(), m = await membership(f), id = String((await m.submit()).record.id)
     const update = ProviderEntitlementEventSchema.parse({ ...m.event, eventId: randomUUID(), occurredAt: '2026-09-03T00:00:00Z', command: { kind: 'update_entitlement', entitlementId: id, renewalMode: 'none' } })

@@ -11,13 +11,30 @@ const MembershipCheckoutEvidenceSchema = z.object({
   currency: z.string().regex(/^[A-Z]{3}$/),
 }).strict()
 
+const ReviewEntitlementFinancialEventCommandSchema = z.object({
+  kind: z.literal('review_entitlement_financial_event'),
+  entitlementId: z.string().uuid(),
+  adjustmentReference: z.string().trim().min(1).max(500),
+  adjustmentKind: z.enum(['refund', 'dispute']),
+  adjustmentStatus: z.enum(['pending', 'succeeded', 'failed', 'cancelled', 'open', 'won', 'lost', 'prevented']),
+  amountMinor: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  paymentIntentId: z.string().trim().min(1).max(500),
+}).strict().superRefine((input, ctx) => {
+  const refund = ['pending', 'succeeded', 'failed', 'cancelled'].includes(input.adjustmentStatus)
+  const dispute = ['open', 'won', 'lost', 'prevented'].includes(input.adjustmentStatus)
+  if ((input.adjustmentKind === 'refund' && !refund) || (input.adjustmentKind === 'dispute' && !dispute)) {
+    ctx.addIssue({ code: 'custom', path: ['adjustmentStatus'], message: 'Financial status does not match its adjustment kind.' })
+  }
+})
+
 export const ProviderEntitlementEventSchema = z.object({
   provider: z.string().regex(/^[a-z][a-z0-9_-]{0,62}$/),
   eventId: z.string().trim().min(1).max(500),
   providerReference: z.string().trim().min(1).max(500),
   providerPeriodId: z.string().trim().min(1).max(500),
   occurredAt: z.string().datetime({ offset: true }),
-  command: z.union([GrantCrmEntitlementCommandSchema, UpdateCrmEntitlementCommandSchema]),
+  command: z.union([GrantCrmEntitlementCommandSchema, UpdateCrmEntitlementCommandSchema, ReviewEntitlementFinancialEventCommandSchema]),
   membershipCheckout: MembershipCheckoutEvidenceSchema.optional(),
 }).strict().superRefine((input, ctx) => {
   const command = input.command

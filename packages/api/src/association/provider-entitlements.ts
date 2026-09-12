@@ -72,17 +72,31 @@ export function createProviderEntitlementInbox(pool: Pool) {
     async apply(client, envelope, actor) {
       const event = eventFor(envelope), command = event.command
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended('crm-provider-period:'||$1::uuid::text||':'||$2::text||':'||$3::text,0))", [workspaceId, event.provider, event.providerReference])
-      const later = await client.query(`SELECT 1 FROM association_integration_events WHERE workspace_id=$1 AND provider=$2 AND provider_reference=$3
-        AND target_kind='entitlement' AND state='applied' AND occurred_at>$4::timestamptz LIMIT 1`, [workspaceId, event.provider, event.providerReference, event.occurredAt])
-      if (later.rowCount) throw new CrmOperationsError('conflict', 'Newer verified provider state already exists.', { reason: 'provider_event_out_of_order' })
-      if (command.kind === 'update_entitlement') {
+      if (command.kind !== 'review_entitlement_financial_event') {
+        const later = await client.query(`SELECT 1 FROM association_integration_events WHERE workspace_id=$1 AND provider=$2 AND provider_reference=$3
+          AND target_kind='entitlement' AND state='applied' AND occurred_at>$4::timestamptz LIMIT 1`, [workspaceId, event.provider, event.providerReference, event.occurredAt])
+        if (later.rowCount) throw new CrmOperationsError('conflict', 'Newer verified provider state already exists.', { reason: 'provider_event_out_of_order' })
+      }
+      if (command.kind !== 'grant_entitlement') {
         const row = (await client.query<{ provider: string; provider_membership_id: string; provider_period_id: string; same: boolean }>(`SELECT provider,provider_membership_id,provider_period_id,
           ($3::text IS NULL OR status=$3) AND (NOT $4::boolean OR ends_at IS NOT DISTINCT FROM $5::timestamptz)
             AND ($6::text IS NULL OR renewal_mode=$6) same
           FROM association_memberships WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
-          [workspaceId, command.entitlementId, command.status ?? null, Object.hasOwn(command, 'endsAt'), command.endsAt ?? null, command.renewalMode ?? null])).rows[0]
-        if (!row || row.provider !== event.provider || row.provider_membership_id !== event.providerReference || row.provider_period_id !== event.providerPeriodId)
+          [workspaceId, command.entitlementId,
+            command.kind === 'update_entitlement' ? command.status ?? null : null,
+            command.kind === 'update_entitlement' && Object.hasOwn(command, 'endsAt'),
+            command.kind === 'update_entitlement' ? command.endsAt ?? null : null,
+            command.kind === 'update_entitlement' ? command.renewalMode ?? null : null])).rows[0]
+        const periodMismatch = command.kind === 'update_entitlement' && row?.provider_period_id !== event.providerPeriodId
+        if (!row || row.provider !== event.provider || row.provider_membership_id !== event.providerReference || periodMismatch)
           throw new CrmOperationsError('conflict', 'Provider object and period do not match the entitlement.')
+        if (command.kind === 'review_entitlement_financial_event') return {
+          record: await readMembership(client, workspaceId, command.entitlementId),
+          created: false,
+          reviewReason: command.adjustmentKind === 'refund'
+            ? 'membership_refund_policy_pending'
+            : 'membership_dispute_policy_pending',
+        }
         if (row.same) return { record: await readMembership(client, workspaceId, command.entitlementId), created: false }
       }
       if (event.membershipCheckout && command.kind === 'grant_entitlement') {
