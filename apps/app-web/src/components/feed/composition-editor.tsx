@@ -60,6 +60,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   const [slotMounts, setSlotMounts] = useState<{ id: string; dom: HTMLElement }[]>([]);
   const frameRef = useRef<HTMLDivElement>(null);
   const [selectionTop, setSelectionTop] = useState<number | null>(null);
+  const [selectionBelow, setSelectionBelow] = useState(false);
   const [formatting, setFormatting] = useState<Partial<Record<FeedFormatAction, boolean>>>({});
   const local = useRef(props.composition); const lastEmitted = useRef('');
   const hasLocalTyping = useRef(false);
@@ -114,8 +115,10 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
         view.updateState(next);
         if (next.selection.empty || latest.current.readOnly || !view.hasFocus()) setSelectionTop(null);
         else {
+          const below = next.selection.head < next.selection.anchor;
           let top = 48;
-          try { top = view.coordsAtPos(next.selection.to).bottom - (frameRef.current?.getBoundingClientRect().top ?? 0) + 8; } catch { /* A DOM-less editor still exposes toolbar actions. */ }
+          try { const anchor = view.coordsAtPos(next.selection.anchor); top = (below ? anchor.bottom + 8 : anchor.top - 8) - (frameRef.current?.getBoundingClientRect().top ?? 0); } catch { /* A DOM-less editor still exposes toolbar actions. */ }
+          setSelectionBelow(below);
           setSelectionTop(top);
         }
         const active: Partial<Record<FeedFormatAction, boolean>> = {};
@@ -179,7 +182,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   return <div ref={frameRef} className={`${styles.canvas} relative`} data-feed-segment-editor>
     <FeedEditorToolbar disabled={props.readOnly} active={formatting} onFormat={format} onPlaceholder={placeholder} onBlock={blockAction} focusEditor={() => viewRef.current?.focus()} onAction={props.onAction} />
     <div ref={host} className={styles.surface} />
-    {selectionTop !== null && !props.readOnly ? <div className="absolute left-2 right-2 z-20" style={{ top: selectionTop }}><FeedSelectionActions onAction={props.onAction} /></div> : null}
+    {selectionTop !== null && !props.readOnly ? <div className={`absolute left-2 right-2 z-20 ${selectionBelow ? '' : '-translate-y-full'}`} style={{ top: selectionTop }}><FeedSelectionActions onAction={props.onAction} /></div> : null}
     {props.generation ? slotMounts.map(mount => {
       let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }
       if (found.node.type === 'image') return createPortal(<FeedGenerationImage workspaceId={props.generation!.workspaceId} fileId={found.node.attrs.fileId} alt={found.node.attrs.alt ?? ''} />, mount.dom, mount.id);

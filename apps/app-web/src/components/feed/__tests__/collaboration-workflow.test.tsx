@@ -206,6 +206,30 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     await act(async () => action.click());
     expect(onAction).toHaveBeenCalledWith('comment');
   });
+  it.each([false, true])('keeps passage actions steady while a selection grows and shrinks (backward: %s)', backward => {
+    const onSelection = vi.fn();
+    act(() => root.render(<CompositionEditor composition={composition()} threads={[]} onEdit={vi.fn()} onSelection={onSelection} onAction={vi.fn()} onOpenThread={vi.fn()} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    // Distinct line geometry exposes movement that jsdom cannot lay out itself.
+    const coords = vi.spyOn(view, 'coordsAtPos').mockImplementation(pos => ({ top: 200 + pos * 4, bottom: 220 + pos * 4, left: 0, right: 0 }));
+    const anchor = backward ? 48 : 1;
+    const heads = backward ? [43, 1, 46] : [6, 40, 4];
+    const tops: string[] = []; const quotes: string[] = [];
+    for (const head of heads) {
+      act(() => { view.focus(); view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, anchor, head))); });
+      const actions = host.querySelector<HTMLElement>('[data-feed-selection-actions]')!;
+      tops.push(actions.parentElement!.style.top);
+      quotes.push(onSelection.mock.lastCall![0].quote);
+    }
+    expect(tops[0]).not.toBe('');
+    expect(new Set(tops).size).toBe(1);
+    // The menu stays outside the highlighted range in either direction.
+    if (backward) expect(Number.parseFloat(tops[0]!)).toBeGreaterThan(220 + anchor * 4);
+    else expect(Number.parseFloat(tops[0]!)).toBeLessThan(200 + anchor * 4);
+    expect(quotes[1]!.length).toBeGreaterThan(quotes[0]!.length);
+    expect(quotes[2]!.length).toBeLessThan(quotes[0]!.length);
+    coords.mockRestore();
+  });
   it('scenario 1: typing emits preimage commands that preserve formatted unselected content', () => {
     const doc = composition(); const onEdit = vi.fn();
     act(() => root.render(<CompositionEditor composition={doc} threads={[]} onEdit={onEdit} onSelection={vi.fn()} onAction={vi.fn()} onOpenThread={vi.fn()} />));
