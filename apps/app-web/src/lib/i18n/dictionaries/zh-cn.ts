@@ -393,6 +393,8 @@ export const zhCN: Dictionary = {
       "saleEnd": "停售时间（选填）",
       "perOrder": "每张订单上限",
       "eligiblePlans": "符合资格的方案标识键（逗号分隔）",
+      "eligibilityScope": "会员资格检查对象",
+      "eligibilityRequired": "购买时必须具备会员资格",
       "status": "状态",
       "reserved": "已预留",
       "available": "剩余",

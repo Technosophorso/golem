@@ -222,6 +222,8 @@ export const AssociationTicketInputSchema = z.object({
   priceMinor: NonNegativeMinor,
   memberPriceMinor: NonNegativeMinor.nullable().optional(),
   eligiblePlanKeys: z.array(StableKey).max(100).default([]),
+  eligibilityRequired: z.boolean().optional(),
+  eligibilityScope: z.enum(['buyer', 'attendees', 'buyer_and_attendees']).default('buyer'),
   capacity: z.number().int().positive().max(1_000_000).nullable().optional(),
   perOrderLimit: z.number().int().positive().max(1_000).default(10),
   saleStartsAt: Instant.nullable().optional(),
@@ -230,7 +232,19 @@ export const AssociationTicketInputSchema = z.object({
 }).refine(
   (value) => !value.saleStartsAt || !value.saleEndsAt || value.saleStartsAt < value.saleEndsAt,
   'saleEndsAt must be after saleStartsAt',
-)
+).superRefine((value, ctx) => {
+  if (value.eligibilityRequired && value.eligiblePlanKeys.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['eligibilityRequired'], message: 'required eligibility needs eligible plan keys' })
+  }
+  if (value.eligibilityScope !== 'buyer' && value.eligiblePlanKeys.length === 0) {
+    ctx.addIssue({ code: 'custom', path: ['eligibilityScope'], message: 'attendee eligibility requires eligible plan keys' })
+  }
+}).transform((value) => ({
+  ...value,
+  // Older publishers already use eligiblePlanKeys for admission. Preserve
+  // their fail-closed behavior unless a newer operator explicitly opts out.
+  eligibilityRequired: value.eligibilityRequired ?? value.eligiblePlanKeys.length > 0,
+}))
 export type AssociationTicketInput = z.infer<typeof AssociationTicketInputSchema>
 
 export const AssociationOrderAttendeeSchema = z.object({
@@ -512,6 +526,7 @@ export type AssociationErrorCode =
   | 'contact_required'
   | 'not_available'
   | 'member_price_ineligible'
+  | 'attendee_membership_ineligible'
 
 export class AssociationError extends Error {
   constructor(

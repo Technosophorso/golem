@@ -491,6 +491,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "attendee_name",
       "attendee_email",
       "attendee_metadata",
+      "eligible_membership_id",
       "status",
       "reservation_expires_at",
       "checked_in_at",
@@ -510,6 +511,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "attendee_name": "CASE WHEN t.attendee_contact_id=$2 THEN t.attendee_name ELSE NULL END",
       "attendee_email": "CASE WHEN t.attendee_contact_id=$2 THEN t.attendee_email ELSE NULL END",
       "attendee_metadata": "CASE WHEN t.attendee_contact_id=$2 THEN t.attendee_metadata ELSE NULL END",
+      "eligible_membership_id": "CASE WHEN EXISTS(SELECT 1 FROM association_memberships m WHERE m.workspace_id=$1 AND m.id=t.eligible_membership_id AND m.contact_id=$2) THEN t.eligible_membership_id ELSE NULL END",
       "source_id": "CASE WHEN t.attendee_contact_id=$2 THEN t.source_id ELSE NULL END",
       "request_fingerprint": "NULL"
     },
@@ -528,6 +530,8 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "price_minor",
       "member_price_minor",
       "eligible_plan_keys",
+      "eligibility_required",
+      "eligibility_scope",
       "capacity",
       "per_order_limit",
       "sale_starts_at",
@@ -1057,6 +1061,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "source_id",
       "integration_credential_id",
       "integration_grants",
+      "confirmation_key",
       "privacy_erased",
       "privacy_erased_at"
     ],
@@ -1065,7 +1070,8 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
     "subjectWhere": "EXISTS(SELECT 1 FROM crm_import_rows r WHERE r.workspace_id=$1 AND (r.job_id=t.id AND r.entity_id=$2))",
     "workspaceWhere": "true",
     "subjectRedactions": {
-      "integration_grants": "NULL"
+      "integration_grants": "NULL",
+      "confirmation_key": "NULL"
     },
     "transforms": {},
     "reason": "Job configuration and lineage remain without a credential-grant snapshot."
@@ -1080,6 +1086,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "input_hash",
       "status",
       "entity_id",
+      "result_refs",
       "created_at",
       "updated_at"
     ],

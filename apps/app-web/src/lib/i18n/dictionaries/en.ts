@@ -395,6 +395,8 @@ export const en = {
       "saleEnd": "Sale ends (optional)",
       "perOrder": "Maximum per order",
       "eligiblePlans": "Eligible plan keys (comma separated)",
+      "eligibilityScope": "Membership check applies to",
+      "eligibilityRequired": "Require membership for purchase",
       "status": "Status",
       "reserved": "Reserved",
       "available": "Available",

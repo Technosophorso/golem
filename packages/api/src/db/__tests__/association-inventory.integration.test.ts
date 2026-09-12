@@ -166,7 +166,31 @@ describe('[COMP:crm/association-inventory] Actual admission and committed bounda
       await writer.query("UPDATE association_memberships SET ends_at=clock_timestamp()-interval '1 second' WHERE id=$1", [id])
       pending = f.order(undefined, undefined, true)
       const rejected = expect(pending).rejects.toMatchObject({ code: 'member_price_ineligible' })
-      await blocked("status='active' ORDER BY id FOR SHARE")
+      await blocked('contact_id=ANY')
+      await writer.query('COMMIT'); await rejected
+      expect(await boundaries(f.workspaceId)).toEqual([])
+    } finally { await writer.query('ROLLBACK').catch(() => {}); writer.release(); if (pending) await pending.catch(() => {}) }
+  })
+  it('rechecks every attendee after a membership row-lock wait and refuses a concurrent revocation', async () => {
+    const f = await fixture({}, true, { priceMinor: 1000, memberPriceMinor: 500 })
+    const attendeeId = randomUUID()
+    await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional member attendee',$3,'manual')", [attendeeId, f.workspaceId, f.userId])
+    const planId = (await pool.query("INSERT INTO association_membership_plans(workspace_id,plan_key,name,currency,fee_minor,billing_period) VALUES($1,'fixture','Fixture','USD',0,'annual') RETURNING id", [f.workspaceId])).rows[0].id
+    await pool.query("INSERT INTO association_memberships(workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,starts_at,ends_at) VALUES($1,$2,$3,$4,repeat('a',64),'active',clock_timestamp()-interval '1 day',clock_timestamp()+interval '1 day')", [f.workspaceId, f.contactId, planId, randomUUID()])
+    const attendeeMembershipId = (await pool.query("INSERT INTO association_memberships(workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,starts_at,ends_at) VALUES($1,$2,$3,$4,repeat('b',64),'active',clock_timestamp()-interval '1 day',clock_timestamp()+interval '1 day') RETURNING id", [f.workspaceId, attendeeId, planId, randomUUID()])).rows[0].id
+    await commerce.upsertTicket(f.workspaceId, f.eventId, TicketInputSchema.parse({ ...ticketInput,
+      priceMinor: 1000, memberPriceMinor: 500, eligiblePlanKeys: ['fixture'], eligibilityRequired: true, eligibilityScope: 'buyer_and_attendees' }), f.actor)
+    const input = OrderCreateSchema.parse({ contactId: f.contactId, idempotencyKey: randomUUID(), lines: [{
+      ticketId: f.ticketId, quantity: 1, useMemberPrice: true,
+      attendees: [{ contactId: attendeeId, name: 'Fictional member attendee' }],
+    }] })
+    const writer = await pool.connect(); let pending: ReturnType<typeof commerce.createOrder> | undefined
+    try {
+      await writer.query('BEGIN')
+      await writer.query("UPDATE association_memberships SET status='cancelled' WHERE id=$1", [attendeeMembershipId])
+      pending = commerce.createOrder(f.workspaceId, input, f.actor)
+      const rejected = expect(pending).rejects.toMatchObject({ code: 'attendee_membership_ineligible', details: { attendeeIndex: 0 } })
+      await blocked('contact_id=ANY')
       await writer.query('COMMIT'); await rejected
       expect(await boundaries(f.workspaceId)).toEqual([])
     } finally { await writer.query('ROLLBACK').catch(() => {}); writer.release(); if (pending) await pending.catch(() => {}) }

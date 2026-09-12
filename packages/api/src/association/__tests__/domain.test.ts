@@ -8,6 +8,7 @@ import {
   mayTransitionOrder,
   OrderCreateSchema,
   ProviderEventInputSchema,
+  TicketInputSchema,
 } from '../domain.js'
 
 const CONTACT_ID = '11111111-1111-4111-8111-111111111111'
@@ -63,6 +64,15 @@ describe('[COMP:crm/association-domain] bounded domain contracts', () => {
       }],
     })
     expect(result.success).toBe(false)
+  })
+
+  it('defaults ticket eligibility to the buyer and bounds attendee admission', () => {
+    const base = { key: 'member', name: 'Member ticket', currency: 'USD', priceMinor: 100 }
+    expect(TicketInputSchema.parse(base)).toMatchObject({ eligibilityRequired: false, eligibilityScope: 'buyer' })
+    expect(TicketInputSchema.parse({ ...base, memberPriceMinor: 25, eligiblePlanKeys: ['member'] }).eligibilityRequired).toBe(true)
+    expect(TicketInputSchema.safeParse({ ...base, memberPriceMinor: 25, eligiblePlanKeys: ['member'], eligibilityRequired: true, eligibilityScope: 'buyer_and_attendees' }).success).toBe(true)
+    expect(TicketInputSchema.safeParse({ ...base, eligibilityRequired: true }).success).toBe(false)
+    expect(TicketInputSchema.safeParse({ ...base, memberPriceMinor: 25, eligibilityScope: 'attendees' }).success).toBe(false)
   })
 
   it('fingerprints equivalent object key order identically', () => {

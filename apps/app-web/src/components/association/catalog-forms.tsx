@@ -54,7 +54,7 @@ export function AssociationEventForm({workspaceId,event,disabled,onSaved}:{works
 }
 export function AssociationTicketForm({workspaceId,eventId,ticket,disabled,onSaved}:{workspaceId:string;eventId:string;ticket?:AssociationTicket;disabled:boolean;onSaved:()=>void}) {
   const t=useT().associationPage.manage,action=useAssociationAction(workspaceId);
-  const [form,setForm]=useState(()=>({key:ticket?.key ?? "",name:ticket?.name ?? "",currency:ticket?.currency ?? "",priceMinor:Number(ticket?.priceMinor ?? 0),memberPriceMinor:ticket?.memberPriceMinor===null||ticket?.memberPriceMinor===undefined?null:Number(ticket.memberPriceMinor),eligiblePlanKeys:ticket?.eligiblePlanKeys ?? [],capacity:ticket?.capacity ?? null,perOrderLimit:ticket?.perOrderLimit ?? 10,saleStartsAt:associationLocalTime(ticket?.saleStartsAt),saleEndsAt:associationLocalTime(ticket?.saleEndsAt),status:ticket?.status ?? "draft"}));
+  const [form,setForm]=useState(()=>({key:ticket?.key ?? "",name:ticket?.name ?? "",currency:ticket?.currency ?? "",priceMinor:Number(ticket?.priceMinor ?? 0),memberPriceMinor:ticket?.memberPriceMinor===null||ticket?.memberPriceMinor===undefined?null:Number(ticket.memberPriceMinor),eligiblePlanKeys:ticket?.eligiblePlanKeys ?? [],eligibilityRequired:ticket?.eligibilityRequired ?? false,eligibilityScope:ticket?.eligibilityScope ?? "buyer" as AssociationTicket["eligibilityScope"],capacity:ticket?.capacity ?? null,perOrderLimit:ticket?.perOrderLimit ?? 10,saleStartsAt:associationLocalTime(ticket?.saleStartsAt),saleEndsAt:associationLocalTime(ticket?.saleEndsAt),status:ticket?.status ?? "draft"}));
   const set=<K extends keyof typeof form>(key:K,value:(typeof form)[K])=>setForm(old=>({...old,[key]:value}));
   return <form className="space-y-3 rounded-xl border border-border p-4" onSubmit={e=>{e.preventDefault();if(disabled)return;void action.run(`${t.save}: ${form.name}`,async()=>{await saveAssociationTicket(workspaceId,eventId,{...form,eligiblePlanKeys:form.eligiblePlanKeys.map(v=>v.trim()).filter(Boolean),saleStartsAt:associationInstant(form.saleStartsAt),saleEndsAt:associationInstant(form.saleEndsAt)});onSaved();});}}>
     <h3 className="font-semibold">{ticket?t.edit:t.newTicket}</h3><fieldset disabled={disabled||action.pending} className="grid min-w-0 gap-3 md:grid-cols-2">
@@ -68,7 +68,9 @@ export function AssociationTicketForm({workspaceId,eventId,ticket,disabled,onSav
       <Choice label={t.status} value={form.status} onChange={v=>set("status",v as typeof form.status)} values={["draft","on_sale","sold_out","closed"]}/>
       <Field label={t.saleStart} type="datetime-local" value={form.saleStartsAt} onChange={v=>set("saleStartsAt",v)}/>
       <Field label={t.saleEnd} type="datetime-local" value={form.saleEndsAt} onChange={v=>set("saleEndsAt",v)}/>
-      <Field label={t.eligiblePlans} value={form.eligiblePlanKeys.join(", ")} onChange={v=>set("eligiblePlanKeys",v.split(","))}/>
+      <Field label={t.eligiblePlans} value={form.eligiblePlanKeys.join(", ")} onChange={v=>setForm(old=>{const eligiblePlanKeys=v.split(",");return {...old,eligiblePlanKeys,eligibilityRequired:eligiblePlanKeys.some(key=>key.trim())?true:old.eligibilityRequired};})}/>
+      <Toggle label={t.eligibilityRequired} checked={form.eligibilityRequired} onChange={v=>set("eligibilityRequired",v)}/>
+      <Choice label={t.eligibilityScope} value={form.eligibilityScope} values={["buyer","attendees","buyer_and_attendees"]} onChange={v=>set("eligibilityScope",v as typeof form.eligibilityScope)}/>
     </fieldset><p className="text-sm text-muted-foreground">{t.timeHint}</p>{action.feedback}
     <Button type="submit" className="min-h-11" disabled={disabled||action.pending}>{t.save}</Button>
   </form>;

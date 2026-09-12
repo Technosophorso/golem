@@ -382,6 +382,8 @@ export const zh: Dictionary = {
       "saleEnd": "停售時間（選填）",
       "perOrder": "每張訂單上限",
       "eligiblePlans": "合資格方案識別鍵（以逗號分隔）",
+      "eligibilityScope": "會員資格檢查對象",
+      "eligibilityRequired": "購買時必須具備會員資格",
       "status": "狀態",
       "reserved": "已預留",
       "available": "剩餘",

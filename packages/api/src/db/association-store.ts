@@ -238,7 +238,8 @@ const TICKET_SELECT = `
   t.id, t.workspace_id AS "workspaceId", t.event_id AS "eventId",
   t.ticket_key AS "key", t.name, t.currency,
   t.price_minor::text AS "priceMinor", t.member_price_minor::text AS "memberPriceMinor",
-  t.eligible_plan_keys AS "eligiblePlanKeys", t.capacity,
+  t.eligible_plan_keys AS "eligiblePlanKeys", t.eligibility_required AS "eligibilityRequired",
+  t.eligibility_scope AS "eligibilityScope", t.capacity,
   t.per_order_limit AS "perOrderLimit", t.sale_starts_at AS "saleStartsAt",
   t.sale_ends_at AS "saleEndsAt", t.status,
   COALESCE(i.reserved_count, 0)::int AS "reservedCount",
@@ -261,6 +262,7 @@ const REGISTRATION_SELECT = `
   order_line_id AS "orderLineId", event_id AS "eventId", ticket_id AS "ticketId",
   attendee_contact_id AS "attendeeContactId", attendee_name AS "attendeeName",
   attendee_email AS "attendeeEmail", attendee_metadata AS "attendeeMetadata",
+  eligible_membership_id AS "eligibleMembershipId",
   status, reservation_expires_at AS "reservationExpiresAt",
   checked_in_at AS "checkedInAt", source_kind AS "sourceKind", source_id AS "sourceId", historical_import AS "historicalImport",
   created_at AS "createdAt", updated_at AS "updatedAt"`
@@ -1337,22 +1339,24 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         const result = await client.query<DbRow>(
           `INSERT INTO association_ticket_types
              (workspace_id, event_id, ticket_key, name, currency, price_minor,
-              member_price_minor, eligible_plan_keys, capacity, per_order_limit,
+              member_price_minor, eligible_plan_keys, eligibility_required, eligibility_scope, capacity, per_order_limit,
               sale_starts_at, sale_ends_at, status)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
            ON CONFLICT (event_id, ticket_key) DO UPDATE SET
              name = EXCLUDED.name, currency = EXCLUDED.currency,
              price_minor = EXCLUDED.price_minor,
              member_price_minor = EXCLUDED.member_price_minor,
              eligible_plan_keys = EXCLUDED.eligible_plan_keys,
+             eligibility_required = EXCLUDED.eligibility_required,
+             eligibility_scope = EXCLUDED.eligibility_scope,
              capacity = EXCLUDED.capacity, per_order_limit = EXCLUDED.per_order_limit,
              sale_starts_at = EXCLUDED.sale_starts_at,
              sale_ends_at = EXCLUDED.sale_ends_at, status = EXCLUDED.status
            RETURNING id`,
           [workspaceId, eventId, input.key, input.name, input.currency,
             input.priceMinor, input.memberPriceMinor ?? null, input.eligiblePlanKeys,
-            input.capacity ?? null, input.perOrderLimit, input.saleStartsAt ?? null,
-            input.saleEndsAt ?? null, input.status],
+            input.eligibilityRequired, input.eligibilityScope, input.capacity ?? null, input.perOrderLimit,
+            input.saleStartsAt ?? null, input.saleEndsAt ?? null, input.status],
         )
         const tickets = await client.query<DbRow>(
           `SELECT ${TICKET_SELECT}
@@ -1594,12 +1598,11 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
         }
         requireAssociationAdmission(module)
         await requirePerson(client, workspaceId, input.contactId)
+        const attendeeContactIds = [...new Set(input.lines.flatMap((line) =>
+          line.attendees.flatMap((attendee) => attendee.contactId ? [attendee.contactId] : [])))]
+        for (const contactId of attendeeContactIds) await requirePerson(client, workspaceId, contactId)
         const ticketIds = input.lines.map((line) => line.ticketId)
         const inventoryEvents=await lockAssociationInventory(client,workspaceId,{ticketIds})
-        const lockedMemberships = input.lines.some(line => line.useMemberPrice)
-          ? (await client.query<{ id: string }>(`SELECT id FROM association_memberships
-              WHERE workspace_id=$1 AND contact_id=$2 AND status='active' ORDER BY id FOR SHARE`,
-            [workspaceId, input.contactId])).rows.map(row => row.id) : []
         const admittedAt=(await client.query<{instant:string}>('SELECT clock_timestamp()::text instant')).rows[0].instant
         const ticketsResult = await client.query<{
           id: string
@@ -1608,6 +1611,8 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           price_minor: string
           member_price_minor: string | null
           eligible_plan_keys: string[]
+          eligibility_required: boolean
+          eligibility_scope: 'buyer' | 'attendees' | 'buyer_and_attendees'
           capacity: number | null
           per_order_limit: number
           sale_starts_at: Date | null
@@ -1620,7 +1625,8 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           registration_closes_at: Date | null
         }>(
           `SELECT t.id, t.event_id, t.currency, t.price_minor::text,
-                  t.member_price_minor::text, t.eligible_plan_keys, t.capacity,
+                  t.member_price_minor::text, t.eligible_plan_keys, t.eligibility_required,
+                  t.eligibility_scope, t.capacity,
                   t.per_order_limit, t.sale_starts_at, t.sale_ends_at, t.status,
                   e.status AS event_status, e.capacity AS event_capacity,
                   e.registration_opens_at, e.registration_closes_at,
@@ -1660,6 +1666,16 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           }
         }
         const tickets = new Map(ticketsResult.rows.map((ticket) => [ticket.id, ticket]))
+        const needsMembershipEvidence = input.lines.some((line) => {
+          const ticket = tickets.get(line.ticketId)!
+          return line.useMemberPrice || ticket.eligibility_required
+        })
+        const membershipContactIds = [...new Set([input.contactId, ...attendeeContactIds])]
+        const lockedMemberships = needsMembershipEvidence
+          ? (await client.query<{ id: string; contact_id: string }>(`SELECT id,contact_id FROM association_memberships
+              WHERE workspace_id=$1 AND contact_id=ANY($2::uuid[]) AND status='active'
+              ORDER BY contact_id,id FOR SHARE`, [workspaceId, membershipContactIds])).rows : []
+        const lockedMembershipIds = lockedMemberships.map(row => row.id)
         const currencies = new Set(ticketsResult.rows.map((ticket) => ticket.currency))
         if (currencies.size !== 1) throw new AssociationError('conflict', 'one order cannot mix currencies')
 
@@ -1708,34 +1724,61 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           unitPrice: number
           publicPrice: number
           membershipId: string | null
+          attendeeMembershipIds: Array<string | null>
         }> = []
         for (const line of input.lines) {
           const ticket = tickets.get(line.ticketId)!
+          if (ticket.eligibility_required && !line.useMemberPrice) {
+            throw new AssociationError('member_price_ineligible',
+              'restricted tickets require eligibility-priced admission', { ticketId: line.ticketId })
+          }
           const publicPrice = Number(ticket.price_minor)
           let membershipId: string | null = null
+          const attendeeMembershipIds: Array<string | null> = line.attendees.map(() => null)
           let unitPrice = publicPrice
           if (line.useMemberPrice) {
             if (ticket.member_price_minor === null) {
               throw new AssociationError('member_price_ineligible', 'ticket has no member price', { ticketId: line.ticketId })
             }
-            const eligibility = await client.query<{ id: string }>(
-              `SELECT m.id FROM association_memberships m
+            const membershipFor = async (contactId: string): Promise<string | null> => {
+              const eligibility = await client.query<{ id: string }>(
+                `SELECT m.id FROM association_memberships m
                  JOIN association_membership_plans p
                    ON p.workspace_id = m.workspace_id AND p.id = m.plan_id
                 WHERE m.workspace_id = $1 AND m.contact_id = $2
                   AND m.id=ANY($4::uuid[])
-                  AND crm_entitlement_is_effective(m.status,m.starts_at,m.ends_at,clock_timestamp())
+                  AND crm_entitlement_is_effective(m.status,m.starts_at,m.ends_at,$5::timestamptz)
                   AND (cardinality($3::text[]) = 0 OR p.plan_key = ANY($3::text[]))
                 ORDER BY m.starts_at DESC LIMIT 1`,
-              [workspaceId, input.contactId, ticket.eligible_plan_keys, lockedMemberships],
-            )
-            membershipId = eligibility.rows[0]?.id ?? null
-            if (!membershipId) {
-              throw new AssociationError('member_price_ineligible', 'contact has no eligible active membership', { ticketId: line.ticketId })
+                [workspaceId, contactId, ticket.eligible_plan_keys, lockedMembershipIds, admittedAt],
+              )
+              return eligibility.rows[0]?.id ?? null
+            }
+            if (ticket.eligibility_scope === 'buyer' || ticket.eligibility_scope === 'buyer_and_attendees') {
+              membershipId = await membershipFor(input.contactId)
+              if (!membershipId) {
+                throw new AssociationError('member_price_ineligible', 'buyer has no eligible active membership', { ticketId: line.ticketId })
+              }
+            }
+            if (ticket.eligibility_scope === 'attendees' || ticket.eligibility_scope === 'buyer_and_attendees') {
+              const seen = new Set<string>()
+              for (const [index, attendee] of line.attendees.entries()) {
+                if (!attendee.contactId || seen.has(attendee.contactId)) {
+                  throw new AssociationError('attendee_membership_ineligible',
+                    'each restricted place requires a distinct attendee contact with an eligible active membership',
+                    { ticketId: line.ticketId, attendeeIndex: index })
+                }
+                seen.add(attendee.contactId)
+                attendeeMembershipIds[index] = await membershipFor(attendee.contactId)
+                if (!attendeeMembershipIds[index]) {
+                  throw new AssociationError('attendee_membership_ineligible',
+                    'attendee has no eligible active membership', { ticketId: line.ticketId, attendeeIndex: index })
+                }
+              }
             }
             unitPrice = Number(ticket.member_price_minor)
           }
-          pricedLines.push({ input: line, ticket, unitPrice, publicPrice, membershipId })
+          pricedLines.push({ input: line, ticket, unitPrice, publicPrice, membershipId, attendeeMembershipIds })
         }
         const subtotal = pricedLines.reduce((sum, line) => sum + line.publicPrice * line.input.quantity, 0)
         const total = pricedLines.reduce((sum, line) => sum + line.unitPrice * line.input.quantity, 0)
@@ -1766,20 +1809,19 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
             [workspaceId, orderId, priced.ticket.id, priced.input.quantity,
               priced.unitPrice, lineDiscount, lineTotal,
-              priced.membershipId ? 'member' : 'public', priced.membershipId],
+              priced.input.useMemberPrice ? 'member' : 'public', priced.membershipId],
           )
           for (const [attendeeIndex, attendee] of priced.input.attendees.entries()) {
-            if (attendee.contactId) await requirePerson(client, workspaceId, attendee.contactId)
             await client.query(
               `INSERT INTO association_registrations
                  (workspace_id, order_id, order_line_id, event_id, ticket_id,
                   attendee_contact_id, attendee_name, attendee_email,
-                  attendee_metadata, status, reservation_expires_at,
+                  attendee_metadata, eligible_membership_id, status, reservation_expires_at,
                   source_kind, source_id, request_fingerprint)
-               VALUES ($1,$2,$3::uuid,$4,$5,$6,$7,$8,$9,'reserved',$10,'commerce',$3::text,$11)`,
+               VALUES ($1,$2,$3::uuid,$4,$5,$6,$7,$8,$9,$10,'reserved',$11,'commerce',$3::text,$12)`,
               [workspaceId, orderId, lineResult.rows[0].id, priced.ticket.event_id,
                 priced.ticket.id, attendee.contactId ?? null, attendee.name,
-                attendee.email ?? null, attendee.metadata, reservationExpiresAt,
+                attendee.email ?? null, attendee.metadata, priced.attendeeMembershipIds[attendeeIndex], reservationExpiresAt,
                 associationFingerprint({ order: fingerprint, ticketId: priced.ticket.id, attendeeIndex })],
             )
           }

@@ -382,6 +382,8 @@ export const ja: Dictionary = {
       "saleEnd": "販売終了（任意）",
       "perOrder": "注文あたりの上限",
       "eligiblePlans": "対象プランキー（カンマ区切り）",
+      "eligibilityScope": "会員資格の確認対象",
+      "eligibilityRequired": "購入時に会員資格を必須にする",
       "status": "状態",
       "reserved": "予約済み",
       "available": "残り",

@@ -179,6 +179,14 @@ export async function redactCrmOperationsForContact(
   // attendee columns are equally identifying and the event chronology may be
   // required independently of the erased subject.
   await client.query(
+    `UPDATE association_registrations r SET eligible_membership_id=NULL
+      WHERE r.workspace_id=$1 AND EXISTS(
+        SELECT 1 FROM association_memberships m
+         WHERE m.workspace_id=r.workspace_id AND m.id=r.eligible_membership_id AND m.contact_id=$2
+      )`,
+    [workspaceId, contactId],
+  )
+  await client.query(
     `UPDATE association_registrations
         SET attendee_contact_id=NULL, attendee_name='Erased participant',
             attendee_email=NULL, attendee_metadata='{}'::jsonb
