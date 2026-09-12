@@ -2,13 +2,14 @@ import { beforeEach,describe,expect,it,vi } from "vitest";
 const api=vi.hoisted(()=>({fetch:vi.fn(),contact:vi.fn(),sendability:vi.fn()}));
 vi.mock("@/lib/auth-fetch",()=>({authFetch:api.fetch}));
 vi.mock("@/lib/api/crm",()=>({fetchCrmRecord:api.contact,checkCrmSendability:api.sendability}));
-import { listAssociationPage,exportAssociationAttendees,exportAssociationOperationalRoster,reserveAssociationOrder,offerAssociationPlace,retryAssociationProviderReceipt,saveAssociationEvent,saveAssociationPlan,saveAssociationTicket,checkInAssociationAttendee,correctAssociationCheckIn } from "@/lib/api/association";
+import { listAssociationPage,exportAssociationAttendees,exportAssociationOperationalRoster,reserveAssociationOrder,offerAssociationPlace,retryAssociationProviderReceipt,saveAssociationEvent,saveAssociationPlan,saveAssociationPromotion,saveAssociationTicket,checkInAssociationAttendee,correctAssociationCheckIn } from "@/lib/api/association";
 const response=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json"}});
 const registration=(id:string,changes={})=>({id,attendeeContactId:`contact-${id}`,attendeeName:`Person ${id}`,attendeeEmail:`person-${id}@example.com`,status:"confirmed",...changes});
 beforeEach(()=>{vi.resetAllMocks();api.sendability.mockResolvedValue({verdict:"allowed"});api.contact.mockImplementation(async(_ws,id)=>({record:{kind:"contact",archivedAt:null,email:`person-${id.replace("contact-","")}@example.com`}}));});
 describe("[COMP:app-web/association] Native member wire contracts",()=>{
   it.each([
     ["plans","operations/entitlement-plans","plans"], ["events","operations/events","events"], ["memberships","operations/entitlements","entitlements"],
+    ["promotions","association/promotions","promotions"],
     ["waitlist","association/waitlist","submissions"], ["receipts","association/provider-receipts","receipts"], ["audit","operations/audit","entries"], ["deliveries","operations/event-delivery","events"],
   ] as const)("reads %s using its canonical envelope and cursor",async(resource,path,key)=>{
     api.fetch.mockResolvedValue(response({[key]:[{id:"one"}],nextCursor:"next/value"}));
@@ -56,8 +57,8 @@ describe("[COMP:app-web/association] Native member wire contracts",()=>{
   it("keeps generic plan/event configuration separate from vertical tickets",async()=>{
     api.fetch.mockImplementation(async()=>response({}));
     // The shape is independently checked by canonical server schemas; this checks routing.
-    await saveAssociationPlan("w",{} as never);await saveAssociationEvent("w",{} as never);await saveAssociationTicket("w","event",{} as never);
-    expect(api.fetch.mock.calls.map(c=>new URL(c[0], "https://app.example").pathname)).toEqual(["/api/crm/w/operations/entitlement-plans","/api/crm/w/operations/events","/api/crm/w/association/events/event/tickets"]);
+    await saveAssociationPlan("w",{} as never);await saveAssociationEvent("w",{} as never);await saveAssociationTicket("w","event",{} as never);await saveAssociationPromotion("w",{} as never);
+    expect(api.fetch.mock.calls.map(c=>new URL(c[0], "https://app.example").pathname)).toEqual(["/api/crm/w/operations/entitlement-plans","/api/crm/w/operations/events","/api/crm/w/association/events/event/tickets","/api/crm/w/association/promotions"]);
   });
 });
 describe("[COMP:app-web/association] Complete consent-filtered attendee download",()=>{

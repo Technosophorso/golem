@@ -238,6 +238,28 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(integration.association.execute).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'integration_key', credentialId } }),
       { kind: 'list_operational_roster', eventId, limit: 50 })
   })
+  it('maps owner promotion reads and writes to the closed canonical commands', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn()
+      .mockResolvedValueOnce({ command: 'list_promotions', items: [{ id: credentialId }], nextCursor: null })
+      .mockResolvedValueOnce({ command: 'save_promotion', record: { id: credentialId }, created: true }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const listed = await request(app).get(`/api/crm/${workspaceId}/association/promotions?status=active&limit=25`)
+    expect(listed.status).toBe(200)
+    expect(listed.body).toEqual({ promotions: [{ id: credentialId }], nextCursor: null })
+    expect(service.execute).toHaveBeenNthCalledWith(1, expect.objectContaining({ actor: { kind: 'user', userId } }),
+      { kind: 'list_promotions', status: 'active', limit: 25 })
+    const promotion = { key: 'launch', name: 'Launch offer', code: 'EXAMPLE-10', discountType: 'percentage',
+      percentageBasisPoints: 1_000, targetKind: 'event', targetIds: [eventId], combinesWithMemberPrice: false,
+      releaseOnFullRefund: false, status: 'active' }
+    const saved = await request(app).post(`/api/crm/${workspaceId}/association/promotions`).send(promotion)
+    expect(saved.status).toBe(201)
+    expect(saved.body).toEqual({ promotion: { id: credentialId }, created: true })
+    expect(service.execute).toHaveBeenNthCalledWith(2, expect.objectContaining({ actor: { kind: 'user', userId } }),
+      { kind: 'save_promotion', promotion })
+  })
   it('maps the reviewed member check-in correction to its closed command', async () => {
     const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
     const service = { execute: vi.fn().mockResolvedValue({ command: 'correct_check_in', record: { id: eventId, status: 'confirmed' } }) } as unknown as AssociationServicePort

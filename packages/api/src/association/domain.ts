@@ -34,6 +34,8 @@ export {
   type AssociationEventInput as EventInput,
   AssociationTicketInputSchema as TicketInputSchema,
   type AssociationTicketInput as TicketInput,
+  AssociationPromotionInputSchema as PromotionInputSchema,
+  type AssociationPromotionInput as PromotionInput,
   AssociationOrderAttendeeSchema as OrderAttendeeSchema,
   AssociationOrderLineInputSchema as OrderLineInputSchema,
   AssociationOrderCreateSchema as OrderCreateSchema,

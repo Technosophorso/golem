@@ -13,6 +13,7 @@ import {
   AssociationMembershipRescueCreateSchema, AssociationMembershipRescueSettlementSchema,
   AssociationMembershipRescueReversalSchema, AssociationMembershipRescueCancellationSchema,
   AssociationMembershipRescueStatusSchema,
+  AssociationPromotionInputSchema,
   AssociationListPageSchema, type AssociationOrderFinancialSummary,
   type AssociationSourceOrderImportInput,
 } from './domain.js'
@@ -32,6 +33,8 @@ export const AssociationCommandSchema = z.union([
   z.object({ kind: z.literal('module_action'), action: z.enum(WORKSPACE_MODULE_ACTIONS), expectedVersion: z.number().int().nonnegative() }).strict(),
   z.object({ kind: z.literal('list_tickets'), eventId: Id }).strict(),
   z.object({ kind: z.literal('save_ticket'), eventId: Id, ticket: AssociationTicketInputSchema }).strict(),
+  AssociationListPageSchema.extend({ kind: z.literal('list_promotions'), status: z.enum(['draft', 'active', 'disabled']).optional() }).strict(),
+  z.object({ kind: z.literal('save_promotion'), promotion: AssociationPromotionInputSchema }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_waitlist'), eventId: Id.optional(), includeClosed: z.boolean().default(false) }).strict(),
   z.object({ kind: z.literal('offer_waitlist_place'), offer: AssociationWaitlistOfferInputSchema }).strict(),
   z.object({ kind: z.literal('create_order'), order: AssociationOrderCreateSchema }).strict(),
@@ -80,4 +83,4 @@ export interface AssociationSourceOrderImportPort {
     input: AssociationSourceOrderImportInput,
   ): Promise<{ record: Record<string, unknown>; created: boolean; duplicate: boolean }>
 }
-export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_membership_rescues'] as const
+export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_membership_rescues'] as const

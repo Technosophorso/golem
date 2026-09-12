@@ -3,7 +3,7 @@
 /** Native editors over the canonical generic catalogs and vertical tickets. [COMP:app-web/association] */
 import { useState } from "react";
 import { useT } from "@/lib/i18n/client";
-import { saveAssociationPlan,saveAssociationEvent,saveAssociationTicket,type AssociationPlan,type AssociationEvent,type AssociationTicket,type AssociationPlanSave } from "@/lib/api/association";
+import { saveAssociationPlan,saveAssociationEvent,saveAssociationTicket,saveAssociationPromotion,type AssociationPlan,type AssociationEvent,type AssociationTicket,type AssociationPromotion,type AssociationPlanSave,type AssociationPromotionSave } from "@/lib/api/association";
 import { Button } from "@/components/ui/button";
 import { AssociationField as Field,AssociationChoice as Choice,AssociationToggle as Toggle,useAssociationAction,associationInstant,associationLocalTime } from "./operator-controls";
 
@@ -72,6 +72,50 @@ export function AssociationTicketForm({workspaceId,eventId,ticket,disabled,onSav
       <Toggle label={t.eligibilityRequired} checked={form.eligibilityRequired} onChange={v=>set("eligibilityRequired",v)}/>
       <Choice label={t.eligibilityScope} value={form.eligibilityScope} values={["buyer","attendees","buyer_and_attendees"]} onChange={v=>set("eligibilityScope",v as typeof form.eligibilityScope)}/>
     </fieldset><p className="text-sm text-muted-foreground">{t.timeHint}</p>{action.feedback}
+    <Button type="submit" className="min-h-11" disabled={disabled||action.pending}>{t.save}</Button>
+  </form>;
+}
+
+export function AssociationPromotionForm({workspaceId,promotion,disabled,onSaved}:{workspaceId:string;promotion?:AssociationPromotion;disabled:boolean;onSaved:()=>void}) {
+  const t=useT().associationPage.manage,action=useAssociationAction(workspaceId);
+  const [code,setCode]=useState("");
+  const [form,setForm]=useState<AssociationPromotionSave>(()=>({
+    key:promotion?.key ?? "",name:promotion?.name ?? "",discountType:promotion?.discountType ?? "percentage",
+    percentageBasisPoints:promotion?.percentageBasisPoints ?? 1000,buyQuantity:promotion?.buyQuantity ?? null,
+    getQuantity:promotion?.getQuantity ?? null,targetKind:promotion?.targetKind ?? "event",targetIds:promotion?.targetIds ?? [],
+    validFrom:associationLocalTime(promotion?.validFrom),validTo:associationLocalTime(promotion?.validTo),
+    maxUses:promotion?.maxUses ?? null,maxUsesPerContact:promotion?.maxUsesPerContact ?? null,
+    combinesWithMemberPrice:promotion?.combinesWithMemberPrice ?? false,releaseOnFullRefund:promotion?.releaseOnFullRefund ?? false,
+    status:promotion?.status ?? "draft",
+  }));
+  const set=<K extends keyof typeof form>(key:K,value:(typeof form)[K])=>setForm(old=>({...old,[key]:value}));
+  const percentage=form.percentageBasisPoints===null?"":String(form.percentageBasisPoints/100);
+  return <form className="space-y-3 rounded-xl border border-border p-4" onSubmit={e=>{e.preventDefault();if(disabled)return;
+    const targetIds=form.targetIds.map(id=>id.trim()).filter(Boolean);
+    void action.run(`${t.save}: ${form.name}`,async()=>{await saveAssociationPromotion(workspaceId,{...form,targetIds,
+      validFrom:associationInstant(form.validFrom ?? ""),validTo:associationInstant(form.validTo ?? ""),
+      ...(code.trim()?{code:code.trim()}:{}),
+      percentageBasisPoints:form.discountType==="percentage"?form.percentageBasisPoints:null,
+      buyQuantity:form.discountType==="buy_x_get_y"?form.buyQuantity:null,
+      getQuantity:form.discountType==="buy_x_get_y"?form.getQuantity:null,
+    });setCode("");onSaved();},{description:t.promotionReview});}}>
+    <h3 className="font-semibold">{promotion?t.edit:t.newPromotion}</h3><fieldset disabled={disabled||action.pending} className="grid min-w-0 gap-3 md:grid-cols-2">
+      <Field label={t.key} value={form.key} onChange={v=>set("key",v)} required disabled={!!promotion} maxLength={63}/>
+      <Field label={t.name} value={form.name} onChange={v=>set("name",v)} required maxLength={200}/>
+      <Field label={promotion?t.replacementCode:t.promotionCode} value={code} onChange={setCode} required={!promotion} autoComplete="off" minLength={3} maxLength={100}/>
+      <Choice label={t.discountType} value={form.discountType} values={["percentage","full","buy_x_get_y"]} onChange={v=>set("discountType",v as typeof form.discountType)}/>
+      {form.discountType==="percentage"?<Field label={t.percentageDiscount} type="number" min={0.01} max={100} step={0.01} value={percentage} onChange={v=>set("percentageBasisPoints",v?Math.round(Number(v)*100):null)} required/>:null}
+      {form.discountType==="buy_x_get_y"?<><Field label={t.buyQuantity} type="number" min={1} max={1000} value={form.buyQuantity===null?"":String(form.buyQuantity)} onChange={v=>set("buyQuantity",v?Number(v):null)} required/><Field label={t.getQuantity} type="number" min={1} max={1000} value={form.getQuantity===null?"":String(form.getQuantity)} onChange={v=>set("getQuantity",v?Number(v):null)} required/></>:null}
+      <Choice label={t.promotionTarget} value={form.targetKind} values={["event","ticket"]} onChange={v=>set("targetKind",v as typeof form.targetKind)}/>
+      <Field label={t.targetIds} multiline value={form.targetIds.join("\n")} onChange={v=>set("targetIds",v.split(/[\n,]/))} required maxLength={4000}/>
+      <Field label={t.activeFrom} type="datetime-local" value={form.validFrom ?? ""} onChange={v=>set("validFrom",v)}/>
+      <Field label={t.activeTo} type="datetime-local" value={form.validTo ?? ""} onChange={v=>set("validTo",v)}/>
+      <Field label={t.maxUses} type="number" min={1} max={1000000} value={form.maxUses===null?"":String(form.maxUses)} onChange={v=>set("maxUses",v?Number(v):null)}/>
+      <Field label={t.maxUsesPerContact} type="number" min={1} max={10000} value={form.maxUsesPerContact===null?"":String(form.maxUsesPerContact)} onChange={v=>set("maxUsesPerContact",v?Number(v):null)}/>
+      <Toggle label={t.combinesWithMemberPrice} checked={form.combinesWithMemberPrice} onChange={v=>set("combinesWithMemberPrice",v)}/>
+      <Toggle label={t.releaseOnFullRefund} checked={form.releaseOnFullRefund} onChange={v=>set("releaseOnFullRefund",v)}/>
+      <Choice label={t.status} value={form.status} values={["draft","active","disabled"]} onChange={v=>set("status",v as typeof form.status)}/>
+    </fieldset><p className="text-sm text-muted-foreground">{t.promotionsHelp}</p><p className="text-sm text-muted-foreground">{t.targetIdsHelp}</p><p className="text-sm text-muted-foreground">{t.timeHint}</p>{action.feedback}
     <Button type="submit" className="min-h-11" disabled={disabled||action.pending}>{t.save}</Button>
   </form>;
 }

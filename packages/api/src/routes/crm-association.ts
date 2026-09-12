@@ -33,7 +33,7 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
         if (!context) return
         const input = AssociationCommandSchema.parse(command(req))
         const result = await options.service.execute(context, input)
-        const createsResource = ['save_ticket', 'create_order', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'offer_waitlist_place', 'create_membership_rescue'].includes(input.kind)
+        const createsResource = ['save_ticket', 'save_promotion', 'create_order', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'offer_waitlist_place', 'create_membership_rescue'].includes(input.kind)
         res.status(result.created && createsResource ? 201 : 200).json({
           [key]: result.items ?? result.record, ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
           ...(result.created !== undefined ? { created: result.created } : {}),
@@ -48,6 +48,8 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
   route('get', '/module-blockers', (req) => ({ ...req.query, kind: 'module_blockers' }), 'orders')
   route('get', '/events/:eventId/tickets', (req) => ({ kind: 'list_tickets', eventId: req.params.eventId }), 'tickets')
   route('post', '/events/:eventId/tickets', (req) => ({ kind: 'save_ticket', eventId: req.params.eventId, ticket: req.body }), 'ticket')
+  route('get', '/promotions', (req) => ({ ...req.query, kind: 'list_promotions' }), 'promotions')
+  route('post', '/promotions', (req) => ({ kind: 'save_promotion', promotion: req.body }), 'promotion')
   route('get', '/events/:eventId/registrations', (req) => ({ ...req.query, kind: 'list_registrations', eventId: req.params.eventId }), 'registrations')
   route('get', '/events/:eventId/operational-roster', (req) => ({ ...req.query, kind: 'list_operational_roster', eventId: req.params.eventId }), 'registrations')
   route('patch', '/registrations/:id', (req) => ({ kind: 'update_registration', registrationId: req.params.id, update: req.body }), 'registration')

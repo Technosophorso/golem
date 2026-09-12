@@ -106,7 +106,8 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
         <div className="min-w-0 space-y-1">
           <h3 className="break-all font-mono text-sm" title={order.id}>{t.order} {order.id.slice(0, 8)}</h3>
           <p className="text-sm">{t.orderStates[order.status]}</p>
-          <p className="text-xs text-muted-foreground">{t.total}: {formatMinor(order.totalMinor, order.currency)}</p>
+          <p className="text-xs text-muted-foreground">{t.total}: {formatMinor(order.totalMinor, order.currency)}{order.discountMinor!=="0"?` · ${t.discount}: ${formatMinor(order.discountMinor,order.currency)}`:""}</p>
+          {order.promotionSnapshot?<p className="text-xs text-muted-foreground">{t.manage.promotion}: {order.promotionSnapshot.name}</p>:null}
           {order.refundState !== "none" && <p className="text-xs text-muted-foreground" data-order-refund>
             {t.refund}: {t.refundStates[order.refundState]}{order.refundedMinor !== "0" ? ` · ${t.refundedAmount}: ${formatMinor(order.refundedMinor, order.currency)}` : ""}
           </p>}

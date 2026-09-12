@@ -702,6 +702,8 @@ export interface OpenApiEnv {
   VERTEX_LOCATION?: string
   VERTEX_SERVICE_ACCOUNT_JSON?: string
   JWT_SECRET: string
+  /** Keyed digest secret for Association promotion-code lookup. */
+  ASSOCIATION_PROMOTION_HMAC_KEY?: string
   NODE_ENV: string
   API_URL: string
   APP_URL: string
@@ -1619,7 +1621,9 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     emailProvider: getGlobalEmailInboxProvider,
   }))
   const crmOperationsService = createCrmOperationsService(createDbCrmOperationsStore(), { deliveries: crmDeliveries })
-  const associationStore = createAssociationStore()
+  const associationStore = createAssociationStore(undefined, undefined, {
+    promotionHmacKey: env.ASSOCIATION_PROMOTION_HMAC_KEY,
+  })
   const workspaceModulesStore = createWorkspaceModulesStore()
   const associationService = createAssociationService({ store: associationStore, modules: workspaceModulesStore, crmService: crmOperationsService })
   const crmIntegrationStore = createCrmIntegrationStore()

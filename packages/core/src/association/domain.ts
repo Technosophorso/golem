@@ -247,6 +247,51 @@ export const AssociationTicketInputSchema = z.object({
 }))
 export type AssociationTicketInput = z.infer<typeof AssociationTicketInputSchema>
 
+const PromotionCode = z.string().trim().min(3).max(100)
+
+export const AssociationPromotionInputSchema = z.object({
+  key: StableKey,
+  name: z.string().trim().min(1).max(200),
+  // Omit code on an update to preserve the existing secret. A new promotion
+  // must supply one; the store persists only its keyed digest.
+  code: PromotionCode.optional(),
+  discountType: z.enum(['percentage', 'full', 'buy_x_get_y']),
+  percentageBasisPoints: z.number().int().min(1).max(10_000).nullable().optional(),
+  buyQuantity: z.number().int().min(1).max(1_000).nullable().optional(),
+  getQuantity: z.number().int().min(1).max(1_000).nullable().optional(),
+  targetKind: z.enum(['event', 'ticket']),
+  targetIds: z.array(UUID).min(1).max(100),
+  validFrom: Instant.nullable().optional(),
+  validTo: Instant.nullable().optional(),
+  maxUses: z.number().int().positive().max(1_000_000).nullable().optional(),
+  maxUsesPerContact: z.number().int().positive().max(10_000).nullable().optional(),
+  combinesWithMemberPrice: z.boolean().default(false),
+  releaseOnFullRefund: z.boolean().default(false),
+  status: z.enum(['draft', 'active', 'disabled']).default('draft'),
+}).strict().superRefine((value, ctx) => {
+  if (value.validFrom && value.validTo && value.validFrom >= value.validTo) {
+    ctx.addIssue({ code: 'custom', path: ['validTo'], message: 'validTo must be after validFrom' })
+  }
+  if (value.discountType === 'percentage') {
+    if (value.percentageBasisPoints == null) {
+      ctx.addIssue({ code: 'custom', path: ['percentageBasisPoints'], message: 'percentage discount needs basis points' })
+    }
+    if (value.buyQuantity != null || value.getQuantity != null) {
+      ctx.addIssue({ code: 'custom', path: ['buyQuantity'], message: 'percentage discount cannot define quantity terms' })
+    }
+  } else if (value.discountType === 'buy_x_get_y') {
+    if (value.buyQuantity == null || value.getQuantity == null) {
+      ctx.addIssue({ code: 'custom', path: ['buyQuantity'], message: 'quantity discount needs buy and get quantities' })
+    }
+    if (value.percentageBasisPoints != null) {
+      ctx.addIssue({ code: 'custom', path: ['percentageBasisPoints'], message: 'quantity discount cannot define a percentage' })
+    }
+  } else if (value.percentageBasisPoints != null || value.buyQuantity != null || value.getQuantity != null) {
+    ctx.addIssue({ code: 'custom', path: ['discountType'], message: 'full discount cannot define percentage or quantity terms' })
+  }
+})
+export type AssociationPromotionInput = z.infer<typeof AssociationPromotionInputSchema>
+
 export const AssociationOrderAttendeeSchema = z.object({
   contactId: UUID.optional(),
   name: z.string().trim().min(1).max(200),
@@ -268,6 +313,7 @@ export const AssociationOrderCreateSchema = z.object({
   contactId: UUID,
   idempotencyKey: z.string().trim().min(1).max(200),
   reservationMinutes: z.number().int().min(1).max(120).default(20),
+  promotionCode: PromotionCode.optional(),
   lines: z.array(AssociationOrderLineInputSchema).min(1).max(50),
   metadata: boundedObject(16_000).default({}),
 }).refine(
@@ -527,6 +573,9 @@ export type AssociationErrorCode =
   | 'not_available'
   | 'member_price_ineligible'
   | 'attendee_membership_ineligible'
+  | 'promotion_invalid'
+  | 'promotion_not_applicable'
+  | 'promotion_exhausted'
 
 export class AssociationError extends Error {
   constructor(

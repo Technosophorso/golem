@@ -8,6 +8,7 @@ import {
   mayTransitionOrder,
   OrderCreateSchema,
   ProviderEventInputSchema,
+  PromotionInputSchema,
   TicketInputSchema,
 } from '../domain.js'
 
@@ -73,6 +74,16 @@ describe('[COMP:crm/association-domain] bounded domain contracts', () => {
     expect(TicketInputSchema.safeParse({ ...base, memberPriceMinor: 25, eligiblePlanKeys: ['member'], eligibilityRequired: true, eligibilityScope: 'buyer_and_attendees' }).success).toBe(true)
     expect(TicketInputSchema.safeParse({ ...base, eligibilityRequired: true }).success).toBe(false)
     expect(TicketInputSchema.safeParse({ ...base, memberPriceMinor: 25, eligibilityScope: 'attendees' }).success).toBe(false)
+  })
+
+  it('requires explicit, bounded promotion terms without accepting a stored-code field', () => {
+    const base = { key: 'member-ten', name: 'Member 10%', code: 'EXAMPLE10', discountType: 'percentage' as const,
+      percentageBasisPoints: 1_000, targetKind: 'event' as const, targetIds: [TICKET_ID] }
+    expect(PromotionInputSchema.parse(base)).toMatchObject({ combinesWithMemberPrice: false, releaseOnFullRefund: false, status: 'draft' })
+    expect(PromotionInputSchema.safeParse({ ...base, percentageBasisPoints: null }).success).toBe(false)
+    expect(PromotionInputSchema.safeParse({ ...base, discountType: 'full', percentageBasisPoints: 1_000 }).success).toBe(false)
+    expect(PromotionInputSchema.safeParse({ ...base, discountType: 'buy_x_get_y', percentageBasisPoints: undefined, buyQuantity: 1, getQuantity: 1 }).success).toBe(true)
+    expect(PromotionInputSchema.safeParse({ ...base, codeDigest: 'a'.repeat(64) }).success).toBe(false)
   })
 
   it('fingerprints equivalent object key order identically', () => {

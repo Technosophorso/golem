@@ -48,7 +48,7 @@ export function createAssociationService(options: {
       if (context.actor.kind === 'intake_key') throw new CrmOperationsError('not_authorized', 'An intake credential cannot operate Association commerce.')
       if (context.actor.kind === 'integration_key' && integration?.credentialId !== context.actor.credentialId) throw new CrmIntegrationScopeError('association.read')
       const operation: CrmIntegrationOperation = read ? 'association.read'
-        : command.kind === 'save_ticket' ? 'crm.catalog.configure'
+        : ['save_ticket', 'save_promotion'].includes(command.kind) ? 'crm.catalog.configure'
         : ['reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider'].includes(command.kind) ? 'association.provider_events.write' : 'association.orders.write'
       if (integration) {
         if (command.kind === 'module_action') throw new CrmOperationsError('not_authorized', 'A member owner or admin is required for module actions.')
@@ -85,6 +85,18 @@ export function createAssociationService(options: {
         }
         case 'list_tickets': return { ...output, items: await store.listTickets(workspaceId, command.eventId) }
         case 'save_ticket': return { ...output, ...(await store.upsertTicket(workspaceId, command.eventId, command.ticket, dbActor)) }
+        case 'list_promotions': {
+          if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
+            throw new CrmOperationsError('not_authorized', 'A workspace owner or admin must manage promotions.')
+          }
+          return { ...output, ...(await store.listPromotions(workspaceId, { ...pagination(), status: command.status })) }
+        }
+        case 'save_promotion': {
+          if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
+            throw new CrmOperationsError('not_authorized', 'A workspace owner or admin must manage promotions.')
+          }
+          return { ...output, ...(await store.upsertPromotion(workspaceId, command.promotion, dbActor)) }
+        }
         case 'list_waitlist': {
           const events = integration ? crmIntegrationResourceSelection(integration, 'association.read', 'eventIds') : 'all'
           if (integration) requireCrmIntegrationOperation(integration, 'crm.submissions.read')

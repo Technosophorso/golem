@@ -9,6 +9,7 @@
  * [COMP:crm/association-store]
  */
 
+import { createHmac } from 'node:crypto'
 import type { Pool, PoolClient, QueryResultRow } from 'pg'
 import { receiveProviderInbox, type ProviderInboxHandlers, type ProviderInboxRow } from '../association/provider-inbox.js'
 import { createProviderEntitlementInbox } from '../association/provider-entitlements.js'
@@ -52,6 +53,7 @@ import {
   type CheckInCorrectionInput,
   type OrderStatus,
   type PlanInput,
+  type PromotionInput,
   type ProviderEventInput,
   type ProviderFinancialEventInput,
   mayTransitionRegistration,
@@ -93,6 +95,8 @@ export type AssociationStore = {
   listEvents(workspaceId: string, input: AssociationListInput & { status?: string }): Promise<AssociationPage>
   upsertTicket(workspaceId: string, eventId: string, input: TicketInput, actor: AssociationActor): Promise<MutationResult>
   listTickets(workspaceId: string, eventId: string): Promise<AssociationRecord[]>
+  upsertPromotion(workspaceId: string, input: PromotionInput, actor: AssociationActor): Promise<MutationResult>
+  listPromotions(workspaceId: string, input: AssociationListInput & { status?: string }): Promise<AssociationPage>
   listWaitlist(workspaceId: string, input: WaitlistListInput): Promise<AssociationPage>
   offerWaitlistPlace(workspaceId: string, input: AssociationWaitlistOfferInput, actor: AssociationActor): Promise<MutationResult>
   createOrder(workspaceId: string, input: OrderCreateInput, actor: AssociationActor): Promise<MutationResult>
@@ -143,6 +147,26 @@ async function authorizeOrderIntegration(client: PoolClient, workspaceId: string
   authorizeIntegration(actor, operation, { eventIds: events.rows.map((row) => row.event_id), ...(provider ? { providerKeys: provider } : {}) }, current)
 }
 
+async function transitionPromotionUse(
+  client: PoolClient,
+  workspaceId: string,
+  orderId: string,
+  target: 'redeemed' | 'released',
+  reason?: 'cancelled' | 'expired' | 'payment_failed' | 'full_refund',
+): Promise<void> {
+  if (target === 'redeemed') {
+    await client.query(`UPDATE association_promotion_uses SET state='redeemed',reservation_expires_at=NULL,
+      released_reason=NULL,updated_at=now() WHERE workspace_id=$1 AND order_id=$2 AND state='reserved'`,
+    [workspaceId, orderId])
+    return
+  }
+  await client.query(`UPDATE association_promotion_uses u SET state='released',reservation_expires_at=NULL,
+      released_reason=$3,updated_at=now() FROM association_promotions p
+    WHERE u.workspace_id=$1 AND u.order_id=$2 AND p.workspace_id=u.workspace_id AND p.id=u.promotion_id
+      AND (u.state='reserved' OR (u.state='redeemed' AND $3='full_refund' AND p.release_on_full_refund))`,
+  [workspaceId, orderId, reason])
+}
+
 async function settleWithoutProvider(pool: Pool, workspaceId: string, id: string, actor: AssociationActor, action: 'cancel' | 'confirm_free' | 'expire'): Promise<MutationResult> {
   if(action==='expire' && !(actor.credentialKind==='system_job' && /^association_expiry:[a-f0-9-]{36}$/i.test(actor.credentialId)))
     throw new CrmOperationsError('not_authorized','Due reservation expiry requires its dedicated system job')
@@ -171,6 +195,8 @@ async function settleWithoutProvider(pool: Pool, workspaceId: string, id: string
     await client.query(`UPDATE association_orders SET status=$3,reservation_expires_at=NULL WHERE workspace_id=$1 AND id=$2`, [workspaceId, id, target])
     await client.query(`UPDATE association_registrations SET status=$3,reservation_expires_at=NULL
       WHERE workspace_id=$1 AND order_id=$2 AND status='reserved'`, [workspaceId, id, target === 'paid' ? 'confirmed' : 'cancelled'])
+    await transitionPromotionUse(client, workspaceId, id, action === 'confirm_free' ? 'redeemed' : 'released',
+      action === 'expire' ? 'expired' : action === 'cancel' ? 'cancelled' : undefined)
     if (action === 'confirm_free') await client.query(`INSERT INTO association_notification_outbox
       (workspace_id,source_kind,source_id,template_key,recipient_kind,recipient_ref,payload)
       SELECT workspace_id,'order',id,'order_receipt','contact',contact_id::text,jsonb_build_object('orderId',id)
@@ -246,6 +272,18 @@ const TICKET_SELECT = `
   CASE WHEN t.capacity IS NULL THEN NULL
        ELSE GREATEST(t.capacity - COALESCE(i.reserved_count, 0), 0)::int END AS "available",
   t.created_at AS "createdAt", t.updated_at AS "updatedAt"`
+const PROMOTION_SELECT = `
+  p.id, p.workspace_id AS "workspaceId", p.promotion_key AS "key", p.name,
+  p.discount_type AS "discountType", p.percentage_basis_points AS "percentageBasisPoints",
+  p.buy_quantity AS "buyQuantity", p.get_quantity AS "getQuantity",
+  p.target_kind AS "targetKind", p.target_ids AS "targetIds",
+  p.valid_from AS "validFrom", p.valid_to AS "validTo", p.max_uses AS "maxUses",
+  p.max_uses_per_contact AS "maxUsesPerContact",
+  p.combines_with_member_price AS "combinesWithMemberPrice",
+  p.release_on_full_refund AS "releaseOnFullRefund", p.status,
+  true AS "hasCode", COALESCE(u.reserved_uses,0)::int AS "reservedUses",
+  COALESCE(u.redeemed_uses,0)::int AS "redeemedUses",
+  p.created_at AS "createdAt", p.updated_at AS "updatedAt"`
 const ORDER_SELECT = `
   id, workspace_id AS "workspaceId", contact_id AS "contactId",
   idempotency_key AS "idempotencyKey", status, currency,
@@ -255,7 +293,8 @@ const ORDER_SELECT = `
   refund_state AS "refundState", dispute_state AS "disputeState",
   source_system AS "sourceSystem", source_site AS "sourceSite",
   source_order_id AS "sourceOrderId", source_occurred_at AS "sourceOccurredAt",
-  source_order_status AS "sourceOrderStatus", source_import AS "sourceImport", metadata,
+  source_order_status AS "sourceOrderStatus", source_import AS "sourceImport",
+  promotion_id AS "promotionId", promotion_snapshot AS "promotionSnapshot", metadata,
   created_at AS "createdAt", updated_at AS "updatedAt"`
 const REGISTRATION_SELECT = `
   id, workspace_id AS "workspaceId", order_id AS "orderId",
@@ -298,6 +337,16 @@ async function requirePerson(client: PoolClient, workspaceId: string, contactId:
   if (!found.rowCount) {
     throw new AssociationError('contact_required', 'contactId must identify a live CRM person in this workspace')
   }
+}
+
+function promotionDigest(code: string, configuredKey?: string): string {
+  const key = configuredKey ?? process.env.ASSOCIATION_PROMOTION_HMAC_KEY
+  if (!key || Buffer.byteLength(key, 'utf8') < 32) {
+    throw new AssociationError('promotion_invalid', 'Promotion service is unavailable.')
+  }
+  return createHmac('sha256', key)
+    .update(code.trim().normalize('NFKC').toUpperCase(), 'utf8')
+    .digest('hex')
 }
 
 async function requireWorkspaceUser(client: PoolClient, workspaceId: string, userId: string): Promise<void> {
@@ -373,6 +422,9 @@ async function getOrderRecord(client: Pick<PoolClient, 'query'>, workspaceId: st
               t.ticket_key AS "ticketKey", t.name AS "ticketName", l.quantity,
               l.unit_price_minor::text AS "unitPriceMinor",
               l.discount_minor::text AS "discountMinor",
+              l.member_discount_minor::text AS "memberDiscountMinor",
+              l.promotion_discount_minor::text AS "promotionDiscountMinor",
+              l.source_discount_minor::text AS "sourceDiscountMinor",
               l.line_total_minor::text AS "lineTotalMinor",
               l.pricing_basis AS "pricingBasis",
               l.eligible_membership_id AS "eligibleMembershipId",
@@ -541,6 +593,14 @@ async function applyProviderOrderEvent(client: PoolClient, workspaceId: string, 
           [workspaceId, orderId, registrationStatus],
         )
         if (input.targetStatus === 'paid') {
+          await transitionPromotionUse(client, workspaceId, orderId, 'redeemed')
+        } else if (input.targetStatus === 'failed' || input.targetStatus === 'cancelled') {
+          await transitionPromotionUse(client, workspaceId, orderId, 'released',
+            input.targetStatus === 'failed' ? 'payment_failed' : 'cancelled')
+        } else if (input.targetStatus === 'refunded') {
+          await transitionPromotionUse(client, workspaceId, orderId, 'released', 'full_refund')
+        }
+        if (input.targetStatus === 'paid') {
           const orderContact = await client.query<{ contact_id: string }>(
             `SELECT contact_id FROM association_orders WHERE workspace_id = $1 AND id = $2`,
             [workspaceId, orderId],
@@ -665,6 +725,7 @@ async function applyProviderOrderFinancialEvent(client: PoolClient, workspaceId:
     await client.query(`UPDATE association_registrations SET status='refunded',reservation_expires_at=NULL
       WHERE workspace_id=$1 AND order_id=$2 AND status IN('reserved','confirmed','checked_in')`, [workspaceId, orderId])
     await refreshAssociationInventory(client, workspaceId, inventoryEvents, actor.credentialKind)
+    await transitionPromotionUse(client, workspaceId, orderId, 'released', 'full_refund')
   }
   await audit(client, workspaceId, 'order.financial_evidence', 'order', orderId, actor, {
     provider: input.provider, providerEventId: input.eventId, kind: input.kind, status: input.status,
@@ -676,7 +737,11 @@ async function applyProviderOrderFinancialEvent(client: PoolClient, workspaceId:
   return { record: (await getOrderRecord(client, workspaceId, orderId))!, created: true }
 }
 
-export function createAssociationStore(pool: Pool = getPool(), transactionClient?: PoolClient): AssociationStore {
+export function createAssociationStore(
+  pool: Pool = getPool(),
+  transactionClient?: PoolClient,
+  options: { promotionHmacKey?: string } = {},
+): AssociationStore {
   // A waitlist promotion shares this exact order implementation and outer commit.
   const transact = <T>(fn: (client: PoolClient) => Promise<T>): Promise<T> => transactionClient ? fn(transactionClient) : transaction(pool, fn)
   const providerHandlers = (workspaceId: string): ProviderInboxHandlers => ({
@@ -1394,9 +1459,104 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
       return result.rows
     },
 
+    async upsertPromotion(workspaceId, input, actor) {
+      return transact(async (client) => {
+        requireAssociationAdmission(await lockAssociationModule(client, workspaceId))
+        if (actor.credentialKind !== 'user' || !actor.actingUserId) {
+          throw new CrmOperationsError('not_authorized', 'A workspace owner or admin must manage promotions.')
+        }
+        const role = (await client.query<{ role: string }>(
+          'SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE',
+          [workspaceId, actor.actingUserId],
+        )).rows[0]?.role
+        if (!['owner', 'admin'].includes(role ?? '')) {
+          throw new CrmOperationsError('not_authorized', 'A workspace owner or admin must manage promotions.')
+        }
+        const targetIds = [...new Set(input.targetIds)].sort()
+        if (targetIds.length !== input.targetIds.length) {
+          throw new AssociationError('promotion_invalid', 'Promotion targets must be unique.')
+        }
+        const targetTable = input.targetKind === 'event' ? 'association_events' : 'association_ticket_types'
+        const targets = await client.query<{ id: string }>(
+          `SELECT id FROM ${targetTable} WHERE workspace_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR SHARE`,
+          [workspaceId, targetIds],
+        )
+        if (targets.rows.length !== targetIds.length) {
+          throw new AssociationError('not_found', 'One or more promotion targets were not found.')
+        }
+        const existing = (await client.query<{ id: string; code_digest: string }>(
+          'SELECT id,code_digest FROM association_promotions WHERE workspace_id=$1 AND promotion_key=$2 FOR UPDATE',
+          [workspaceId, input.key],
+        )).rows[0]
+        if (!existing && !input.code) {
+          throw new AssociationError('promotion_invalid', 'A new promotion requires a code.')
+        }
+        const codeDigest = input.code ? promotionDigest(input.code, options.promotionHmacKey) : existing!.code_digest
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('association-promotion-code:'||$1::text||':'||$2,0))",
+          [workspaceId, codeDigest],
+        )
+        const conflicting = (await client.query<{ id: string }>(
+          'SELECT id FROM association_promotions WHERE workspace_id=$1 AND code_digest=$2 FOR UPDATE',
+          [workspaceId, codeDigest],
+        )).rows[0]
+        if (conflicting && conflicting.id !== existing?.id) {
+          throw new AssociationError('conflict', 'That promotion code is already assigned.')
+        }
+        if (existing && input.maxUses !== null && input.maxUses !== undefined) {
+          const used = (await client.query<{ count: number }>(`SELECT count(*)::int count FROM association_promotion_uses
+            WHERE workspace_id=$1 AND promotion_id=$2
+              AND (state='redeemed' OR (state='reserved' AND reservation_expires_at>clock_timestamp()))`,
+          [workspaceId, existing.id])).rows[0]?.count ?? 0
+          if (used > input.maxUses) {
+            throw new AssociationError('promotion_invalid', 'Maximum uses cannot be below current reserved and redeemed uses.')
+          }
+        }
+        const saved = (await client.query<{ id: string }>(`INSERT INTO association_promotions
+          (workspace_id,promotion_key,name,code_digest,discount_type,percentage_basis_points,buy_quantity,get_quantity,
+           target_kind,target_ids,valid_from,valid_to,max_uses,max_uses_per_contact,combines_with_member_price,
+           release_on_full_refund,status)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+          ON CONFLICT(workspace_id,promotion_key) DO UPDATE SET
+            name=EXCLUDED.name,code_digest=EXCLUDED.code_digest,discount_type=EXCLUDED.discount_type,
+            percentage_basis_points=EXCLUDED.percentage_basis_points,buy_quantity=EXCLUDED.buy_quantity,
+            get_quantity=EXCLUDED.get_quantity,target_kind=EXCLUDED.target_kind,target_ids=EXCLUDED.target_ids,
+            valid_from=EXCLUDED.valid_from,valid_to=EXCLUDED.valid_to,max_uses=EXCLUDED.max_uses,
+            max_uses_per_contact=EXCLUDED.max_uses_per_contact,
+            combines_with_member_price=EXCLUDED.combines_with_member_price,
+            release_on_full_refund=EXCLUDED.release_on_full_refund,status=EXCLUDED.status,updated_at=now()
+          RETURNING id`, [workspaceId, input.key, input.name, codeDigest, input.discountType,
+            input.percentageBasisPoints ?? null, input.buyQuantity ?? null, input.getQuantity ?? null,
+            input.targetKind, targetIds, input.validFrom ?? null, input.validTo ?? null,
+            input.maxUses ?? null, input.maxUsesPerContact ?? null, input.combinesWithMemberPrice,
+            input.releaseOnFullRefund, input.status])).rows[0]
+        const record = (await client.query<DbRow>(`SELECT ${PROMOTION_SELECT} FROM association_promotions p
+          LEFT JOIN LATERAL(SELECT
+            count(*) FILTER(WHERE state='reserved' AND reservation_expires_at>statement_timestamp())::int reserved_uses,
+            count(*) FILTER(WHERE state='redeemed')::int redeemed_uses
+            FROM association_promotion_uses x WHERE x.workspace_id=p.workspace_id AND x.promotion_id=p.id) u ON true
+          WHERE p.workspace_id=$1 AND p.id=$2`, [workspaceId, saved.id])).rows[0]
+        await audit(client, workspaceId, existing ? 'promotion.updated' : 'promotion.created', 'promotion', saved.id, actor,
+          { key: input.key, targetKind: input.targetKind, targetCount: targetIds.length, codeChanged: Boolean(input.code) })
+        return { record, created: !existing }
+      })
+    },
+
+    async listPromotions(workspaceId, input) {
+      const conditions = ['p.workspace_id=$1']
+      const values: unknown[] = [workspaceId]
+      if (input.status) { values.push(input.status); conditions.push(`p.status=$${values.length}`) }
+      return page(pool, workspaceId, 'association.promotions', input, `SELECT ${PROMOTION_SELECT}
+        FROM association_promotions p LEFT JOIN LATERAL(SELECT
+          count(*) FILTER(WHERE state='reserved' AND reservation_expires_at>statement_timestamp())::int reserved_uses,
+          count(*) FILTER(WHERE state='redeemed')::int redeemed_uses
+          FROM association_promotion_uses x WHERE x.workspace_id=p.workspace_id AND x.promotion_id=p.id) u ON true
+        WHERE ${conditions.join(' AND ')}`, values)
+    },
+
     listWaitlist: (workspaceId, input) => listAssociationWaitlist(pool, workspaceId, input),
     offerWaitlistPlace: (workspaceId, input, actor) => transact(client => offerAssociationWaitlist(client, workspaceId, input, actor,
-      order => createAssociationStore(pool, client).createOrder(workspaceId, order, actor),
+      order => createAssociationStore(pool, client, options).createOrder(workspaceId, order, actor),
       id => getOrderRecord(client, workspaceId, id))),
 
     async importSourceOrder(workspaceId, input, actor) {
@@ -1535,8 +1695,8 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           const lineId = (await client.query<{ id: string }>(
             `INSERT INTO association_order_lines(
                workspace_id,order_id,ticket_id,quantity,unit_price_minor,discount_minor,
-               line_total_minor,pricing_basis,created_at)
-             VALUES($1,$2,$3,$4,$5,$6,$7,'source',$8) RETURNING id`,
+               source_discount_minor,line_total_minor,pricing_basis,created_at)
+             VALUES($1,$2,$3,$4,$5,$6,$6,$7,'source',$8) RETURNING id`,
             [workspaceId, order.id, line.ticketId, line.quantity, line.unitPriceMinor,
               line.discountMinor, line.lineTotalMinor, input.occurredAt],
           )).rows[0].id
@@ -1581,7 +1741,11 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
       return transact(async (client) => {
         const integration = await lockIntegrationActor(client, workspaceId, actor)
         const module = await lockAssociationModule(client, workspaceId)
-        const fingerprint = associationFingerprint(input)
+        const codeDigest = input.promotionCode
+          ? promotionDigest(input.promotionCode, options.promotionHmacKey) : null
+        const { promotionCode: _promotionCode, ...fingerprintOrder } = input
+        const fingerprint = associationFingerprint({ ...fingerprintOrder,
+          ...(codeDigest ? { promotionCodeDigest: codeDigest } : {}) })
         const existing = await client.query<DbRow>(
           `SELECT id, request_fingerprint AS "requestFingerprint"
              FROM association_orders
@@ -1666,6 +1830,44 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           }
         }
         const tickets = new Map(ticketsResult.rows.map((ticket) => [ticket.id, ticket]))
+        const promotion = codeDigest ? (await client.query<{
+          id: string
+          promotion_key: string
+          name: string
+          discount_type: 'percentage' | 'full' | 'buy_x_get_y'
+          percentage_basis_points: number | null
+          buy_quantity: number | null
+          get_quantity: number | null
+          target_kind: 'event' | 'ticket'
+          target_ids: string[]
+          valid_from: Date | null
+          valid_to: Date | null
+          max_uses: number | null
+          max_uses_per_contact: number | null
+          combines_with_member_price: boolean
+          release_on_full_refund: boolean
+          status: string
+        }>(`SELECT id,promotion_key,name,discount_type,percentage_basis_points,buy_quantity,get_quantity,
+              target_kind,target_ids,valid_from,valid_to,max_uses,max_uses_per_contact,
+              combines_with_member_price,release_on_full_refund,status
+            FROM association_promotions WHERE workspace_id=$1 AND code_digest=$2 FOR UPDATE`,
+        [workspaceId, codeDigest])).rows[0] : null
+        if (codeDigest && (!promotion || promotion.status !== 'active'
+          || (promotion.valid_from && promotion.valid_from.getTime() > Date.parse(admittedAt))
+          || (promotion.valid_to && promotion.valid_to.getTime() <= Date.parse(admittedAt)))) {
+          throw new AssociationError('promotion_invalid', 'Promotion code is invalid or unavailable.')
+        }
+        if (promotion) {
+          const counts = (await client.query<{ all_uses: number; contact_uses: number }>(`SELECT
+              count(*) FILTER(WHERE state='redeemed' OR (state='reserved' AND reservation_expires_at>$3::timestamptz))::int all_uses,
+              count(*) FILTER(WHERE contact_id=$4 AND (state='redeemed' OR (state='reserved' AND reservation_expires_at>$3::timestamptz)))::int contact_uses
+            FROM association_promotion_uses WHERE workspace_id=$1 AND promotion_id=$2`,
+          [workspaceId, promotion.id, admittedAt, input.contactId])).rows[0]
+          if ((promotion.max_uses !== null && counts.all_uses >= promotion.max_uses)
+            || (promotion.max_uses_per_contact !== null && counts.contact_uses >= promotion.max_uses_per_contact)) {
+            throw new AssociationError('promotion_exhausted', 'Promotion code has reached its usage limit.')
+          }
+        }
         const needsMembershipEvidence = input.lines.some((line) => {
           const ticket = tickets.get(line.ticketId)!
           return line.useMemberPrice || ticket.eligibility_required
@@ -1723,6 +1925,8 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           ticket: (typeof ticketsResult.rows)[number]
           unitPrice: number
           publicPrice: number
+          memberDiscount: number
+          promotionDiscount: number
           membershipId: string | null
           attendeeMembershipIds: Array<string | null>
         }> = []
@@ -1778,37 +1982,87 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
             }
             unitPrice = Number(ticket.member_price_minor)
           }
-          pricedLines.push({ input: line, ticket, unitPrice, publicPrice, membershipId, attendeeMembershipIds })
+          pricedLines.push({ input: line, ticket, unitPrice, publicPrice,
+            memberDiscount: (publicPrice - unitPrice) * line.quantity,
+            promotionDiscount: 0, membershipId, attendeeMembershipIds })
         }
         const subtotal = pricedLines.reduce((sum, line) => sum + line.publicPrice * line.input.quantity, 0)
-        const total = pricedLines.reduce((sum, line) => sum + line.unitPrice * line.input.quantity, 0)
+        if (promotion) {
+          const targets = new Set(promotion.target_ids)
+          const applicable = pricedLines.filter(line =>
+            (promotion.target_kind === 'event' ? targets.has(line.ticket.event_id) : targets.has(line.ticket.id))
+            && (promotion.combines_with_member_price || !line.input.useMemberPrice))
+          if (applicable.length === 0) {
+            throw new AssociationError('promotion_not_applicable', 'Promotion code does not apply to this order.')
+          }
+          for (const line of applicable) {
+            const base = line.unitPrice * line.input.quantity
+            if (promotion.discount_type === 'full') line.promotionDiscount = base
+            else if (promotion.discount_type === 'percentage') {
+              line.promotionDiscount = Math.floor(base * promotion.percentage_basis_points! / 10_000)
+            } else {
+              const group = promotion.buy_quantity! + promotion.get_quantity!
+              const freeUnits = Math.floor(line.input.quantity / group) * promotion.get_quantity!
+              line.promotionDiscount = Math.min(base, freeUnits * line.unitPrice)
+            }
+          }
+          if (!applicable.some(line => line.promotionDiscount > 0)) {
+            throw new AssociationError('promotion_not_applicable', 'Promotion quantity or amount does not produce a discount.')
+          }
+        }
+        const total = pricedLines.reduce((sum, line) =>
+          sum + line.unitPrice * line.input.quantity - line.promotionDiscount, 0)
         const discount = subtotal - total
         if (![subtotal, total, discount].every(Number.isSafeInteger)) {
           throw new AssociationError('conflict', 'Order money exceeds the supported exact integer range.')
         }
         const reservationExpiresAt=(await client.query<{deadline:string}>(
           "SELECT ($1::timestamptz+$2::integer*interval '1 minute')::text deadline",[admittedAt,input.reservationMinutes])).rows[0].deadline
+        const promotionSnapshot = promotion ? {
+          promotionId: promotion.id,
+          key: promotion.promotion_key,
+          name: promotion.name,
+          discountType: promotion.discount_type,
+          percentageBasisPoints: promotion.percentage_basis_points,
+          buyQuantity: promotion.buy_quantity,
+          getQuantity: promotion.get_quantity,
+          targetKind: promotion.target_kind,
+          targetIds: promotion.target_ids,
+          combinesWithMemberPrice: promotion.combines_with_member_price,
+          releaseOnFullRefund: promotion.release_on_full_refund,
+          validTo: promotion.valid_to?.toISOString() ?? null,
+          discountMinor: pricedLines.reduce((sum, line) => sum + line.promotionDiscount, 0),
+          applicableLines: pricedLines.filter(line => line.promotionDiscount > 0)
+            .map(line => ({ ticketId: line.ticket.id, discountMinor: line.promotionDiscount })),
+        } : null
         const orderResult = await client.query<{ id: string }>(
           `INSERT INTO association_orders
              (workspace_id, contact_id, idempotency_key, request_fingerprint,
               status, currency, subtotal_minor, discount_minor, total_minor,
-              reservation_expires_at, metadata)
-           VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9,$10) RETURNING id`,
+              reservation_expires_at, promotion_id, promotion_snapshot, metadata)
+           VALUES ($1,$2,$3,$4,'pending',$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
           [workspaceId, input.contactId, input.idempotencyKey, fingerprint,
             [...currencies][0], subtotal, discount, total, reservationExpiresAt,
-            input.metadata],
+            promotion?.id ?? null, promotionSnapshot, input.metadata],
         )
         const orderId = orderResult.rows[0].id
+        if (promotion) {
+          await client.query(`INSERT INTO association_promotion_uses
+            (workspace_id,promotion_id,order_id,contact_id,state,reservation_expires_at)
+            VALUES($1,$2,$3,$4,'reserved',$5)`,
+          [workspaceId, promotion.id, orderId, input.contactId, reservationExpiresAt])
+        }
         for (const priced of pricedLines) {
-          const lineTotal = priced.unitPrice * priced.input.quantity
-          const lineDiscount = (priced.publicPrice - priced.unitPrice) * priced.input.quantity
+          const lineTotal = priced.unitPrice * priced.input.quantity - priced.promotionDiscount
+          const lineDiscount = priced.memberDiscount + priced.promotionDiscount
           const lineResult = await client.query<{ id: string }>(
             `INSERT INTO association_order_lines
                (workspace_id, order_id, ticket_id, quantity, unit_price_minor,
-                discount_minor, line_total_minor, pricing_basis, eligible_membership_id)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`,
+                discount_minor, member_discount_minor, promotion_discount_minor,
+                line_total_minor, pricing_basis, eligible_membership_id)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
             [workspaceId, orderId, priced.ticket.id, priced.input.quantity,
-              priced.unitPrice, lineDiscount, lineTotal,
+              priced.unitPrice, lineDiscount, priced.memberDiscount, priced.promotionDiscount, lineTotal,
               priced.input.useMemberPrice ? 'member' : 'public', priced.membershipId],
           )
           for (const [attendeeIndex, attendee] of priced.input.attendees.entries()) {
@@ -1831,6 +2085,8 @@ export function createAssociationStore(pool: Pool = getPool(), transactionClient
           contactId: input.contactId,
           totalMinor: total,
           currency: [...currencies][0],
+          ...(promotion ? { promotionId: promotion.id,
+            promotionDiscountMinor: promotionSnapshot!.discountMinor } : {}),
         })
         return { record: (await getOrderRecord(client, workspaceId, orderId))!, created: true }
       })

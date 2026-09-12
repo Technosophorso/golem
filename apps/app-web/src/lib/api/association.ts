@@ -32,13 +32,15 @@ export function changeAssociationModule(workspaceId: string, action: WorkspaceMo
 
 export type AssociationOrder = {
   id: string; contactId: string; status: "pending" | "paid" | "failed" | "cancelled" | "refunded";
-  currency: string; totalMinor: string; reservationExpiresAt: string | null;
+  currency: string; subtotalMinor:string;discountMinor:string;totalMinor: string; reservationExpiresAt: string | null;
   refundedMinor: string; refundState: "none" | "pending" | "partial" | "partial_pending" | "partial_failed" | "full" | "failed";
   disputeState: "none" | "open" | "won" | "lost" | "mixed";
-  provider: string | null; providerReference: string | null; createdAt: string;
+  provider: string | null; providerReference: string | null;promotionId:string|null;
+  promotionSnapshot:{name:string;discountType:"percentage"|"full"|"buy_x_get_y";discountMinor:number;validTo:string|null}|null;createdAt: string;
 };
 export type AssociationOrderLine = { id:string;ticketId:string;ticketKey:string;ticketName:string;quantity:number;
-  unitPriceMinor:string;discountMinor:string;lineTotalMinor:string;pricingBasis:"public"|"member";eligibleMembershipId:string|null };
+  unitPriceMinor:string;discountMinor:string;memberDiscountMinor:string;promotionDiscountMinor:string;sourceDiscountMinor:string;
+  lineTotalMinor:string;pricingBasis:"public"|"member";eligibleMembershipId:string|null };
 export type AssociationOrderDetail = AssociationOrder & { lines:AssociationOrderLine[];registrations:AssociationRegistration[] };
 export type AssociationOrderFinancialSummary = {currency:string;orderCount:number;settledOrderCount:number;subtotalMinor:string;
   discountMinor:string;grossMinor:string;refundedMinor:string;netMinor:string;pendingMinor:string};
@@ -66,6 +68,11 @@ export function changeAssociationOrder(workspaceId: string, orderId: string, act
 export type AssociationPlan = { id:string;planKey:string;name:string;currency:string;feeMinor:string;billingPeriod:"one_time"|"monthly"|"annual"|"lifetime"|"manual";benefits:string[];eligibilityNote:string|null;published:boolean;activeFrom:string|null;activeTo:string|null;provider:string|null;providerPlanId:string|null };
 export type AssociationEvent = {id:string;slug:string;title:string;description:string;startsAt:string;endsAt:string;timezone:string;mode:"venue"|"online"|"hybrid";venue:string|null;onlineUrl:string|null;registrationOpensAt:string|null;registrationClosesAt:string|null;capacity:number|null;status:"draft"|"published"|"cancelled"|"completed";canonicalUrl:string|null;programmeKey:string|null;metadata:Record<string,unknown>};
 export type AssociationTicket = {id:string;key:string;name:string;currency:string;priceMinor:string;memberPriceMinor:string|null;eligiblePlanKeys:string[];eligibilityRequired:boolean;eligibilityScope:"buyer"|"attendees"|"buyer_and_attendees";capacity:number|null;perOrderLimit:number;saleStartsAt:string|null;saleEndsAt:string|null;status:"draft"|"on_sale"|"sold_out"|"closed";reservedCount:number;available:number|null};
+export type AssociationPromotion = {id:string;key:string;name:string;discountType:"percentage"|"full"|"buy_x_get_y";
+  percentageBasisPoints:number|null;buyQuantity:number|null;getQuantity:number|null;targetKind:"event"|"ticket";targetIds:string[];
+  validFrom:string|null;validTo:string|null;maxUses:number|null;maxUsesPerContact:number|null;combinesWithMemberPrice:boolean;
+  releaseOnFullRefund:boolean;status:"draft"|"active"|"disabled";hasCode:boolean;reservedUses:number;redeemedUses:number;
+  createdAt:string;updatedAt:string};
 export type AssociationRegistration = {id:string;eventId:string;ticketId:string|null;orderId:string|null;attendeeContactId:string|null;eligibleMembershipId:string|null;attendeeName:string;attendeeEmail:string|null;status:"reserved"|"confirmed"|"checked_in"|"cancelled"|"refunded"|"registered"|"attended"|"no_show";sourceKind:string;checkedInAt:string|null};
 export type AssociationOperationalRosterRow = {id:string;eventId:string;orderId:string|null;orderLineId:string|null;ticketId:string|null;ticketKey:string|null;ticketName:string|null;buyerContactId:string|null;attendeeContactId:string|null;attendeeName:string;attendeeEmail:string|null;phone:string|null;organisation:string|null;jobTitle:string|null;status:AssociationRegistration["status"];checkedInAt:string|null;sourceKind:string;sourceId:string|null;historicalImport:boolean;marketingConsent:boolean|null;ticketingConsent:boolean|null;policyVersion:string|null;policyAcceptedAt:string|null;questionResponses:unknown;createdAt:string;updatedAt:string};
 export type AssociationWaitlistRow = {id:string;contactId:string;contactName:string;eventId:string;ticketId:string;waitlistState:"waiting"|"offered"|"converted"|"closed";promotionId:string|null;orderId:string|null;reservationExpiresAt:string|null};
@@ -77,13 +84,13 @@ export type AssociationMembershipRescue = {id:string;contactId:string;contactNam
   settlementMethod:"bank_transfer"|"cash"|"cheque"|"other"|null;settlementReference:string|null;settlementOccurredAt:string|null;
   settlementNote:string|null;reversalReference:string|null;reversalOccurredAt:string|null;reversalReason:string|null;cancellationReason:string|null;
   createdAt:string;updatedAt:string};
-type Rows = {retentionRuns:Record<string,unknown>&{id:string;status:string;createdAt:string};credentials:import("./crm-administration").CrmManagedCredential;plans:AssociationPlan;memberships:AssociationMembership;rescues:AssociationMembershipRescue;events:AssociationEvent;tickets:AssociationTicket;registrations:AssociationRegistration;waitlist:AssociationWaitlistRow;receipts:AssociationProviderReceipt;audit:import("./crm").CrmOperationsAuditEntry;deliveries:import("./crm").CrmEventDeliveryEntry};
+type Rows = {retentionRuns:Record<string,unknown>&{id:string;status:string;createdAt:string};credentials:import("./crm-administration").CrmManagedCredential;plans:AssociationPlan;memberships:AssociationMembership;rescues:AssociationMembershipRescue;events:AssociationEvent;tickets:AssociationTicket;promotions:AssociationPromotion;registrations:AssociationRegistration;waitlist:AssociationWaitlistRow;receipts:AssociationProviderReceipt;audit:import("./crm").CrmOperationsAuditEntry;deliveries:import("./crm").CrmEventDeliveryEntry};
 export type AssociationResource = keyof Rows;
 export type AssociationListQuery = {cursor?:string;eventId?:string;planId?:string;contactId?:string;status?:string;includeClosed?:boolean;activeOnly?:boolean};
 export async function listAssociationPage<K extends keyof Rows>(workspaceId:string,resource:K,query:AssociationListQuery={}):Promise<{items:Rows[K][];nextCursor:string|null}> {
   const base=`/api/crm/${encodeURIComponent(workspaceId)}`;
   const event=encodeURIComponent(query.eventId ?? "");
-  const catalog={retentionRuns:["operations/retention/runs","runs"],credentials:["operations/integration-credentials","credentials"],plans:["operations/entitlement-plans","plans"],memberships:["operations/entitlements","entitlements"],rescues:["association/membership-rescues","rescues"],events:["operations/events","events"],tickets:[`association/events/${event}/tickets`,"tickets"],registrations:[`association/events/${event}/registrations`,"registrations"],waitlist:["association/waitlist","submissions"],receipts:["association/provider-receipts","receipts"],audit:["operations/audit","entries"],deliveries:["operations/event-delivery","events"]} as const;
+  const catalog={retentionRuns:["operations/retention/runs","runs"],credentials:["operations/integration-credentials","credentials"],plans:["operations/entitlement-plans","plans"],memberships:["operations/entitlements","entitlements"],rescues:["association/membership-rescues","rescues"],events:["operations/events","events"],tickets:[`association/events/${event}/tickets`,"tickets"],promotions:["association/promotions","promotions"],registrations:[`association/events/${event}/registrations`,"registrations"],waitlist:["association/waitlist","submissions"],receipts:["association/provider-receipts","receipts"],audit:["operations/audit","entries"],deliveries:["operations/event-delivery","events"]} as const;
   const [path,key]=catalog[resource];
   const params=new URLSearchParams(resource==="tickets"?{}:{limit:"50"});
   for(const [name,value] of Object.entries(query)) if(value!==undefined && !(name==="eventId" && ["tickets","registrations"].includes(resource))) params.set(name,String(value));
@@ -117,6 +124,12 @@ export function saveAssociationEvent(workspaceId:string,input:Omit<AssociationEv
 }
 export function saveAssociationTicket(workspaceId:string,eventId:string,input:Omit<AssociationTicket,"id"|"priceMinor"|"memberPriceMinor"|"reservedCount"|"available"> & {priceMinor:number;memberPriceMinor:number|null}) {
   return request<{ticket:AssociationTicket}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/events/${encodeURIComponent(eventId)}/tickets`,input);
+}
+export type AssociationPromotionSave = Omit<AssociationPromotion,"id"|"hasCode"|"reservedUses"|"redeemedUses"|"createdAt"|"updatedAt"|"percentageBasisPoints"|"buyQuantity"|"getQuantity"|"maxUses"|"maxUsesPerContact"> & {
+  code?:string;percentageBasisPoints:number|null;buyQuantity:number|null;getQuantity:number|null;maxUses:number|null;maxUsesPerContact:number|null;
+};
+export function saveAssociationPromotion(workspaceId:string,input:AssociationPromotionSave) {
+  return request<{promotion:AssociationPromotion}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/promotions`,input);
 }
 export type AssociationReservation = {contactId:string;idempotencyKey:string;reservationMinutes:number;lines:Array<{ticketId:string;quantity:number;useMemberPrice:boolean;attendees:Array<{contactId?:string;name:string;email?:string}>}>};
 export function reserveAssociationOrder(workspaceId:string,input:AssociationReservation) {
