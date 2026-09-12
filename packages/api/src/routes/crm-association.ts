@@ -33,7 +33,7 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
         if (!context) return
         const input = AssociationCommandSchema.parse(command(req))
         const result = await options.service.execute(context, input)
-        const createsResource = ['save_ticket', 'save_promotion', 'create_order', 'reserve_membership_checkout', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'bind_membership_checkout_provider', 'offer_waitlist_place', 'create_membership_rescue'].includes(input.kind)
+        const createsResource = ['save_ticket', 'save_promotion', 'create_order', 'reserve_membership_checkout', 'reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'bind_membership_checkout_provider', 'offer_waitlist_place', 'create_membership_rescue', 'create_sponsorship_allocation', 'issue_sponsorship_invitation', 'redeem_sponsorship_invitation'].includes(input.kind)
         res.status(result.created && createsResource ? 201 : 200).json({
           [key]: result.items ?? result.record, ...(result.nextCursor !== undefined ? { nextCursor: result.nextCursor } : {}),
           ...(result.created !== undefined ? { created: result.created } : {}),
@@ -83,6 +83,13 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
   route('post', '/membership-rescues/:id/settle', req => ({ kind: 'settle_membership_rescue', rescueId: req.params.id, settlement: req.body }), 'rescue')
   route('post', '/membership-rescues/:id/reverse', req => ({ kind: 'reverse_membership_rescue', rescueId: req.params.id, reversal: req.body }), 'rescue')
   route('post', '/membership-rescues/:id/cancel', req => ({ kind: 'cancel_membership_rescue', rescueId: req.params.id, cancellation: req.body }), 'rescue')
+  route('get', '/sponsorship-allocations', req => ({ ...req.query, kind: 'list_sponsorship_allocations' }), 'allocations')
+  route('post', '/sponsorship-allocations', req => ({ kind: 'create_sponsorship_allocation', allocation: req.body }), 'allocation')
+  route('post', '/sponsorship-allocations/:id/cancel', req => ({ kind: 'cancel_sponsorship_allocation', allocationId: req.params.id, cancellation: req.body }), 'allocation')
+  route('get', '/sponsorship-invitations', req => ({ ...req.query, kind: 'list_sponsorship_invitations' }), 'invitations')
+  route('post', '/sponsorship-invitations', req => ({ kind: 'issue_sponsorship_invitation', invitation: req.body }), 'invitation')
+  route('post', '/sponsorship-invitations/:id/revoke', req => ({ kind: 'revoke_sponsorship_invitation', invitationId: req.params.id, revocation: req.body }), 'invitation')
+  route('post', '/sponsorship-invitations/redeem', req => ({ kind: 'redeem_sponsorship_invitation', redemption: req.body }), 'membership')
   return router
 }
 

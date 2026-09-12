@@ -9,7 +9,7 @@
  * [COMP:crm/association-store]
  */
 
-import { createHmac } from 'node:crypto'
+import { createHash, createHmac, randomBytes } from 'node:crypto'
 import type { Pool, PoolClient, QueryResultRow } from 'pg'
 import { receiveProviderInbox, type ProviderInboxHandlers, type ProviderInboxRow } from '../association/provider-inbox.js'
 import { createProviderEntitlementInbox } from '../association/provider-entitlements.js'
@@ -48,6 +48,12 @@ import {
   type MembershipRescueSettlementInput,
   type MembershipRescueStatus,
   type MembershipUpdateInput,
+  type SponsorshipAllocationCreateInput,
+  type SponsorshipAllocationStatus,
+  type SponsorshipInvitationCreateInput,
+  type SponsorshipInvitationStatus,
+  type SponsorshipReasonInput,
+  type SponsorshipRedemptionInput,
   type OrderCreateInput,
   type SourceOrderImportInput,
   type AssociationOrderFinancialSummary,
@@ -89,6 +95,13 @@ export type AssociationStore = {
   createMembership(workspaceId: string, input: MembershipInput, actor: AssociationActor): Promise<MutationResult>
   listMemberships(workspaceId: string, contactId: string, filters?: CrmEffectiveEntitlementQuery): Promise<AssociationRecord[]>
   updateMembership(workspaceId: string, id: string, input: MembershipUpdateInput, actor: AssociationActor): Promise<AssociationRecord>
+  listSponsorshipAllocations(workspaceId: string, input: AssociationListInput & { sponsorContactId?: string; status?: SponsorshipAllocationStatus }): Promise<AssociationPage>
+  createSponsorshipAllocation(workspaceId: string, input: SponsorshipAllocationCreateInput, actor: AssociationActor): Promise<MutationResult>
+  cancelSponsorshipAllocation(workspaceId: string, id: string, input: SponsorshipReasonInput, actor: AssociationActor): Promise<MutationResult>
+  listSponsorshipInvitations(workspaceId: string, input: AssociationListInput & { allocationId?: string; nomineeContactId?: string; status?: SponsorshipInvitationStatus }): Promise<AssociationPage>
+  issueSponsorshipInvitation(workspaceId: string, input: SponsorshipInvitationCreateInput, actor: AssociationActor): Promise<MutationResult>
+  revokeSponsorshipInvitation(workspaceId: string, id: string, input: SponsorshipReasonInput, actor: AssociationActor): Promise<MutationResult>
+  redeemSponsorshipInvitation(workspaceId: string, input: SponsorshipRedemptionInput, actor: AssociationActor): Promise<MutationResult>
   listMembershipRescues(workspaceId: string, input: AssociationListInput & { contactId?: string; planId?: string; status?: MembershipRescueStatus }): Promise<AssociationPage>
   createMembershipRescue(workspaceId: string, input: MembershipRescueCreateInput, actor: AssociationActor): Promise<MutationResult>
   settleMembershipRescue(workspaceId: string, id: string, input: MembershipRescueSettlementInput, actor: AssociationActor): Promise<MutationResult>
@@ -244,8 +257,28 @@ const MEMBERSHIP_SELECT = `
   m.plan_id AS "planId", p.plan_key AS "planKey", p.name AS "planName",
   m.idempotency_key AS "idempotencyKey", m.status, m.starts_at AS "startsAt",
   m.ends_at AS "endsAt", m.renewal_mode AS "renewalMode", m.provider,
-  m.provider_membership_id AS "providerMembershipId", m.provider_period_id AS "providerPeriodId", m.predecessor_id AS "predecessorId",
+  m.provider_membership_id AS "providerMembershipId", m.provider_membership_id AS "providerEntitlementId",
+  m.provider_period_id AS "providerPeriodId", m.predecessor_id AS "predecessorId",
+  m.sponsorship_allocation_id AS "sponsorshipAllocationId",
   m.created_at AS "createdAt", m.updated_at AS "updatedAt"`
+const SPONSORSHIP_ALLOCATION_SELECT = `
+  a.id,a.workspace_id AS "workspaceId",a.sponsor_contact_id AS "sponsorContactId",
+  sponsor.display_name AS "sponsorContactName",a.sponsor_membership_id AS "sponsorMembershipId",
+  a.beneficiary_plan_id AS "beneficiaryPlanId",beneficiary.plan_key AS "beneficiaryPlanKey",
+  beneficiary.name AS "beneficiaryPlanName",a.seat_limit AS "seatLimit",
+  (SELECT count(*)::int FROM association_sponsorship_invitations i
+    WHERE i.workspace_id=a.workspace_id AND i.allocation_id=a.id
+      AND (i.status='redeemed' OR (i.status='pending' AND i.expires_at>statement_timestamp()))) AS "allocatedSeats",
+  a.starts_at AS "startsAt",a.ends_at AS "endsAt",a.invitation_ttl_hours AS "invitationTtlHours",
+  a.status,a.cancellation_reason AS "cancellationReason",a.cancelled_at AS "cancelledAt",
+  a.created_at AS "createdAt",a.updated_at AS "updatedAt"`
+const SPONSORSHIP_INVITATION_SELECT = `
+  i.id,i.workspace_id AS "workspaceId",i.allocation_id AS "allocationId",
+  i.nominee_contact_id AS "nomineeContactId",nominee.display_name AS "nomineeContactName",
+  i.status,CASE WHEN i.status='pending' AND i.expires_at<=statement_timestamp() THEN true ELSE false END AS expired,
+  i.expires_at AS "expiresAt",i.redeemed_contact_id AS "redeemedContactId",i.membership_id AS "membershipId",
+  i.redeemed_at AS "redeemedAt",i.revocation_reason AS "revocationReason",i.revoked_at AS "revokedAt",
+  i.created_at AS "createdAt",i.updated_at AS "updatedAt"`
 const MEMBERSHIP_RESCUE_SELECT = `
   r.id, r.workspace_id AS "workspaceId", r.contact_id AS "contactId",
   e.display_name AS "contactName", r.plan_id AS "planId", p.plan_key AS "planKey", p.name AS "planName",
@@ -1149,12 +1182,12 @@ export function createAssociationStore(
       const at = 'coalesce($4::timestamptz,statement_timestamp())'
       const result = await pool.query<DbRow>(
         `SELECT ${MEMBERSHIP_SELECT},
-             crm_entitlement_is_effective(m.status,m.starts_at,m.ends_at,${at}) AS "isEffective",
+             association_membership_is_effective(m.workspace_id,m.id,m.status,m.starts_at,m.ends_at,${at}) AS "isEffective",
              to_char(${at} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "effectiveAt"
            FROM association_memberships m JOIN association_membership_plans p
              ON p.workspace_id=m.workspace_id AND p.id=m.plan_id
           WHERE m.workspace_id=$1 AND m.contact_id=$2
-            AND (NOT $3::boolean OR crm_entitlement_is_effective(m.status,m.starts_at,m.ends_at,${at}))
+            AND (NOT $3::boolean OR association_membership_is_effective(m.workspace_id,m.id,m.status,m.starts_at,m.ends_at,${at}))
           ORDER BY m.created_at DESC,m.id DESC`,
         [workspaceId, contactId, input.activeOnly ?? false, input.effectiveAt ? crmPageInstant(input.effectiveAt) : null],
       )
@@ -1201,6 +1234,218 @@ export function createAssociationStore(
         )
         await audit(client, workspaceId, 'membership.updated', 'membership', id, actor, input)
         return result.rows[0]
+      })
+    },
+
+    async listSponsorshipAllocations(workspaceId, input) {
+      const conditions = ['a.workspace_id=$1']
+      const values: unknown[] = [workspaceId]
+      for (const [column, value] of [['a.sponsor_contact_id', input.sponsorContactId], ['a.status', input.status]] as const) {
+        if (value) { values.push(value); conditions.push(`${column}=$${values.length}`) }
+      }
+      return page(pool, workspaceId, 'association.sponsorship_allocations', input,
+        `SELECT ${SPONSORSHIP_ALLOCATION_SELECT}
+           FROM association_sponsorship_allocations a
+           JOIN entities sponsor ON sponsor.workspace_id=a.workspace_id AND sponsor.id=a.sponsor_contact_id
+           JOIN association_membership_plans beneficiary ON beneficiary.workspace_id=a.workspace_id AND beneficiary.id=a.beneficiary_plan_id
+          WHERE ${conditions.join(' AND ')}`, values)
+    },
+
+    async createSponsorshipAllocation(workspaceId, input, actor) {
+      return transact(async client => {
+        const fingerprint = associationFingerprint(input)
+        const replay = async () => client.query<DbRow>(
+          `SELECT ${SPONSORSHIP_ALLOCATION_SELECT},a.request_fingerprint AS "requestFingerprint"
+             FROM association_sponsorship_allocations a
+             JOIN entities sponsor ON sponsor.workspace_id=a.workspace_id AND sponsor.id=a.sponsor_contact_id
+             JOIN association_membership_plans beneficiary ON beneficiary.workspace_id=a.workspace_id AND beneficiary.id=a.beneficiary_plan_id
+            WHERE a.workspace_id=$1 AND a.idempotency_key=$2 FOR UPDATE OF a`, [workspaceId, input.idempotencyKey])
+        const existing = (await replay()).rows[0]
+        if (existing) {
+          if (existing.requestFingerprint !== fingerprint) throw new AssociationError('conflict', 'idempotency key was already used for a different sponsorship allocation')
+          const { requestFingerprint: _ignored, ...record } = existing
+          return { record, created: false }
+        }
+        await requirePerson(client, workspaceId, input.sponsorContactId)
+        const sponsor = (await client.query<{contact_id:string;starts_at:Date;ends_at:Date|null;sponsorship_allocation_id:string|null;effective:boolean}>(
+          `SELECT contact_id,starts_at,ends_at,sponsorship_allocation_id,
+             crm_entitlement_is_effective(status,starts_at,ends_at,statement_timestamp()) effective
+             FROM association_memberships WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
+          [workspaceId, input.sponsorMembershipId])).rows[0]
+        if (!sponsor) throw new AssociationError('not_found', 'sponsor membership not found')
+        if (sponsor.contact_id !== input.sponsorContactId) throw new AssociationError('conflict', 'sponsor membership belongs to a different contact')
+        if (sponsor.sponsorship_allocation_id || !sponsor.effective) throw new AssociationError('not_available', 'sponsor membership must be a current direct entitlement')
+        if (Date.parse(input.startsAt) < sponsor.starts_at.getTime()) throw new AssociationError('conflict', 'allocation cannot start before the sponsor membership')
+        if (sponsor.ends_at && Date.parse(input.endsAt) > sponsor.ends_at.getTime()) throw new AssociationError('conflict', 'allocation cannot outlive the sponsor membership')
+        const plan = (await client.query<{fee_minor:string;provider:string|null}>(
+          `SELECT fee_minor::text,provider FROM association_membership_plans WHERE workspace_id=$1 AND id=$2 FOR SHARE`,
+          [workspaceId, input.beneficiaryPlanId])).rows[0]
+        if (!plan) throw new AssociationError('not_found', 'beneficiary plan not found')
+        if (plan.provider || plan.fee_minor !== '0') throw new AssociationError('not_available', 'sponsorship requires a zero-fee plan managed by Brian')
+        const inserted = (await client.query<{id:string}>(
+          `INSERT INTO association_sponsorship_allocations
+             (workspace_id,sponsor_contact_id,sponsor_membership_id,beneficiary_plan_id,idempotency_key,request_fingerprint,
+              seat_limit,starts_at,ends_at,invitation_ttl_hours)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+           ON CONFLICT(workspace_id,idempotency_key) DO NOTHING RETURNING id`,
+          [workspaceId,input.sponsorContactId,input.sponsorMembershipId,input.beneficiaryPlanId,input.idempotencyKey,
+            fingerprint,input.seatLimit,input.startsAt,input.endsAt,input.invitationTtlHours])).rows[0]
+        if (!inserted) {
+          const raced=(await replay()).rows[0]
+          if(!raced || raced.requestFingerprint!==fingerprint)throw new AssociationError('conflict','sponsorship allocation could not be resolved after a concurrent submission')
+          const {requestFingerprint:_ignored,...record}=raced
+          return {record,created:false}
+        }
+        const record=(await client.query<DbRow>(`SELECT ${SPONSORSHIP_ALLOCATION_SELECT}
+          FROM association_sponsorship_allocations a
+          JOIN entities sponsor ON sponsor.workspace_id=a.workspace_id AND sponsor.id=a.sponsor_contact_id
+          JOIN association_membership_plans beneficiary ON beneficiary.workspace_id=a.workspace_id AND beneficiary.id=a.beneficiary_plan_id
+          WHERE a.workspace_id=$1 AND a.id=$2`,[workspaceId,inserted.id])).rows[0]!
+        await audit(client,workspaceId,'sponsorship.allocation_created','sponsorship_allocation',inserted.id,actor,
+          {contactId:input.sponsorContactId,beneficiaryPlanId:input.beneficiaryPlanId,seatLimit:input.seatLimit})
+        return {record,created:true}
+      })
+    },
+
+    async cancelSponsorshipAllocation(workspaceId, id, input, actor) {
+      return transact(async client => {
+        const allocation=(await client.query<{status:string}>(
+          'SELECT status FROM association_sponsorship_allocations WHERE workspace_id=$1 AND id=$2 FOR UPDATE',[workspaceId,id])).rows[0]
+        if(!allocation)throw new AssociationError('not_found','sponsorship allocation not found')
+        if(allocation.status==='cancelled')return {record:{id,status:'cancelled'},created:false}
+        await client.query(`UPDATE association_sponsorship_allocations SET status='cancelled',cancellation_reason=$3,cancelled_at=statement_timestamp()
+          WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,input.reason])
+        await client.query(`UPDATE association_sponsorship_invitations SET status='revoked',revocation_reason=$3,revoked_at=statement_timestamp()
+          WHERE workspace_id=$1 AND allocation_id=$2 AND status='pending'`,[workspaceId,id,input.reason])
+        await client.query(`UPDATE association_memberships SET status='cancelled'
+          WHERE workspace_id=$1 AND sponsorship_allocation_id=$2 AND status IN('pending','active')`,[workspaceId,id])
+        await audit(client,workspaceId,'sponsorship.allocation_cancelled','sponsorship_allocation',id,actor,{reason:input.reason,requestId:input.requestId})
+        return {record:{id,status:'cancelled',cancellationReason:input.reason},created:true}
+      })
+    },
+
+    async listSponsorshipInvitations(workspaceId, input) {
+      const conditions=['i.workspace_id=$1'];const values:unknown[]=[workspaceId]
+      for(const [column,value] of [['i.allocation_id',input.allocationId],['i.nominee_contact_id',input.nomineeContactId],['i.status',input.status]] as const)
+        if(value){values.push(value);conditions.push(`${column}=$${values.length}`)}
+      return page(pool,workspaceId,'association.sponsorship_invitations',input,
+        `SELECT ${SPONSORSHIP_INVITATION_SELECT} FROM association_sponsorship_invitations i
+          JOIN entities nominee ON nominee.workspace_id=i.workspace_id AND nominee.id=i.nominee_contact_id
+          WHERE ${conditions.join(' AND ')}`,values)
+    },
+
+    async issueSponsorshipInvitation(workspaceId, input, actor) {
+      return transact(async client => {
+        const fingerprint=associationFingerprint(input)
+        const replay=async()=>client.query<DbRow>(`SELECT ${SPONSORSHIP_INVITATION_SELECT},i.request_fingerprint AS "requestFingerprint"
+          FROM association_sponsorship_invitations i JOIN entities nominee ON nominee.workspace_id=i.workspace_id AND nominee.id=i.nominee_contact_id
+          WHERE i.workspace_id=$1 AND i.idempotency_key=$2 FOR UPDATE OF i`,[workspaceId,input.idempotencyKey])
+        const existing=(await replay()).rows[0]
+        if(existing){
+          if(existing.requestFingerprint!==fingerprint)throw new AssociationError('conflict','idempotency key was already used for a different sponsorship invitation')
+          const {requestFingerprint:_ignored,...record}=existing
+          return {record:{...record,redemptionToken:null},created:false}
+        }
+        const allocation=(await client.query<{status:string;starts_at:Date;ends_at:Date;invitation_ttl_hours:number;seat_limit:number}>(
+          `SELECT status,starts_at,ends_at,invitation_ttl_hours,seat_limit FROM association_sponsorship_allocations
+            WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,input.allocationId])).rows[0]
+        if(!allocation)throw new AssociationError('not_found','sponsorship allocation not found')
+        if(allocation.status!=='active'||allocation.ends_at.getTime()<=Date.now())throw new AssociationError('not_available','sponsorship allocation is not available')
+        const expired=await client.query<{id:string}>(`UPDATE association_sponsorship_invitations
+          SET status='revoked',revocation_reason='Invitation expired before replacement.',revoked_at=statement_timestamp()
+          WHERE workspace_id=$1 AND allocation_id=$2 AND status='pending' AND expires_at<=statement_timestamp() RETURNING id`,
+          [workspaceId,input.allocationId])
+        for(const row of expired.rows)await audit(client,workspaceId,'sponsorship.invitation_expired','sponsorship_invitation',row.id,actor,
+          {allocationId:input.allocationId})
+        await requirePerson(client,workspaceId,input.nomineeContactId)
+        const duplicateNominee=await client.query(`SELECT 1 FROM association_sponsorship_invitations
+          WHERE workspace_id=$1 AND allocation_id=$2 AND nominee_contact_id=$3 AND status IN('pending','redeemed')`,
+          [workspaceId,input.allocationId,input.nomineeContactId])
+        if(duplicateNominee.rowCount)throw new AssociationError('conflict','nominee already has a live invitation in this allocation')
+        const used=Number((await client.query<{count:string}>(`SELECT count(*)::text count FROM association_sponsorship_invitations
+          WHERE workspace_id=$1 AND allocation_id=$2 AND (status='redeemed' OR (status='pending' AND expires_at>statement_timestamp()))`,
+          [workspaceId,input.allocationId])).rows[0]!.count)
+        if(used>=allocation.seat_limit)throw new AssociationError('not_available','sponsorship allocation has no available seats')
+        const token=randomBytes(32).toString('base64url'),tokenHash=createHash('sha256').update(token).digest('hex')
+        const expiresAt=new Date(Math.min(Date.now()+allocation.invitation_ttl_hours*3_600_000,allocation.ends_at.getTime()))
+        const inserted=(await client.query<{id:string}>(`INSERT INTO association_sponsorship_invitations
+          (workspace_id,allocation_id,nominee_contact_id,token_hash,idempotency_key,request_fingerprint,expires_at)
+          VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(workspace_id,idempotency_key) DO NOTHING RETURNING id`,
+          [workspaceId,input.allocationId,input.nomineeContactId,tokenHash,input.idempotencyKey,fingerprint,expiresAt])).rows[0]
+        if(!inserted){
+          const raced=(await replay()).rows[0]
+          if(!raced||raced.requestFingerprint!==fingerprint)throw new AssociationError('conflict','sponsorship invitation could not be resolved after a concurrent submission')
+          const {requestFingerprint:_ignored,...record}=raced
+          return {record:{...record,redemptionToken:null},created:false}
+        }
+        const record=(await client.query<DbRow>(`SELECT ${SPONSORSHIP_INVITATION_SELECT}
+          FROM association_sponsorship_invitations i JOIN entities nominee ON nominee.workspace_id=i.workspace_id AND nominee.id=i.nominee_contact_id
+          WHERE i.workspace_id=$1 AND i.id=$2`,[workspaceId,inserted.id])).rows[0]!
+        await audit(client,workspaceId,'sponsorship.invitation_issued','sponsorship_invitation',inserted.id,actor,
+          {contactId:input.nomineeContactId,allocationId:input.allocationId})
+        return {record:{...record,redemptionToken:token},created:true}
+      })
+    },
+
+    async revokeSponsorshipInvitation(workspaceId,id,input,actor){
+      return transact(async client=>{
+        const invitation=(await client.query<{status:string;membership_id:string|null}>(
+          'SELECT status,membership_id FROM association_sponsorship_invitations WHERE workspace_id=$1 AND id=$2 FOR UPDATE',[workspaceId,id])).rows[0]
+        if(!invitation)throw new AssociationError('not_found','sponsorship invitation not found')
+        if(invitation.status==='revoked')return {record:{id,status:'revoked'},created:false}
+        await client.query(`UPDATE association_sponsorship_invitations SET status='revoked',revocation_reason=$3,revoked_at=statement_timestamp(),
+          redeemed_at=NULL,redeemed_contact_id=NULL,membership_id=NULL WHERE workspace_id=$1 AND id=$2`,[workspaceId,id,input.reason])
+        if(invitation.membership_id)await client.query(`UPDATE association_memberships SET status='cancelled'
+          WHERE workspace_id=$1 AND id=$2 AND status IN('pending','active')`,[workspaceId,invitation.membership_id])
+        await audit(client,workspaceId,'sponsorship.invitation_revoked','sponsorship_invitation',id,actor,{reason:input.reason,requestId:input.requestId})
+        return {record:{id,status:'revoked',revocationReason:input.reason},created:true}
+      })
+    },
+
+    async redeemSponsorshipInvitation(workspaceId,input,actor){
+      return transact(async client=>{
+        const tokenHash=createHash('sha256').update(input.token).digest('hex')
+        const invitation=(await client.query<{id:string;allocation_id:string;nominee_contact_id:string;status:string;expires_at:Date;redeemed_contact_id:string|null;membership_id:string|null}>(
+          `SELECT id,allocation_id,nominee_contact_id,status,expires_at,redeemed_contact_id,membership_id
+             FROM association_sponsorship_invitations WHERE workspace_id=$1 AND token_hash=$2 FOR UPDATE`,[workspaceId,tokenHash])).rows[0]
+        if(!invitation)throw new AssociationError('not_found','sponsorship invitation not found')
+        if(invitation.nominee_contact_id!==input.contactId)throw new AssociationError('not_available','sponsorship invitation belongs to a different member')
+        if(invitation.status==='redeemed'&&invitation.redeemed_contact_id===input.contactId&&invitation.membership_id){
+          const record=(await client.query<DbRow>(`SELECT ${MEMBERSHIP_SELECT} FROM association_memberships m
+            JOIN association_membership_plans p ON p.workspace_id=m.workspace_id AND p.id=m.plan_id WHERE m.workspace_id=$1 AND m.id=$2`,
+            [workspaceId,invitation.membership_id])).rows[0]
+          if(record)return {record,created:false}
+        }
+        if(invitation.status!=='pending'||invitation.expires_at.getTime()<=Date.now())throw new AssociationError('not_available','sponsorship invitation is expired or unavailable')
+        const allocation=(await client.query<{status:string;starts_at:Date;ends_at:Date;beneficiary_plan_id:string;sponsor_membership_id:string}>(
+          `SELECT status,starts_at,ends_at,beneficiary_plan_id,sponsor_membership_id FROM association_sponsorship_allocations
+            WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,invitation.allocation_id])).rows[0]
+        if(!allocation||allocation.status!=='active'||allocation.starts_at.getTime()>Date.now()||allocation.ends_at.getTime()<=Date.now())
+          throw new AssociationError('not_available','sponsorship allocation is not currently active')
+        const integration=await lockIntegrationActor(client,workspaceId,actor)
+        authorizeIntegration(actor,'crm.entitlements.write',{planIds:allocation.beneficiary_plan_id},integration)
+        const sponsor=(await client.query<{effective:boolean;sponsorship_allocation_id:string|null}>(`SELECT sponsorship_allocation_id,
+          crm_entitlement_is_effective(status,starts_at,ends_at,statement_timestamp()) effective
+          FROM association_memberships WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,[workspaceId,allocation.sponsor_membership_id])).rows[0]
+        if(!sponsor||sponsor.sponsorship_allocation_id||!sponsor.effective)throw new AssociationError('not_available','sponsor membership is no longer active')
+        const duplicate=await client.query(`SELECT 1 FROM association_memberships m WHERE m.workspace_id=$1 AND m.contact_id=$2 AND m.plan_id=$3
+          AND association_membership_is_effective(m.workspace_id,m.id,m.status,m.starts_at,m.ends_at,statement_timestamp())`,
+          [workspaceId,input.contactId,allocation.beneficiary_plan_id])
+        if(duplicate.rowCount)throw new AssociationError('conflict','member already has an effective entitlement for this plan')
+        const membershipId=(await client.query<{id:string}>(`INSERT INTO association_memberships
+          (workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,starts_at,ends_at,renewal_mode,sponsorship_allocation_id)
+          VALUES($1,$2,$3,$4,$5,'active',statement_timestamp(),$6,'none',$7) RETURNING id`,
+          [workspaceId,input.contactId,allocation.beneficiary_plan_id,`sponsorship:${invitation.id}`,
+            associationFingerprint({invitationId:invitation.id,contactId:input.contactId,planId:allocation.beneficiary_plan_id}),
+            allocation.ends_at,invitation.allocation_id])).rows[0]!.id
+        await client.query(`UPDATE association_sponsorship_invitations SET status='redeemed',redeemed_contact_id=$3,membership_id=$4,
+          redeemed_at=statement_timestamp() WHERE workspace_id=$1 AND id=$2`,[workspaceId,invitation.id,input.contactId,membershipId])
+        await audit(client,workspaceId,'sponsorship.invitation_redeemed','sponsorship_invitation',invitation.id,actor,
+          {contactId:input.contactId,allocationId:invitation.allocation_id,membershipId})
+        const record=(await client.query<DbRow>(`SELECT ${MEMBERSHIP_SELECT} FROM association_memberships m
+          JOIN association_membership_plans p ON p.workspace_id=m.workspace_id AND p.id=m.plan_id WHERE m.workspace_id=$1 AND m.id=$2`,
+          [workspaceId,membershipId])).rows[0]!
+        return {record,created:true}
       })
     },
 
@@ -2334,7 +2579,7 @@ export function createAssociationStore(
                    ON p.workspace_id = m.workspace_id AND p.id = m.plan_id
                 WHERE m.workspace_id = $1 AND m.contact_id = $2
                   AND m.id=ANY($4::uuid[])
-                  AND crm_entitlement_is_effective(m.status,m.starts_at,m.ends_at,$5::timestamptz)
+                  AND association_membership_is_effective(m.workspace_id,m.id,m.status,m.starts_at,m.ends_at,$5::timestamptz)
                   AND (cardinality($3::text[]) = 0 OR p.plan_key = ANY($3::text[]))
                 ORDER BY m.starts_at DESC LIMIT 1`,
                 [workspaceId, contactId, ticket.eligible_plan_keys, lockedMembershipIds, admittedAt],

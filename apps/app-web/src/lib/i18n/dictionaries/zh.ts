@@ -538,6 +538,11 @@ export const zh: Dictionary = {
       "manualOnly": "免費授予需使用未綁定供應商的免費計劃。",
       "renewalHelp": "手動調整不能取代供應商證據，原開始日期會保留。"
     },
+    "sponsorship": {
+      "title": "贊助會籍", "help": "從有效的贊助者會籍建立有期限的名額，再發出綁定指定收件人的邀請。兌換後的會籍會隨名額期限結束，贊助者會籍失效時亦立即停止。",
+      "createAllocation": "建立贊助名額", "issueInvitation": "發出邀請", "sponsor": "贊助者", "sponsorMembership": "有效贊助者會籍", "beneficiaryPlan": "受贊助計劃", "allocation": "贊助名額", "nominee": "獲提名者", "choose": "請選擇…", "seats": "名額上限", "ttl": "邀請有效時數", "start": "名額開始時間", "end": "名額結束時間",
+      "tokenHelp": "請立即複製這個一次性兌換代碼。Brian 只保存摘要，之後不能再次顯示。", "copyToken": "複製代碼", "reason": "取消或撤回原因", "cancelAllocation": "取消贊助名額", "cancelHelp": "取消此名額、撤回待處理邀請，並取消所有由此兌換的會籍？", "revokeInvitation": "撤回邀請", "revokeHelp": "撤回此邀請？如已兌換，其贊助會籍將被取消並釋出名額。", "expired": "已過期"
+    },
     "admin": {
       "title": "管理",
       "keys": "整合金鑰",

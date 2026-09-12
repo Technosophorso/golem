@@ -533,6 +533,7 @@ export type CrmEntitlement = {
   renewalMode: "none" | "manual" | "auto";
   provider: string | null;
   providerEntitlementId: string | null;
+  sponsorshipAllocationId?: string | null;
   createdAt: string;
   updatedAt: string;
 };

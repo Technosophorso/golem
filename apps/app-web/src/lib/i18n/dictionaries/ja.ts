@@ -538,6 +538,11 @@ export const ja: Dictionary = {
       "manualOnly": "無償付与には、プロバイダーと紐付いていない無料プランが必要です。",
       "renewalHelp": "手動変更はプロバイダーの証拠を代替できません。元の開始日時を保持します。"
     },
+    "sponsorship": {
+      "title": "スポンサー会員枠", "help": "有効なスポンサー会員資格から期限付きの枠を作成し、受取人に紐づく招待を発行します。交換した資格は枠の終了時に失効し、スポンサー資格が失効した場合も直ちに停止します。",
+      "createAllocation": "スポンサー枠を作成", "issueInvitation": "招待を発行", "sponsor": "スポンサー", "sponsorMembership": "有効なスポンサー会員資格", "beneficiaryPlan": "スポンサー対象プラン", "allocation": "スポンサー枠", "nominee": "候補者", "choose": "選択…", "seats": "枠数", "ttl": "招待の有効時間", "start": "枠の開始", "end": "枠の終了",
+      "tokenHelp": "この一回限りの交換トークンを今コピーしてください。Brian はダイジェストだけを保存し、再表示できません。", "copyToken": "トークンをコピー", "reason": "取消または撤回の理由", "cancelAllocation": "スポンサー枠を取消", "cancelHelp": "この枠を取り消し、保留中の招待と交換済みのスポンサー会員資格をすべて取り消しますか？", "revokeInvitation": "招待を撤回", "revokeHelp": "この招待を撤回しますか？交換済みの場合、スポンサー会員資格を取り消して枠を戻します。", "expired": "期限切れ"
+    },
     "admin": {
       "title": "管理",
       "keys": "連携キー",

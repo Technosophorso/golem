@@ -288,7 +288,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
     ],
     "excludedColumns": [],
     "orderBy": "t.id",
-    "subjectWhere": "EXISTS(SELECT 1 FROM association_memberships m WHERE m.workspace_id=$1 AND (m.contact_id=$2 AND m.plan_id=t.id)) OR EXISTS(SELECT 1 FROM association_membership_offline_rescues r WHERE r.workspace_id=$1 AND r.contact_id=$2 AND r.plan_id=t.id)",
+    "subjectWhere": "EXISTS(SELECT 1 FROM association_memberships m WHERE m.workspace_id=$1 AND (m.contact_id=$2 AND m.plan_id=t.id)) OR EXISTS(SELECT 1 FROM association_membership_offline_rescues r WHERE r.workspace_id=$1 AND r.contact_id=$2 AND r.plan_id=t.id) OR EXISTS(SELECT 1 FROM association_sponsorship_allocations a WHERE a.workspace_id=$1 AND a.beneficiary_plan_id=t.id AND (a.sponsor_contact_id=$2 OR EXISTS(SELECT 1 FROM association_sponsorship_invitations i WHERE i.workspace_id=$1 AND i.allocation_id=a.id AND (i.nominee_contact_id=$2 OR i.redeemed_contact_id=$2))))",
     "workspaceWhere": "true",
     "subjectRedactions": {},
     "transforms": {},
@@ -311,6 +311,7 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
       "provider_membership_id",
       "provider_period_id",
       "predecessor_id",
+      "sponsorship_allocation_id",
       "created_at",
       "updated_at"
     ],
@@ -321,6 +322,42 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
     "subjectRedactions": { "provider_period_id": "NULL" },
     "transforms": {},
     "reason": "Rows follow explicit CRM attribution."
+  },
+  {
+    "domain": "association_sponsorship_allocations",
+    "columns": [
+      "id","workspace_id","sponsor_contact_id","sponsor_membership_id","beneficiary_plan_id",
+      "idempotency_key","request_fingerprint","seat_limit","starts_at","ends_at","invitation_ttl_hours",
+      "status","cancellation_reason","cancelled_at","created_at","updated_at"
+    ],
+    "excludedColumns": ["idempotency_key","request_fingerprint"],
+    "orderBy": "t.id",
+    "subjectWhere": "t.sponsor_contact_id=$2 OR EXISTS(SELECT 1 FROM association_sponsorship_invitations i WHERE i.workspace_id=$1 AND i.allocation_id=t.id AND (i.nominee_contact_id=$2 OR i.redeemed_contact_id=$2))",
+    "workspaceWhere": "true",
+    "subjectRedactions": {
+      "sponsor_contact_id": "CASE WHEN t.sponsor_contact_id=$2 THEN t.sponsor_contact_id ELSE NULL END",
+      "sponsor_membership_id": "CASE WHEN t.sponsor_contact_id=$2 THEN t.sponsor_membership_id ELSE NULL END",
+      "cancellation_reason": "CASE WHEN t.sponsor_contact_id=$2 THEN t.cancellation_reason ELSE NULL END"
+    },
+    "transforms": {},
+    "reason": "Allocation policy and the subject's participation are included; another person's sponsor identity and internal replay evidence are redacted."
+  },
+  {
+    "domain": "association_sponsorship_invitations",
+    "columns": [
+      "id","workspace_id","allocation_id","nominee_contact_id","token_hash","idempotency_key","request_fingerprint",
+      "status","expires_at","redeemed_contact_id","membership_id","redeemed_at","revocation_reason","revoked_at","created_at","updated_at"
+    ],
+    "excludedColumns": ["token_hash","idempotency_key","request_fingerprint"],
+    "orderBy": "t.id",
+    "subjectWhere": "t.nominee_contact_id=$2 OR t.redeemed_contact_id=$2",
+    "workspaceWhere": "true",
+    "subjectRedactions": {
+      "nominee_contact_id": "CASE WHEN t.nominee_contact_id=$2 THEN t.nominee_contact_id ELSE NULL END",
+      "redeemed_contact_id": "CASE WHEN t.redeemed_contact_id=$2 THEN t.redeemed_contact_id ELSE NULL END"
+    },
+    "transforms": {},
+    "reason": "Invitation lifecycle evidence is attributable to the nominee; the bearer-token digest and replay identifiers are always excluded."
   },
   {
     "domain": "association_membership_offline_rescues",

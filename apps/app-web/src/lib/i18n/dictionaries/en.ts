@@ -551,6 +551,11 @@ export const en = {
       "manualOnly": "Complimentary grants require a free plan with no provider binding.",
       "renewalHelp": "Manual adjustments cannot replace provider evidence. The original start date is retained."
     },
+    "sponsorship": {
+      "title": "Sponsored memberships", "help": "Create a time-bounded seat allocation from a current sponsor membership, then issue recipient-bound invitations. A redeemed place ends with the allocation and stops working if the sponsor lapses.",
+      "createAllocation": "Create allocation", "issueInvitation": "Issue invitation", "sponsor": "Sponsor", "sponsorMembership": "Current sponsor membership", "beneficiaryPlan": "Sponsored plan", "allocation": "Allocation", "nominee": "Nominee", "choose": "Choose…", "seats": "Seat limit", "ttl": "Invitation validity (hours)", "start": "Allocation starts", "end": "Allocation ends",
+      "tokenHelp": "Copy this one-time redemption token now. Brian stores only its digest and cannot show it again.", "copyToken": "Copy token", "reason": "Reason for cancellation or revocation", "cancelAllocation": "Cancel allocation", "cancelHelp": "Cancel this allocation, revoke pending invitations, and cancel every membership redeemed from it?", "revokeInvitation": "Revoke invitation", "revokeHelp": "Revoke this invitation? If it was redeemed, its sponsored membership will be cancelled and the seat released.", "expired": "expired"
+    },
     "admin": {
       "title": "Administration",
       "keys": "Integration keys",

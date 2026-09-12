@@ -549,6 +549,11 @@ export const zhCN: Dictionary = {
       "manualOnly": "免费授予需使用未绑定供应商的免费计划。",
       "renewalHelp": "手动调整不能替代供应商证据，原开始日期会保留。"
     },
+    "sponsorship": {
+      "title": "赞助会员资格", "help": "从有效的赞助者会员资格创建有期限的名额，再发出绑定指定收件人的邀请。兑换后的资格会随名额期限结束，赞助者资格失效时也会立即停止。",
+      "createAllocation": "创建赞助名额", "issueInvitation": "发出邀请", "sponsor": "赞助者", "sponsorMembership": "有效赞助者资格", "beneficiaryPlan": "受赞助计划", "allocation": "赞助名额", "nominee": "被提名人", "choose": "请选择…", "seats": "名额上限", "ttl": "邀请有效小时数", "start": "名额开始时间", "end": "名额结束时间",
+      "tokenHelp": "请立即复制这个一次性兑换代码。Brian 只保存摘要，之后无法再次显示。", "copyToken": "复制代码", "reason": "取消或撤销原因", "cancelAllocation": "取消赞助名额", "cancelHelp": "取消此名额、撤销待处理邀请，并取消所有由此兑换的会员资格？", "revokeInvitation": "撤销邀请", "revokeHelp": "撤销此邀请？如果已兑换，其赞助资格将被取消并释放名额。", "expired": "已过期"
+    },
     "admin": {
       "title": "管理",
       "keys": "集成密钥",

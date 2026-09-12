@@ -140,6 +140,43 @@ export const AssociationMembershipUpdateSchema = z.object({
 }).refine((value) => Object.keys(value).length > 0, 'at least one change is required')
 export type AssociationMembershipUpdateInput = z.infer<typeof AssociationMembershipUpdateSchema>
 
+export const AssociationSponsorshipAllocationStatusSchema = z.enum(['active', 'cancelled'])
+export type AssociationSponsorshipAllocationStatus = z.infer<typeof AssociationSponsorshipAllocationStatusSchema>
+
+export const AssociationSponsorshipAllocationCreateSchema = z.object({
+  sponsorContactId: UUID,
+  sponsorMembershipId: UUID,
+  beneficiaryPlanId: UUID,
+  idempotencyKey: z.string().trim().min(1).max(200),
+  seatLimit: z.number().int().positive().max(10_000),
+  startsAt: Instant,
+  endsAt: Instant,
+  invitationTtlHours: z.number().int().min(1).max(24 * 90).default(168),
+}).strict().refine(value => Date.parse(value.startsAt) < Date.parse(value.endsAt), 'endsAt must be after startsAt')
+export type AssociationSponsorshipAllocationCreateInput = z.infer<typeof AssociationSponsorshipAllocationCreateSchema>
+
+export const AssociationSponsorshipInvitationStatusSchema = z.enum(['pending', 'redeemed', 'revoked'])
+export type AssociationSponsorshipInvitationStatus = z.infer<typeof AssociationSponsorshipInvitationStatusSchema>
+
+export const AssociationSponsorshipInvitationCreateSchema = z.object({
+  allocationId: UUID,
+  nomineeContactId: UUID,
+  idempotencyKey: z.string().trim().min(1).max(200),
+}).strict()
+export type AssociationSponsorshipInvitationCreateInput = z.infer<typeof AssociationSponsorshipInvitationCreateSchema>
+
+export const AssociationSponsorshipReasonSchema = z.object({
+  requestId: z.string().trim().min(1).max(200),
+  reason: z.string().trim().min(1).max(2_000),
+}).strict()
+export type AssociationSponsorshipReasonInput = z.infer<typeof AssociationSponsorshipReasonSchema>
+
+export const AssociationSponsorshipRedemptionSchema = z.object({
+  token: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
+  contactId: UUID,
+}).strict()
+export type AssociationSponsorshipRedemptionInput = z.infer<typeof AssociationSponsorshipRedemptionSchema>
+
 export const AssociationMembershipRescueStatusSchema = z.enum(['outstanding', 'settled', 'reversed', 'cancelled'])
 export type AssociationMembershipRescueStatus = z.infer<typeof AssociationMembershipRescueStatusSchema>
 

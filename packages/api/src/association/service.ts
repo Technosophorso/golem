@@ -59,7 +59,8 @@ export function createAssociationService(options: {
       if (!(read ? authority.canRead : authority.canWrite)) throw new CrmOperationsError('not_authorized', 'Association authority is required.')
       if (context.actor.kind === 'intake_key') throw new CrmOperationsError('not_authorized', 'An intake credential cannot operate Association commerce.')
       if (context.actor.kind === 'integration_key' && integration?.credentialId !== context.actor.credentialId) throw new CrmIntegrationScopeError('association.read')
-      const operation: CrmIntegrationOperation = read ? 'association.read'
+      const operation: CrmIntegrationOperation = command.kind === 'redeem_sponsorship_invitation' ? 'crm.entitlements.write'
+        : read ? 'association.read'
         : ['save_ticket', 'save_promotion'].includes(command.kind) ? 'crm.catalog.configure'
         : command.kind === 'reserve_membership_checkout' ? 'crm.entitlements.write'
         : ['reconcile_provider_event', 'reconcile_provider_financial_event', 'reconcile_provider_entitlement', 'bind_order_provider', 'bind_membership_checkout_provider'].includes(command.kind) ? 'association.provider_events.write' : 'association.orders.write'
@@ -85,6 +86,11 @@ export function createAssociationService(options: {
       const requireFinanceReviewer = () => {
         if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
           throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to review offline payment evidence.')
+        }
+      }
+      const requireSponsorshipManager = () => {
+        if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
+          throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to manage sponsorship allocations.')
         }
       }
       switch (command.kind) {
@@ -158,6 +164,37 @@ export function createAssociationService(options: {
         case 'cancel_membership_rescue': {
           requireFinanceReviewer()
           return { ...output, ...(await store.cancelMembershipRescue(workspaceId, command.rescueId, command.cancellation, dbActor)) }
+        }
+        case 'list_sponsorship_allocations': {
+          requireSponsorshipManager()
+          return { ...output, ...(await store.listSponsorshipAllocations(workspaceId, { ...pagination(), sponsorContactId: command.sponsorContactId, status: command.status })) }
+        }
+        case 'create_sponsorship_allocation': {
+          requireSponsorshipManager()
+          return { ...output, ...(await store.createSponsorshipAllocation(workspaceId, command.allocation, dbActor)) }
+        }
+        case 'cancel_sponsorship_allocation': {
+          requireSponsorshipManager()
+          return { ...output, ...(await store.cancelSponsorshipAllocation(workspaceId, command.allocationId, command.cancellation, dbActor)) }
+        }
+        case 'list_sponsorship_invitations': {
+          requireSponsorshipManager()
+          return { ...output, ...(await store.listSponsorshipInvitations(workspaceId, { ...pagination(), allocationId: command.allocationId,
+            nomineeContactId: command.nomineeContactId, status: command.status })) }
+        }
+        case 'issue_sponsorship_invitation': {
+          requireSponsorshipManager()
+          return { ...output, ...(await store.issueSponsorshipInvitation(workspaceId, command.invitation, dbActor)) }
+        }
+        case 'revoke_sponsorship_invitation': {
+          requireSponsorshipManager()
+          return { ...output, ...(await store.revokeSponsorshipInvitation(workspaceId, command.invitationId, command.revocation, dbActor)) }
+        }
+        case 'redeem_sponsorship_invitation': {
+          if (context.actor.kind !== 'integration_key' || !integration) {
+            throw new CrmOperationsError('not_authorized', 'A credential-scoped member backend is required to redeem a sponsorship invitation.')
+          }
+          return { ...output, ...(await store.redeemSponsorshipInvitation(workspaceId, command.redemption, dbActor)) }
         }
         case 'create_order': return { ...output, ...(await store.createOrder(workspaceId, command.order, dbActor)) }
         case 'reserve_membership_checkout': return { ...output, ...(await store.reserveMembershipCheckout(workspaceId, command.checkout, dbActor)) }

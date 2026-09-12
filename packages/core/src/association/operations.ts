@@ -14,6 +14,9 @@ import {
   AssociationMembershipRescueCreateSchema, AssociationMembershipRescueSettlementSchema,
   AssociationMembershipRescueReversalSchema, AssociationMembershipRescueCancellationSchema,
   AssociationMembershipRescueStatusSchema,
+  AssociationSponsorshipAllocationCreateSchema, AssociationSponsorshipAllocationStatusSchema,
+  AssociationSponsorshipInvitationCreateSchema, AssociationSponsorshipInvitationStatusSchema,
+  AssociationSponsorshipReasonSchema, AssociationSponsorshipRedemptionSchema,
   AssociationPromotionInputSchema,
   AssociationListPageSchema, type AssociationOrderFinancialSummary,
   type AssociationPromotionImportInput, type AssociationSourceOrderImportInput,
@@ -61,6 +64,15 @@ export const AssociationCommandSchema = z.union([
   z.object({ kind: z.literal('settle_membership_rescue'), rescueId: Id, settlement: AssociationMembershipRescueSettlementSchema }).strict(),
   z.object({ kind: z.literal('reverse_membership_rescue'), rescueId: Id, reversal: AssociationMembershipRescueReversalSchema }).strict(),
   z.object({ kind: z.literal('cancel_membership_rescue'), rescueId: Id, cancellation: AssociationMembershipRescueCancellationSchema }).strict(),
+  AssociationListPageSchema.extend({ kind: z.literal('list_sponsorship_allocations'), sponsorContactId: Id.optional(),
+    status: AssociationSponsorshipAllocationStatusSchema.optional() }).strict(),
+  z.object({ kind: z.literal('create_sponsorship_allocation'), allocation: AssociationSponsorshipAllocationCreateSchema }).strict(),
+  z.object({ kind: z.literal('cancel_sponsorship_allocation'), allocationId: Id, cancellation: AssociationSponsorshipReasonSchema }).strict(),
+  AssociationListPageSchema.extend({ kind: z.literal('list_sponsorship_invitations'), allocationId: Id.optional(),
+    nomineeContactId: Id.optional(), status: AssociationSponsorshipInvitationStatusSchema.optional() }).strict(),
+  z.object({ kind: z.literal('issue_sponsorship_invitation'), invitation: AssociationSponsorshipInvitationCreateSchema }).strict(),
+  z.object({ kind: z.literal('revoke_sponsorship_invitation'), invitationId: Id, revocation: AssociationSponsorshipReasonSchema }).strict(),
+  z.object({ kind: z.literal('redeem_sponsorship_invitation'), redemption: AssociationSponsorshipRedemptionSchema }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_registrations'), eventId: Id, status: AssociationRegistrationStatusSchema.optional() }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_operational_roster'), eventId: Id }).strict(),
   z.object({ kind: z.literal('update_registration'), registrationId: Id, update: AssociationRegistrationUpdateSchema }).strict(),
@@ -94,4 +106,4 @@ export interface AssociationPromotionImportPort {
     input: AssociationPromotionImportInput,
   ): Promise<{ record: Record<string, unknown>; created: boolean; duplicate: boolean }>
 }
-export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_order_notifications', 'list_membership_rescues'] as const
+export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_order_notifications', 'list_membership_rescues', 'list_sponsorship_allocations', 'list_sponsorship_invitations'] as const

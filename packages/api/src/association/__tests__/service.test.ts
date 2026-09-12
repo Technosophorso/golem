@@ -28,6 +28,13 @@ function fixture() {
     settleMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'settled' }, created: true }),
     reverseMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'reversed' }, created: true }),
     cancelMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'cancelled' }, created: true }),
+    listSponsorshipAllocations:vi.fn().mockResolvedValue({items:[],nextCursor:null}),
+    createSponsorshipAllocation:vi.fn().mockResolvedValue({record:{id:orderId,status:'active'},created:true}),
+    cancelSponsorshipAllocation:vi.fn().mockResolvedValue({record:{id:orderId,status:'cancelled'},created:true}),
+    listSponsorshipInvitations:vi.fn().mockResolvedValue({items:[],nextCursor:null}),
+    issueSponsorshipInvitation:vi.fn().mockResolvedValue({record:{id:orderId,status:'pending',redemptionToken:'x'.repeat(43)},created:true}),
+    revokeSponsorshipInvitation:vi.fn().mockResolvedValue({record:{id:orderId,status:'revoked'},created:true}),
+    redeemSponsorshipInvitation:vi.fn().mockResolvedValue({record:{id:orderId,status:'active'},created:true}),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'manual', eventId }),
     updateRegistration: vi.fn(), correctRegistrationCheckIn: vi.fn().mockResolvedValue({ id: orderId, status: 'confirmed' }),
     reconcileProviderEvent: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }),
@@ -213,6 +220,21 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
       currency:'USD',occurredAt:'2026-09-08T00:00:00Z'}
     expect((await f.service.execute(owner,command({kind:'settle_membership_rescue',rescueId:orderId,settlement}))).record).toMatchObject({status:'settled'})
     expect(f.store.settleMembershipRescue).toHaveBeenCalledWith(workspaceId,orderId,settlement,expect.objectContaining({credentialKind:'user'}))
+  })
+  it('keeps sponsorship management with owner/admin staff and redemption with the scoped member backend',async()=>{
+    const f=fixture(),owner={...member,authority:{...member.authority,role:'owner' as const,canConfigure:true}}
+    const allocation={sponsorContactId:userId,sponsorMembershipId:orderId,beneficiaryPlanId:eventId,idempotencyKey:randomUUID(),
+      seatLimit:1,startsAt:'2026-09-01T00:00:00Z',endsAt:'2027-09-01T00:00:00Z',invitationTtlHours:168}
+    await expect(f.service.execute(member,command({kind:'create_sponsorship_allocation',allocation}))).rejects.toMatchObject({code:'not_authorized'})
+    await f.service.execute(owner,command({kind:'create_sponsorship_allocation',allocation}))
+    expect(f.store.createSponsorshipAllocation).toHaveBeenCalledWith(workspaceId,allocation,expect.objectContaining({credentialKind:'user'}))
+    await f.service.execute(owner,command({kind:'list_sponsorship_allocations',limit:10,sponsorContactId:userId}))
+    const redemption={token:'x'.repeat(43),contactId:userId}
+    await expect(f.service.execute(owner,command({kind:'redeem_sponsorship_invitation',redemption}))).rejects.toMatchObject({code:'not_authorized'})
+    const backend=integration();backend.authority.integration!.grants.push({operation:'crm.entitlements.write',selectors:{planIds:[eventId]}})
+    await f.service.execute(backend,command({kind:'redeem_sponsorship_invitation',redemption}))
+    expect(f.store.redeemSponsorshipInvitation).toHaveBeenCalledWith(workspaceId,redemption,
+      expect.objectContaining({credentialKind:'integration_key',integration:backend.authority.integration}))
   })
   it('routes generic participation through CRM and preserves the legacy registration envelope', async () => {
     const f = fixture()

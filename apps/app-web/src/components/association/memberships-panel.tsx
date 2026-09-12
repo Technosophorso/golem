@@ -12,6 +12,7 @@ import { useAssociationModule } from "./module-controls";
 import { AssociationPlanForm } from "./catalog-forms";
 import { AssociationField as Field,AssociationChoice as Choice,AssociationToggle,AssociationContactPicker,AssociationIntentNotice,AssociationListState,useAssociationPage,useAssociationAction,useAssociationIntent,associationLocalTime,associationInstant } from "./operator-controls";
 import { AssociationMembershipRescueForm,AssociationMembershipRescues } from "./membership-rescue";
+import {AssociationSponsorships} from "./sponsorships";
 
 export function AssociationMembershipForm({workspaceId,plan,contact,row,disabled,onSaved}:{workspaceId:string;plan?:AssociationPlan;contact?:CrmLookupRow;row?:AssociationMembership;disabled:boolean;onSaved:()=>void}) {
   const t=useT().associationPage.manage,action=useAssociationAction(workspaceId);
@@ -65,5 +66,6 @@ export function AssociationMembershipsPanel({workspaceId}:{workspaceId:string}) 
     </div>)}</div>{memberships.data?.items.length===0?<p>{t.manage.empty}</p>:null}</AssociationListState>
     {adjust?<AssociationMembershipForm key={adjust.id} workspaceId={workspaceId} row={adjust} disabled={!!memberships.error} onSaved={()=>void memberships.refresh()}/>:null}
     <AssociationMembershipRescues key={rescueVersion} workspaceId={workspaceId} canManage={configure}/>
+    <AssociationSponsorships workspaceId={workspaceId} canManage={configure}/>
   </section>;
 }

@@ -85,13 +85,19 @@ export type AssociationMembershipRescue = {id:string;contactId:string;contactNam
   settlementMethod:"bank_transfer"|"cash"|"cheque"|"other"|null;settlementReference:string|null;settlementOccurredAt:string|null;
   settlementNote:string|null;reversalReference:string|null;reversalOccurredAt:string|null;reversalReason:string|null;cancellationReason:string|null;
   createdAt:string;updatedAt:string};
-type Rows = {retentionRuns:Record<string,unknown>&{id:string;status:string;createdAt:string};credentials:import("./crm-administration").CrmManagedCredential;plans:AssociationPlan;memberships:AssociationMembership;rescues:AssociationMembershipRescue;events:AssociationEvent;tickets:AssociationTicket;promotions:AssociationPromotion;registrations:AssociationRegistration;waitlist:AssociationWaitlistRow;receipts:AssociationProviderReceipt;audit:import("./crm").CrmOperationsAuditEntry;deliveries:import("./crm").CrmEventDeliveryEntry};
+export type AssociationSponsorshipAllocation={id:string;sponsorContactId:string;sponsorContactName:string;sponsorMembershipId:string;
+  beneficiaryPlanId:string;beneficiaryPlanKey:string;beneficiaryPlanName:string;seatLimit:number;allocatedSeats:number;startsAt:string;endsAt:string;
+  invitationTtlHours:number;status:"active"|"cancelled";cancellationReason:string|null;cancelledAt:string|null;createdAt:string;updatedAt:string};
+export type AssociationSponsorshipInvitation={id:string;allocationId:string;nomineeContactId:string;nomineeContactName:string;
+  status:"pending"|"redeemed"|"revoked";expired:boolean;expiresAt:string;redeemedContactId:string|null;membershipId:string|null;
+  redeemedAt:string|null;revocationReason:string|null;revokedAt:string|null;redemptionToken?:string|null;createdAt:string;updatedAt:string};
+type Rows = {retentionRuns:Record<string,unknown>&{id:string;status:string;createdAt:string};credentials:import("./crm-administration").CrmManagedCredential;plans:AssociationPlan;memberships:AssociationMembership;rescues:AssociationMembershipRescue;allocations:AssociationSponsorshipAllocation;invitations:AssociationSponsorshipInvitation;events:AssociationEvent;tickets:AssociationTicket;promotions:AssociationPromotion;registrations:AssociationRegistration;waitlist:AssociationWaitlistRow;receipts:AssociationProviderReceipt;audit:import("./crm").CrmOperationsAuditEntry;deliveries:import("./crm").CrmEventDeliveryEntry};
 export type AssociationResource = keyof Rows;
-export type AssociationListQuery = {cursor?:string;eventId?:string;planId?:string;contactId?:string;status?:string;includeClosed?:boolean;activeOnly?:boolean};
+export type AssociationListQuery = {cursor?:string;eventId?:string;planId?:string;contactId?:string;sponsorContactId?:string;allocationId?:string;nomineeContactId?:string;status?:string;includeClosed?:boolean;activeOnly?:boolean};
 export async function listAssociationPage<K extends keyof Rows>(workspaceId:string,resource:K,query:AssociationListQuery={}):Promise<{items:Rows[K][];nextCursor:string|null}> {
   const base=`/api/crm/${encodeURIComponent(workspaceId)}`;
   const event=encodeURIComponent(query.eventId ?? "");
-  const catalog={retentionRuns:["operations/retention/runs","runs"],credentials:["operations/integration-credentials","credentials"],plans:["operations/entitlement-plans","plans"],memberships:["operations/entitlements","entitlements"],rescues:["association/membership-rescues","rescues"],events:["operations/events","events"],tickets:[`association/events/${event}/tickets`,"tickets"],promotions:["association/promotions","promotions"],registrations:[`association/events/${event}/registrations`,"registrations"],waitlist:["association/waitlist","submissions"],receipts:["association/provider-receipts","receipts"],audit:["operations/audit","entries"],deliveries:["operations/event-delivery","events"]} as const;
+  const catalog={retentionRuns:["operations/retention/runs","runs"],credentials:["operations/integration-credentials","credentials"],plans:["operations/entitlement-plans","plans"],memberships:["operations/entitlements","entitlements"],rescues:["association/membership-rescues","rescues"],allocations:["association/sponsorship-allocations","allocations"],invitations:["association/sponsorship-invitations","invitations"],events:["operations/events","events"],tickets:[`association/events/${event}/tickets`,"tickets"],promotions:["association/promotions","promotions"],registrations:[`association/events/${event}/registrations`,"registrations"],waitlist:["association/waitlist","submissions"],receipts:["association/provider-receipts","receipts"],audit:["operations/audit","entries"],deliveries:["operations/event-delivery","events"]} as const;
   const [path,key]=catalog[resource];
   const params=new URLSearchParams(resource==="tickets"?{}:{limit:"50"});
   for(const [name,value] of Object.entries(query)) if(value!==undefined && !(name==="eventId" && ["tickets","registrations"].includes(resource))) params.set(name,String(value));
@@ -119,6 +125,19 @@ export function reverseAssociationMembershipRescue(workspaceId:string,rescueId:s
 }
 export function cancelAssociationMembershipRescue(workspaceId:string,rescueId:string,input:{requestId:string;reason:string}) {
   return request<{rescue:AssociationMembershipRescue;created:boolean}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/membership-rescues/${encodeURIComponent(rescueId)}/cancel`,input);
+}
+export function createAssociationSponsorshipAllocation(workspaceId:string,input:{sponsorContactId:string;sponsorMembershipId:string;
+  beneficiaryPlanId:string;idempotencyKey:string;seatLimit:number;startsAt:string;endsAt:string;invitationTtlHours:number}){
+  return request<{allocation:AssociationSponsorshipAllocation;created:boolean}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/sponsorship-allocations`,input);
+}
+export function cancelAssociationSponsorshipAllocation(workspaceId:string,id:string,input:{requestId:string;reason:string}){
+  return request<{allocation:AssociationSponsorshipAllocation;created:boolean}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/sponsorship-allocations/${encodeURIComponent(id)}/cancel`,input);
+}
+export function issueAssociationSponsorshipInvitation(workspaceId:string,input:{allocationId:string;nomineeContactId:string;idempotencyKey:string}){
+  return request<{invitation:AssociationSponsorshipInvitation;created:boolean}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/sponsorship-invitations`,input);
+}
+export function revokeAssociationSponsorshipInvitation(workspaceId:string,id:string,input:{requestId:string;reason:string}){
+  return request<{invitation:AssociationSponsorshipInvitation;created:boolean}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/sponsorship-invitations/${encodeURIComponent(id)}/revoke`,input);
 }
 export function saveAssociationEvent(workspaceId:string,input:Omit<AssociationEvent,"id">) {
   return request<{record:AssociationEvent}>(`/api/crm/${encodeURIComponent(workspaceId)}/operations/events`,input);
