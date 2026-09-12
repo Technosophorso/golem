@@ -10,7 +10,7 @@ vi.mock("@/lib/api/association", async importOriginal => ({
 vi.mock("@/lib/surface-prefetch", () => ({ associationModuleCacheKey: (workspaceId: string) => `association-module:${workspaceId}:viewer`,
   associationOrdersCacheKey: (workspaceId: string, cursor: string | null) => `association-orders:${workspaceId}:viewer:${cursor ?? "first"}` }));
 vi.mock("@/components/ui/confirm-dialog", () => ({ confirmDialog: api.confirm }));
-import { AssociationApiError } from "@/lib/api/association";
+import { AssociationApiError, type AssociationOrder } from "@/lib/api/association";
 import { AssociationModuleControls } from "../module-controls";
 import { AssociationOrdersPanel } from "../orders-panel";
 import { I18nProvider } from "@/lib/i18n/client";
@@ -91,8 +91,11 @@ describe("[COMP:app-web/association] Independent module controls", () => {
   });
 });
 
-const orderRow = (id = "order-one", status = "pending", totalMinor = "0") => ({ id, status, totalMinor, currency: "USD", contactId: "contact-one", reservationExpiresAt: null,
-  provider: null, providerReference: null, refundedMinor: "0", refundState: "none", disputeState: "none" });
+const orderRow = (id = "order-one", status: AssociationOrder["status"] = "pending", totalMinor = "0"): AssociationOrder => ({
+  id, status, currency: "USD", subtotalMinor: totalMinor, discountMinor: "0", totalMinor, contactId: "contact-one", reservationExpiresAt: null,
+  provider: null, providerReference: null, promotionId: null, promotionSnapshot: null, createdAt: "2026-09-13T00:00:00.000Z",
+  refundedMinor: "0", refundState: "none", disputeState: "none",
+});
 async function renderOrders() {
   await act(async () => root.render(<I18nProvider locale="en" dict={en}><AssociationOrdersPanel workspaceId="w1" /></I18nProvider>));
 }
