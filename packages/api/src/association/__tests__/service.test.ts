@@ -21,6 +21,7 @@ function fixture() {
     bindOrderProvider: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
     reconcileProviderEntitlement: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     listProviderReceipts: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
+    listNotifications: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     resolveProviderReceipt: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     listMembershipRescues: vi.fn().mockResolvedValue({ items: [{ id: orderId, status: 'outstanding' }], nextCursor: null }),
     createMembershipRescue: vi.fn().mockResolvedValue({ record: { id: orderId, status: 'outstanding' }, created: true }),
@@ -149,6 +150,20 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     await f.service.execute(context, { kind: 'get_order', orderId })
     expect(f.store.getOrder).toHaveBeenCalledWith(workspaceId, orderId, expect.objectContaining({ integration: context.authority.integration }))
     await expect(f.service.execute({ ...context, actor: { kind: 'integration_key', credentialId: randomUUID() } }, { kind: 'get_order', orderId })).rejects.toMatchObject({ code: 'integration_scope_denied' })
+  })
+  it('limits notification evidence to an exact readable order', async () => {
+    const f = fixture(), context = integration()
+    const result = await f.service.execute(context, command({ kind: 'list_order_notifications', orderId, limit: 10 }))
+    expect(result.items).toEqual([])
+    expect(f.store.getOrder).toHaveBeenCalledWith(workspaceId, orderId,
+      expect.objectContaining({ integration: context.authority.integration }))
+    expect(f.store.listNotifications).toHaveBeenCalledWith(workspaceId, {
+      limit: 10, cursor: null, sourceKind: 'order', sourceId: orderId,
+    })
+    f.store.getOrder.mockResolvedValueOnce(null)
+    await expect(f.service.execute(context, command({ kind: 'list_order_notifications', orderId })))
+      .rejects.toMatchObject({ code: 'not_found' })
+    expect(f.store.listNotifications).toHaveBeenCalledTimes(1)
   })
   it('does not let read scope or intake credentials perform commerce writes', async () => {
     const f = fixture()

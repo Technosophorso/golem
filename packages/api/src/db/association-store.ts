@@ -124,7 +124,7 @@ export type AssociationStore = {
   getRegistrationManagement(workspaceId: string, id: string): Promise<{ sourceKind: string; eventId?: string } | null>
   updateRegistration(workspaceId: string, id: string, input: RegistrationUpdateInput, actor: AssociationActor): Promise<AssociationRecord>
   correctRegistrationCheckIn(workspaceId: string, id: string, input: CheckInCorrectionInput, actor: AssociationActor): Promise<AssociationRecord>
-  listNotifications(workspaceId: string, input: AssociationListInput & { status?: string }): Promise<AssociationPage>
+  listNotifications(workspaceId: string, input: AssociationListInput & { status?: string; sourceKind?: string; sourceId?: string }): Promise<AssociationPage>
 }
 
 type DbRow = QueryResultRow & Record<string, unknown>
@@ -2761,6 +2761,14 @@ export function createAssociationStore(
       if (input.status) {
         values.push(input.status)
         conditions.push(`status = $${values.length}`)
+      }
+      if (input.sourceKind) {
+        values.push(input.sourceKind)
+        conditions.push(`source_kind = $${values.length}`)
+      }
+      if (input.sourceId) {
+        values.push(input.sourceId)
+        conditions.push(`source_id = $${values.length}`)
       }
       return page(pool, workspaceId, 'association.notifications', input,
         `SELECT ${NOTIFICATION_SELECT} FROM association_notification_outbox WHERE ${conditions.join(' AND ')}`, values)

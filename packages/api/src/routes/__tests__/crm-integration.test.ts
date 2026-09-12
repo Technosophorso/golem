@@ -121,6 +121,18 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(response.status).toBe(200)
     expect(response.body).toMatchObject({ orders: [{ id: eventId }], financialSummary: summary })
   })
+  it('exposes notification evidence only through the exact order route', async () => {
+    const f = fixture()
+    f.association.execute.mockResolvedValueOnce({ command: 'list_order_notifications', items: [], nextCursor: null } as never)
+    const response = await request(f.app).get(`/api/crm/integration/association/orders/${eventId}/notifications?limit=10`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toEqual({ notifications: [], nextCursor: null })
+    expect(f.association.execute).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceId, actor: { kind: 'integration_key', credentialId } }),
+      { kind: 'list_order_notifications', orderId: eventId, limit: 10 },
+    )
+  })
   it('runs before JWT-only guards, derives context from the CRM credential and exposes no secret', async () => {
     const f = fixture()
     const result = await request(f.app).get('/api/crm/integration/catalog').set('Authorization', `Bearer ${token}`)
@@ -258,7 +270,7 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(saved.status).toBe(201)
     expect(saved.body).toEqual({ promotion: { id: credentialId }, created: true })
     expect(service.execute).toHaveBeenNthCalledWith(2, expect.objectContaining({ actor: { kind: 'user', userId } }),
-      { kind: 'save_promotion', promotion })
+      { kind: 'save_promotion', promotion: { ...promotion, recurrenceMode: 'once', applyMode: 'each_eligible_item' } })
   })
   it('maps the reviewed member check-in correction to its closed command', async () => {
     const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore

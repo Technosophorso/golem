@@ -62,6 +62,7 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
   route('post', '/membership-checkouts', (req) => ({ kind: 'reserve_membership_checkout', checkout: req.body }), 'checkout')
   route('post', '/membership-checkouts/:id/provider-binding', (req) => ({ kind: 'bind_membership_checkout_provider', checkoutId: req.params.id, binding: req.body }), 'checkout')
   route('get', '/orders/:id', (req) => ({ kind: 'get_order', orderId: req.params.id }), 'order')
+  route('get', '/orders/:id/notifications', (req) => ({ ...req.query, kind: 'list_order_notifications', orderId: req.params.id }), 'notifications')
   for (const [path, kind] of [['cancel', 'cancel_order'], ['confirm-free', 'confirm_free_order']] as const) {
     route('post', `/orders/:id/${path}`, (req) => {
       z.object({}).strict().parse(req.body ?? {})

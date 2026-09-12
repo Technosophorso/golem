@@ -125,6 +125,13 @@ export function createAssociationService(options: {
           return { ...output, ...(await store.listProviderReceipts(workspaceId, { ...pagination(), orderId: command.orderId, entitlementId: command.entitlementId, state: command.state,
             ...(events === 'all' ? {} : { allowedEventIds: events }), ...(plans === 'all' ? {} : { allowedPlanIds: plans }) })) }
         }
+        case 'list_order_notifications': {
+          const order = await store.getOrder(workspaceId, command.orderId, dbActor)
+          if (!order) throw new AssociationError('not_found', 'order not found')
+          return { ...output, ...(await store.listNotifications(workspaceId, {
+            ...pagination(), sourceKind: 'order', sourceId: command.orderId,
+          })) }
+        }
         case 'retry_provider_receipt': {
           if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
             throw new CrmOperationsError('not_authorized', 'A workspace owner or admin is required to retry provider evidence.')

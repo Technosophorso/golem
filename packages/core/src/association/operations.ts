@@ -53,6 +53,7 @@ export const AssociationCommandSchema = z.union([
   z.object({ kind: z.literal('reconcile_provider_financial_event'), orderId: Id, event: AssociationProviderFinancialEventInputSchema }).strict(),
   z.object({ kind: z.literal('reconcile_provider_entitlement'), event: ProviderEntitlementEventSchema }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_provider_receipts'), orderId: Id.optional(), entitlementId: Id.optional(), state: ProviderReceiptStateSchema.optional() }).strict(),
+  AssociationListPageSchema.extend({ kind: z.literal('list_order_notifications'), orderId: Id }).strict(),
   z.object({ kind: z.literal('retry_provider_receipt'), receiptId: Id }).strict(),
   AssociationListPageSchema.extend({ kind: z.literal('list_membership_rescues'), contactId: Id.optional(),
     planId: Id.optional(), status: AssociationMembershipRescueStatusSchema.optional() }).strict(),
@@ -93,4 +94,4 @@ export interface AssociationPromotionImportPort {
     input: AssociationPromotionImportInput,
   ): Promise<{ record: Record<string, unknown>; created: boolean; duplicate: boolean }>
 }
-export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_membership_rescues'] as const
+export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_order_notifications', 'list_membership_rescues'] as const
