@@ -38,6 +38,9 @@ export async function startReferenceIntakeBackend({ queue, bearerToken, getIntak
     if (!timingSafeEqual(digest(req.headers.authorization ?? ''), bearerHash)) { reply(401, { error: 'unauthorized' }); return }
     try {
       const url = new URL(req.url, 'http://localhost'), parts = url.pathname.split('/').filter(Boolean)
+      if (req.method === 'GET' && parts[0] === 'summary' && parts.length === 1 && !url.search) {
+        reply(200, { queue: queue.summary() }); return
+      }
       if (req.method === 'POST' && parts[0] === 'submissions' && parts.length === 2) {
         const input = await readJson(req)
         if (!input || typeof input !== 'object' || Array.isArray(input) || Object.keys(input).some((key) => !['idempotencyKey', 'body', 'continuation'].includes(key))) throw new IntakeQueueError('invalid_submission_body')
@@ -105,7 +108,8 @@ Supply secrets only through the named environment variables. The backend token
 must contain at least 32 non-whitespace characters. No .env file is loaded.
 POST /submissions/<definition> with {idempotencyKey,body:{fields,...}} and an
 optional opaque continuation commits the queue before 202. GET /receipts/<id>
-shows both states; ?includePayload=true is explicit owner inspection. POST
+shows both states; ?includePayload=true is explicit owner inspection. GET
+/summary returns payload-free aggregate state, age and due counts. POST
 /receipts/<id>/retry or /cancel and /receipts/<id>/continuation/retry or
 /cancel require {confirmed:true}. All routes require the private backend bearer.
 The fixture ignores forwarded-IP headers and is not a production website.

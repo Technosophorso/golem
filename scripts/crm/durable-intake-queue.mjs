@@ -137,6 +137,48 @@ export class DurableIntakeQueue {
         continuationPayload: continuation?.payload_json ? JSON.parse(continuation.payload_json) : null,
       } : {}) }
   }
+  summary() {
+    const now = this.now()
+    const stateCounts = (table, states) => {
+      const counts = Object.fromEntries(states.map((state) => [state, 0]))
+      for (const row of this.db.prepare(`SELECT state,count(*) AS count FROM ${table} GROUP BY state`).all()) {
+        if (Object.hasOwn(counts,row.state)) counts[row.state]=Number(row.count)
+      }
+      return counts
+    }
+    const submissions = this.db.prepare(`SELECT count(*) AS outstanding,min(created_at) AS oldest,
+      sum(CASE WHEN state='queued' AND next_attempt_at<=? THEN 1 ELSE 0 END) AS due,
+      sum(CASE WHEN uncertain=1 THEN 1 ELSE 0 END) AS uncertain,
+      sum(CASE WHEN state IN ('failed','paused') THEN 1 ELSE 0 END) AS blocked,
+      min(CASE WHEN state='queued' THEN next_attempt_at END) AS next_attempt
+      FROM receipts WHERE payload_json IS NOT NULL`).get(now)
+    const continuations = this.db.prepare(`SELECT count(*) AS outstanding,min(r.created_at) AS oldest,
+      sum(CASE WHEN c.state='pending' AND c.next_attempt_at<=? THEN 1 ELSE 0 END) AS due,
+      sum(CASE WHEN c.uncertain=1 THEN 1 ELSE 0 END) AS uncertain,
+      sum(CASE WHEN c.state IN ('failed','paused') THEN 1 ELSE 0 END) AS blocked,
+      min(CASE WHEN c.state='pending' THEN c.next_attempt_at END) AS next_attempt
+      FROM continuations c JOIN receipts r ON r.id=c.receipt_id WHERE c.payload_json IS NOT NULL`).get(now)
+    const projection = (row) => ({
+      outstanding: Number(row.outstanding),
+      due: Number(row.due ?? 0),
+      uncertain: Number(row.uncertain ?? 0),
+      blocked: Number(row.blocked ?? 0),
+      oldestOutstandingAgeMs: row.oldest === null ? null : Math.max(0,now-Number(row.oldest)),
+      nextAttemptInMs: row.next_attempt === null ? null : Math.max(0,Number(row.next_attempt)-now),
+    })
+    return {
+      schemaVersion: 1,
+      observedAt: now,
+      submissions: {
+        states: stateCounts('receipts',['queued','leased','delivered','retired','failed','paused','cancelled']),
+        ...projection(submissions),
+      },
+      continuations: {
+        states: stateCounts('continuations',['pending','leased','delivered','failed','paused','cancelled']),
+        ...projection(continuations),
+      },
+    }
+  }
   enqueue({ definitionKey, idempotencyKey, body, visitorId, continuation }) {
     if (!stableKey.test(definitionKey) || typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.trim().length > 200) fail('invalid_submission_identity')
     if (typeof visitorId !== 'string' || !visitorId || visitorId.length > 500) fail('trusted_visitor_identifier_required')

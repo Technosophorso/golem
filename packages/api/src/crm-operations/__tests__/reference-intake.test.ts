@@ -111,6 +111,30 @@ describe('[COMP:crm/intake-reference] Durable backend admission and replay', () 
     expect(queue.getReceipt(first.id,{ includePayload: true }).continuationPayload).toEqual(continuation)
   })
 
+  it('reports payload-free aggregate backlog, age and state evidence', async () => {
+    const f=fixture(),queue=f.open()
+    expect(queue.summary()).toEqual({
+      schemaVersion: 1,observedAt: f.clock.value,
+      submissions: { states: { queued: 0,leased: 0,delivered: 0,retired: 0,failed: 0,paused: 0,cancelled: 0 },
+        outstanding: 0,due: 0,uncertain: 0,blocked: 0,oldestOutstandingAgeMs: null,nextAttemptInMs: null },
+      continuations: { states: { pending: 0,leased: 0,delivered: 0,failed: 0,paused: 0,cancelled: 0 },
+        outstanding: 0,due: 0,uncertain: 0,blocked: 0,oldestOutstandingAgeMs: null,nextAttemptInMs: null },
+    })
+    enqueue(queue,'summary-fixture','summary-visitor',{ kind: 'fixture',email: 'private@example.test' })
+    f.clock.value+=5000
+    expect(queue.summary()).toMatchObject({
+      observedAt: f.clock.value,
+      submissions: { states: { queued: 1 },outstanding: 1,due: 1,uncertain: 0,blocked: 0,oldestOutstandingAgeMs: 5000,nextAttemptInMs: 0 },
+      continuations: { states: { pending: 1 },outstanding: 1,due: 1,uncertain: 0,blocked: 0,oldestOutstandingAgeMs: 5000,nextAttemptInMs: 0 },
+    })
+    await queue.tick({ getToken: () => token,fetchImpl: async () => accepted() })
+    const delivered=queue.summary()
+    expect(delivered.submissions).toMatchObject({ states: { delivered: 1 },outstanding: 0,due: 0,oldestOutstandingAgeMs: null })
+    expect(delivered.continuations).toMatchObject({ states: { pending: 1 },outstanding: 1,due: 1,oldestOutstandingAgeMs: 5000 })
+    expect(JSON.stringify(delivered)).not.toContain('private@example.test')
+    expect(JSON.stringify(delivered)).not.toContain('summary-fixture')
+  })
+
   it('recovers a two-hour outage after restart with the frozen key/body and clears successful payloads', async () => {
     const f=fixture(),queue=f.open(),first=enqueue(queue)
     const unavailable=vi.fn(async () => { throw new Error('sensitive upstream detail must not persist') })
@@ -262,6 +286,10 @@ describe('[COMP:crm/intake-reference] Durable backend admission and replay', () 
       body: JSON.stringify({ idempotencyKey: key,body }),
     })
     try {
+      expect((await fetch(`${backend.url}/summary`)).status).toBe(401)
+      const summary=await fetch(`${backend.url}/summary`,{ headers: { Authorization: `Bearer ${backendToken}` } })
+      expect(summary.status).toBe(200)
+      expect(await summary.json()).toMatchObject({ queue: { schemaVersion: 1,submissions: { outstanding: 0 } } })
       expect((await post('unauthorized','wrong')).status).toBe(401)
       const response=await post('first'); expect(response.status).toBe(202)
       const { receipt }=await response.json() as { receipt: { id: string } }
