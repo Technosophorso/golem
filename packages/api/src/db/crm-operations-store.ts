@@ -15,6 +15,8 @@ import {
   mayTransitionCrmEntitlement,
   mayTransitionCrmParticipation,
   type CrmIntakeDefinitionVersionInput,
+  type CrmIntakeAttachmentPolicy,
+  type PreparedCrmSubmissionAttachment,
   type ImportHistoricalCrmSubmission,
   type CrmOperationsActor,
   type CrmOperationsContext,
@@ -48,6 +50,7 @@ export type StoredIntakeDefinition = {
   currentVersion: number
   versionId: string
   fields: CrmIntakeDefinitionVersionInput['fields']
+  attachments: CrmIntakeAttachmentPolicy[]
   identityPolicy: CrmIntakeDefinitionVersionInput['identityPolicy']
   allowedIdentityProvider: string | null
   consentMappings: CrmIntakeDefinitionVersionInput['consentMappings']
@@ -130,6 +133,10 @@ export type CrmOperationsTransaction = {
     submittedAt: string
     identityVerificationEvidence?: Record<string, unknown> | null
   }): Promise<CrmOperationsRecord>
+  createSubmissionAttachments(
+    submissionId: string,
+    attachments: readonly PreparedCrmSubmissionAttachment[],
+  ): Promise<void>
   importHistoricalSubmission(params: ImportHistoricalCrmSubmission & {
     requestFingerprint: string
   }): Promise<{ record: CrmOperationsRecord; created: boolean }>
@@ -301,6 +308,7 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
         `SELECT d.id, d.workspace_id AS "workspaceId", d.definition_key AS "definitionKey",
                 d.label, d.active, d.current_version AS "currentVersion",
                 v.id AS "versionId", v.field_catalog AS fields,
+                COALESCE(v.schema_snapshot->'attachments','[]'::jsonb) AS attachments,
                 v.identity_policy AS "identityPolicy",
                 v.allowed_identity_provider AS "allowedIdentityProvider",
                 v.consent_mappings AS "consentMappings", v.queue_key AS "queueKey",
@@ -535,6 +543,19 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
           params.identityVerificationEvidence ? JSON.stringify(params.identityVerificationEvidence) : null],
       )
       return first(result)
+    },
+
+    async createSubmissionAttachments(submissionId, attachments) {
+      for (const attachment of attachments) {
+        await client.query(
+          `INSERT INTO association_submission_attachments(
+             workspace_id,submission_id,attachment_key,original_name,mime_type,
+             content_bytes,size_bytes,sha256
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [workspaceId, submissionId, attachment.key, attachment.originalName,
+            attachment.mimeType, attachment.contentBytes, attachment.sizeBytes, attachment.sha256],
+        )
+      }
     },
 
     async importHistoricalSubmission(params) {

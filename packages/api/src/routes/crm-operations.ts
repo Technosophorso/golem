@@ -349,6 +349,37 @@ export function crmOperationsRoutes(options: Options): Router {
     } catch (error) { writeError(res, error) }
   })
 
+  router.get('/:workspaceId/operations/submissions/:submissionId/attachments/:attachmentId', async (req, res) => {
+    const ctx = await context(req, res)
+    if (!ctx) return
+    const ids = z.object({
+      submissionId: CrmOperationsUuidSchema,
+      attachmentId: CrmOperationsUuidSchema,
+    }).safeParse(req.params)
+    if (!ids.success) {
+      res.status(400).json({ error: 'invalid_input', issues: ids.error.issues })
+      return
+    }
+    try {
+      const attachment = await options.readStore.getSubmissionAttachment(
+        ctx.workspaceId, ids.data.submissionId, ids.data.attachmentId,
+      )
+      if (!attachment) {
+        res.status(404).json({ error: 'not_found' })
+        return
+      }
+      const encodedName = encodeURIComponent(attachment.name)
+        .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+      res.setHeader('Content-Type', attachment.mimeType)
+      res.setHeader('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodedName}`)
+      res.setHeader('Content-Length', String(attachment.contentBytes.length))
+      res.setHeader('Cache-Control', 'private, no-store')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'")
+      res.end(attachment.contentBytes)
+    } catch (error) { writeError(res, error) }
+  })
+
   router.patch('/:workspaceId/operations/submissions/:submissionId', async (req, res) => {
     const ctx = await context(req, res)
     if (!ctx) return

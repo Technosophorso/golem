@@ -306,6 +306,9 @@ export async function pruneCrmOperationsRetention(
       `DELETE FROM crm_intake_idempotency WHERE workspace_id=$1 AND status='retired'
         AND replay_expires_at<=clock_timestamp()`, [workspaceId])
     deleted.crm_intake_idempotency! += retiredReceiptsDeleted
+    await remove('association_submission_attachments',
+      `DELETE FROM association_submission_attachments WHERE workspace_id=$1
+        AND submission_id=ANY($2::uuid[])`, [workspaceId, submissionIds])
     await remove('association_enquiries',
       `DELETE FROM association_enquiries WHERE workspace_id=$1
         AND id=ANY($2::uuid[])`, [workspaceId, submissionIds])

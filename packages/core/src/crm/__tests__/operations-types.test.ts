@@ -30,6 +30,20 @@ describe('[COMP:crm/operations-contract] CRM operations contracts', () => {
     }
     expect(CrmOperationsCommandSchema.safeParse({ kind: 'record_submission', definitionKey: 'fixture', idempotencyKey: 'fixture', fields: {}, externalIdentity: { provider: 'fixture', subject: 'subject', verified: true } }).success).toBe(false)
   })
+  it('bounds declared image attachments separately from mapped form fields', () => {
+    const field = { key: 'name', label: 'Name', type: 'text', required: true, mapping: { kind: 'base_field', field: 'name' } }
+    const attachment = { key: 'business_card', label: 'Business card', maxBytes: 1_048_576, mimeTypes: ['image/png'] }
+    const definition = { identityPolicy: 'new_or_review', fields: [field], attachments: [attachment] }
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse(definition).success).toBe(true)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [attachment, attachment] }).success).toBe(false)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [{ ...attachment, key: 'name' }] }).success).toBe(false)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [{ ...attachment, maxBytes: 1_048_577 }] }).success).toBe(false)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [{ ...attachment, mimeTypes: ['image/svg+xml'] }] }).success).toBe(false)
+    expect(CrmOperationsCommandSchema.safeParse({
+      kind: 'record_submission', definitionKey: 'fixture', idempotencyKey: 'attachment-fixture', fields: { name: 'Fixture' },
+      attachments: [{ key: 'business_card', name: 'card.png', mimeType: 'image/png', contentBase64: 'aGVsbG8=' }],
+    }).success).toBe(true)
+  })
   it('bounds locale maps and rejects client-owned wording evidence', () => {
     const save = { kind: 'save_consent_purpose', purposeKey: 'updates', label: 'Updates', wordingVersion: '1', wording: 'Default' }
     expect(CrmOperationsCommandSchema.safeParse({ ...save, localeWordings: { ja: '同意します' } }).success).toBe(true)

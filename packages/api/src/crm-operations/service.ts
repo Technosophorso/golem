@@ -22,6 +22,7 @@ import {
   isCrmConfigCommand,
   canonicalCrmRequest,
   crmOperationsSha256,
+  prepareCrmSubmissionAttachments,
   requireCrmIntegrationResources,
   validateCrmSegmentCatalog,
   type CrmIntakeFieldDefinition,
@@ -279,6 +280,7 @@ async function executeSubmission(
   const requestHash = crmOperationsSha256({
     definitionKey: command.definitionKey,
     fields: command.fields,
+    ...(command.attachments?.length ? { attachments: command.attachments } : {}),
     externalIdentity: command.externalIdentity ?? null,
     submittedAt: command.submittedAt ?? null,
   })
@@ -311,6 +313,7 @@ async function executeSubmission(
     })
   }
   const mapped = validateAndMapFields(definition, command.fields)
+  const attachments = await prepareCrmSubmissionAttachments(command.attachments ?? [], definition.attachments)
   const identityVerificationEvidence = verifyIntakeIdentity(context, definition, command, requestHash, now)
 
   let resolvedContactId: string | null = null
@@ -357,6 +360,7 @@ async function executeSubmission(
     identityVerificationEvidence,
   })
   const submissionId = recordId(submission, 'submission')
+  await tx.createSubmissionAttachments(submissionId, attachments)
 
   const emittedEventIds: string[] = []
   const auditIdentity: AuditIdentity = actorAuditIdentity(context.actor)

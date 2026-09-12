@@ -76,6 +76,17 @@ describe('[COMP:crm/intake-reference] Durable backend admission and replay', () 
     expect(statSync(f.options.databasePath).mode & 0o077).toBe(0)
   })
 
+  it('durably carries one bounded attachment envelope and still rejects oversized queue payloads', () => {
+    const f=fixture(),queue=f.open()
+    const attachmentBody={ fields: { name: 'Synthetic fixture' },attachments: [{
+      key: 'business_card',name: 'card.png',mimeType: 'image/png',contentBase64: 'A'.repeat(1_398_100),
+    }] }
+    const receipt=queue.enqueue({ definitionKey: 'fixture_form',idempotencyKey: 'attachment',body: attachmentBody,visitorId: 'fixture_visitor' })
+    expect(queue.getReceipt(receipt.id,{ includePayload: true }).payload).toEqual(attachmentBody)
+    expect(() => queue.enqueue({ definitionKey: 'fixture_form',idempotencyKey: 'oversized',visitorId: 'another_visitor',
+      body: { fields: {},attachments: [{ key: 'business_card',contentBase64: 'A'.repeat(1_600_000) }] } })).toThrow('payload_too_large')
+  })
+
   it('shares visitor admission across openings and ignores duplicate retries without creating more work', () => {
     const f=fixture({ visitorLimit: 2 }),left=f.open(),right=f.open()
     const first=enqueue(left,'first','private_visitor_identifier')

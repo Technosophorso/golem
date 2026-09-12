@@ -182,6 +182,29 @@ export const CrmIntakeFieldDefinitionSchema = z.object({
 })
 export type CrmIntakeFieldDefinition = z.infer<typeof CrmIntakeFieldDefinitionSchema>
 
+export const CrmIntakeAttachmentPolicySchema = z.object({
+  key: CrmOperationsStableKeySchema,
+  label: z.string().trim().min(1).max(200),
+  required: z.boolean().default(false),
+  maxBytes: z.number().int().min(1).max(1_048_576),
+  mimeTypes: z.array(z.enum(['image/jpeg', 'image/png', 'image/webp'])).min(1).max(3),
+}).strict().superRefine((policy, ctx) => {
+  if (new Set(policy.mimeTypes).size !== policy.mimeTypes.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mimeTypes'], message: 'attachment MIME types must be unique' })
+  }
+})
+export type CrmIntakeAttachmentPolicy = z.infer<typeof CrmIntakeAttachmentPolicySchema>
+
+export const CrmSubmissionAttachmentSchema = z.object({
+  key: CrmOperationsStableKeySchema,
+  name: z.string().trim().min(1).max(200)
+    .refine((value) => !/[\\/\u0000-\u001f\u007f]/.test(value), 'attachment name must not contain a path or control character'),
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  contentBase64: z.string().min(4).max(1_398_104)
+    .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/, 'attachment must use canonical base64'),
+}).strict()
+export type CrmSubmissionAttachment = z.infer<typeof CrmSubmissionAttachmentSchema>
+
 export const CrmConsentAnswerMappingSchema = z.object({
   fieldKey: CrmOperationsStableKeySchema,
   grantedValue: z.union([z.string().max(200), z.boolean(), z.number()]),
@@ -200,6 +223,7 @@ export const CrmFollowUpTaskTemplateSchema = z.object({
 
 export const CrmIntakeDefinitionVersionInputSchema = z.object({
   fields: z.array(CrmIntakeFieldDefinitionSchema).min(1).max(100),
+  attachments: z.array(CrmIntakeAttachmentPolicySchema).max(5).optional(),
   identityPolicy: CrmIdentityPolicySchema,
   identityVerification: CrmIntakeVerificationConfigSchema.optional(),
   allowedIdentityProvider: CrmOperationsStableKeySchema.nullable().optional(),
@@ -216,6 +240,13 @@ export const CrmIntakeDefinitionVersionInputSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fields'], message: 'field keys must be unique' })
   }
   const known = new Set(keys)
+  const attachmentKeys = (value.attachments ?? []).map((attachment) => attachment.key)
+  if (new Set(attachmentKeys).size !== attachmentKeys.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['attachments'], message: 'attachment keys must be unique' })
+  }
+  if (attachmentKeys.some((key) => known.has(key))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['attachments'], message: 'attachment keys must not duplicate field keys' })
+  }
   for (const [index, mapping] of value.consentMappings.entries()) {
     if (!known.has(mapping.fieldKey)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['consentMappings', index, 'fieldKey'], message: 'consent field must exist in the field catalog' })
@@ -269,6 +300,7 @@ export const RecordCrmSubmissionCommandSchema = z.object({
   definitionKey: CrmOperationsStableKeySchema,
   idempotencyKey: z.string().trim().min(1).max(200),
   fields: boundedCrmObject(1_048_576),
+  attachments: z.array(CrmSubmissionAttachmentSchema).max(5).optional(),
   externalIdentity: CrmExternalIdentityClaimSchema.optional(),
   identityProof: CrmIntakeIdentityProofSchema.optional(),
   submittedAt: CrmOperationsInstantSchema.optional(),

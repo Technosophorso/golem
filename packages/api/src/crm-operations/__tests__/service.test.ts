@@ -38,6 +38,7 @@ const definition: StoredIntakeDefinition = {
     { key: 'newsletter', label: 'Newsletter', type: 'boolean', required: true, mapping: { kind: 'submission_only' } },
     { key: 'private_note', label: 'Private note', type: 'text', required: false, mapping: { kind: 'custom_field', fieldKey: 'intake_note' } },
   ],
+  attachments: [],
   identityPolicy: 'new_or_review',
   allowedIdentityProvider: null,
   consentMappings: [{ fieldKey: 'newsletter', grantedValue: true, purposeKey: 'newsletter' }],
@@ -65,6 +66,7 @@ function makeTransaction(overrides: Partial<CrmOperationsTransaction> = {}) {
     updateContact: vi.fn().mockResolvedValue({ id: CONTACT_ID }),
     bindExternalIdentity: vi.fn().mockResolvedValue(undefined),
     createSubmission: vi.fn().mockResolvedValue({ id: SUBMISSION_ID, contactId: CONTACT_ID }),
+    createSubmissionAttachments: vi.fn().mockResolvedValue(undefined),
     createFollowUpTask: vi.fn().mockResolvedValue({ id: TASK_ID }),
     attachFollowUpTask: vi.fn().mockResolvedValue(undefined),
     getConsentPurpose: vi.fn().mockResolvedValue({
@@ -159,6 +161,7 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
       purpose: expect.objectContaining({ purposeKey: 'newsletter' }),
     }))
     expect(tx.attachFollowUpTask).toHaveBeenCalledWith(SUBMISSION_ID, TASK_ID)
+    expect(tx.createSubmissionAttachments).toHaveBeenCalledWith(SUBMISSION_ID, [])
     expect(tx.commitIdempotency).toHaveBeenCalledWith({
       claimId: 'claim-1', submissionId: SUBMISSION_ID, contactId: CONTACT_ID, followUpTaskId: TASK_ID,
     })
@@ -172,6 +175,59 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
       expect.objectContaining({ submissionId: SUBMISSION_ID, definitionKey: 'contact_form' }),
       expect.objectContaining({ contactId: CONTACT_ID, purposeKey: 'newsletter', action: 'granted' }),
     ]))
+  })
+
+  it('normalizes a declared image attachment before storing it with the submission', async () => {
+    const tx = makeTransaction({
+      getIntakeDefinition: vi.fn().mockResolvedValue({
+        ...definition,
+        attachments: [{
+          key: 'business_card', label: 'Business card', required: false,
+          maxBytes: 1_048_576, mimeTypes: ['image/png'],
+        }],
+      }),
+    })
+    const contentBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    await createCrmOperationsService(makeStore(tx)).execute(context, {
+      ...submissionCommand,
+      attachments: [{ key: 'business_card', name: 'card.png', mimeType: 'image/png', contentBase64 }],
+    })
+    expect(tx.createSubmissionAttachments).toHaveBeenCalledOnce()
+    const saved = (tx.createSubmissionAttachments as ReturnType<typeof vi.fn>).mock.calls[0]![1][0]
+    expect(saved).toMatchObject({
+      key: 'business_card', originalName: 'card.png', mimeType: 'image/png',
+      sizeBytes: expect.any(Number), sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
+    expect(Buffer.isBuffer(saved.contentBytes)).toBe(true)
+    expect(saved.contentBytes.toString('base64')).not.toBe(contentBase64)
+  })
+
+  it('rejects attachments that the intake definition does not declare', async () => {
+    const tx = makeTransaction(), rolledBack = vi.fn()
+    await expect(createCrmOperationsService(makeStore(tx, rolledBack)).execute(context, {
+      ...submissionCommand,
+      attachments: [{
+        key: 'business_card', name: 'card.png', mimeType: 'image/png',
+        contentBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      }],
+    })).rejects.toMatchObject({ code: 'invalid_input', details: { attachmentKey: 'business_card' } })
+    expect(rolledBack).toHaveBeenCalledOnce()
+    expect(tx.createContact).not.toHaveBeenCalled()
+  })
+
+  it('rejects a missing required attachment before creating CRM records', async () => {
+    const tx = makeTransaction({
+      getIntakeDefinition: vi.fn().mockResolvedValue({
+        ...definition,
+        attachments: [{
+          key: 'business_card', label: 'Business card', required: true,
+          maxBytes: 1_048_576, mimeTypes: ['image/png'],
+        }],
+      }),
+    })
+    await expect(createCrmOperationsService(makeStore(tx)).execute(context, submissionCommand))
+      .rejects.toMatchObject({ code: 'invalid_input', details: { attachmentKey: 'business_card' } })
+    expect(tx.createContact).not.toHaveBeenCalled()
   })
 
   it('returns the committed bounded response on an identical replay without any semantic write', async () => {
@@ -252,7 +308,7 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
   })
 
   it.each([
-    'createContact', 'createSubmission', 'appendConsent', 'createFollowUpTask',
+    'createContact', 'createSubmission', 'createSubmissionAttachments', 'appendConsent', 'createFollowUpTask',
     'appendDomainAudit', 'appendWorkspaceAudit', 'emitDomainEvent', 'commitIdempotency',
   ])('propagates a %s failure through the transaction rollback seam', async (method) => {
     let rolledBack = false

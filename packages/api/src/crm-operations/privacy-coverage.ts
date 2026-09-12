@@ -205,6 +205,17 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
     "reason": "Rows follow explicit CRM attribution."
   },
   {
+    domain: 'association_submission_attachments',
+    columns: ['id','workspace_id','submission_id','attachment_key','original_name','mime_type','content_bytes','size_bytes','sha256','created_at'],
+    excludedColumns: ['content_bytes'],
+    orderBy: 't.id',
+    subjectWhere: 'EXISTS(SELECT 1 FROM association_enquiries q WHERE q.workspace_id=$1 AND q.id=t.submission_id AND q.contact_id=$2)',
+    workspaceWhere: 'true',
+    subjectRedactions: {},
+    transforms: {},
+    reason: 'Submission attachment metadata and digest are exportable; normalized binary content stays behind authenticated download and is excluded from bulk privacy export.',
+  },
+  {
     "domain": "association_events",
     "columns": [
       "id",

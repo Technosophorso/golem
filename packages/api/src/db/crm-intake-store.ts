@@ -56,6 +56,11 @@ export type CrmIntakeReadStore = {
 }
 
 export type DbCrmOperationsReadStore = CrmIntakeReadStore & CrmOperationsReadPort & {
+  getSubmissionAttachment(workspaceId: string, submissionId: string, attachmentId: string): Promise<{
+    name: string
+    mimeType: string
+    contentBytes: Buffer
+  } | null>
   listRecordFields(workspaceId: string, filters?: unknown): Promise<CrmPage<'fields'>>
   resolveLegacyPipelineStage(workspaceId: string, stageKey: string): Promise<{
     pipelineId: string
@@ -218,6 +223,8 @@ export function createDbCrmIntakeReadStore(integration?: CrmIntegrationAuthority
                 e.definition_id AS "definitionId", d.definition_key AS "definitionKey",
                 d.label AS "definitionLabel", e.status, e.queue_key AS "queueKey",
                 e.owner_user_id AS "ownerUserId", e.follow_up_task_id AS "followUpTaskId",
+                (SELECT count(*)::int FROM association_submission_attachments a
+                  WHERE a.workspace_id=e.workspace_id AND a.submission_id=e.id) AS "attachmentCount",
                 e.submitted_at AS "submittedAt", e.created_at AS "createdAt",
                 e.updated_at AS "updatedAt"
            FROM association_enquiries e
@@ -251,13 +258,34 @@ export function createDbCrmIntakeReadStore(integration?: CrmIntegrationAuthority
                   'actingUserId', n.acting_user_id, 'createdAt', n.created_at
                 ) ORDER BY n.created_at, n.id)
                 FROM association_enquiry_notes n
-                WHERE n.workspace_id=e.workspace_id AND n.enquiry_id=e.id), '[]'::jsonb) AS notes
+                WHERE n.workspace_id=e.workspace_id AND n.enquiry_id=e.id), '[]'::jsonb) AS notes,
+                COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                  'id', a.id, 'key', a.attachment_key, 'name', a.original_name,
+                  'mimeType', a.mime_type, 'sizeBytes', a.size_bytes,
+                  'sha256', a.sha256, 'createdAt', a.created_at
+                ) ORDER BY a.created_at,a.id)
+                FROM association_submission_attachments a
+                WHERE a.workspace_id=e.workspace_id AND a.submission_id=e.id), '[]'::jsonb) AS attachments
            FROM association_enquiries e
            JOIN entities c ON c.workspace_id=e.workspace_id AND c.id=e.contact_id
            LEFT JOIN crm_intake_definitions d
              ON d.workspace_id=e.workspace_id AND d.id=e.definition_id
           WHERE e.workspace_id=$1 AND e.id=$2 AND ($3::uuid[] IS NULL OR e.definition_id=ANY($3::uuid[]))`,
         [workspaceId, submissionId, select(workspaceId, 'crm.submissions.read', 'definitionIds')],
+      )
+      return result.rows[0] ?? null
+    },
+
+    async getSubmissionAttachment(workspaceId, submissionId, attachmentId) {
+      const result = await query<{ name: string; mimeType: string; contentBytes: Buffer }>(
+        `SELECT a.original_name AS name,a.mime_type AS "mimeType",a.content_bytes AS "contentBytes"
+           FROM association_submission_attachments a
+           JOIN association_enquiries e
+             ON e.workspace_id=a.workspace_id AND e.id=a.submission_id
+          WHERE a.workspace_id=$1 AND a.submission_id=$2 AND a.id=$3
+            AND ($4::uuid[] IS NULL OR e.definition_id=ANY($4::uuid[]))`,
+        [workspaceId, submissionId, attachmentId,
+          select(workspaceId, 'crm.submissions.read', 'definitionIds')],
       )
       return result.rows[0] ?? null
     },

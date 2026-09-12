@@ -8,6 +8,7 @@ const WORKSPACE_ID = '11111111-1111-4111-8111-111111111111'
 const USER_ID = '22222222-2222-4222-8222-222222222222'
 const DEFINITION_ID = '33333333-3333-4333-8333-333333333333'
 const SUBMISSION_ID = '44444444-4444-4444-8444-444444444444'
+const ATTACHMENT_ID = '44444444-4444-4444-9444-444444444444'
 const CONTACT_ID = '55555555-5555-4555-8555-555555555555'
 const SEGMENT_ID = '66666666-6666-4666-8666-666666666666'
 const PLAN_ID = '77777777-7777-4777-8777-777777777777'
@@ -30,6 +31,9 @@ function build(role: 'owner' | 'admin' | 'member' = 'owner') {
     listCredentials: vi.fn().mockResolvedValue({ credentials: [{ id: 'credential-1', prefix: 'sk_intake_abcd' }], nextCursor: null }),
     listSubmissions: vi.fn().mockResolvedValue({ submissions: [{ id: SUBMISSION_ID, contactId: CONTACT_ID }], nextCursor: null }),
     getSubmission: vi.fn().mockResolvedValue({ id: SUBMISSION_ID, contactId: CONTACT_ID, fields: { message: 'Hello' } }),
+    getSubmissionAttachment: vi.fn().mockResolvedValue({
+      name: "Kaye's card.png", mimeType: 'image/png', contentBytes: Buffer.from([137, 80, 78, 71]),
+    }),
     listConsentPurposes: vi.fn().mockResolvedValue({ purposes: [{ purposeKey: 'marketing' }], nextCursor: null }),
     getConsent: vi.fn().mockResolvedValue({ purposes: [], events: [], suppressions: [] }),
     checkSendability: vi.fn().mockResolvedValue({ verdict: 'unknown', reasons: ['consent_not_recorded'], effectiveSuppressionEventIds: [] }),
@@ -124,6 +128,21 @@ describe('[COMP:api/crm-operations-route] intake configuration REST adapter', ()
       status: 'new', limit: 20,
     })
     expect(member.readStore.getSubmission).toHaveBeenCalledWith(WORKSPACE_ID, SUBMISSION_ID)
+  })
+
+  it('downloads a submission attachment through the workspace-qualified read port', async () => {
+    const member = build('member')
+    const response = await request(member.app)
+      .get(`/api/crm/${WORKSPACE_ID}/operations/submissions/${SUBMISSION_ID}/attachments/${ATTACHMENT_ID}`)
+    expect(response.status).toBe(200)
+    expect(response.headers['content-type']).toBe('image/png')
+    expect(response.headers['content-disposition']).toContain("filename*=UTF-8''Kaye%27s%20card.png")
+    expect(response.headers['cache-control']).toBe('private, no-store')
+    expect(response.headers['x-content-type-options']).toBe('nosniff')
+    expect(response.headers['content-security-policy']).toBe("sandbox; default-src 'none'")
+    expect(member.readStore.getSubmissionAttachment).toHaveBeenCalledWith(
+      WORKSPACE_ID, SUBMISSION_ID, ATTACHMENT_ID,
+    )
   })
 
   it('updates a submission only through the canonical service with a server actor', async () => {
