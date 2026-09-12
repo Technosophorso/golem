@@ -23,6 +23,7 @@ function fixture(auth: CrmIntegrationPrincipal | null = principal) {
   const memberProfiles = {
     getMemberProfile: vi.fn(),
     updateMemberProfile: vi.fn(),
+    updateMemberVerifiedEmail: vi.fn(),
   }
   const authenticate = vi.fn().mockResolvedValue(auth)
   const app = express()
@@ -59,6 +60,16 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
       .set('Authorization', `Bearer ${token}`).send({ ...update, email: 'other@example.test' })
     expect(extra.status).toBe(400)
     expect(f.memberProfiles.updateMemberProfile).toHaveBeenCalledTimes(1)
+
+    const verifiedEmail = { expectedUpdatedAt: profile.updatedAt, email: 'New.Member@Example.test', verificationId: credentialId }
+    f.memberProfiles.updateMemberVerifiedEmail.mockResolvedValueOnce({ ...profile, email: 'new.member@example.test' })
+    const emailWritten = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}/verified-email`)
+      .set('Authorization', `Bearer ${token}`).send(verifiedEmail)
+    expect(emailWritten.status).toBe(200)
+    expect(emailWritten.body.profile.email).toBe('new.member@example.test')
+    expect(f.memberProfiles.updateMemberVerifiedEmail).toHaveBeenCalledWith(eventId, {
+      ...verifiedEmail, email: 'new.member@example.test',
+    })
   })
   it('denies member-profile edits without crm.records.write', async () => {
     const f = fixture({ ...principal, grants: [{ operation: 'crm.records.read', selectors: {} }] })
@@ -66,6 +77,12 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
       .set('Authorization', `Bearer ${token}`).send({ expectedUpdatedAt: '2026-09-12T08:00:00.000Z', name: 'New name' })
     expect(response.status).toBe(403)
     expect(f.memberProfiles.updateMemberProfile).not.toHaveBeenCalled()
+    const emailResponse = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}/verified-email`)
+      .set('Authorization', `Bearer ${token}`).send({
+        expectedUpdatedAt: '2026-09-12T08:00:00.000Z', email: 'new@example.test', verificationId: credentialId,
+      })
+    expect(emailResponse.status).toBe(403)
+    expect(f.memberProfiles.updateMemberVerifiedEmail).not.toHaveBeenCalled()
   })
   it('exposes normalized provider receipts through the shared integration adapter', async () => {
     const f = fixture()

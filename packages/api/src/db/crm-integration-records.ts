@@ -49,6 +49,13 @@ export const CrmIntegrationMemberProfileUpdateSchema = z.object({
 })
 export type CrmIntegrationMemberProfileUpdate = z.infer<typeof CrmIntegrationMemberProfileUpdateSchema>
 
+export const CrmIntegrationMemberVerifiedEmailUpdateSchema = z.object({
+  expectedUpdatedAt: z.string().datetime({ offset: true }),
+  email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
+  verificationId: z.string().uuid(),
+}).strict()
+export type CrmIntegrationMemberVerifiedEmailUpdate = z.infer<typeof CrmIntegrationMemberVerifiedEmailUpdateSchema>
+
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 }
@@ -187,6 +194,83 @@ export function createCrmIntegrationRecordReadStore(principal: CrmIntegrationPri
              (workspace_id,action,subject_kind,subject_id,actor_kind,actor_credential_id,metadata)
            VALUES($1,'crm.member_profile.updated','contact',$2,'integration_key',$3,$4::jsonb)`,
           [principal.workspaceId, id, principal.credentialId, JSON.stringify({ fields: changed.sort() })],
+        )
+        await client.query('COMMIT')
+        return memberProfile(result.rows[0])
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    },
+    async updateMemberVerifiedEmail(rawId: unknown, rawUpdate: unknown): Promise<CrmIntegrationMemberProfile | null> {
+      authorize()
+      requireCrmIntegrationOperation(principal, 'crm.records.write')
+      const id = z.string().uuid().parse(rawId)
+      const update = CrmIntegrationMemberVerifiedEmailUpdateSchema.parse(rawUpdate)
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const current = await lockCrmIntegrationCredential(client, principal.workspaceId, principal.credentialId)
+        requireCrmIntegrationOperation(current, 'crm.records.read')
+        requireCrmIntegrationOperation(current, 'crm.records.write')
+        const before = await readMemberProfile(client, principal.workspaceId, id, true)
+        if (!before) {
+          await client.query('ROLLBACK')
+          return null
+        }
+        const oldEmail = text(object(before.attributes).email) ?? before.canonicalId
+        if (oldEmail?.trim().toLowerCase() === update.email) {
+          await client.query('COMMIT')
+          return memberProfile(before)
+        }
+        if (new Date(before.updatedAt).toISOString() !== new Date(update.expectedUpdatedAt).toISOString()) {
+          throw new CrmOperationsError('conflict', 'The member profile changed; request a new email verification link.')
+        }
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))', [
+          JSON.stringify(['crm-intake-identity', principal.workspaceId, 'email', update.email]),
+        ])
+        const collision = await client.query<{ id: string }>(
+          `SELECT id FROM (
+             SELECT e.id
+               FROM entities e
+              WHERE e.workspace_id=$1 AND e.id<>$2 AND e.kind='person'
+                AND e.valid_to IS NULL AND e.retracted_at IS NULL
+                AND NOT (e.attributes ? 'crm_archived_at')
+                AND lower(btrim(COALESCE(NULLIF(btrim(e.attributes->>'email'),''),e.canonical_id,'')))=$3
+             UNION
+             SELECT e.id
+               FROM entity_external_identities i
+               JOIN entities e ON e.workspace_id=i.workspace_id AND e.id=i.entity_id
+              WHERE i.workspace_id=$1 AND i.entity_id<>$2 AND i.identity_kind='email'
+                AND lower(btrim(i.normalized_value))=$3 AND e.kind='person'
+                AND e.valid_to IS NULL AND e.retracted_at IS NULL
+                AND NOT (e.attributes ? 'crm_archived_at')
+           ) matches LIMIT 1`,
+          [principal.workspaceId, id, update.email],
+        )
+        if (collision.rows[0]) {
+          throw new CrmOperationsError('conflict', 'That verified email is already linked to another contact.', {
+            reason: 'email_already_linked',
+          })
+        }
+        const attributes = { ...object(before.attributes), email: update.email }
+        const result = await client.query<MemberProfileRow>(
+          `UPDATE entities
+              SET canonical_id=$3,attributes=$4::jsonb,updated_at=clock_timestamp()
+            WHERE workspace_id=$1 AND id=$2 AND kind='person'
+              AND valid_to IS NULL AND retracted_at IS NULL
+          RETURNING id,display_name AS name,canonical_id AS "canonicalId",attributes,updated_at AS "updatedAt"`,
+          [principal.workspaceId, id, update.email, JSON.stringify(attributes)],
+        )
+        await client.query(
+          `INSERT INTO association_audit_log
+             (workspace_id,action,subject_kind,subject_id,actor_kind,actor_credential_id,metadata)
+           VALUES($1,'crm.member_profile.email_verified','contact',$2,'integration_key',$3,$4::jsonb)`,
+          [principal.workspaceId, id, principal.credentialId, JSON.stringify({
+            fields: ['email'], verificationId: update.verificationId,
+          })],
         )
         await client.query('COMMIT')
         return memberProfile(result.rows[0])

@@ -308,14 +308,48 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
       actor_kind: 'integration_key', actor_credential_id: f.credentialId,
       metadata: { fields: ['mailingAddress', 'name', 'phone'] },
     }])
+    const verificationId = randomUUID()
+    const emailUpdated = await profiles.updateMemberVerifiedEmail(f.contactId, {
+      expectedUpdatedAt: updated!.updatedAt,
+      email: 'New.Member@Example.test',
+      verificationId,
+    })
+    expect(emailUpdated).toMatchObject({ email: 'new.member@example.test' })
+    expect(await profiles.updateMemberVerifiedEmail(f.contactId, {
+      expectedUpdatedAt: before!.updatedAt,
+      email: 'new.member@example.test',
+      verificationId,
+    })).toMatchObject({ email: 'new.member@example.test' })
+    const storedEmail = await pool.query<{ canonical_id: string; attributes: Record<string, unknown> }>(
+      'SELECT canonical_id,attributes FROM entities WHERE workspace_id=$1 AND id=$2', [f.workspaceId, f.contactId])
+    expect(storedEmail.rows[0]).toMatchObject({
+      canonical_id: 'new.member@example.test', attributes: { email: 'new.member@example.test', private_note: 'must remain private' },
+    })
+    const emailAudit = await pool.query<{ actor_kind: string; actor_credential_id: string; metadata: Record<string, unknown> }>(
+      `SELECT actor_kind,actor_credential_id,metadata FROM association_audit_log
+        WHERE workspace_id=$1 AND action='crm.member_profile.email_verified' AND subject_id=$2`, [f.workspaceId, f.contactId])
+    expect(emailAudit.rows).toEqual([{
+      actor_kind: 'integration_key', actor_credential_id: f.credentialId,
+      metadata: { fields: ['email'], verificationId },
+    }])
+    const duplicateId = randomUUID()
+    await pool.query(`INSERT INTO entities
+      (id,workspace_id,kind,display_name,canonical_id,attributes,created_by_user_id,source)
+      VALUES($1,$2,'person','Duplicate email',$3,$4::jsonb,$5,'manual')`,
+    [duplicateId, f.workspaceId, 'duplicate@example.test', JSON.stringify({ email: 'duplicate@example.test' }), f.userId])
+    await expect(profiles.updateMemberVerifiedEmail(f.contactId, {
+      expectedUpdatedAt: emailUpdated!.updatedAt,
+      email: 'duplicate@example.test',
+      verificationId: randomUUID(),
+    })).rejects.toMatchObject({ code: 'conflict', details: { reason: 'email_already_linked' } })
     await expect(createCrmIntegrationRecordReadStore({
       ...principal, grants: [{ operation: 'crm.records.read' as const, selectors: {} }],
     }, pool).updateMemberProfile(f.contactId, {
-      expectedUpdatedAt: updated!.updatedAt, name: 'Forbidden edit',
+      expectedUpdatedAt: emailUpdated!.updatedAt, name: 'Forbidden edit',
     })).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await keys.revoke(f.workspaceId, f.userId, f.credentialId)
     await expect(profiles.updateMemberProfile(f.contactId, {
-      expectedUpdatedAt: updated!.updatedAt, name: 'Revoked edit',
+      expectedUpdatedAt: emailUpdated!.updatedAt, name: 'Revoked edit',
     })).rejects.toMatchObject({ code: 'credential_revoked' })
     expect(await profiles.getMemberProfile(f.contactId)).toMatchObject({ name: 'Updated member' })
   })

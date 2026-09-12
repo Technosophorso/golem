@@ -16,6 +16,7 @@ import { CreateCrmIntegrationCredentialSchema } from '../db/crm-integration-stor
 import { createDbCrmIntakeReadStore, type DbCrmOperationsReadStore } from '../db/crm-intake-store.js'
 import {
   createCrmIntegrationRecordReadStore, CrmIntegrationMemberProfileUpdateSchema,
+  CrmIntegrationMemberVerifiedEmailUpdateSchema,
   type CrmIntegrationMemberProfile,
 } from '../db/crm-integration-records.js'
 import { CrmPipelinesQuerySchema, CrmRecordFieldsQuerySchema } from '../db/crm-config-catalog.js'
@@ -47,6 +48,7 @@ export function crmIntegrationRoutes(options: {
   memberProfiles?: (principal: CrmIntegrationPrincipal) => {
     getMemberProfile(id: unknown): Promise<CrmIntegrationMemberProfile | null>
     updateMemberProfile(id: unknown, update: unknown): Promise<CrmIntegrationMemberProfile | null>
+    updateMemberVerifiedEmail(id: unknown, update: unknown): Promise<CrmIntegrationMemberProfile | null>
   }
 }): Router {
   const router = Router()
@@ -133,6 +135,16 @@ export function crmIntegrationRoutes(options: {
     const profile = await memberProfiles(res).updateMemberProfile(
       req.params.id,
       CrmIntegrationMemberProfileUpdateSchema.parse(req.body),
+    )
+    if (!profile) { res.status(404).json({ error: 'not_found' }); return }
+    res.set('Cache-Control', 'no-store').json({ profile })
+  }))
+  router.patch('/operations/member-profiles/:id/verified-email', endpoint(async (req, res) => {
+    requireCrmIntegrationOperation(principal(res), 'crm.records.read')
+    requireCrmIntegrationOperation(principal(res), 'crm.records.write')
+    const profile = await memberProfiles(res).updateMemberVerifiedEmail(
+      req.params.id,
+      CrmIntegrationMemberVerifiedEmailUpdateSchema.parse(req.body),
     )
     if (!profile) { res.status(404).json({ error: 'not_found' }); return }
     res.set('Cache-Control', 'no-store').json({ profile })
