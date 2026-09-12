@@ -143,6 +143,40 @@ describe('[COMP:crm/production-import] production CRM import', () => {
     }
   })
 
+  it('preflights a standalone digest-only promotion row and has no plaintext-code target', async () => {
+    const columns = [
+      'promotionSource', 'promotionSite', 'promotionId', 'promotionKey', 'promotionName',
+      'promotionCodeDigest', 'promotionDiscountType', 'promotionPercentageBasisPoints',
+      'promotionTargetKind', 'promotionTargetIdsJson', 'promotionMaxUses', 'promotionMaxUsesPerContact',
+      'promotionCombinesWithMemberPrice', 'promotionReleaseOnFullRefund', 'promotionStatus',
+      'promotionSourceRedeemedUses', 'promotionSourceContactUsesJson',
+    ]
+    const row = [
+      'wix', 'oasahk.org', 'coupon-1', 'member-ten', 'Member 10%', 'a'.repeat(64),
+      'percentage', '1000', 'event', JSON.stringify([fileId]), '20', '2', 'false', 'false',
+      'active', '2', JSON.stringify([{ contactId: entityId, uses: 2 }]),
+    ]
+    const cell = (value: string) => /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value
+    const promotionBytes = Buffer.from(`${columns.join(',')}\n${row.map(cell).join(',')}\n`)
+    readBytes.mockResolvedValueOnce({ ok: true, value: { file: { id: fileId }, bytes: promotionBytes } })
+    const service = createCrmProductionImportService({ filesApi, operationsForTransaction: () => operations as never })
+    const input = { stagedFileId: fileId, entityKind: 'operations' as const,
+      mapping: { columns: Object.fromEntries(columns.map((column, index) => [index, column])) } }
+    await expect(service.dryRun(context, input)).resolves.toMatchObject({ totalRows: 1, validRows: 1, failedRows: 0 })
+    await expect(service.dryRun(context, {
+      ...input,
+      mapping: { columns: { ...input.mapping.columns, 17: 'promotionCode' } },
+    })).rejects.toThrow('unknown import target')
+
+    const incomplete = [...row]
+    incomplete[16] = '[]'
+    readBytes.mockResolvedValueOnce({ ok: true, value: { file: { id: fileId }, bytes: Buffer.from(
+      `${columns.join(',')}\n${incomplete.map(cell).join(',')}\n`,
+    ) } })
+    await expect(service.dryRun(context, input)).resolves.toMatchObject({ totalRows: 1, validRows: 0, failedRows: 1,
+      sampleErrors: [expect.objectContaining({ code: 'invalid_promotion' })] })
+  })
+
   it('commits one bounded chunk and treats a completed resume as a no-op', async () => {
     const service = createCrmProductionImportService({ filesApi, operationsForTransaction: () => operations as never })
     const checked = await service.dryRun(context, {

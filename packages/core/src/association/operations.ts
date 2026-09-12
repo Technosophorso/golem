@@ -15,7 +15,7 @@ import {
   AssociationMembershipRescueStatusSchema,
   AssociationPromotionInputSchema,
   AssociationListPageSchema, type AssociationOrderFinancialSummary,
-  type AssociationSourceOrderImportInput,
+  type AssociationPromotionImportInput, type AssociationSourceOrderImportInput,
 } from './domain.js'
 
 const Id = z.string().uuid()
@@ -81,6 +81,13 @@ export interface AssociationSourceOrderImportPort {
   importSourceOrder(
     context: AssociationContext,
     input: AssociationSourceOrderImportInput,
+  ): Promise<{ record: Record<string, unknown>; created: boolean; duplicate: boolean }>
+}
+/** Internal port used only by the confirmed production-import service. */
+export interface AssociationPromotionImportPort {
+  importPromotion(
+    context: AssociationContext,
+    input: AssociationPromotionImportInput,
   ): Promise<{ record: Record<string, unknown>; created: boolean; duplicate: boolean }>
 }
 export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_membership_rescues'] as const

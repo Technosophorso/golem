@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 import { setTimeout } from 'node:timers/promises'
 import pg from 'pg'
 import { afterAll, describe, expect, it, vi } from 'vitest'
@@ -15,13 +15,14 @@ const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/
 await assertLocalFixture()
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, application_name: 'crm_atomic_import_fixture' })
 const files = new Map<string, Buffer>()
+const promotionHmacKey = 'fictional-promotion-key-for-tests-only'
 const filesApi = { readBytes: async (_ctx: unknown, id: string) => ({ ok: true, value: { file: { id }, bytes: files.get(id)! } }) } as unknown as FilesApi
 const operations = createCrmOperationsService(createDbCrmOperationsStore(pool))
 type Hook = (client: pg.PoolClient, command: CrmOperationsCommand) => Promise<void>
 function importer(hook?: Hook, entityLinks?: EntityLinksStore) {
   return createCrmProductionImportService({ pool, filesApi, entityLinks, associationForTransaction: (client) => {
     const crmService = createCrmOperationsService(createDbCrmOperationsStore(pool, client))
-    return createAssociationService({ store: createAssociationStore(pool, client), crmService })
+    return createAssociationService({ store: createAssociationStore(pool, client, { promotionHmacKey }), crmService })
   }, operationsForTransaction: (client) => {
     const service = createCrmOperationsService(createDbCrmOperationsStore(pool, client))
     return {
@@ -253,13 +254,15 @@ describe('[COMP:crm/production-import] Atomic rows and serialized chunk recovery
 
     const first = await f.job(columns, [original], 'operations')
     expect(await importer().resume(f.context, first.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
-    expect((await pool.query(`SELECT result_refs FROM crm_import_rows
-      WHERE workspace_id=$1 AND job_id=$2 AND row_number=2`, [f.workspaceId, first.id])).rows[0].result_refs).toEqual([
+    const sourceOrderRefs = (await pool.query(`SELECT result_refs FROM crm_import_rows
+      WHERE workspace_id=$1 AND job_id=$2 AND row_number=2`, [f.workspaceId, first.id])).rows[0].result_refs
+    expect(sourceOrderRefs).toHaveLength(4)
+    expect(sourceOrderRefs).toEqual(expect.arrayContaining([
       { kind: 'contact', id: buyerId },
       { kind: 'order', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'wix-order-42' },
       { kind: 'registration', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'booking-1' },
       { kind: 'registration', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'booking-2' },
-    ])
+    ]))
     const saved = (await pool.query(`SELECT source_system,source_site,source_order_id,source_order_status,
       status,currency,subtotal_minor::text,discount_minor::text,total_minor::text,refunded_minor::text,
       refund_state,provider,provider_reference,source_import,
@@ -317,6 +320,60 @@ describe('[COMP:crm/production-import] Atomic rows and serialized chunk recovery
     expect((await pool.query(`SELECT message FROM crm_import_errors WHERE job_id=$1`, [capacity.id])).rows[0].message)
       .toBe('Source order exceeds current ticket capacity.')
     expect(await counts()).toMatchObject({ orders: 1, registrations: 2, audit: 1, used: 2 })
+  })
+
+  it('imports digest-only Wix promotions with source usage and replay-safe receipts', async () => {
+    const f = await fixture(), contactId = await f.entity('person', 'Promotion history contact')
+    const association = createAssociationStore(pool, undefined, { promotionHmacKey })
+    const actor = { credentialKind: 'user' as const, credentialId: f.userId, actingUserId: f.userId }
+    const event = await association.upsertEvent(f.workspaceId, EventInputSchema.parse({
+      slug: `promotion-import-${f.workspaceId.slice(0, 8)}`, title: 'Promotion import target',
+      startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z',
+      timezone: 'UTC', mode: 'venue', status: 'published', capacity: 10,
+    }), actor)
+    const code = 'WIX-HISTORY-10'
+    const digest = createHmac('sha256', promotionHmacKey).update(code, 'utf8').digest('hex')
+    const columns = [
+      'promotionSource', 'promotionSite', 'promotionId', 'promotionKey', 'promotionName',
+      'promotionCodeDigest', 'promotionDiscountType', 'promotionPercentageBasisPoints',
+      'promotionTargetKind', 'promotionTargetIdsJson', 'promotionMaxUses', 'promotionMaxUsesPerContact',
+      'promotionCombinesWithMemberPrice', 'promotionReleaseOnFullRefund', 'promotionStatus',
+      'promotionSourceRedeemedUses', 'promotionSourceContactUsesJson',
+    ]
+    const original = [
+      'wix', 'oasahk.org', 'wix-coupon-history-10', 'history-ten', 'Historical 10%', digest,
+      'percentage', '1000', 'event', JSON.stringify([event.record.id]), '10', '1', 'false', 'false',
+      'active', '1', JSON.stringify([{ contactId, uses: 1 }]),
+    ]
+    const first = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, first.id)).toMatchObject({
+      status: 'completed', succeededRows: 1, failedRows: 0,
+    })
+    const receipt = (await pool.query(`SELECT result_refs FROM crm_import_rows
+      WHERE workspace_id=$1 AND job_id=$2 AND row_number=2`, [f.workspaceId, first.id])).rows[0]
+    expect(receipt.result_refs).toEqual([{
+      kind: 'promotion', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'wix-coupon-history-10',
+    }])
+    const saved = (await pool.query(`SELECT id,code_digest,source_system,source_site,source_promotion_id,
+      source_redeemed_uses,source_import FROM association_promotions WHERE workspace_id=$1`, [f.workspaceId])).rows[0]
+    expect(saved).toMatchObject({ code_digest: digest, source_system: 'wix', source_site: 'oasahk.org',
+      source_promotion_id: 'wix-coupon-history-10', source_redeemed_uses: 1,
+      source_import: { jobId: first.id, row: 2, fingerprint: expect.stringMatching(/^[0-9a-f]{64}$/) } })
+    expect(JSON.stringify(saved)).not.toContain(code)
+
+    const replay = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, replay.id)).toMatchObject({ succeededRows: 1, failedRows: 0 })
+    expect((await pool.query(`SELECT count(*)::int count FROM association_promotions
+      WHERE workspace_id=$1`, [f.workspaceId])).rows[0].count).toBe(1)
+    expect((await pool.query(`SELECT count(*)::int count FROM association_audit_log
+      WHERE workspace_id=$1 AND action='promotion.source_imported'`, [f.workspaceId])).rows[0].count).toBe(1)
+
+    const changed = [...original]
+    changed[4] = 'Changed source evidence'
+    const conflict = await f.job(columns, [changed], 'operations')
+    expect(await importer().resume(f.context, conflict.id)).toMatchObject({ succeededRows: 0, failedRows: 1 })
+    expect((await pool.query(`SELECT message FROM crm_import_errors WHERE job_id=$1`, [conflict.id])).rows)
+      .toEqual([{ message: 'Source promotion identity was already used with different evidence.' }])
   })
 
   it('keeps ended source bookings historical and rechecks owner authority at commit', async () => {

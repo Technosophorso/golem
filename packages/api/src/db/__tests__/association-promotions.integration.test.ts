@@ -1,9 +1,9 @@
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
 import { getAppPool, getPool } from '../client.js'
 import { createAssociationStore } from '../association-store.js'
 import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
-import { EventInputSchema, MembershipInputSchema, OrderCreateSchema, PlanInputSchema, PromotionInputSchema, TicketInputSchema } from '../../association/domain.js'
+import { EventInputSchema, MembershipInputSchema, OrderCreateSchema, PlanInputSchema, PromotionImportSchema, PromotionInputSchema, TicketInputSchema } from '../../association/domain.js'
 
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
@@ -124,5 +124,56 @@ describe('[COMP:crm/association-promotions] canonical discount authority', () =>
       targetIds: [randomUUID()], status: 'active',
     }), f.actor).catch(error => error)
     expect(other).toMatchObject({ code: 'not_found' })
+  })
+
+  it('imports immutable Wix usage by digest and combines source and live caps', async () => {
+    const f = await fixture(), code = ' Wix-Legacy-20 '
+    const codeDigest = createHmac('sha256', promotionHmacKey)
+      .update(code.trim().normalize('NFKC').toUpperCase(), 'utf8').digest('hex')
+    const input = PromotionImportSchema.parse({
+      importJobId: randomUUID(), importRow: 2,
+      source: 'wix', sourceSite: 'oasahk.org', sourcePromotionId: 'coupon-legacy-20', codeDigest,
+      promotion: {
+        key: 'legacy-twenty', name: 'Legacy 20%', discountType: 'percentage', percentageBasisPoints: 2_000,
+        targetKind: 'event', targetIds: [f.eventId], maxUses: 3, maxUsesPerContact: 2, status: 'active',
+      },
+      sourceRedeemedUses: 2,
+      sourceContactUses: [{ contactId: f.buyerId, uses: 2 }],
+    })
+    const importActor = { credentialKind: 'import' as const, credentialId: input.importJobId, actingUserId: f.userId }
+    const imported = await commerce.importPromotion(f.workspaceId, input, importActor)
+    expect(imported).toMatchObject({ created: true, record: {
+      sourceSystem: 'wix', sourceSite: 'oasahk.org', sourcePromotionId: 'coupon-legacy-20',
+      sourceRedeemedUses: 2, redeemedUses: 2,
+    } })
+    const replayJobId = randomUUID()
+    const replay = await commerce.importPromotion(f.workspaceId, {
+      ...input, importJobId: replayJobId, importRow: 7,
+    }, { ...importActor, credentialId: replayJobId })
+    expect(replay).toMatchObject({ created: false, record: { id: imported.record.id } })
+    await expect(commerce.importPromotion(f.workspaceId, input,
+      { ...importActor, credentialId: randomUUID() })).rejects.toMatchObject({ code: 'not_authorized' })
+    const changedJobId = randomUUID()
+    await expect(commerce.importPromotion(f.workspaceId, {
+      ...input, importJobId: changedJobId, importRow: 8,
+      promotion: { ...input.promotion, name: 'Changed evidence' },
+    }, { ...importActor, credentialId: changedJobId })).rejects.toMatchObject({ code: 'conflict' })
+
+    const stored = (await pool.query(`SELECT code_digest,source_import::text
+      FROM association_promotions WHERE workspace_id=$1 AND id=$2`, [f.workspaceId, imported.record.id])).rows[0]
+    expect(stored.code_digest).toBe(codeDigest)
+    expect(JSON.stringify(stored)).not.toContain(code.trim())
+    await expect(pool.query(`UPDATE association_promotions SET source_promotion_id='changed'
+      WHERE workspace_id=$1 AND id=$2`, [f.workspaceId, imported.record.id])).rejects.toMatchObject({ code: '23514' })
+
+    await expect(f.order(f.buyerId, randomUUID(), { promotionCode: code })).rejects
+      .toMatchObject({ code: 'promotion_exhausted' })
+    const remaining = await f.order(f.secondBuyerId, randomUUID(), { promotionCode: code })
+    expect(remaining.record).toMatchObject({ subtotalMinor: '1000', discountMinor: '200', totalMinor: '800' })
+    await expect(f.order(f.secondBuyerId, randomUUID(), { promotionCode: code })).rejects
+      .toMatchObject({ code: 'promotion_exhausted' })
+    await expect(commerce.upsertPromotion(f.workspaceId, PromotionInputSchema.parse({
+      ...input.promotion, maxUses: 2,
+    }), f.actor)).rejects.toMatchObject({ code: 'promotion_invalid' })
   })
 })

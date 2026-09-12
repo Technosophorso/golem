@@ -8,6 +8,7 @@ import {
   mayTransitionOrder,
   OrderCreateSchema,
   ProviderEventInputSchema,
+  PromotionImportSchema,
   PromotionInputSchema,
   TicketInputSchema,
 } from '../domain.js'
@@ -84,6 +85,26 @@ describe('[COMP:crm/association-domain] bounded domain contracts', () => {
     expect(PromotionInputSchema.safeParse({ ...base, discountType: 'full', percentageBasisPoints: 1_000 }).success).toBe(false)
     expect(PromotionInputSchema.safeParse({ ...base, discountType: 'buy_x_get_y', percentageBasisPoints: undefined, buyQuantity: 1, getQuantity: 1 }).success).toBe(true)
     expect(PromotionInputSchema.safeParse({ ...base, codeDigest: 'a'.repeat(64) }).success).toBe(false)
+  })
+
+  it('admits digest-only promotion imports and requires complete history for per-contact caps', () => {
+    const promotion = {
+      key: 'member-ten', name: 'Member 10%', discountType: 'percentage' as const,
+      percentageBasisPoints: 1_000, targetKind: 'event' as const, targetIds: [TICKET_ID],
+      maxUses: 20, maxUsesPerContact: 2, status: 'active' as const,
+    }
+    const source = {
+      importJobId: '33333333-3333-4333-8333-333333333333', importRow: 2,
+      source: 'wix', sourceSite: 'oasahk.org', sourcePromotionId: 'coupon-1',
+      codeDigest: 'a'.repeat(64), promotion, sourceRedeemedUses: 2,
+      sourceContactUses: [{ contactId: CONTACT_ID, uses: 2 }],
+    }
+    expect(PromotionImportSchema.parse(source)).toMatchObject(source)
+    expect(PromotionImportSchema.safeParse({ ...source, promotion: { ...promotion, code: 'PLAINTEXT' } }).success).toBe(false)
+    expect(PromotionImportSchema.safeParse({ ...source, sourceContactUses: [] }).success).toBe(false)
+    expect(PromotionImportSchema.safeParse({ ...source, sourceRedeemedUses: 21 }).success).toBe(false)
+    expect(PromotionImportSchema.safeParse({ ...source,
+      sourceContactUses: [{ contactId: CONTACT_ID, uses: 3 }] }).success).toBe(false)
   })
 
   it('fingerprints equivalent object key order identically', () => {

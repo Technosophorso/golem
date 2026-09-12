@@ -51,6 +51,7 @@ export const CRM_OPERATIONS_PRIVACY_TABLES = [
   'association_registrations',
   'association_inventory_boundaries',
   'association_promotions',
+  'association_promotion_source_contact_uses',
   'association_promotion_uses',
   'association_waitlist_offers',
   'association_integration_events',
@@ -91,7 +92,7 @@ EXPORT_PROJECTIONS.crm_import_sources = [
 ].join(',')
 EXPORT_PROJECTIONS.crm_address_suppression_tombstones = 'id,workspace_id,key_version,channel,purpose_key,reason_code,occurred_at,policy_version,created_at,expires_at,released_at,release_evidence_kind,release_evidence_id'
 EXPORT_PROJECTIONS.association_integration_events = 'id,workspace_id,provider,provider_event_id,provider_reference,occurred_at,target_kind,order_id,entitlement_id,contact_id,plan_id,state,attempts,cycle_attempts,next_attempt_at,last_error_code,created_at,updated_at,applied_at'
-EXPORT_PROJECTIONS.association_promotions = 'id,workspace_id,promotion_key,name,discount_type,percentage_basis_points,buy_quantity,get_quantity,target_kind,target_ids,valid_from,valid_to,max_uses,max_uses_per_contact,combines_with_member_price,release_on_full_refund,status,created_at,updated_at'
+EXPORT_PROJECTIONS.association_promotions = 'id,workspace_id,promotion_key,name,discount_type,percentage_basis_points,buy_quantity,get_quantity,target_kind,target_ids,valid_from,valid_to,max_uses,max_uses_per_contact,source_system,source_site,source_promotion_id,source_redeemed_uses,combines_with_member_price,release_on_full_refund,status,created_at,updated_at'
 
 EXPORT_PROJECTIONS.crm_import_file_cleanups='id,workspace_id,owner_user_id,file_id,before_at,policy_version,summary,status,attempts,next_attempt_at,leased_until,error_code,created_at,expires_at,queued_at,completed_at,replay_expires_at'
 EXPORT_PROJECTIONS.crm_erasure_journal='id,workspace_id,table_name,operation,captured_at'
@@ -179,6 +180,10 @@ export async function redactCrmOperationsForContact(
 
   await client.query(
     'UPDATE association_promotion_uses SET contact_id=NULL WHERE workspace_id=$1 AND contact_id=$2',
+    [workspaceId, contactId],
+  )
+  await client.query(
+    'UPDATE association_promotion_source_contact_uses SET contact_id=NULL WHERE workspace_id=$1 AND contact_id=$2',
     [workspaceId, contactId],
   )
 

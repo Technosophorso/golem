@@ -36,4 +36,17 @@ describe('[COMP:crm/production-import] Integration import authority', () => {
     expect(() => requireImportRowAuthority(context, 'operations', { participationEventId: eventId }, 'fixture')).toThrow()
     expect(() => requireImportRowAuthority({ ...context, actor: { kind: 'integration_key', credentialId: randomUUID() } }, 'operations', {})).toThrow()
   })
+  it('admits promotions only from a current owner or admin member file', () => {
+    const memberContext: CrmOperationsContext = {
+      workspaceId: context.workspaceId,
+      actor: { kind: 'user', userId: credentialId },
+      authority: { role: 'owner', canWrite: true, canConfigure: true, trustedIdentitySources: [] },
+    }
+    expect(() => requireImportRowAuthority(memberContext, 'operations', { promotionSource: 'wix' })).not.toThrow()
+    expect(() => requireImportRowAuthority({
+      ...memberContext,
+      authority: { ...memberContext.authority, role: 'member', canConfigure: false },
+    }, 'operations', { promotionSource: 'wix' })).toThrow('owner or admin')
+    expect(() => requireImportRowAuthority(context, 'operations', { promotionSource: 'wix' })).toThrow('member file')
+  })
 })

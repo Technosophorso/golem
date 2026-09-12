@@ -292,6 +292,51 @@ export const AssociationPromotionInputSchema = z.object({
 })
 export type AssociationPromotionInput = z.infer<typeof AssociationPromotionInputSchema>
 
+const AssociationPromotionSourceContactUseSchema = z.object({
+  contactId: UUID,
+  uses: z.number().int().positive().max(1_000_000),
+}).strict()
+
+/** Immutable source evidence admitted only by the confirmed production
+ * importer. The source tooling supplies the HMAC digest; plaintext codes must
+ * never enter a staged Brian file or import receipt. */
+export const AssociationPromotionImportSchema = z.object({
+  importJobId: UUID,
+  importRow: z.number().int().positive(),
+  source: StableKey,
+  sourceSite: z.string().trim().min(1).max(500),
+  sourcePromotionId: z.string().trim().min(1).max(500),
+  codeDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  promotion: AssociationPromotionInputSchema,
+  sourceRedeemedUses: z.number().int().nonnegative().max(1_000_000),
+  sourceContactUses: z.array(AssociationPromotionSourceContactUseSchema).max(100_000).default([]),
+}).strict().superRefine((value, ctx) => {
+  if (value.promotion.code !== undefined) {
+    ctx.addIssue({ code: 'custom', path: ['promotion', 'code'], message: 'promotion imports accept only a keyed code digest' })
+  }
+  const contacts = new Set(value.sourceContactUses.map((entry) => entry.contactId))
+  if (contacts.size !== value.sourceContactUses.length) {
+    ctx.addIssue({ code: 'custom', path: ['sourceContactUses'], message: 'source contact usage must contain unique contact IDs' })
+  }
+  const attributedUses = value.sourceContactUses.reduce((sum, entry) => sum + entry.uses, 0)
+  if (!Number.isSafeInteger(attributedUses) || attributedUses > value.sourceRedeemedUses) {
+    ctx.addIssue({ code: 'custom', path: ['sourceContactUses'], message: 'attributed source usage cannot exceed total redeemed usage' })
+  }
+  if (value.promotion.maxUses !== null && value.promotion.maxUses !== undefined
+    && value.sourceRedeemedUses > value.promotion.maxUses) {
+    ctx.addIssue({ code: 'custom', path: ['sourceRedeemedUses'], message: 'source usage cannot exceed the global cap' })
+  }
+  if (value.promotion.maxUsesPerContact !== null && value.promotion.maxUsesPerContact !== undefined) {
+    if (attributedUses !== value.sourceRedeemedUses) {
+      ctx.addIssue({ code: 'custom', path: ['sourceContactUses'], message: 'per-contact caps require complete attributed source usage' })
+    }
+    if (value.sourceContactUses.some((entry) => entry.uses > value.promotion.maxUsesPerContact!)) {
+      ctx.addIssue({ code: 'custom', path: ['sourceContactUses'], message: 'source contact usage cannot exceed the per-contact cap' })
+    }
+  }
+})
+export type AssociationPromotionImportInput = z.infer<typeof AssociationPromotionImportSchema>
+
 export const AssociationOrderAttendeeSchema = z.object({
   contactId: UUID.optional(),
   name: z.string().trim().min(1).max(200),

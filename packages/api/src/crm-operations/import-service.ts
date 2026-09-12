@@ -16,6 +16,7 @@ import type {
   CrmOperationsContext,
   CrmOperationsServicePort,
   CrmHistoricalSubmissionImportPort,
+  AssociationPromotionImportPort,
   AssociationSourceOrderImportPort,
   EntityLinksStore,
   FilesApi,
@@ -24,7 +25,7 @@ import type {
   CrmPage,
   CrmPageQuery,
 } from '@use-brian/core'
-import { AssociationSourceOrderImportSchema, CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
+import { AssociationPromotionImportSchema, AssociationSourceOrderImportSchema, CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
 import { createCompany, createContact, createDeal, updateContact, type CrmWriteTransaction } from '../db/crm.js'
 import { updateCrmCustomFields } from '../db/crm-r2.js'
 import { getEntityById, updateEntity } from '../db/entities-store.js'
@@ -62,6 +63,12 @@ const BASE_TARGETS = new Set([
   'sourceOrderRefundedMinor', 'sourceOrderReservationExpiresAt',
   'sourceOrderProvider', 'sourceOrderProviderReference', 'sourceOrderLinesJson',
   'sourceOrderMetadataJson',
+  'promotionSource', 'promotionSite', 'promotionId', 'promotionKey', 'promotionName',
+  'promotionCodeDigest', 'promotionDiscountType', 'promotionPercentageBasisPoints',
+  'promotionBuyQuantity', 'promotionGetQuantity', 'promotionTargetKind', 'promotionTargetIdsJson',
+  'promotionValidFrom', 'promotionValidTo', 'promotionMaxUses', 'promotionMaxUsesPerContact',
+  'promotionCombinesWithMemberPrice', 'promotionReleaseOnFullRefund', 'promotionStatus',
+  'promotionSourceRedeemedUses', 'promotionSourceContactUsesJson',
 ])
 
 function validTarget(target: string): boolean {
@@ -171,7 +178,7 @@ type ImportServiceContext = CrmOperationsContext
 
 const IMPORT_RESULT_KINDS = [
   'contact', 'company', 'deal', 'consent', 'suppression', 'entitlement',
-  'participation', 'submission', 'order', 'registration',
+  'participation', 'submission', 'order', 'registration', 'promotion',
 ] as const
 type ImportResultKind = typeof IMPORT_RESULT_KINDS[number]
 type ImportResultRef = { kind: ImportResultKind; id: string; sourceId?: string }
@@ -361,6 +368,47 @@ function sourceOrderInput(values: Record<string, string>, importJobId: string, i
   })
 }
 
+function importBoolean(raw: string | undefined, label: string): boolean {
+  const normalized = raw?.trim().toLowerCase()
+  if (['true', 'yes', '1', 'on'].includes(normalized ?? '')) return true
+  if (['false', 'no', '0', 'off'].includes(normalized ?? '')) return false
+  throw new Error(`${label} must be true/false, yes/no, 1/0, or on/off.`)
+}
+
+function optionalNumber(raw: string | undefined): number | undefined {
+  return raw === undefined ? undefined : Number(raw)
+}
+
+function promotionImportInput(values: Record<string, string>, importJobId: string, importRow: number) {
+  return AssociationPromotionImportSchema.parse({
+    importJobId,
+    importRow,
+    source: values.promotionSource,
+    sourceSite: values.promotionSite,
+    sourcePromotionId: values.promotionId,
+    codeDigest: values.promotionCodeDigest,
+    promotion: {
+      key: values.promotionKey,
+      name: values.promotionName,
+      discountType: values.promotionDiscountType,
+      percentageBasisPoints: optionalNumber(values.promotionPercentageBasisPoints),
+      buyQuantity: optionalNumber(values.promotionBuyQuantity),
+      getQuantity: optionalNumber(values.promotionGetQuantity),
+      targetKind: values.promotionTargetKind,
+      targetIds: jsonValue(values.promotionTargetIdsJson, 'Promotion target IDs'),
+      validFrom: values.promotionValidFrom,
+      validTo: values.promotionValidTo,
+      maxUses: optionalNumber(values.promotionMaxUses),
+      maxUsesPerContact: optionalNumber(values.promotionMaxUsesPerContact),
+      combinesWithMemberPrice: importBoolean(values.promotionCombinesWithMemberPrice, 'Promotion member-price combination'),
+      releaseOnFullRefund: importBoolean(values.promotionReleaseOnFullRefund, 'Promotion refund release'),
+      status: values.promotionStatus,
+    },
+    sourceRedeemedUses: Number(values.promotionSourceRedeemedUses),
+    sourceContactUses: jsonValue(values.promotionSourceContactUsesJson, 'Promotion source contact usage', []),
+  })
+}
+
 function validateMappedRow(
   kind: CrmImportEntityKind,
   row: { row: number; cells: string[]; malformedReason?: string },
@@ -505,6 +553,32 @@ function validateMappedRow(
     try { sourceOrderInput(values, '00000000-0000-4000-8000-000000000000', row.row) }
     catch (error) { add('invalid_source_order', error instanceof Error ? error.message : 'Source order evidence is invalid.', 'sourceOrderLinesJson') }
   }
+  const promotionFields = [
+    values.promotionSource, values.promotionSite, values.promotionId, values.promotionKey,
+    values.promotionName, values.promotionCodeDigest, values.promotionDiscountType,
+    values.promotionPercentageBasisPoints, values.promotionBuyQuantity, values.promotionGetQuantity,
+    values.promotionTargetKind, values.promotionTargetIdsJson, values.promotionValidFrom,
+    values.promotionValidTo, values.promotionMaxUses, values.promotionMaxUsesPerContact,
+    values.promotionCombinesWithMemberPrice, values.promotionReleaseOnFullRefund,
+    values.promotionStatus, values.promotionSourceRedeemedUses, values.promotionSourceContactUsesJson,
+  ]
+  const hasPromotion = promotionFields.some((value) => value !== undefined)
+  if (hasPromotion && !(
+    values.promotionSource && values.promotionSite && values.promotionId
+    && values.promotionKey && values.promotionName && values.promotionCodeDigest
+    && values.promotionDiscountType && values.promotionTargetKind && values.promotionTargetIdsJson
+    && values.promotionCombinesWithMemberPrice && values.promotionReleaseOnFullRefund
+    && values.promotionStatus && values.promotionSourceRedeemedUses !== undefined
+  )) add('incomplete_promotion', 'Source, site, promotion ID, key, name, digest, rule, targets, policies, status, and redeemed usage are required together.', 'promotionSource')
+  if (hasPromotion) {
+    if (kind !== 'operations') add('invalid_promotion_kind', 'Promotions require an operations import.', 'promotionSource')
+    if (values.contactId || hasConsent || hasSuppression || hasEntitlement || hasParticipation
+      || hasHistoricalSubmission || hasSourceOrder) {
+      add('mixed_promotion', 'A promotion import row cannot contain contact or other operations evidence.', 'promotionSource')
+    }
+    try { promotionImportInput(values, '00000000-0000-4000-8000-000000000000', row.row) }
+    catch (error) { add('invalid_promotion', error instanceof Error ? error.message : 'Promotion evidence is invalid.', 'promotionSource') }
+  }
   if (values.currencyCode && !/^[a-z]{3}$/i.test(values.currencyCode)) {
     add('invalid_currency', 'Currency must be a three-letter ISO code.', 'currencyCode')
   }
@@ -513,11 +587,11 @@ function validateMappedRow(
   } catch (error) {
     add('invalid_custom_value', error instanceof Error ? error.message : 'Custom field value is invalid.')
   }
-  if (kind === 'operations' && !isUuid(values.contactId)) {
+  if (kind === 'operations' && !hasPromotion && !isUuid(values.contactId)) {
     add('required_field', 'Operations rows require a contact UUID.', 'contactId')
   }
-  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation || hasHistoricalSubmission || hasSourceOrder)) {
-    add('required_operation', 'An operations row must contain consent, suppression, entitlement, participation, historical submission, or source order evidence.')
+  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation || hasHistoricalSubmission || hasSourceOrder || hasPromotion)) {
+    add('required_operation', 'An operations row must contain consent, suppression, entitlement, participation, historical submission, source order, or promotion evidence.')
   }
   return errors
 }
@@ -540,7 +614,7 @@ export function createCrmProductionImportService(deps: {
   filesApi?: FilesApi
   sources?: CrmImportSources
   operationsForTransaction: (client: PoolClient) => CrmOperationsServicePort & CrmHistoricalSubmissionImportPort
-  associationForTransaction?: (client: PoolClient) => AssociationSourceOrderImportPort
+  associationForTransaction?: (client: PoolClient) => AssociationSourceOrderImportPort & AssociationPromotionImportPort
   pool?: Pool
   entityLinks?: EntityLinksStore
 }) {
@@ -842,7 +916,7 @@ export function createCrmProductionImportService(deps: {
     customCatalog: ReadonlyMap<string, ImportCustomDefinition>,
     transaction: CrmWriteTransaction,
     operations: CrmOperationsServicePort & CrmHistoricalSubmissionImportPort,
-    association?: AssociationSourceOrderImportPort,
+    association?: AssociationSourceOrderImportPort & AssociationPromotionImportPort,
   ): Promise<ImportRowResult> {
     const values = mappedValues(row.cells, job.mapping)
     requireImportRowAuthority(context, job.entityKind, values, job.mapping.trustedIdentitySource)
@@ -1038,6 +1112,15 @@ export function createCrmProductionImportService(deps: {
         const record = registration as Record<string, unknown>
         resultRefs.push(resultRef('registration', record, sourceRegistrationId(record)))
       }
+    }
+    if (values.promotionSource) {
+      if (!association) throw new Error('Association promotion importer is unavailable.')
+      const saved = await association.importPromotion({
+        workspaceId: context.workspaceId,
+        actor: importContext.actor,
+        authority: { ...context.authority, canRead: true, canReconcileProvider: false },
+      }, promotionImportInput(values, job.id, row.row))
+      resultRefs.push(resultRef('promotion', saved.record, values.promotionId))
     }
     return { entityId: entityId ?? contactId ?? null, resultRefs: uniqueResultRefs(resultRefs) }
   }

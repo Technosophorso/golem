@@ -53,6 +53,7 @@ import {
   type CheckInCorrectionInput,
   type OrderStatus,
   type PlanInput,
+  type PromotionImportInput,
   type PromotionInput,
   type ProviderEventInput,
   type ProviderFinancialEventInput,
@@ -96,6 +97,7 @@ export type AssociationStore = {
   upsertTicket(workspaceId: string, eventId: string, input: TicketInput, actor: AssociationActor): Promise<MutationResult>
   listTickets(workspaceId: string, eventId: string): Promise<AssociationRecord[]>
   upsertPromotion(workspaceId: string, input: PromotionInput, actor: AssociationActor): Promise<MutationResult>
+  importPromotion(workspaceId: string, input: PromotionImportInput, actor: AssociationActor): Promise<MutationResult>
   listPromotions(workspaceId: string, input: AssociationListInput & { status?: string }): Promise<AssociationPage>
   listWaitlist(workspaceId: string, input: WaitlistListInput): Promise<AssociationPage>
   offerWaitlistPlace(workspaceId: string, input: AssociationWaitlistOfferInput, actor: AssociationActor): Promise<MutationResult>
@@ -279,10 +281,12 @@ const PROMOTION_SELECT = `
   p.target_kind AS "targetKind", p.target_ids AS "targetIds",
   p.valid_from AS "validFrom", p.valid_to AS "validTo", p.max_uses AS "maxUses",
   p.max_uses_per_contact AS "maxUsesPerContact",
+  p.source_system AS "sourceSystem", p.source_site AS "sourceSite",
+  p.source_promotion_id AS "sourcePromotionId", p.source_redeemed_uses AS "sourceRedeemedUses",
   p.combines_with_member_price AS "combinesWithMemberPrice",
   p.release_on_full_refund AS "releaseOnFullRefund", p.status,
   true AS "hasCode", COALESCE(u.reserved_uses,0)::int AS "reservedUses",
-  COALESCE(u.redeemed_uses,0)::int AS "redeemedUses",
+  (COALESCE(u.redeemed_uses,0)+p.source_redeemed_uses)::int AS "redeemedUses",
   p.created_at AS "createdAt", p.updated_at AS "updatedAt"`
 const ORDER_SELECT = `
   id, workspace_id AS "workspaceId", contact_id AS "contactId",
@@ -381,6 +385,25 @@ async function requireSourceOrderImportActor(client: PoolClient, workspaceId: st
   )
   if (!['owner', 'admin'].includes(member.rows[0]?.role ?? '')) {
     throw new CrmOperationsError('not_authorized', 'Source order imports require a current workspace owner or admin.')
+  }
+  return actor.actingUserId
+}
+
+async function requirePromotionImportActor(
+  client: PoolClient,
+  workspaceId: string,
+  actor: AssociationActor,
+  importJobId: string,
+): Promise<string> {
+  if (actor.credentialKind !== 'import' || actor.credentialId !== importJobId || !actor.actingUserId) {
+    throw new CrmOperationsError('not_authorized', 'Promotions are only available to a confirmed owner/admin import job.')
+  }
+  const member = await client.query<{ role: string }>(
+    `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR KEY SHARE`,
+    [workspaceId, actor.actingUserId],
+  )
+  if (!['owner', 'admin'].includes(member.rows[0]?.role ?? '')) {
+    throw new CrmOperationsError('not_authorized', 'Promotion imports require a current workspace owner or admin.')
   }
   return actor.actingUserId
 }
@@ -1484,8 +1507,8 @@ export function createAssociationStore(
         if (targets.rows.length !== targetIds.length) {
           throw new AssociationError('not_found', 'One or more promotion targets were not found.')
         }
-        const existing = (await client.query<{ id: string; code_digest: string }>(
-          'SELECT id,code_digest FROM association_promotions WHERE workspace_id=$1 AND promotion_key=$2 FOR UPDATE',
+        const existing = (await client.query<{ id: string; code_digest: string; source_redeemed_uses: number }>(
+          'SELECT id,code_digest,source_redeemed_uses FROM association_promotions WHERE workspace_id=$1 AND promotion_key=$2 FOR UPDATE',
           [workspaceId, input.key],
         )).rows[0]
         if (!existing && !input.code) {
@@ -1508,8 +1531,24 @@ export function createAssociationStore(
             WHERE workspace_id=$1 AND promotion_id=$2
               AND (state='redeemed' OR (state='reserved' AND reservation_expires_at>clock_timestamp()))`,
           [workspaceId, existing.id])).rows[0]?.count ?? 0
-          if (used > input.maxUses) {
+          if (used + existing.source_redeemed_uses > input.maxUses) {
             throw new AssociationError('promotion_invalid', 'Maximum uses cannot be below current reserved and redeemed uses.')
+          }
+        }
+        if (existing && input.maxUsesPerContact !== null && input.maxUsesPerContact !== undefined) {
+          const maximum = (await client.query<{ count: number }>(`SELECT COALESCE(max(total),0)::int count FROM (
+            SELECT contact_id,sum(uses)::int total FROM (
+              SELECT contact_id,count(*)::int uses FROM association_promotion_uses
+                WHERE workspace_id=$1 AND promotion_id=$2 AND contact_id IS NOT NULL
+                  AND (state='redeemed' OR (state='reserved' AND reservation_expires_at>clock_timestamp()))
+                GROUP BY contact_id
+              UNION ALL
+              SELECT contact_id,uses FROM association_promotion_source_contact_uses
+                WHERE workspace_id=$1 AND promotion_id=$2 AND contact_id IS NOT NULL
+            ) combined GROUP BY contact_id
+          ) totals`, [workspaceId, existing.id])).rows[0]?.count ?? 0
+          if (maximum > input.maxUsesPerContact) {
+            throw new AssociationError('promotion_invalid', 'Per-contact maximum cannot be below current source and live use.')
           }
         }
         const saved = (await client.query<{ id: string }>(`INSERT INTO association_promotions
@@ -1539,6 +1578,104 @@ export function createAssociationStore(
         await audit(client, workspaceId, existing ? 'promotion.updated' : 'promotion.created', 'promotion', saved.id, actor,
           { key: input.key, targetKind: input.targetKind, targetCount: targetIds.length, codeChanged: Boolean(input.code) })
         return { record, created: !existing }
+      })
+    },
+
+    async importPromotion(workspaceId, input, actor) {
+      return transact(async (client) => {
+        const reviewer = await requirePromotionImportActor(client, workspaceId, actor, input.importJobId)
+        const { importJobId, importRow, ...evidence } = input
+        const fingerprint = associationFingerprint(evidence)
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('association-source-promotion:'||$1::text||':'||$2||':'||$3||':'||$4,0))",
+          [workspaceId, input.source, input.sourceSite, input.sourcePromotionId],
+        )
+        const existing = (await client.query<{ id: string; fingerprint: string }>(
+          `SELECT id,source_import->>'fingerprint' fingerprint FROM association_promotions
+            WHERE workspace_id=$1 AND source_system=$2 AND source_site=$3
+              AND source_promotion_id=$4 FOR UPDATE`,
+          [workspaceId, input.source, input.sourceSite, input.sourcePromotionId],
+        )).rows[0]
+        if (existing) {
+          if (existing.fingerprint !== fingerprint) {
+            throw new AssociationError('conflict', 'Source promotion identity was already used with different evidence.')
+          }
+          const record = (await client.query<DbRow>(`SELECT ${PROMOTION_SELECT}
+            FROM association_promotions p LEFT JOIN LATERAL(SELECT
+              count(*) FILTER(WHERE state='reserved' AND reservation_expires_at>statement_timestamp())::int reserved_uses,
+              count(*) FILTER(WHERE state='redeemed')::int redeemed_uses
+              FROM association_promotion_uses x WHERE x.workspace_id=p.workspace_id AND x.promotion_id=p.id) u ON true
+            WHERE p.workspace_id=$1 AND p.id=$2`, [workspaceId, existing.id])).rows[0]
+          return { record, created: false }
+        }
+
+        requireAssociationAdmission(await lockAssociationModule(client, workspaceId))
+        const promotion = input.promotion
+        const targetIds = [...new Set(promotion.targetIds)].sort()
+        if (targetIds.length !== promotion.targetIds.length) {
+          throw new AssociationError('promotion_invalid', 'Promotion targets must be unique.')
+        }
+        const targetTable = promotion.targetKind === 'event' ? 'association_events' : 'association_ticket_types'
+        const targets = await client.query<{ id: string }>(
+          `SELECT id FROM ${targetTable} WHERE workspace_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR SHARE`,
+          [workspaceId, targetIds],
+        )
+        if (targets.rows.length !== targetIds.length) {
+          throw new AssociationError('not_found', 'One or more promotion targets were not found.')
+        }
+        const contactIds = input.sourceContactUses.map((entry) => entry.contactId)
+        if (contactIds.length > 0) {
+          const contacts = await client.query<{ id: string }>(
+            `SELECT id FROM entities WHERE workspace_id=$1 AND kind='person' AND id=ANY($2::uuid[])
+              AND valid_to IS NULL AND retracted_at IS NULL ORDER BY id FOR SHARE`,
+            [workspaceId, contactIds],
+          )
+          if (contacts.rows.length !== contactIds.length) {
+            throw new AssociationError('not_found', 'One or more source promotion contacts were not found.')
+          }
+        }
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('association-promotion-code:'||$1::text||':'||$2,0))",
+          [workspaceId, input.codeDigest],
+        )
+        const conflict = await client.query(
+          `SELECT 1 FROM association_promotions WHERE workspace_id=$1
+            AND (promotion_key=$2 OR code_digest=$3) FOR UPDATE`,
+          [workspaceId, promotion.key, input.codeDigest],
+        )
+        if (conflict.rowCount) {
+          throw new AssociationError('conflict', 'The promotion key or code digest is already assigned.')
+        }
+        const saved = (await client.query<{ id: string }>(`INSERT INTO association_promotions
+          (workspace_id,promotion_key,name,code_digest,discount_type,percentage_basis_points,buy_quantity,get_quantity,
+           target_kind,target_ids,valid_from,valid_to,max_uses,max_uses_per_contact,combines_with_member_price,
+           release_on_full_refund,status,source_system,source_site,source_promotion_id,source_redeemed_uses,source_import)
+          VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+          RETURNING id`, [workspaceId, promotion.key, promotion.name, input.codeDigest, promotion.discountType,
+            promotion.percentageBasisPoints ?? null, promotion.buyQuantity ?? null, promotion.getQuantity ?? null,
+            promotion.targetKind, targetIds, promotion.validFrom ?? null, promotion.validTo ?? null,
+            promotion.maxUses ?? null, promotion.maxUsesPerContact ?? null, promotion.combinesWithMemberPrice,
+            promotion.releaseOnFullRefund, promotion.status, input.source, input.sourceSite,
+            input.sourcePromotionId, input.sourceRedeemedUses, { jobId: importJobId, row: importRow, fingerprint }])).rows[0]
+        if (input.sourceContactUses.length > 0) {
+          await client.query(`INSERT INTO association_promotion_source_contact_uses
+            (workspace_id,promotion_id,contact_id,uses)
+            SELECT $1,$2,entry.contact_id,entry.uses
+              FROM unnest($3::uuid[],$4::integer[]) AS entry(contact_id,uses)`,
+          [workspaceId, saved.id, contactIds, input.sourceContactUses.map((entry) => entry.uses)])
+        }
+        const record = (await client.query<DbRow>(`SELECT ${PROMOTION_SELECT}
+          FROM association_promotions p LEFT JOIN LATERAL(SELECT
+            count(*) FILTER(WHERE state='reserved' AND reservation_expires_at>statement_timestamp())::int reserved_uses,
+            count(*) FILTER(WHERE state='redeemed')::int redeemed_uses
+            FROM association_promotion_uses x WHERE x.workspace_id=p.workspace_id AND x.promotion_id=p.id) u ON true
+          WHERE p.workspace_id=$1 AND p.id=$2`, [workspaceId, saved.id])).rows[0]
+        await audit(client, workspaceId, 'promotion.source_imported', 'promotion', saved.id, actor, {
+          source: input.source, sourceSite: input.sourceSite, sourcePromotionId: input.sourcePromotionId,
+          sourceRedeemedUses: input.sourceRedeemedUses, attributedContacts: contactIds.length,
+          importJobId, importRow, reviewedByUserId: reviewer,
+        })
+        return { record, created: true }
       })
     },
 
@@ -1844,11 +1981,12 @@ export function createAssociationStore(
           valid_to: Date | null
           max_uses: number | null
           max_uses_per_contact: number | null
+          source_redeemed_uses: number
           combines_with_member_price: boolean
           release_on_full_refund: boolean
           status: string
         }>(`SELECT id,promotion_key,name,discount_type,percentage_basis_points,buy_quantity,get_quantity,
-              target_kind,target_ids,valid_from,valid_to,max_uses,max_uses_per_contact,
+              target_kind,target_ids,valid_from,valid_to,max_uses,max_uses_per_contact,source_redeemed_uses,
               combines_with_member_price,release_on_full_refund,status
             FROM association_promotions WHERE workspace_id=$1 AND code_digest=$2 FOR UPDATE`,
         [workspaceId, codeDigest])).rows[0] : null
@@ -1858,13 +1996,16 @@ export function createAssociationStore(
           throw new AssociationError('promotion_invalid', 'Promotion code is invalid or unavailable.')
         }
         if (promotion) {
-          const counts = (await client.query<{ all_uses: number; contact_uses: number }>(`SELECT
+          const counts = (await client.query<{ all_uses: number; contact_uses: number; source_contact_uses: number }>(`SELECT
               count(*) FILTER(WHERE state='redeemed' OR (state='reserved' AND reservation_expires_at>$3::timestamptz))::int all_uses,
-              count(*) FILTER(WHERE contact_id=$4 AND (state='redeemed' OR (state='reserved' AND reservation_expires_at>$3::timestamptz)))::int contact_uses
+              count(*) FILTER(WHERE contact_id=$4 AND (state='redeemed' OR (state='reserved' AND reservation_expires_at>$3::timestamptz)))::int contact_uses,
+              COALESCE((SELECT uses FROM association_promotion_source_contact_uses
+                WHERE workspace_id=$1 AND promotion_id=$2 AND contact_id=$4),0)::int source_contact_uses
             FROM association_promotion_uses WHERE workspace_id=$1 AND promotion_id=$2`,
           [workspaceId, promotion.id, admittedAt, input.contactId])).rows[0]
-          if ((promotion.max_uses !== null && counts.all_uses >= promotion.max_uses)
-            || (promotion.max_uses_per_contact !== null && counts.contact_uses >= promotion.max_uses_per_contact)) {
+          if ((promotion.max_uses !== null && counts.all_uses + promotion.source_redeemed_uses >= promotion.max_uses)
+            || (promotion.max_uses_per_contact !== null
+              && counts.contact_uses + counts.source_contact_uses >= promotion.max_uses_per_contact)) {
             throw new AssociationError('promotion_exhausted', 'Promotion code has reached its usage limit.')
           }
         }
