@@ -20,16 +20,53 @@ const principal: CrmIntegrationPrincipal = { workspaceId, credentialId, grants: 
 function fixture(auth: CrmIntegrationPrincipal | null = principal) {
   const service = { execute: vi.fn().mockResolvedValue({ command: 'save_event', record: { id: eventId }, created: true }) }
   const association = { execute: vi.fn().mockRejectedValue(new CrmIntegrationScopeError('association.read')) }
+  const memberProfiles = {
+    getMemberProfile: vi.fn(),
+    updateMemberProfile: vi.fn(),
+  }
   const authenticate = vi.fn().mockResolvedValue(auth)
   const app = express()
   app.use(express.json())
-  app.use('/api/crm/integration', crmIntegrationRoutes({ credentials: { authenticate }, service: service as CrmOperationsServicePort, association: association as AssociationServicePort }))
+  app.use('/api/crm/integration', crmIntegrationRoutes({ credentials: { authenticate }, service: service as CrmOperationsServicePort,
+    association: association as AssociationServicePort, memberProfiles: () => memberProfiles }))
   const jwtGuard = vi.fn((_req, res) => res.status(401).json({ error: 'jwt_only' }))
   app.use('/api', jwtGuard)
-  return { app, service, association, authenticate, jwtGuard }
+  return { app, service, association, memberProfiles, authenticate, jwtGuard }
 }
 
 describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', () => {
+  it('exposes only the bounded member profile and requires record-write authority for edits', async () => {
+    const grants = [{ operation: 'crm.records.read', selectors: {} }, { operation: 'crm.records.write', selectors: {} }] as const
+    const f = fixture({ ...principal, grants: [...grants] })
+    const profile = { contactId: eventId, name: 'Fictional Member', email: 'member@example.test', phone: null,
+      organisationName: 'Example Org', position: null, mailingAddress: null, updatedAt: '2026-09-12T08:00:00.000Z' }
+    f.memberProfiles.getMemberProfile.mockResolvedValueOnce(profile)
+    const read = await request(f.app).get(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(read.status).toBe(200)
+    expect(read.body).toEqual({ profile })
+    expect(read.headers['cache-control']).toBe('no-store')
+
+    f.memberProfiles.updateMemberProfile.mockResolvedValueOnce({ ...profile, phone: '+852 2000 0000' })
+    const update = { expectedUpdatedAt: profile.updatedAt, phone: '+852 2000 0000' }
+    const written = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`).send(update)
+    expect(written.status).toBe(200)
+    expect(written.body.profile.phone).toBe('+852 2000 0000')
+    expect(f.memberProfiles.updateMemberProfile).toHaveBeenCalledWith(eventId, update)
+
+    const extra = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`).send({ ...update, email: 'other@example.test' })
+    expect(extra.status).toBe(400)
+    expect(f.memberProfiles.updateMemberProfile).toHaveBeenCalledTimes(1)
+  })
+  it('denies member-profile edits without crm.records.write', async () => {
+    const f = fixture({ ...principal, grants: [{ operation: 'crm.records.read', selectors: {} }] })
+    const response = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`).send({ expectedUpdatedAt: '2026-09-12T08:00:00.000Z', name: 'New name' })
+    expect(response.status).toBe(403)
+    expect(f.memberProfiles.updateMemberProfile).not.toHaveBeenCalled()
+  })
   it('exposes normalized provider receipts through the shared integration adapter', async () => {
     const f = fixture()
     f.association.execute.mockResolvedValueOnce({ command: 'reconcile_provider_entitlement', record: { id: eventId }, created: true, receipt: { id: credentialId, state: 'applied' } } as never)

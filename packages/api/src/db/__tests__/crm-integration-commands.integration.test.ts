@@ -265,6 +265,60 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
     await expect(createCrmIntegrationRecordReadStore({ ...principal, grants: [{ operation: 'association.read', selectors: { eventIds: 'all' } }] }, pool).get(f.contactId))
       .rejects.toMatchObject({ code: 'integration_scope_denied' })
   })
+  it('bounds member profiles to one workspace and records field-only audited edits with stale-write protection', async () => {
+    const f = await fixture(), other = await fixture()
+    await pool.query(`UPDATE entities SET canonical_id='member@example.test', attributes=$3::jsonb
+      WHERE workspace_id=$1 AND id=$2`, [f.workspaceId, f.contactId, JSON.stringify({
+      email: 'member@example.test', phone: '+852 2000 0000', private_note: 'must remain private',
+      custom_fields: { organisation_name: 'Example Org', position: 'Member', private_field: 'must remain private' },
+    })])
+    const principal = { workspaceId: f.workspaceId, credentialId: f.credentialId, grants: [
+      { operation: 'crm.records.read' as const, selectors: {} },
+      { operation: 'crm.records.write' as const, selectors: {} },
+    ] }
+    const profiles = createCrmIntegrationRecordReadStore(principal, pool)
+    const before = await profiles.getMemberProfile(f.contactId)
+    expect(before).toMatchObject({
+      contactId: f.contactId, name: 'Fixture person', email: 'member@example.test',
+      phone: '+852 2000 0000', organisationName: 'Example Org', position: 'Member', mailingAddress: null,
+    })
+    expect(await profiles.getMemberProfile(other.contactId)).toBeNull()
+
+    const updated = await profiles.updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: before!.updatedAt,
+      name: 'Updated member',
+      phone: null,
+      mailingAddress: 'Fixture address',
+    })
+    expect(updated).toMatchObject({ name: 'Updated member', phone: null, mailingAddress: 'Fixture address' })
+    await expect(profiles.updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: before!.updatedAt,
+      position: 'Stale edit',
+    })).rejects.toMatchObject({ code: 'conflict' })
+    const stored = await pool.query<{ attributes: Record<string, unknown> }>(
+      'SELECT attributes FROM entities WHERE workspace_id=$1 AND id=$2', [f.workspaceId, f.contactId])
+    expect(stored.rows[0].attributes).toMatchObject({
+      email: 'member@example.test', private_note: 'must remain private',
+      custom_fields: { organisation_name: 'Example Org', position: 'Member', mailing_address: 'Fixture address', private_field: 'must remain private' },
+    })
+    const audit = await pool.query<{ actor_kind: string; actor_credential_id: string; metadata: Record<string, unknown> }>(
+      `SELECT actor_kind,actor_credential_id,metadata FROM association_audit_log
+        WHERE workspace_id=$1 AND action='crm.member_profile.updated' AND subject_id=$2`, [f.workspaceId, f.contactId])
+    expect(audit.rows).toEqual([{
+      actor_kind: 'integration_key', actor_credential_id: f.credentialId,
+      metadata: { fields: ['mailingAddress', 'name', 'phone'] },
+    }])
+    await expect(createCrmIntegrationRecordReadStore({
+      ...principal, grants: [{ operation: 'crm.records.read' as const, selectors: {} }],
+    }, pool).updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: updated!.updatedAt, name: 'Forbidden edit',
+    })).rejects.toMatchObject({ code: 'integration_scope_denied' })
+    await keys.revoke(f.workspaceId, f.userId, f.credentialId)
+    await expect(profiles.updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: updated!.updatedAt, name: 'Revoked edit',
+    })).rejects.toMatchObject({ code: 'credential_revoked' })
+    expect(await profiles.getMemberProfile(f.contactId)).toMatchObject({ name: 'Updated member' })
+  })
   it('bounds traversal across new inserts and label edits, rejects cross-query cursors and pages all field definitions', async () => {
     const f = await fixture()
     const principal = { workspaceId: f.workspaceId, credentialId: f.credentialId,
