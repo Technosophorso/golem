@@ -6,7 +6,7 @@ import type { Pool } from 'pg'
 import { afterAll, describe, expect, it } from 'vitest'
 import { type AssociationActor, type AssociationProviderEventInput, ProviderEntitlementEventSchema } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createAssociationStore } from '../association-store.js'
 import { createProviderEntitlementInbox } from '../../association/provider-entitlements.js'
 import { createProviderInboxWorker } from '../../association/provider-inbox-worker.js'
@@ -15,14 +15,14 @@ import { EventInputSchema, TicketInputSchema, OrderCreateSchema } from '../../as
 import { _resetCoalescerForTests } from '../../brain-stream/notify.js'
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore(), store = createAssociationStore(), keys = createCrmIntegrationStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore(), store = createAssociationStore(), keys = createCrmIntegrationStore()
 async function fixture() {
   const workspaceId = randomUUID(), userId = randomUUID(), contactId = randomUUID()
   await pool.query('INSERT INTO users(id,auth_provider_id) VALUES($1::uuid,$1::text)', [userId])
   await pool.query("INSERT INTO workspaces(id,name,owner_user_id) VALUES($1,'Provider fixture',$2)", [workspaceId, userId])
   await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId])
   await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional buyer',$3,'manual')", [contactId, workspaceId, userId])
-  await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const human: AssociationActor = { credentialKind: 'user', credentialId: userId, actingUserId: userId }, actor: AssociationActor = { credentialKind: 'api_key', credentialId: randomUUID() }
   const eventId = String((await store.upsertEvent(workspaceId, EventInputSchema.parse({ slug: 'fixture', title: 'Provider fixture', startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity: 10 }), human)).record.id)
   const ticketId = String((await store.upsertTicket(workspaceId, eventId, TicketInputSchema.parse({ key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 1000, status: 'on_sale', capacity: 10 }), human)).record.id)
@@ -194,7 +194,7 @@ describe('[COMP:crm/provider-inbox] Actual durable normalized receipts', () => {
   it('applies provider periods while commerce is disabled, suppresses semantic duplicates and preserves terminal renewal lineage', async () => {
     const f = await fixture(), m = await membership(f)
     await store.cancelOrder(f.workspaceId, f.orderId, f.human)
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
     const grant = await m.submit(), id = String(grant.record.id)
     expect(grant).toMatchObject({ receipt: { state: 'applied', entitlementId: id }, record: { providerPeriodId: 'period-1', status: 'active' } })
     await m.submit({ ...m.event, eventId: randomUUID() })

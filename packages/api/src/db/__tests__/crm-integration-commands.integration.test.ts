@@ -10,7 +10,7 @@ import { createDbCrmIntakeReadStore } from '../crm-intake-store.js'
 import { createCrmIntegrationRecordReadStore } from '../crm-integration-records.js'
 import { createAssociationService } from '../../association/service.js'
 import { createAssociationStore } from '../association-store.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createCrmIntegrationStore } from '../crm-integration-store.js'
 import { crmIntegrationContext } from '../../routes/crm-integration.js'
 import { getPool } from '../client.js'
@@ -22,7 +22,7 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
 const app = new pg.Pool({ connectionString: process.env.DATABASE_URL_APP })
 const crm = createCrmOperationsService(createDbCrmOperationsStore(pool))
 const commerce = createAssociationStore(pool)
-const modules = createWorkspaceModulesStore(pool, app)
+const modules = createAssociationWorkspaceModulesStore(pool, app)
 const keys = createCrmIntegrationStore(pool, app)
 const association = createAssociationService({ crmService: crm, store: commerce, modules })
 const legacy = { credentialKind: 'api_key' as const, credentialId: 'fixture' }
@@ -77,7 +77,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
     await expect(crm.execute(limited, CrmOperationsCommandSchema.parse({ kind: 'save_event', ...event('not-selected') }))).rejects.toMatchObject({ code: 'integration_scope_denied' })
     const after = await pool.query('SELECT count(*) FROM association_audit_log WHERE workspace_id=$1', [f.workspaceId])
     expect(after.rows).toEqual(before.rows)
-    expect((await modules.getAssociation(f.workspaceId)).state).toBe('disabled')
+    expect((await modules.get(f.workspaceId, 'association')).state).toBe('disabled')
     const audit = await pool.query('SELECT actor_kind,actor_credential_id FROM association_audit_log WHERE workspace_id=$1', [f.workspaceId])
     expect(audit.rows).toHaveLength(2)
     expect(audit.rows.every((row) => row.actor_kind === 'integration_key' && row.actor_credential_id === f.credentialId)).toBe(true)
@@ -181,7 +181,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
 
   it('rechecks stale credentials before every commerce mutation including exact order and provider replay', async () => {
     const f=await fixture()
-    await modules.act(f.workspaceId,f.userId,{ action: 'enable',expectedVersion: 1 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable',expectedVersion: 1 })
     const e=await commerce.upsertEvent(f.workspaceId,event('commerce-admission'),legacy), eventId=String(e.record.id)
     const t=await commerce.upsertTicket(f.workspaceId,eventId,{ ...ticket, priceMinor: 100 },legacy)
     const input=OrderCreateSchema.parse({ contactId: f.contactId,idempotencyKey: randomUUID(),lines: [
@@ -398,7 +398,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
   })
   it('prevents ticket, mixed-order, by-id, provider and registration traversal across event grants', async () => {
     const f = await fixture()
-    await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 1 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 1 })
     const a = await commerce.upsertEvent(f.workspaceId, event('event-a'), legacy)
     const b = await commerce.upsertEvent(f.workspaceId, event('event-b'), legacy)
     const aid = String(a.record.id), bid = String(b.record.id)
@@ -430,7 +430,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
     const page = await association.execute(ctx, AssociationCommandSchema.parse({ kind: 'module_blockers', limit: 1 }))
     expect(page.pendingOrders).toBe(1)
     expect(page.items?.[0].id).toBe(singleId)
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
     await association.execute(ctx, { kind: 'confirm_free_order', orderId: singleId })
     expect((await commerce.getOrder(f.workspaceId, singleId))?.status).toBe('paid')
     expect((await pool.query('SELECT count(*)::int AS count FROM association_provider_events WHERE workspace_id=$1', [f.workspaceId])).rows[0].count).toBe(0)

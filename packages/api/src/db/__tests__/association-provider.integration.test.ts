@@ -2,21 +2,21 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
 import { AssociationOperationalRosterRowSchema, type AssociationActor, type AssociationProviderEventInput, type AssociationProviderFinancialEventInput } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createAssociationStore } from '../association-store.js'
 import { createCrmIntegrationStore } from '../crm-integration-store.js'
 import { EventInputSchema, TicketInputSchema, OrderCreateSchema } from '../../association/domain.js'
 import { _resetCoalescerForTests } from '../../brain-stream/notify.js'
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore(), store = createAssociationStore(), keys = createCrmIntegrationStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore(), store = createAssociationStore(), keys = createCrmIntegrationStore()
 async function fixture() {
   const workspaceId = randomUUID(), userId = randomUUID(), contactId = randomUUID()
   await pool.query('INSERT INTO users(id,auth_provider_id) VALUES($1::uuid,$1::text)', [userId])
   await pool.query("INSERT INTO workspaces(id,name,owner_user_id) VALUES($1,'Provider fixture',$2)", [workspaceId, userId])
   await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId])
   await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional buyer',$3,'manual')", [contactId, workspaceId, userId])
-  await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const human: AssociationActor = { credentialKind: 'user', credentialId: userId, actingUserId: userId }, actor: AssociationActor = { credentialKind: 'api_key', credentialId: 'fixture-backend' }
   const eventId = String((await store.upsertEvent(workspaceId, EventInputSchema.parse({ slug: 'fixture', title: 'Provider fixture', startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity: 10 }), human)).record.id)
   const ticketId = String((await store.upsertTicket(workspaceId, eventId, TicketInputSchema.parse({ key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 1000, status: 'on_sale', capacity: 10 }), human)).record.id)
@@ -73,7 +73,7 @@ describe('[COMP:crm/association-provider] Actual provider object and money admis
   })
   it('retains bound recovery after disable and refunds checked-in registrations exactly once', async () => {
     const f = await fixture(); await f.bind(); await f.apply()
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
     expect((await f.bind()).created).toBe(false)
     const registration = (await pool.query('SELECT id FROM association_registrations WHERE order_id=$1', [f.orderId])).rows[0].id
     await store.updateRegistration(f.workspaceId, registration, { status: 'checked_in' }, f.human)

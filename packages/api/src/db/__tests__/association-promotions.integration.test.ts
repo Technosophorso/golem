@@ -2,13 +2,13 @@ import { createHmac, randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
 import { getAppPool, getPool } from '../client.js'
 import { createAssociationStore } from '../association-store.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { EventInputSchema, MembershipCheckoutCreateSchema, MembershipCheckoutProviderBindingSchema, MembershipInputSchema, OrderCreateSchema, PlanInputSchema, PromotionImportSchema, PromotionInputSchema, TicketInputSchema } from '../../association/domain.js'
 import { ProviderEntitlementEventSchema } from '@use-brian/core'
 
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore()
 const promotionHmacKey = 'fictional-promotion-key-for-tests-only'
 const commerce = createAssociationStore(pool, undefined, { promotionHmacKey })
 
@@ -21,7 +21,7 @@ async function fixture() {
     await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person',$3,$4,'manual')",
       [id, workspaceId, name, userId])
   }
-  await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const actor = { credentialKind: 'user' as const, credentialId: userId, actingUserId: userId }
   const event = await commerce.upsertEvent(workspaceId, EventInputSchema.parse({
     slug: `promotion-${workspaceId.slice(0, 8)}`, title: 'Promotion fixture', startsAt: '2099-01-01T12:00:00Z',

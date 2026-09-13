@@ -643,7 +643,7 @@ import { brainMcpRoutes } from './brain-mcp/server.js'
 import { associationRoutes } from './routes/association.js'
 import { createAssociationService } from './association/service.js'
 import { createAssociationStore } from './db/association-store.js'
-import { createWorkspaceModulesStore } from './db/workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from './association/workspace-module.js'
 import { createCrmIntegrationStore } from './db/crm-integration-store.js'
 import { crmIntegrationRoutes, crmIntegrationCredentialRoutes } from './routes/crm-integration.js'
 import { crmAssociationRoutes, associationMemberContext, workspaceModuleRoutes } from './routes/crm-association.js'
@@ -1624,7 +1624,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const associationStore = createAssociationStore(undefined, undefined, {
     promotionHmacKey: env.ASSOCIATION_PROMOTION_HMAC_KEY,
   })
-  const workspaceModulesStore = createWorkspaceModulesStore()
+  const workspaceModulesStore = createAssociationWorkspaceModulesStore()
   const associationService = createAssociationService({ store: associationStore, modules: workspaceModulesStore, crmService: crmOperationsService })
   const crmIntegrationStore = createCrmIntegrationStore()
   const crmIntakeReadStore = createDbCrmIntakeReadStore()
@@ -6599,7 +6599,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     service: associationService, context: associationMemberContext(workspaceStore),
   }))
   app.use('/api/workspaces', requireAuth(env.JWT_SECRET), workspaceModuleRoutes({
-    workspaceStore, modules: workspaceModulesStore, service: associationService,
+    workspaceStore, modules: workspaceModulesStore,
   }))
   app.use('/api/crm', requireAuth(env.JWT_SECRET), crmIntegrationCredentialRoutes({ workspaceStore, credentials: crmIntegrationStore }))
   app.use('/api/crm', requireAuth(env.JWT_SECRET), crmOperationsRoutes({

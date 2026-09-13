@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises'
 import { setTimeout } from 'node:timers/promises'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { defineWorkspaceModuleRegistry } from '@use-brian/shared'
 import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createAssociationStore } from '../association-store.js'
 import { EventInputSchema, OrderCreateSchema, PlanInputSchema, TicketInputSchema } from '../../association/domain.js'
 
@@ -13,9 +15,10 @@ const { assertLocalFixture } = await import(fixtureScript)
 await assertLocalFixture()
 const owner = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 8, application_name: 'assurance-owner' })
 const app = new pg.Pool({ connectionString: process.env.DATABASE_URL_APP, max: 8, application_name: 'assurance-member' })
-const modules = createWorkspaceModulesStore(owner, app)
+const modules = createAssociationWorkspaceModulesStore(owner, app)
 const commerce = createAssociationStore(owner)
 const actor = { credentialKind: 'api_key' as const, credentialId: 'fixture-key' }
+const testRegistry = defineWorkspaceModuleRegistry({ test_module: { key: 'test_module', defaultState: 'disabled' } } as const)
 
 async function workspace() {
   const userId = randomUUID()
@@ -30,7 +33,7 @@ async function workspace() {
 async function enabledCommerce() {
   const fixture = await workspace()
   const { workspaceId, userId } = fixture
-  const enabled = await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  const enabled = await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const contactId = randomUUID()
   await owner.query(`INSERT INTO entities (id,workspace_id,kind,display_name,created_by_user_id,source)
     VALUES ($1,$2,'person','Fixture Attendee',$3,'manual')`, [contactId, workspaceId, userId])
@@ -88,27 +91,50 @@ describe('[COMP:api/workspace-modules] Actual lifecycle and admission transactio
     const f = await workspace()
     const initial = await modules.listForMember(f.workspaceId, f.memberId)
     expect(initial[0]).toMatchObject({ state: 'disabled', version: 1 })
-    await expect(modules.act(f.workspaceId, f.memberId, { action: 'enable', expectedVersion: 1 })).rejects.toMatchObject({ code: 'not_authorized' })
+    await expect(modules.act(f.workspaceId, f.memberId, 'association', { action: 'enable', expectedVersion: 1 })).rejects.toMatchObject({ code: 'not_authorized' })
     await expect(modules.listForMember(f.workspaceId, randomUUID())).rejects.toMatchObject({ code: 'not_authorized' })
     await commerce.upsertPlan(f.workspaceId, PlanInputSchema.parse({ key: 'general', name: 'General', currency: 'USD', feeMinor: 0, billingPeriod: 'manual' }), actor)
     expect((await commerce.listPlans(f.workspaceId, { limit: 100, cursor: null })).items).toHaveLength(1)
-    const enabled = await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 1 })
+    const enabled = await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 1 })
     expect(enabled).toMatchObject({ changed: true, module: { state: 'enabled', version: 2 } })
-    expect(await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 2 })).toMatchObject({ changed: false })
-    await expect(modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 1 }))
+    expect(await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 2 })).toMatchObject({ changed: false })
+    await expect(modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 1 }))
       .rejects.toMatchObject({ code: 'stale_module_version' })
     expect((await owner.query(`SELECT details FROM workspace_audit_log WHERE workspace_id=$1 AND event_type='workspace.module_changed'`, [f.workspaceId])).rows)
       .toEqual([{ details: { moduleKey: 'association', action: 'enable', from: 'disabled', to: 'enabled', version: 2 } }])
   })
 
+  it('runs a second test module through the same registry, store and blocker seam', async () => {
+    const f = await workspace()
+    let blockingCount = 2
+    const testModules = createWorkspaceModulesStore(owner, app, {
+      registry: testRegistry,
+      lifecycles: { test_module: { readBlockingWork: async () => [{ key: 'pending_jobs', count: blockingCount }] } },
+    })
+    expect(await testModules.listForMember(f.workspaceId, f.memberId))
+      .toEqual([expect.objectContaining({ moduleKey: 'test_module', state: 'disabled', version: 0 })])
+    expect(await testModules.act(f.workspaceId, f.userId, 'test_module', { action: 'enable', expectedVersion: 0 }))
+      .toMatchObject({ changed: true, module: { moduleKey: 'test_module', state: 'enabled', version: 2 } })
+    expect(await testModules.act(f.workspaceId, f.userId, 'test_module', { action: 'request_disable', expectedVersion: 2 }))
+      .toMatchObject({ changed: true, module: { state: 'draining', version: 3 },
+        blockingWork: [{ key: 'pending_jobs', count: 2 }] })
+    await expect(testModules.act(f.workspaceId, f.userId, 'test_module', { action: 'finish_disable', expectedVersion: 3 }))
+      .rejects.toMatchObject({ code: 'module_drain_pending', details: {
+        moduleKey: 'test_module', blockingWork: [{ key: 'pending_jobs', count: 2 }],
+      } })
+    blockingCount = 0
+    expect(await testModules.act(f.workspaceId, f.userId, 'test_module', { action: 'finish_disable', expectedVersion: 3 }))
+      .toMatchObject({ changed: true, module: { state: 'disabled', version: 4 } })
+  })
+
   it('fails closed on missing rows and provisions only under owner lifecycle authority', async () => {
     const f = await workspace()
     await owner.query('DELETE FROM workspace_modules WHERE workspace_id=$1', [f.workspaceId])
-    expect(await modules.getAssociation(f.workspaceId)).toMatchObject({ state: 'disabled', version: 0 })
+    expect(await modules.get(f.workspaceId, 'association')).toMatchObject({ state: 'disabled', version: 0 })
     await expect(commerce.upsertTicket(f.workspaceId, randomUUID(), TicketInputSchema.parse({
       key: 'blocked', name: 'Blocked', currency: 'USD', priceMinor: 0,
     }), actor)).rejects.toMatchObject({ code: 'module_disabled' })
-    expect(await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 0 }))
+    expect(await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 0 }))
       .toMatchObject({ changed: true, module: { state: 'enabled', version: 2 } })
   })
 
@@ -124,17 +150,19 @@ describe('[COMP:api/workspace-modules] Actual lifecycle and admission transactio
     let shutdown: ReturnType<typeof modules.act> | undefined
     try {
       await blocked('FROM association_events WHERE workspace_id=$1 AND id=ANY($2::uuid[]) ORDER BY id FOR UPDATE', 'assurance-owner')
-      shutdown = modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+      shutdown = modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
       void shutdown.catch(() => undefined)
-      await blocked("module_key='association' FOR UPDATE", 'assurance-member')
+      await blocked('module_key=$2 FOR UPDATE', 'assurance-member')
     } finally { await held.query('ROLLBACK'); held.release() }
     const created = await order
     expect(await shutdown).toMatchObject({ changed: true, pendingOrders: 1, module: { state: 'draining', version: 3 } })
     await expect(commerce.createOrder(f.workspaceId, { ...f.input, idempotencyKey: randomUUID() }, actor))
       .rejects.toMatchObject({ code: 'module_draining' })
     expect((await commerce.createOrder(f.workspaceId, f.input, actor)).record.id).toBe(created.record.id)
-    await expect(modules.act(f.workspaceId, f.userId, { action: 'finish_disable', expectedVersion: 3 }))
-      .rejects.toMatchObject({ code: 'module_drain_pending', details: { pendingOrders: 1 } })
+    await expect(modules.act(f.workspaceId, f.userId, 'association', { action: 'finish_disable', expectedVersion: 3 }))
+      .rejects.toMatchObject({ code: 'module_drain_pending', details: {
+        moduleKey: 'association', blockingWork: [{ key: 'pending_orders', count: 1 }],
+      } })
   })
 
   it('refuses admission when shutdown wins, and does not lock another workspace (M3)', async () => {
@@ -157,15 +185,15 @@ describe('[COMP:api/workspace-modules] Actual lifecycle and admission transactio
         release: () => client.release(),
       }
     } } as unknown as pg.Pool
-    const shutdown = createWorkspaceModulesStore(owner, pausedPool).act(f.workspaceId, f.userId,
-      { action: 'request_disable', expectedVersion: 2 })
+    const shutdown = createAssociationWorkspaceModulesStore(owner, pausedPool).act(f.workspaceId, f.userId,
+      'association', { action: 'request_disable', expectedVersion: 2 })
     void shutdown.catch(() => undefined)
     await Promise.race([reached, shutdown.then(() => { throw new Error('Expected an uncommitted transition') })])
     const order = commerce.createOrder(f.workspaceId, f.input, actor)
     const rejected = expect(order).rejects.toMatchObject({ code: 'module_disabled' })
     try {
-      await blocked("module_key='association' FOR SHARE", 'assurance-owner')
-      expect(await modules.act(other.workspaceId, other.userId, { action: 'enable', expectedVersion: 1 }))
+      await blocked('module_key=$2 FOR SHARE', 'assurance-owner')
+      expect(await modules.act(other.workspaceId, other.userId, 'association', { action: 'enable', expectedVersion: 1 }))
         .toMatchObject({ changed: true })
     } finally { releasePause() }
     expect(await shutdown).toMatchObject({ changed: true, module: { state: 'disabled', version: 3 } })
@@ -179,9 +207,9 @@ describe('[COMP:api/workspace-modules] Actual lifecycle and admission transactio
     const id = String(created.record.id)
     const paid = { provider: 'fixture', providerReference: randomUUID(), amountMinor: Number(created.record.totalMinor), currency: String(created.record.currency), eventId: randomUUID(), targetStatus: 'paid' as const, occurredAt: new Date().toISOString(), metadata: {} }
     await commerce.bindOrderProvider(f.workspaceId, id, { provider: paid.provider, providerReference: paid.providerReference, amountMinor: paid.amountMinor, currency: paid.currency }, actor)
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
     await commerce.reconcileProviderEvent(f.workspaceId, id, paid, actor)
-    expect(await modules.act(f.workspaceId, f.userId, { action: 'finish_disable', expectedVersion: 3 }))
+    expect(await modules.act(f.workspaceId, f.userId, 'association', { action: 'finish_disable', expectedVersion: 3 }))
       .toMatchObject({ module: { state: 'disabled', version: 4 }, pendingOrders: 0 })
     const replay = await commerce.createOrder(f.workspaceId, f.input, actor)
     expect(replay).toMatchObject({ created: false, record: { id, status: 'paid' } })

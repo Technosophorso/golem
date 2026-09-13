@@ -26,7 +26,7 @@ import { crmPageInstant, queryCrmPage } from '../crm-operations/pagination.js'
 import { getPool } from './client.js'
 import { lockCrmIntegrationCredential, type CrmIntegrationPrincipal } from './crm-integration-store.js'
 import { crmEvidenceRequestHash, resolveCrmEvidenceReplay, type CrmEvidenceRequest } from '../crm-operations/evidence-replay.js'
-import { lockAssociationModule, requireAssociationAdmission } from './workspace-modules-store.js'
+import { lockAssociationModule, requireAssociationAdmission } from '../association/workspace-module.js'
 import {
   AssociationError,
   associationFingerprint,

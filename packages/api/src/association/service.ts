@@ -11,7 +11,12 @@ import {
   type CrmIntegrationOperation, type CrmOperationsServicePort,
 } from '@use-brian/core'
 import { createAssociationStore, type AssociationStore } from '../db/association-store.js'
-import { createWorkspaceModulesStore, type WorkspaceModulesStore } from '../db/workspace-modules-store.js'
+import type { WorkspaceModulesStore } from '../db/workspace-modules-store.js'
+import {
+  ASSOCIATION_MODULE_KEY,
+  associationPendingOrders,
+  createAssociationWorkspaceModulesStore,
+} from './workspace-module.js'
 
 function actor(context: AssociationContext): AssociationActor {
   const identity = actorAuditIdentity(context.actor)
@@ -27,7 +32,7 @@ export function createAssociationService(options: {
 }): AssociationServicePort & AssociationSourceOrderImportPort & AssociationPromotionImportPort & AssociationSourceMembershipImportPort {
   const store = options.store ?? createAssociationStore()
   // Resolve the default lazily so pure command tests never open a database.
-  const modules = () => options.modules ?? createWorkspaceModulesStore()
+  const modules = () => options.modules ?? createAssociationWorkspaceModulesStore()
   return {
     async importSourceMembership(rawContext, rawInput) {
       const context = AssociationContextSchema.parse(rawContext)
@@ -106,13 +111,14 @@ export function createAssociationService(options: {
         }
       }
       switch (command.kind) {
-        case 'module_status': return { ...output, record: { ...(await modules().getAssociation(workspaceId)) } }
+        case 'module_status': return { ...output, record: { ...(await modules().get(workspaceId, ASSOCIATION_MODULE_KEY)) } }
         case 'module_action': {
           if (context.actor.kind !== 'user' || !authority.canConfigure || !['owner', 'admin'].includes(authority.role)) {
             throw new CrmOperationsError('not_authorized', 'A member owner or admin is required for module actions.')
           }
-          const changed = await modules().act(workspaceId, context.actor.userId, command)
-          return { ...output, record: { ...changed.module }, created: changed.changed, pendingOrders: changed.pendingOrders }
+          const changed = await modules().act(workspaceId, context.actor.userId, ASSOCIATION_MODULE_KEY, command)
+          return { ...output, record: { ...changed.module }, created: changed.changed,
+            blockingWork: changed.blockingWork, pendingOrders: associationPendingOrders(changed.blockingWork) }
         }
         case 'list_tickets': return { ...output, items: await store.listTickets(workspaceId, command.eventId) }
         case 'save_ticket': return { ...output, ...(await store.upsertTicket(workspaceId, command.eventId, command.ticket, dbActor)) }

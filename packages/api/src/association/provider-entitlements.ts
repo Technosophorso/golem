@@ -4,7 +4,7 @@ import { CrmOperationsError, requireCrmIntegrationResources, type AssociationAct
   type ProviderEntitlementEvent, type ProviderInboxEnvelope } from '@use-brian/core'
 import { createDbCrmOperationsStore } from '../db/crm-operations-store.js'
 import { lockCrmIntegrationCredential } from '../db/crm-integration-store.js'
-import { lockAssociationModule } from '../db/workspace-modules-store.js'
+import { lockAssociationModule } from './workspace-module.js'
 import { createCrmOperationsService } from '../crm-operations/service.js'
 import { requireProviderEntitlementActor } from '../crm-operations/entitlement-periods.js'
 import { receiveProviderInbox, type ProviderInboxHandlers, type ProviderInboxRow } from './provider-inbox.js'

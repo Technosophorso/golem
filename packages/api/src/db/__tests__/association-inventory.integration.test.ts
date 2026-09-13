@@ -3,7 +3,7 @@ import { setTimeout } from 'node:timers/promises'
 import { afterAll, describe, expect, it } from 'vitest'
 import { type CrmOperationsContext, type CrmOperationsCommand } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createAssociationStore } from '../association-store.js'
 import { createCrmOperationsService } from '../../crm-operations/service.js'
 import { createDbCrmOperationsStore } from '../crm-operations-store.js'
@@ -11,7 +11,7 @@ import { EventInputSchema, TicketInputSchema, OrderCreateSchema } from '../../as
 import { _resetCoalescerForTests } from '../../brain-stream/notify.js'
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore()
 const commerce = createAssociationStore(), operations = createCrmOperationsService(createDbCrmOperationsStore())
 const eventInput = { slug: 'fixture-event', title: 'Inventory fixture', startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity: 1 }
 const ticketInput = { key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 0, status: 'on_sale', capacity: 1 }
@@ -21,7 +21,7 @@ async function fixture(eventPatch: Record<string, unknown> = {}, withTicket = tr
   await pool.query("INSERT INTO workspaces(id,name,owner_user_id) VALUES($1,'Inventory fixture',$2)", [workspaceId, userId])
   await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId])
   await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional attendee',$3,'manual')", [contactId, workspaceId, userId])
-  await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const actor = { credentialKind: 'user' as const, credentialId: userId, actingUserId: userId }
   const event = await commerce.upsertEvent(workspaceId, EventInputSchema.parse({ ...eventInput, ...eventPatch }), actor)
   const eventId = String(event.record.id)

@@ -44,8 +44,9 @@ function fixture() {
     cancelOrder: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true }), confirmFreeOrder: vi.fn(),
   }
   const crm = { execute: vi.fn().mockResolvedValue({ record: { id: orderId, contactId: userId, metadata: {} } }) }
-  const modules = { act: vi.fn().mockResolvedValue({ module: { state: 'disabled' }, changed: true, pendingOrders: 0 }),
-    getAssociation: vi.fn().mockResolvedValue({ state: 'disabled', version: 3 }) }
+  const modules = { act: vi.fn().mockResolvedValue({ module: { state: 'disabled' }, changed: true,
+    blockingWork: [{ key: 'pending_orders', count: 0 }] }),
+    get: vi.fn().mockResolvedValue({ state: 'disabled', version: 3 }) }
   return { store, crm, modules, service: createAssociationService({ store: store as unknown as AssociationStore,
     crmService: crm as CrmOperationsServicePort, modules: modules as unknown as WorkspaceModulesStore }) }
 }
@@ -134,7 +135,7 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     const f = fixture()
     expect((await f.service.execute(member, { kind: 'get_order', orderId })).record?.id).toBe(orderId)
     await f.service.execute(member, { kind: 'cancel_order', orderId })
-    expect(f.modules.getAssociation).not.toHaveBeenCalled()
+    expect(f.modules.get).not.toHaveBeenCalled()
     expect(f.store.cancelOrder).toHaveBeenCalledWith(workspaceId, orderId, { credentialKind: 'user', credentialId: userId, actingUserId: userId })
   })
   it('denies read/write independently, including direct invocation', async () => {
@@ -151,7 +152,7 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
     }
     await f.service.execute({ ...member, authority: { ...member.authority, role: 'admin', canConfigure: true } }, change)
     expect(f.modules.act).toHaveBeenCalledTimes(1)
-    expect(f.modules.act).toHaveBeenCalledWith(workspaceId, userId, expect.objectContaining({ expectedVersion: 1 }))
+    expect(f.modules.act).toHaveBeenCalledWith(workspaceId, userId, 'association', expect.objectContaining({ expectedVersion: 1 }))
   })
   it('passes the event ceiling into SQL list inputs before pagination and scopes blocker counts', async () => {
     const f = fixture()

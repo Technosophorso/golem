@@ -3,6 +3,7 @@ import express from 'express'
 import request from 'supertest'
 import { describe, expect, it, vi } from 'vitest'
 import { CrmIntegrationScopeError, CrmOperationsError, type CrmOperationsServicePort, type AssociationServicePort } from '@use-brian/core'
+import { defineWorkspaceModuleRegistry } from '@use-brian/shared'
 import { crmIntegrationRoutes, crmIntegrationCredentialRoutes } from '../crm-integration.js'
 import { crmAssociationRoutes, associationMemberContext, workspaceModuleRoutes } from '../crm-association.js'
 import { createAssociationService } from '../../association/service.js'
@@ -290,15 +291,42 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     const workspaceStore = { getRole: vi.fn().mockResolvedValue('member') } as unknown as WorkspaceStore
     const credentials = { create: vi.fn(), listForMember: vi.fn() } as unknown as CrmIntegrationStore
     const modules = { listForMember: vi.fn().mockResolvedValue([{ state: 'disabled', version: 1 }]), act: vi.fn() } as unknown as WorkspaceModulesStore
-    const service = createAssociationService({ modules, store: {} as AssociationStore, crmService: {} as CrmOperationsServicePort })
     const app = express()
     app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
-    app.use('/api/workspaces', workspaceModuleRoutes({ workspaceStore, modules, service }))
+    app.use('/api/workspaces', workspaceModuleRoutes({ workspaceStore, modules }))
     app.use('/api/crm', crmIntegrationCredentialRoutes({ workspaceStore, credentials }))
     expect((await request(app).get(`/api/workspaces/${workspaceId}/modules`)).status).toBe(200)
     expect((await request(app).post(`/api/workspaces/${workspaceId}/modules/association/actions`).send({ action: 'enable', expectedVersion: 1 })).status).toBe(403)
     expect((await request(app).post(`/api/crm/${workspaceId}/operations/integration-credentials`).send({})).status).toBe(403)
     expect(modules.act).not.toHaveBeenCalled()
     expect(credentials.create).not.toHaveBeenCalled()
+  })
+  it('routes a second registered module without Association service changes', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const registry = defineWorkspaceModuleRegistry({ test_module: {
+      key: 'test_module', defaultState: 'disabled',
+      blockingCountCompatibility: { field: 'pendingJobs', blockerKey: 'pending_jobs' },
+    } } as const)
+    const modules = {
+      listForMember: vi.fn(),
+      act: vi.fn().mockResolvedValue({
+        module: { workspaceId, moduleKey: 'test_module', state: 'draining', version: 2 },
+        changed: true, blockingWork: [{ key: 'pending_jobs', count: 3 }],
+      }),
+    } as unknown as WorkspaceModulesStore
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/workspaces', workspaceModuleRoutes({ workspaceStore, modules, registry }))
+    const response = await request(app).post(`/api/workspaces/${workspaceId}/modules/test_module/actions`)
+      .send({ action: 'request_disable', expectedVersion: 1 })
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ changed: true, pendingJobs: 3,
+      module: { moduleKey: 'test_module' }, blockingWork: [{ key: 'pending_jobs', count: 3 }] })
+    expect(modules.act).toHaveBeenCalledWith(workspaceId, userId, 'test_module',
+      { action: 'request_disable', expectedVersion: 1 })
+    const unknown = await request(app).post(`/api/workspaces/${workspaceId}/modules/unregistered/actions`)
+      .send({ action: 'enable', expectedVersion: 0 })
+    expect(unknown.status).toBe(422)
+    expect(unknown.body.error).toBe('invalid_input')
   })
 })

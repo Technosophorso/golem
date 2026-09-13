@@ -4,7 +4,7 @@
 import { z } from 'zod'
 import { AssociationWaitlistOfferInputSchema } from './waitlist.js'
 import { ProviderEntitlementEventSchema, ProviderReceiptStateSchema } from './provider-inbox.js'
-import { WORKSPACE_MODULE_ACTIONS } from '@use-brian/shared'
+import { WORKSPACE_MODULE_ACTIONS, type WorkspaceModuleBlockingWork } from '@use-brian/shared'
 import { CrmOperationsActorSchema, CrmOperationsAuthoritySchema } from '../crm/operations-types.js'
 import {
   AssociationTicketInputSchema, AssociationOrderCreateSchema, AssociationProviderEventInputSchema, AssociationProviderFinancialEventInputSchema, AssociationProviderBindingInputSchema,
@@ -86,6 +86,7 @@ export type AssociationCommandResult = {
   items?: Array<Record<string, unknown>>
   nextCursor?: string | null
   created?: boolean
+  blockingWork?: WorkspaceModuleBlockingWork[]
   pendingOrders?: number
   financialSummary?: AssociationOrderFinancialSummary[]
   receipt?: Record<string, unknown>
