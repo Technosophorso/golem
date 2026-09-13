@@ -10,6 +10,7 @@ import {
   ProviderEventInputSchema,
   PromotionImportSchema,
   PromotionInputSchema,
+  SourceMembershipImportSchema,
   TicketInputSchema,
 } from '../domain.js'
 
@@ -110,6 +111,23 @@ describe('[COMP:crm/association-domain] bounded domain contracts', () => {
     expect(PromotionImportSchema.safeParse({ ...source, sourceRedeemedUses: 21 }).success).toBe(false)
     expect(PromotionImportSchema.safeParse({ ...source,
       sourceContactUses: [{ contactId: CONTACT_ID, uses: 3 }] }).success).toBe(false)
+  })
+
+  it('separates imported membership lineage from provider and automatic-renewal authority', () => {
+    const source = {
+      importJobId: '33333333-3333-4333-8333-333333333333', importRow: 2,
+      contactId: CONTACT_ID, planId: TICKET_ID, idempotencyKey: 'wix-membership:source-1',
+      status: 'active' as const, startsAt: '2026-08-01T00:00:00Z', endsAt: '2027-08-01T00:00:00Z',
+      source: 'wix', sourceSite: 'oasahk.org', sourceMembershipId: 'source-1',
+      sourcePlanId: 'plan-1', sourceSubscriptionId: 'subscription-1',
+      sourcePaymentProvider: 'stripe', sourcePaymentReference: 'sub_source_1',
+      sourceStatus: 'ACTIVE', sourceRenewalStatus: 'AUTO_RENEWING',
+      purchasedAt: '2026-08-01T00:00:00Z', relationships: { companyId: 'company-1' },
+    }
+    expect(SourceMembershipImportSchema.parse(source)).toMatchObject({ ...source, targetRenewalMode: 'none' })
+    expect(SourceMembershipImportSchema.safeParse({ ...source, targetRenewalMode: 'auto' }).success).toBe(false)
+    expect(SourceMembershipImportSchema.safeParse({ ...source, sourcePaymentReference: undefined }).success).toBe(false)
+    expect(SourceMembershipImportSchema.safeParse({ ...source, cancelledAt: '2026-07-01T00:00:00Z' }).success).toBe(false)
   })
 
   it('fingerprints equivalent object key order identically', () => {

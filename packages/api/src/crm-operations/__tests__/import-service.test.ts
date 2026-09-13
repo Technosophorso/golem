@@ -180,6 +180,38 @@ describe('[COMP:crm/production-import] production CRM import', () => {
       sampleErrors: [expect.objectContaining({ code: 'invalid_promotion' })] })
   })
 
+  it('preflights source membership lineage without accepting provider renewal authority', async () => {
+    const columns = [
+      'contactId', 'entitlementPlanId', 'entitlementIdempotencyKey', 'entitlementStatus',
+      'entitlementStartsAt', 'entitlementEndsAt', 'entitlementRenewalMode',
+      'sourceMembershipSource', 'sourceMembershipSite', 'sourceMembershipId',
+      'sourceMembershipPlanId', 'sourceMembershipSubscriptionId',
+      'sourceMembershipPaymentProvider', 'sourceMembershipPaymentReference',
+      'sourceMembershipStatus', 'sourceMembershipRenewalStatus',
+      'sourceMembershipPurchasedAt', 'sourceMembershipRelationshipsJson',
+    ]
+    const row = [
+      entityId, fileId, 'wix-membership:source-1', 'active',
+      '2026-08-01T00:00:00Z', '2027-08-01T00:00:00Z', 'none',
+      'wix', 'oasahk_org', 'source-1', 'plan-1', 'subscription-1',
+      'stripe', 'sub_source_1', 'ACTIVE', 'AUTO_RENEWING',
+      '2026-08-01T00:00:00Z', JSON.stringify({ companyId: 'company-1' }),
+    ]
+    const cell = (value: string) => /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value
+    const membershipBytes = Buffer.from(`${columns.join(',')}\n${row.map(cell).join(',')}\n`)
+    readBytes.mockResolvedValueOnce({ ok: true, value: { file: { id: fileId }, bytes: membershipBytes } })
+    const service = createCrmProductionImportService({ filesApi, operationsForTransaction: () => operations as never })
+    const input = { stagedFileId: fileId, entityKind: 'operations' as const,
+      mapping: { columns: Object.fromEntries(columns.map((column, index) => [index, column])) } }
+    await expect(service.dryRun(context, input)).resolves.toMatchObject({ totalRows: 1, validRows: 1, failedRows: 0 })
+    row[columns.indexOf('entitlementRenewalMode')] = 'auto'
+    readBytes.mockResolvedValueOnce({ ok: true, value: { file: { id: fileId }, bytes: Buffer.from(
+      `${columns.join(',')}\n${row.map(cell).join(',')}\n`,
+    ) } })
+    await expect(service.dryRun(context, input)).resolves.toMatchObject({ totalRows: 1, validRows: 0, failedRows: 1,
+      sampleErrors: [expect.objectContaining({ code: 'invalid_source_membership' })] })
+  })
+
   it('commits one bounded chunk and treats a completed resume as a no-op', async () => {
     const service = createCrmProductionImportService({ filesApi, operationsForTransaction: () => operations as never })
     const checked = await service.dryRun(context, {

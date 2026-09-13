@@ -18,6 +18,8 @@ export {
   type AssociationPlanInput as PlanInput,
   AssociationMembershipInputSchema as MembershipInputSchema,
   type AssociationMembershipInput as MembershipInput,
+  AssociationSourceMembershipImportSchema as SourceMembershipImportSchema,
+  type AssociationSourceMembershipImportInput as SourceMembershipImportInput,
   AssociationMembershipUpdateSchema as MembershipUpdateSchema,
   type AssociationMembershipUpdateInput as MembershipUpdateInput,
   AssociationSponsorshipAllocationStatusSchema as SponsorshipAllocationStatusSchema,

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
-import { AssociationCommandSchema, AssociationSourceOrderImportSchema, type AssociationContext, type CrmOperationsServicePort } from '@use-brian/core'
+import { AssociationCommandSchema, AssociationSourceMembershipImportSchema, AssociationSourceOrderImportSchema, type AssociationContext, type CrmOperationsServicePort } from '@use-brian/core'
 import { createAssociationService } from '../service.js'
 import type { AssociationStore } from '../../db/association-store.js'
 import type { WorkspaceModulesStore } from '../../db/workspace-modules-store.js'
@@ -18,6 +18,7 @@ function fixture() {
     listWaitlist: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
     offerWaitlistPlace: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
     importSourceOrder: vi.fn().mockResolvedValue({ record: { id: orderId, sourceImport: true }, created: true }),
+    importSourceMembership: vi.fn().mockResolvedValue({ record: { id: orderId, sourceImport: true }, created: true }),
     bindOrderProvider: vi.fn().mockResolvedValue({ record: { orderId }, created: true }),
     reconcileProviderEntitlement: vi.fn().mockResolvedValue({ record: { id: orderId }, created: true, receipt: { state: 'applied' } }),
     listProviderReceipts: vi.fn().mockResolvedValue({ items: [], nextCursor: null }),
@@ -54,6 +55,30 @@ function integration(): AssociationContext {
 }
 
 describe('[COMP:crm/association-service] Canonical authority and adapters', () => {
+  it('keeps source membership assertions inside the matching owner/admin import job', async () => {
+    const f = fixture(), jobId = randomUUID()
+    const input = AssociationSourceMembershipImportSchema.parse({
+      importJobId: jobId, importRow: 1, contactId: userId, planId: eventId,
+      idempotencyKey: 'wix-membership:source-1', status: 'active',
+      startsAt: '2026-08-01T00:00:00Z', endsAt: '2027-08-01T00:00:00Z',
+      source: 'wix', sourceSite: 'oasahk_org', sourceMembershipId: 'source-1',
+      sourcePlanId: 'wix-plan-1', sourceSubscriptionId: 'wix-subscription-1',
+      sourceStatus: 'ACTIVE', sourceRenewalStatus: 'AUTO_RENEWING',
+      purchasedAt: '2026-08-01T00:00:00Z',
+    })
+    const ownerImport: AssociationContext = { ...member,
+      actor: { kind: 'import', jobId, userId },
+      authority: { ...member.authority, role: 'owner', canConfigure: true } }
+    expect(await f.service.importSourceMembership(ownerImport, input)).toMatchObject({ created: true, duplicate: false })
+    expect(f.store.importSourceMembership).toHaveBeenCalledWith(workspaceId, input,
+      expect.objectContaining({ credentialKind: 'import', actingUserId: userId }))
+    for (const context of [
+      { ...ownerImport, actor: { kind: 'import' as const, jobId: randomUUID(), userId } },
+      { ...ownerImport, authority: { ...ownerImport.authority, role: 'member' as const, canConfigure: false } },
+      { ...ownerImport, actor: { kind: 'user' as const, userId } },
+    ]) await expect(f.service.importSourceMembership(context, input)).rejects.toMatchObject({ code: 'not_authorized' })
+    expect(f.store.importSourceMembership).toHaveBeenCalledTimes(1)
+  })
   it('keeps source order assertions inside the matching owner/admin import job', async () => {
     const f = fixture(), jobId = randomUUID()
     const input = AssociationSourceOrderImportSchema.parse({

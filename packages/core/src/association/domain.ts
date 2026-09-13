@@ -401,6 +401,49 @@ export const AssociationPromotionImportSchema = z.object({
 })
 export type AssociationPromotionImportInput = z.infer<typeof AssociationPromotionImportSchema>
 
+/** Immutable membership lineage admitted only by the confirmed production
+ * importer. Source payment identifiers remain evidence; they never bind the
+ * canonical entitlement to a provider or authorize a future charge. */
+export const AssociationSourceMembershipImportSchema = z.object({
+  importJobId: UUID,
+  importRow: z.number().int().positive(),
+  contactId: UUID,
+  planId: UUID,
+  idempotencyKey: z.string().trim().min(1).max(200),
+  status: z.enum(['pending', 'active', 'expired', 'cancelled']),
+  startsAt: Instant,
+  endsAt: Instant.optional(),
+  targetRenewalMode: z.enum(['none', 'manual']).default('none'),
+  source: StableKey,
+  sourceSite: z.string().trim().min(1).max(500),
+  sourceMembershipId: z.string().trim().min(1).max(500),
+  sourcePlanId: z.string().trim().min(1).max(500),
+  sourceMemberId: z.string().trim().min(1).max(500).optional(),
+  sourceOrderId: z.string().trim().min(1).max(500).optional(),
+  sourceSubscriptionId: z.string().trim().min(1).max(500).optional(),
+  sourcePaymentProvider: ProviderKey.optional(),
+  sourcePaymentReference: z.string().trim().min(1).max(500).optional(),
+  sourceStatus: z.string().trim().min(1).max(100),
+  sourceRenewalStatus: z.string().trim().min(1).max(100),
+  sourcePaymentStatus: z.string().trim().min(1).max(100).optional(),
+  sourceRefundStatus: z.string().trim().min(1).max(100).optional(),
+  purchasedAt: Instant,
+  cancelledAt: Instant.optional(),
+  relationships: boundedObject(8_000).default({}),
+  metadata: boundedObject(16_000).default({}),
+}).strict().superRefine((value, ctx) => {
+  if ((value.sourcePaymentProvider === undefined) !== (value.sourcePaymentReference === undefined)) {
+    ctx.addIssue({ code: 'custom', path: ['sourcePaymentProvider'], message: 'source payment provider and reference must be supplied together' })
+  }
+  if (value.endsAt && Date.parse(value.startsAt) >= Date.parse(value.endsAt)) {
+    ctx.addIssue({ code: 'custom', path: ['endsAt'], message: 'endsAt must be after startsAt' })
+  }
+  if (value.cancelledAt && Date.parse(value.cancelledAt) < Date.parse(value.purchasedAt)) {
+    ctx.addIssue({ code: 'custom', path: ['cancelledAt'], message: 'cancelledAt cannot precede purchasedAt' })
+  }
+})
+export type AssociationSourceMembershipImportInput = z.infer<typeof AssociationSourceMembershipImportSchema>
+
 export const AssociationMembershipCheckoutCreateSchema = z.object({
   contactId: UUID,
   planId: UUID,

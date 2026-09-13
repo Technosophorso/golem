@@ -46,6 +46,7 @@ export const CRM_OPERATIONS_PRIVACY_TABLES = [
   'crm_segments',
   'association_membership_plans',
   'association_memberships',
+  'association_membership_source_imports',
   'association_membership_checkouts',
   'association_membership_offline_rescues',
   'association_events',
@@ -94,6 +95,7 @@ EXPORT_PROJECTIONS.crm_import_sources = [
 EXPORT_PROJECTIONS.crm_address_suppression_tombstones = 'id,workspace_id,key_version,channel,purpose_key,reason_code,occurred_at,policy_version,created_at,expires_at,released_at,release_evidence_kind,release_evidence_id'
 EXPORT_PROJECTIONS.association_integration_events = 'id,workspace_id,provider,provider_event_id,provider_reference,occurred_at,target_kind,order_id,entitlement_id,contact_id,plan_id,state,attempts,cycle_attempts,next_attempt_at,last_error_code,created_at,updated_at,applied_at'
 EXPORT_PROJECTIONS.association_promotions = 'id,workspace_id,promotion_key,name,discount_type,percentage_basis_points,amount_minor,currency,buy_quantity,get_quantity,target_kind,target_ids,recurrence_mode,recurrence_cycles,apply_mode,valid_from,valid_to,max_uses,max_uses_per_contact,source_system,source_site,source_promotion_id,source_redeemed_uses,combines_with_member_price,release_on_full_refund,status,created_at,updated_at'
+EXPORT_PROJECTIONS.association_membership_source_imports = 'id,workspace_id,membership_id,source_system,source_site,source_membership_id,source_plan_id,source_member_id,source_order_id,source_subscription_id,source_payment_provider,source_payment_reference,source_status,source_renewal_status,source_payment_status,source_refund_status,purchased_at,cancelled_at,relationships,metadata,created_at'
 EXPORT_PROJECTIONS.association_membership_checkouts = 'id,workspace_id,contact_id,plan_id,status,currency,subtotal_minor,discount_minor,total_minor,promotion_id,promotion_snapshot,reservation_expires_at,provider,provider_reference,provider_coupon_reference,created_at,updated_at'
 
 EXPORT_PROJECTIONS.crm_import_file_cleanups='id,workspace_id,owner_user_id,file_id,before_at,policy_version,summary,status,attempts,next_attempt_at,leased_until,error_code,created_at,expires_at,queued_at,completed_at,replay_expires_at'

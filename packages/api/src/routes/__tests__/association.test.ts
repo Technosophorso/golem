@@ -41,6 +41,7 @@ function fakeStore(): AssociationStore {
     upsertPlan: vi.fn(),
     listPlans: vi.fn(),
     createMembership: vi.fn(),
+    importSourceMembership: vi.fn(),
     listMemberships: vi.fn(),
     updateMembership: vi.fn(),
     listSponsorshipAllocations: vi.fn(),

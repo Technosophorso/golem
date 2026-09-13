@@ -9,7 +9,7 @@ import { createCrmProductionImportService, type CrmImportEntityKind } from '../.
 import { getPool } from '../client.js'
 import { createAssociationService } from '../../association/service.js'
 import { createAssociationStore } from '../association-store.js'
-import { EventInputSchema, TicketInputSchema } from '../../association/domain.js'
+import { EventInputSchema, PlanInputSchema, TicketInputSchema } from '../../association/domain.js'
 
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
@@ -207,6 +207,84 @@ describe('[COMP:crm/production-import] Atomic rows and serialized chunk recovery
     await expect(importer().dryRun(member, { stagedFileId: nextId, entityKind: 'operations',
       mapping: { columns: Object.fromEntries(columns.map((column, index) => [index, column])) } }))
       .rejects.toMatchObject({ code: 'not_authorized' })
+  })
+
+  it('imports Wix membership access with immutable source lineage and no provider authority or side effects', async () => {
+    const f = await fixture(), contactId = await f.entity('person', 'Source membership person')
+    const association = createAssociationStore(pool)
+    const actor = { credentialKind: 'user' as const, credentialId: f.userId, actingUserId: f.userId }
+    const plan = await association.upsertPlan(f.workspaceId, PlanInputSchema.parse({
+      key: `source-plan-${f.workspaceId.slice(0, 8)}`, name: 'Source membership plan',
+      currency: 'HKD', feeMinor: 120000, billingPeriod: 'annual', published: true,
+    }), actor)
+    const columns = [
+      'contactId', 'entitlementPlanId', 'entitlementIdempotencyKey', 'entitlementStatus',
+      'entitlementStartsAt', 'entitlementEndsAt', 'entitlementRenewalMode',
+      'sourceMembershipSource', 'sourceMembershipSite', 'sourceMembershipId',
+      'sourceMembershipPlanId', 'sourceMembershipMemberId', 'sourceMembershipOrderId',
+      'sourceMembershipSubscriptionId', 'sourceMembershipPaymentProvider',
+      'sourceMembershipPaymentReference', 'sourceMembershipStatus',
+      'sourceMembershipRenewalStatus', 'sourceMembershipPaymentStatus',
+      'sourceMembershipRefundStatus', 'sourceMembershipPurchasedAt',
+      'sourceMembershipRelationshipsJson', 'sourceMembershipMetadataJson',
+    ]
+    const original = [
+      contactId, String(plan.record.id), 'wix-membership:wix-membership-42', 'active',
+      '2026-08-01T00:00:00Z', '2027-08-01T00:00:00Z', 'none',
+      'wix', 'oasahk_org', 'wix-membership-42', 'wix-plan-annual', 'wix-member-42',
+      'wix-order-42', 'wix-subscription-42', 'stripe', 'sub_wix_42', 'ACTIVE',
+      'AUTO_RENEWING', 'PAID', 'NOT_REFUNDED', '2026-08-01T00:00:00Z',
+      JSON.stringify({ companySourceId: 'wix-company-42', namedMemberSourceId: 'wix-member-42' }),
+      JSON.stringify({ sourceRevision: 'rev-1' }),
+    ]
+    const first = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, first.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    const refs = (await pool.query(`SELECT result_refs FROM crm_import_rows
+      WHERE workspace_id=$1 AND job_id=$2 AND row_number=2`, [f.workspaceId, first.id])).rows[0].result_refs
+    expect(refs).toEqual(expect.arrayContaining([
+      { kind: 'contact', id: contactId },
+      { kind: 'entitlement', id: expect.stringMatching(/^[0-9a-f-]{36}$/), sourceId: 'wix-membership-42' },
+    ]))
+    const saved = (await pool.query(`SELECT m.id,m.status,m.renewal_mode,m.provider,m.provider_membership_id,
+      m.provider_period_id,m.predecessor_id,s.source_system,s.source_site,s.source_membership_id,
+      s.source_plan_id,s.source_member_id,s.source_order_id,s.source_subscription_id,
+      s.source_payment_provider,s.source_payment_reference,s.source_status,s.source_renewal_status,
+      s.source_payment_status,s.source_refund_status,s.relationships,s.metadata
+      FROM association_memberships m JOIN association_membership_source_imports s
+        ON s.workspace_id=m.workspace_id AND s.membership_id=m.id
+      WHERE m.workspace_id=$1 AND s.source_membership_id='wix-membership-42'`, [f.workspaceId])).rows[0]
+    expect(saved).toMatchObject({ status: 'active', renewal_mode: 'none', provider: null,
+      provider_membership_id: null, provider_period_id: null, predecessor_id: null,
+      source_system: 'wix', source_site: 'oasahk_org', source_membership_id: 'wix-membership-42',
+      source_plan_id: 'wix-plan-annual', source_member_id: 'wix-member-42', source_order_id: 'wix-order-42',
+      source_subscription_id: 'wix-subscription-42', source_payment_provider: 'stripe',
+      source_payment_reference: 'sub_wix_42', source_status: 'ACTIVE',
+      source_renewal_status: 'AUTO_RENEWING', source_payment_status: 'PAID',
+      source_refund_status: 'NOT_REFUNDED',
+      relationships: { companySourceId: 'wix-company-42', namedMemberSourceId: 'wix-member-42' },
+      metadata: { sourceRevision: 'rev-1' } })
+    expect((await pool.query(`SELECT
+      (SELECT count(*) FROM association_notification_outbox WHERE workspace_id=$1)::int notifications,
+      (SELECT count(*) FROM association_integration_events WHERE workspace_id=$1)::int provider_events,
+      (SELECT count(*) FROM crm_domain_event_outbox WHERE workspace_id=$1)::int domain_events`,
+    [f.workspaceId])).rows[0]).toEqual({ notifications: 0, provider_events: 0, domain_events: 0 })
+    await expect(pool.query(`UPDATE association_membership_source_imports SET source_status='CHANGED'
+      WHERE workspace_id=$1 AND source_membership_id='wix-membership-42'`, [f.workspaceId]))
+      .rejects.toMatchObject({ code: '23514' })
+
+    const replay = await f.job(columns, [original], 'operations')
+    expect(await importer().resume(f.context, replay.id)).toMatchObject({ succeededRows: 1, failedRows: 0 })
+    expect((await pool.query(`SELECT count(*)::int count FROM association_membership_source_imports
+      WHERE workspace_id=$1`, [f.workspaceId])).rows[0].count).toBe(1)
+    expect((await pool.query(`SELECT count(*)::int count FROM association_audit_log
+      WHERE workspace_id=$1 AND action='membership.source_imported'`, [f.workspaceId])).rows[0].count).toBe(1)
+
+    const changed = [...original]
+    changed[columns.indexOf('sourceMembershipStatus')] = 'CANCELLED'
+    const conflict = await f.job(columns, [changed], 'operations')
+    expect(await importer().resume(f.context, conflict.id)).toMatchObject({ succeededRows: 0, failedRows: 1 })
+    expect((await pool.query(`SELECT message FROM crm_import_errors WHERE job_id=$1`, [conflict.id])).rows)
+      .toEqual([{ message: 'Source membership identity was already used with different evidence.' }])
   })
 
   it('imports source orders silently, reconciles capacity once, and protects source evidence across jobs', async () => {

@@ -40,6 +40,7 @@ import {
   type EventInput,
   type ExternalIdentityInput,
   type MembershipInput,
+  type SourceMembershipImportInput,
   type MembershipCheckoutCreateInput,
   type MembershipCheckoutProviderBindingInput,
   type MembershipRescueCancellationInput,
@@ -93,6 +94,7 @@ export type AssociationStore = {
   upsertPlan(workspaceId: string, input: PlanInput, actor: AssociationActor): Promise<MutationResult>
   listPlans(workspaceId: string, input: AssociationListInput & { published?: boolean }): Promise<AssociationPage>
   createMembership(workspaceId: string, input: MembershipInput, actor: AssociationActor): Promise<MutationResult>
+  importSourceMembership(workspaceId: string, input: SourceMembershipImportInput, actor: AssociationActor): Promise<MutationResult>
   listMemberships(workspaceId: string, contactId: string, filters?: CrmEffectiveEntitlementQuery): Promise<AssociationRecord[]>
   updateMembership(workspaceId: string, id: string, input: MembershipUpdateInput, actor: AssociationActor): Promise<AssociationRecord>
   listSponsorshipAllocations(workspaceId: string, input: AssociationListInput & { sponsorContactId?: string; status?: SponsorshipAllocationStatus }): Promise<AssociationPage>
@@ -438,6 +440,25 @@ async function requireSourceOrderImportActor(client: PoolClient, workspaceId: st
   return actor.actingUserId
 }
 
+async function requireSourceMembershipImportActor(
+  client: PoolClient,
+  workspaceId: string,
+  actor: AssociationActor,
+  importJobId: string,
+): Promise<string> {
+  if (actor.credentialKind !== 'import' || actor.credentialId !== importJobId || !actor.actingUserId) {
+    throw new CrmOperationsError('not_authorized', 'Source memberships are only available to a confirmed owner/admin import job.')
+  }
+  const member = await client.query<{ role: string }>(
+    `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR KEY SHARE`,
+    [workspaceId, actor.actingUserId],
+  )
+  if (!['owner', 'admin'].includes(member.rows[0]?.role ?? '')) {
+    throw new CrmOperationsError('not_authorized', 'Source membership imports require a current workspace owner or admin.')
+  }
+  return actor.actingUserId
+}
+
 async function requirePromotionImportActor(
   client: PoolClient,
   workspaceId: string,
@@ -535,6 +556,31 @@ async function getMembershipCheckoutRecord(client: Pick<PoolClient, 'query'>, wo
   const result = await client.query<DbRow>(
     `SELECT ${MEMBERSHIP_CHECKOUT_SELECT} FROM association_membership_checkouts c
       WHERE c.workspace_id=$1 AND c.id=$2`,
+    [workspaceId, id],
+  )
+  return result.rows[0] ?? null
+}
+
+async function getSourceMembershipRecord(
+  client: Pick<PoolClient, 'query'>,
+  workspaceId: string,
+  id: string,
+): Promise<AssociationRecord | null> {
+  const result = await client.query<DbRow>(
+    `SELECT ${MEMBERSHIP_SELECT},true AS "sourceImport",
+       jsonb_build_object(
+         'source',s.source_system,'site',s.source_site,'membershipId',s.source_membership_id,
+         'planId',s.source_plan_id,'memberId',s.source_member_id,'orderId',s.source_order_id,
+         'subscriptionId',s.source_subscription_id,'paymentProvider',s.source_payment_provider,
+         'paymentReference',s.source_payment_reference,'status',s.source_status,
+         'renewalStatus',s.source_renewal_status,'paymentStatus',s.source_payment_status,
+         'refundStatus',s.source_refund_status,'purchasedAt',s.purchased_at,
+         'cancelledAt',s.cancelled_at,'relationships',s.relationships,'metadata',s.metadata
+       ) AS "sourceEvidence"
+       FROM association_memberships m
+       JOIN association_membership_plans p ON p.workspace_id=m.workspace_id AND p.id=m.plan_id
+       JOIN association_membership_source_imports s ON s.workspace_id=m.workspace_id AND s.membership_id=m.id
+      WHERE m.workspace_id=$1 AND m.id=$2`,
     [workspaceId, id],
   )
   return result.rows[0] ?? null
@@ -1177,15 +1223,97 @@ export function createAssociationStore(
       })
     },
 
+    async importSourceMembership(workspaceId, input, actor) {
+      return transact(async (client) => {
+        const reviewer = await requireSourceMembershipImportActor(client, workspaceId, actor, input.importJobId)
+        const { importJobId, importRow, ...evidence } = input
+        const fingerprint = associationFingerprint(evidence)
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended('association-source-membership:'||$1::text||':'||$2||':'||$3||':'||$4,0))",
+          [workspaceId, input.source, input.sourceSite, input.sourceMembershipId],
+        )
+        const existing = (await client.query<{ membership_id: string; request_fingerprint: string }>(
+          `SELECT membership_id,request_fingerprint FROM association_membership_source_imports
+            WHERE workspace_id=$1 AND source_system=$2 AND source_site=$3 AND source_membership_id=$4`,
+          [workspaceId, input.source, input.sourceSite, input.sourceMembershipId],
+        )).rows[0]
+        if (existing) {
+          if (existing.request_fingerprint !== fingerprint) {
+            throw new AssociationError('conflict', 'Source membership identity was already used with different evidence.')
+          }
+          return { record: (await getSourceMembershipRecord(client, workspaceId, existing.membership_id))!, created: false }
+        }
+        const timing = (await client.query<{ purchased_valid: boolean; cancelled_valid: boolean }>(
+          `SELECT $1::timestamptz<=clock_timestamp() purchased_valid,
+             ($2::timestamptz IS NULL OR $2::timestamptz<=clock_timestamp()) cancelled_valid`,
+          [input.purchasedAt, input.cancelledAt ?? null],
+        )).rows[0]
+        if (!timing.purchased_valid || !timing.cancelled_valid) {
+          throw new AssociationError('conflict', 'Source membership evidence cannot be dated in the future.')
+        }
+        await requirePerson(client, workspaceId, input.contactId)
+        const plan = await client.query(
+          `SELECT 1 FROM association_membership_plans WHERE workspace_id=$1 AND id=$2 FOR KEY SHARE`,
+          [workspaceId, input.planId],
+        )
+        if (!plan.rowCount) throw new AssociationError('not_found', 'membership plan not found')
+        const membership = (await client.query<{ id: string }>(
+          `INSERT INTO association_memberships(
+             workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,
+             starts_at,ends_at,renewal_mode,provider,provider_membership_id,provider_period_id,
+             predecessor_id,created_at,updated_at)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,NULL,NULL,NULL,NULL,$10,$10)
+           RETURNING id`,
+          [workspaceId, input.contactId, input.planId, input.idempotencyKey,
+            fingerprint, input.status, input.startsAt, input.endsAt ?? null,
+            input.targetRenewalMode, input.purchasedAt],
+        )).rows[0]
+        await client.query("SELECT set_config('app.association_source_membership_actor',$1,true)", [reviewer])
+        await client.query(
+          `INSERT INTO association_membership_source_imports(
+             workspace_id,membership_id,source_system,source_site,source_membership_id,
+             source_plan_id,source_member_id,source_order_id,source_subscription_id,
+             source_payment_provider,source_payment_reference,source_status,source_renewal_status,
+             source_payment_status,source_refund_status,purchased_at,cancelled_at,
+             relationships,metadata,import_job_id,import_row,request_fingerprint)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
+          [workspaceId, membership.id, input.source, input.sourceSite, input.sourceMembershipId,
+            input.sourcePlanId, input.sourceMemberId ?? null, input.sourceOrderId ?? null,
+            input.sourceSubscriptionId ?? null, input.sourcePaymentProvider ?? null,
+            input.sourcePaymentReference ?? null, input.sourceStatus, input.sourceRenewalStatus,
+            input.sourcePaymentStatus ?? null, input.sourceRefundStatus ?? null,
+            input.purchasedAt, input.cancelledAt ?? null, input.relationships, input.metadata,
+            importJobId, importRow, fingerprint],
+        )
+        await audit(client, workspaceId, 'membership.source_imported', 'membership', membership.id, actor, {
+          contactId: input.contactId, planId: input.planId, source: input.source,
+          sourceSite: input.sourceSite, sourceMembershipId: input.sourceMembershipId,
+          importJobId, importRow,
+        })
+        return { record: (await getSourceMembershipRecord(client, workspaceId, membership.id))!, created: true }
+      })
+    },
+
     async listMemberships(workspaceId, contactId, filters = {}) {
       const input = CrmEffectiveEntitlementQuerySchema.parse(filters)
       const at = 'coalesce($4::timestamptz,statement_timestamp())'
       const result = await pool.query<DbRow>(
-        `SELECT ${MEMBERSHIP_SELECT},
+        `SELECT ${MEMBERSHIP_SELECT},(s.id IS NOT NULL) AS "sourceImport",
+             CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object(
+               'source',s.source_system,'site',s.source_site,'membershipId',s.source_membership_id,
+               'planId',s.source_plan_id,'memberId',s.source_member_id,'orderId',s.source_order_id,
+               'subscriptionId',s.source_subscription_id,'paymentProvider',s.source_payment_provider,
+               'paymentReference',s.source_payment_reference,'status',s.source_status,
+               'renewalStatus',s.source_renewal_status,'paymentStatus',s.source_payment_status,
+               'refundStatus',s.source_refund_status,'purchasedAt',s.purchased_at,
+               'cancelledAt',s.cancelled_at,'relationships',s.relationships,'metadata',s.metadata)
+             END AS "sourceEvidence",
              association_membership_is_effective(m.workspace_id,m.id,m.status,m.starts_at,m.ends_at,${at}) AS "isEffective",
              to_char(${at} AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "effectiveAt"
            FROM association_memberships m JOIN association_membership_plans p
              ON p.workspace_id=m.workspace_id AND p.id=m.plan_id
+           LEFT JOIN association_membership_source_imports s
+             ON s.workspace_id=m.workspace_id AND s.membership_id=m.id
           WHERE m.workspace_id=$1 AND m.contact_id=$2
             AND (NOT $3::boolean OR association_membership_is_effective(m.workspace_id,m.id,m.status,m.starts_at,m.ends_at,${at}))
           ORDER BY m.created_at DESC,m.id DESC`,

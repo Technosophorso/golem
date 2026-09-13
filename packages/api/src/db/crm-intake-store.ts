@@ -378,12 +378,24 @@ export function createDbCrmIntakeReadStore(integration?: CrmIntegrationAuthority
                 m.renewal_mode AS "renewalMode", m.provider,
                 m.provider_membership_id AS "providerEntitlementId",m.provider_period_id AS "providerPeriodId",m.predecessor_id AS "predecessorId",
                 m.sponsorship_allocation_id AS "sponsorshipAllocationId",
+                (s.id IS NOT NULL) AS "sourceImport",
+                CASE WHEN s.id IS NULL THEN NULL ELSE jsonb_build_object(
+                  'source',s.source_system,'site',s.source_site,'membershipId',s.source_membership_id,
+                  'planId',s.source_plan_id,'memberId',s.source_member_id,'orderId',s.source_order_id,
+                  'subscriptionId',s.source_subscription_id,'paymentProvider',s.source_payment_provider,
+                  'paymentReference',s.source_payment_reference,'status',s.source_status,
+                  'renewalStatus',s.source_renewal_status,'paymentStatus',s.source_payment_status,
+                  'refundStatus',s.source_refund_status,'purchasedAt',s.purchased_at,
+                  'cancelledAt',s.cancelled_at,'relationships',s.relationships,'metadata',s.metadata)
+                END AS "sourceEvidence",
                 m.created_at AS "createdAt", m.updated_at AS "updatedAt"
            FROM association_memberships m
            JOIN association_membership_plans p
              ON p.workspace_id=m.workspace_id AND p.id=m.plan_id
            JOIN entities c
              ON c.workspace_id=m.workspace_id AND c.id=m.contact_id
+           LEFT JOIN association_membership_source_imports s
+             ON s.workspace_id=m.workspace_id AND s.membership_id=m.id
           WHERE m.workspace_id=$1
             AND ($2::uuid IS NULL OR m.contact_id=$2)
             AND ($3::uuid IS NULL OR m.plan_id=$3)

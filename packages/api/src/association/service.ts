@@ -6,6 +6,7 @@ import {
   requireCrmIntegrationOperation, requireCrmIntegrationResources,
   type AssociationActor, type AssociationContext, type AssociationServicePort,
   AssociationPromotionImportSchema, type AssociationPromotionImportPort,
+  AssociationSourceMembershipImportSchema, type AssociationSourceMembershipImportPort,
   AssociationSourceOrderImportSchema, type AssociationSourceOrderImportPort,
   type CrmIntegrationOperation, type CrmOperationsServicePort,
 } from '@use-brian/core'
@@ -23,11 +24,22 @@ export function createAssociationService(options: {
   crmService: CrmOperationsServicePort
   store?: AssociationStore
   modules?: WorkspaceModulesStore
-}): AssociationServicePort & AssociationSourceOrderImportPort & AssociationPromotionImportPort {
+}): AssociationServicePort & AssociationSourceOrderImportPort & AssociationPromotionImportPort & AssociationSourceMembershipImportPort {
   const store = options.store ?? createAssociationStore()
   // Resolve the default lazily so pure command tests never open a database.
   const modules = () => options.modules ?? createWorkspaceModulesStore()
   return {
+    async importSourceMembership(rawContext, rawInput) {
+      const context = AssociationContextSchema.parse(rawContext)
+      const input = AssociationSourceMembershipImportSchema.parse(rawInput)
+      if (context.actor.kind !== 'import' || context.actor.jobId !== input.importJobId
+        || !context.authority.canWrite || !context.authority.canConfigure
+        || !['owner', 'admin'].includes(context.authority.role)) {
+        throw new CrmOperationsError('not_authorized', 'Source memberships require the current owner/admin production import job.')
+      }
+      const saved = await store.importSourceMembership(context.workspaceId, input, actor(context))
+      return { record: saved.record, created: saved.created, duplicate: !saved.created }
+    },
     async importPromotion(rawContext, rawInput) {
       const context = AssociationContextSchema.parse(rawContext)
       const input = AssociationPromotionImportSchema.parse(rawInput)

@@ -324,6 +324,23 @@ export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
     "reason": "Rows follow explicit CRM attribution."
   },
   {
+    domain: 'association_membership_source_imports',
+    columns: [
+      'id','workspace_id','membership_id','source_system','source_site','source_membership_id',
+      'source_plan_id','source_member_id','source_order_id','source_subscription_id',
+      'source_payment_provider','source_payment_reference','source_status','source_renewal_status',
+      'source_payment_status','source_refund_status','purchased_at','cancelled_at','relationships',
+      'metadata','import_job_id','import_row','request_fingerprint','created_at',
+    ],
+    excludedColumns: ['import_job_id','import_row','request_fingerprint'],
+    orderBy: 't.id',
+    subjectWhere: 'EXISTS(SELECT 1 FROM association_memberships m WHERE m.workspace_id=$1 AND m.id=t.membership_id AND m.contact_id=$2)',
+    workspaceWhere: 'true',
+    subjectRedactions: {},
+    transforms: {},
+    reason: 'The source subscription and paid-through lineage follows its imported membership; private importer replay coordinates are excluded.',
+  },
+  {
     "domain": "association_sponsorship_allocations",
     "columns": [
       "id","workspace_id","sponsor_contact_id","sponsor_membership_id","beneficiary_plan_id",

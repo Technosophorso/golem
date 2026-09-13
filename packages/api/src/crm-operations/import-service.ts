@@ -17,6 +17,7 @@ import type {
   CrmOperationsServicePort,
   CrmHistoricalSubmissionImportPort,
   AssociationPromotionImportPort,
+  AssociationSourceMembershipImportPort,
   AssociationSourceOrderImportPort,
   EntityLinksStore,
   FilesApi,
@@ -25,7 +26,7 @@ import type {
   CrmPage,
   CrmPageQuery,
 } from '@use-brian/core'
-import { AssociationPromotionImportSchema, AssociationSourceOrderImportSchema, CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
+import { AssociationPromotionImportSchema, AssociationSourceMembershipImportSchema, AssociationSourceOrderImportSchema, CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
 import { createCompany, createContact, createDeal, updateContact, type CrmWriteTransaction } from '../db/crm.js'
 import { updateCrmCustomFields } from '../db/crm-r2.js'
 import { getEntityById, updateEntity } from '../db/entities-store.js'
@@ -71,6 +72,14 @@ const BASE_TARGETS = new Set([
   'promotionValidFrom', 'promotionValidTo', 'promotionMaxUses', 'promotionMaxUsesPerContact',
   'promotionCombinesWithMemberPrice', 'promotionReleaseOnFullRefund', 'promotionStatus',
   'promotionSourceRedeemedUses', 'promotionSourceContactUsesJson',
+  'sourceMembershipSource', 'sourceMembershipSite', 'sourceMembershipId',
+  'sourceMembershipPlanId', 'sourceMembershipMemberId', 'sourceMembershipOrderId',
+  'sourceMembershipSubscriptionId', 'sourceMembershipPaymentProvider',
+  'sourceMembershipPaymentReference', 'sourceMembershipStatus',
+  'sourceMembershipRenewalStatus', 'sourceMembershipPaymentStatus',
+  'sourceMembershipRefundStatus', 'sourceMembershipPurchasedAt',
+  'sourceMembershipCancelledAt', 'sourceMembershipRelationshipsJson',
+  'sourceMembershipMetadataJson',
 ])
 
 function validTarget(target: string): boolean {
@@ -370,6 +379,37 @@ function sourceOrderInput(values: Record<string, string>, importJobId: string, i
   })
 }
 
+function sourceMembershipInput(values: Record<string, string>, importJobId: string, importRow: number) {
+  return AssociationSourceMembershipImportSchema.parse({
+    importJobId,
+    importRow,
+    contactId: values.contactId,
+    planId: values.entitlementPlanId,
+    idempotencyKey: values.entitlementIdempotencyKey,
+    status: values.entitlementStatus ?? 'pending',
+    startsAt: values.entitlementStartsAt,
+    endsAt: values.entitlementEndsAt,
+    targetRenewalMode: values.entitlementRenewalMode ?? 'none',
+    source: values.sourceMembershipSource,
+    sourceSite: values.sourceMembershipSite,
+    sourceMembershipId: values.sourceMembershipId,
+    sourcePlanId: values.sourceMembershipPlanId,
+    sourceMemberId: values.sourceMembershipMemberId,
+    sourceOrderId: values.sourceMembershipOrderId,
+    sourceSubscriptionId: values.sourceMembershipSubscriptionId,
+    sourcePaymentProvider: values.sourceMembershipPaymentProvider,
+    sourcePaymentReference: values.sourceMembershipPaymentReference,
+    sourceStatus: values.sourceMembershipStatus,
+    sourceRenewalStatus: values.sourceMembershipRenewalStatus,
+    sourcePaymentStatus: values.sourceMembershipPaymentStatus,
+    sourceRefundStatus: values.sourceMembershipRefundStatus,
+    purchasedAt: values.sourceMembershipPurchasedAt,
+    cancelledAt: values.sourceMembershipCancelledAt,
+    relationships: jsonValue(values.sourceMembershipRelationshipsJson, 'Source membership relationships', {}),
+    metadata: jsonValue(values.sourceMembershipMetadataJson, 'Source membership metadata', {}),
+  })
+}
+
 function importBoolean(raw: string | undefined, label: string): boolean {
   const normalized = raw?.trim().toLowerCase()
   if (['true', 'yes', '1', 'on'].includes(normalized ?? '')) return true
@@ -491,6 +531,28 @@ function validateMappedRow(
   for (const field of ['entitlementStartsAt', 'entitlementEndsAt']) {
     if (values[field] && Number.isNaN(Date.parse(values[field]))) add('invalid_instant', 'Value must be an ISO timestamp.', field)
   }
+  const sourceMembershipFields = [
+    values.sourceMembershipSource, values.sourceMembershipSite, values.sourceMembershipId,
+    values.sourceMembershipPlanId, values.sourceMembershipMemberId, values.sourceMembershipOrderId,
+    values.sourceMembershipSubscriptionId, values.sourceMembershipPaymentProvider,
+    values.sourceMembershipPaymentReference, values.sourceMembershipStatus,
+    values.sourceMembershipRenewalStatus, values.sourceMembershipPaymentStatus,
+    values.sourceMembershipRefundStatus, values.sourceMembershipPurchasedAt,
+    values.sourceMembershipCancelledAt, values.sourceMembershipRelationshipsJson,
+    values.sourceMembershipMetadataJson,
+  ]
+  const hasSourceMembership = sourceMembershipFields.some((value) => value !== undefined)
+  if (hasSourceMembership && !(
+    values.sourceMembershipSource && values.sourceMembershipSite && values.sourceMembershipId
+    && values.sourceMembershipPlanId && values.sourceMembershipStatus
+    && values.sourceMembershipRenewalStatus && values.sourceMembershipPurchasedAt
+    && values.entitlementPlanId && values.entitlementIdempotencyKey && values.entitlementStartsAt
+  )) add('incomplete_source_membership', 'Source membership identity, plan, status, renewal state, purchase time, and target entitlement are required together.', 'sourceMembershipSource')
+  if (hasSourceMembership) {
+    if (kind !== 'operations') add('invalid_source_membership_kind', 'Source memberships require an operations import.', 'sourceMembershipSource')
+    try { sourceMembershipInput(values, '00000000-0000-4000-8000-000000000000', row.row) }
+    catch (error) { add('invalid_source_membership', error instanceof Error ? error.message : 'Source membership evidence is invalid.', 'sourceMembershipSource') }
+  }
   const hasParticipation = values.participationEventId || values.participationSourceId || values.participationStatus || values.participationHistoricalImport
   if (hasParticipation && !(values.participationEventId && values.participationSourceId && values.participantName)) {
     add('incomplete_participation', 'Participation event, source, and attendee name are required together.', 'participationEventId')
@@ -576,7 +638,6 @@ function validateMappedRow(
     values.promotionSource && values.promotionSite && values.promotionId
     && values.promotionKey && values.promotionName && values.promotionCodeDigest
     && values.promotionDiscountType && values.promotionTargetKind && values.promotionTargetIdsJson
-    && values.promotionRecurrenceMode && values.promotionApplyMode
     && values.promotionCombinesWithMemberPrice && values.promotionReleaseOnFullRefund
     && values.promotionStatus && values.promotionSourceRedeemedUses !== undefined
   )) add('incomplete_promotion', 'Source, site, promotion ID, key, name, digest, rule, targets, policies, status, and redeemed usage are required together.', 'promotionSource')
@@ -624,7 +685,7 @@ export function createCrmProductionImportService(deps: {
   filesApi?: FilesApi
   sources?: CrmImportSources
   operationsForTransaction: (client: PoolClient) => CrmOperationsServicePort & CrmHistoricalSubmissionImportPort
-  associationForTransaction?: (client: PoolClient) => AssociationSourceOrderImportPort & AssociationPromotionImportPort
+  associationForTransaction?: (client: PoolClient) => AssociationSourceOrderImportPort & AssociationPromotionImportPort & AssociationSourceMembershipImportPort
   pool?: Pool
   entityLinks?: EntityLinksStore
 }) {
@@ -926,7 +987,7 @@ export function createCrmProductionImportService(deps: {
     customCatalog: ReadonlyMap<string, ImportCustomDefinition>,
     transaction: CrmWriteTransaction,
     operations: CrmOperationsServicePort & CrmHistoricalSubmissionImportPort,
-    association?: AssociationSourceOrderImportPort & AssociationPromotionImportPort,
+    association?: AssociationSourceOrderImportPort & AssociationPromotionImportPort & AssociationSourceMembershipImportPort,
   ): Promise<ImportRowResult> {
     const values = mappedValues(row.cells, job.mapping)
     requireImportRowAuthority(context, job.entityKind, values, job.mapping.trustedIdentitySource)
@@ -1064,7 +1125,7 @@ export function createCrmProductionImportService(deps: {
       })
       resultRefs.push(resultRef('suppression', saved.record))
     }
-    if (contactId && values.entitlementPlanId) {
+    if (contactId && values.entitlementPlanId && !values.sourceMembershipSource) {
       const saved = await operations.execute(importContext, {
         kind: 'grant_entitlement', contactId, planId: values.entitlementPlanId,
         idempotencyKey: values.entitlementIdempotencyKey,
@@ -1074,6 +1135,15 @@ export function createCrmProductionImportService(deps: {
         renewalMode: (values.entitlementRenewalMode || 'none') as 'none' | 'manual' | 'auto',
       })
       resultRefs.push(resultRef('entitlement', saved.record))
+    }
+    if (contactId && values.sourceMembershipSource) {
+      if (!association) throw new Error('Association source membership importer is unavailable.')
+      const saved = await association.importSourceMembership({
+        workspaceId: context.workspaceId,
+        actor: importContext.actor,
+        authority: { ...context.authority, canRead: true, canReconcileProvider: false },
+      }, sourceMembershipInput(values, job.id, row.row))
+      resultRefs.push(resultRef('entitlement', saved.record, values.sourceMembershipId))
     }
     if (contactId && values.participationEventId) {
       const saved = await operations.execute(importContext, {
