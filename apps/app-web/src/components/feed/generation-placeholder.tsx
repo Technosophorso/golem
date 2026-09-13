@@ -23,6 +23,7 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
   const t = useT().feedGeneration; const tc = useT().feedCollaboration; const tr = useT().feedReview; const locale = useLocale(); const c = props.controls;
   const [open, setOpen] = useState(false);
   const [manual, setManual] = useState(''); const [link, setLink] = useState(''); const [files, setFiles] = useState<'reference' | 'image' | null>(null);
+  const [imageProvider, setImageProvider] = useState<'gemini' | 'openai-codex'>('gemini');
   const [model, setModel] = useState<'standard' | 'pro' | 'max'>('standard'); const [count, setCount] = useState(1);
   const [estimate, setEstimate] = useState<FeedGenerationEstimate | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
   const retained = useRef<{ key: string; mutationId: string } | null>(null); const dispatchIds = useRef(new Map<string, string>()); const uploadInput = useRef<HTMLInputElement>(null);
@@ -38,7 +39,7 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
   }
   async function estimateGeneration() {
     if (remoteBlocked || active) return; setBusy(true); setError(null);
-    const body = { expectedRevision: c.revision, segmentId: props.segmentId, slotId: props.slot.id, model, count: props.slot.kind === 'image' ? 1 : count, locale };
+    const body = { expectedRevision: c.revision, segmentId: props.segmentId, slotId: props.slot.id, model, ...(props.slot.kind === 'image' ? { imageProvider } : {}), count: props.slot.kind === 'image' ? 1 : count, locale };
     const key = JSON.stringify(body); if (retained.current?.key !== key) retained.current = { key, mutationId: crypto.randomUUID() };
     try { setEstimate((await request('/generations/estimate', { ...body, mutationId: retained.current.mutationId })).estimate); retained.current = null; }
     catch (err) { setError(err instanceof Error && err.message.includes('unavailable') ? t.unavailable : t.failed); } finally { setBusy(false); c.onRefresh(); }
@@ -95,6 +96,13 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
       <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked} onClick={() => setFiles('image')}>{t.chooseFile}</Button>
     </div>}
     {files ? <FeedGenerationFilePicker controls={c} onCancel={() => setFiles(null)} onPick={async id => { if (files === 'reference') update({ references: [...props.slot.references, { fileId: id }] }); else { try { const blob = await fetchDocFileBlob(c.workspaceId, id); fillImage(id, blob.type); } catch { setError(t.imageRequired); } } setFiles(null); }} /> : null}
+    {props.slot.kind === 'image' ? <div className="space-y-2">
+      <label className="block text-sm">{t.imageProvider}</label>
+      <SearchableSelect aria-label={t.imageProvider} className="min-h-11 text-base" popupClassName="z-[110] [&_[role=option]]:min-h-11" value={imageProvider}
+        disabled={remoteBlocked || active} items={[{ value: 'gemini', label: t.imageGemini }, ...(publicRuntimeConfig().edition === 'oss' ? [{ value: 'openai-codex', label: t.imageCodex }] : [])]}
+        onValueChange={value => { setImageProvider(value as 'gemini' | 'openai-codex'); setEstimate(null); setError(null); }} />
+      {imageProvider === 'openai-codex' ? <p className="text-xs text-muted-foreground">{t.codexConnection}</p> : null}
+    </div> : null}
     {props.slot.kind === 'text' ? <div className="flex flex-wrap gap-2" role="group" aria-label={t.model}>{(['standard', 'pro', 'max'] as const).map(tier => <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" key={tier} disabled={remoteBlocked || active} aria-pressed={model === tier} onClick={() => { setModel(tier); setEstimate(null); }}>{tr[tier]}</Button>)}</div> : null}
     {props.slot.kind === 'text' ? <label className="block text-sm">{t.candidates}<input className={inputClass} type="number" min={1} max={5} value={count} disabled={remoteBlocked || active} onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 5) { setCount(value); setEstimate(null); } }} /></label> : null}
     <Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={remoteBlocked || active || !props.slot.brief.trim()} onClick={() => void estimateGeneration()}>{runs.length ? t.tryAgain : t.generate}</Button>
@@ -102,8 +110,8 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
     {busy ? <p role="status" className="text-sm">{t.loading}</p> : null}{error ? <p role="alert" className="text-sm">{error}</p> : null}
     {estimate ? <section className="space-y-2 rounded-lg border bg-background p-3" aria-label={t.estimateTitle}>
       <h4 className="font-medium">{t.estimateTitle}</h4><p className="whitespace-pre-wrap text-sm">{estimate.slot.brief}</p><p className="text-sm">{t.model}: {estimate.model} · {t.candidates}: {estimate.count}</p>
-      <p className="text-sm">{t.estimatedCost}: {estimate.price.maximumUsd === null ? t.costUnknown : new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }).format(estimate.price.maximumUsd)}</p>
-      <p className="text-xs">{estimate.price.billing === 'byo' ? t.costByo : estimate.price.billing === 'metered' ? t.costMetered : t.costIncluded}{estimate.price.credits !== undefined ? ` ${t.credits}: ${estimate.price.credits}` : ''}</p>
+      <p className="text-sm">{estimate.price.billing === 'subscription' ? t.quotaUsage : t.estimatedCost}: {estimate.price.billing === 'subscription' ? t.quotaUnknown : estimate.price.maximumUsd === null ? t.costUnknown : new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }).format(estimate.price.maximumUsd)}</p>
+      <p className="text-xs">{estimate.price.billing === 'subscription' ? t.costSubscription : estimate.price.billing === 'byo' ? t.costByo : estimate.price.billing === 'metered' ? t.costMetered : t.costIncluded}{estimate.price.credits !== undefined ? ` ${t.credits}: ${estimate.price.credits}` : ''}</p>
       <dl className="text-sm">{(['intent', 'length', 'aspectRatio', 'style', 'altIntent'] as const).map(key => estimate.slot[key] !== undefined ? <div key={key}><dt className="font-medium">{t[key]}</dt><dd>{estimate.slot[key]}</dd></div> : null)}</dl>
       <p className="text-sm">{t.confirmShape}</p><p className="text-xs">{t.sources}: {estimate.sources.map(source => source.title).join(', ') || tr.unavailable}</p>
       {estimate.omissions.length ? <p className="text-sm">{t.referenceOmissions}</p> : null}
@@ -135,8 +143,9 @@ export function FeedGenerationResults({ controls: c, runs, candidates, slot, onR
     </div>)}
     {candidates.map(candidate => {
       const edit = candidate.edits[0]; const stale = !slot || edit?.kind !== 'replaceBlock' || canonicalFeedValue(edit.preimage) !== canonicalFeedValue({ type: 'generationPlaceholder', attrs: slot });
+      const candidateRun = runs.find(run => run.id === candidate.sourceRunId);
       const text = candidate.edits.flatMap(edit => edit.kind === 'replaceBlock' ? edit.replacement.map(feedText) : []).join('\n\n'); const actionable = ['proposed', 'deferred'].includes(candidate.status);
-      return <article key={candidate.id} className="space-y-2 rounded-lg border bg-background p-3" data-feed-candidate={candidate.id}>{candidate.edits.flatMap(edit => edit.kind === 'replaceBlock' ? edit.replacement.filter(node => node.type === 'image') : []).map(node => node.type === 'image' ? <FeedGenerationImage key={node.attrs.id} workspaceId={c.workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} /> : null)}<p className="whitespace-pre-wrap text-sm">{text}</p><p className="text-xs text-muted-foreground">{candidate.rationale}</p>
+      return <article key={candidate.id} className="space-y-2 rounded-lg border bg-background p-3" data-feed-candidate={candidate.id}>{candidateRun ? <p className="text-xs text-muted-foreground">{t.model}: {candidateRun.model}</p> : null}{candidate.edits.flatMap(edit => edit.kind === 'replaceBlock' ? edit.replacement.filter(node => node.type === 'image') : []).map(node => node.type === 'image' ? <FeedGenerationImage key={node.attrs.id} workspaceId={c.workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} /> : null)}<p className="whitespace-pre-wrap text-sm">{text}</p><p className="text-xs text-muted-foreground">{candidate.rationale}</p>
         {stale && actionable ? <p className="text-sm">{t.stale}</p> : null}
         {actionable ? <div className="flex flex-wrap gap-2"><Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled || stale} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'accepted' }])}>{tc.accept}</Button><Button variant="destructive" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'rejected' }])}>{tc.reject}</Button><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled || candidate.status === 'deferred'} onClick={() => void c.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'deferred' }])}>{t.keepLater}</Button></div> : <p className="text-xs">{tc[candidate.status as 'accepted' | 'rejected'] ?? candidate.status}</p>}
       </article>;

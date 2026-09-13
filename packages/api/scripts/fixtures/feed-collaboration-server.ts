@@ -6,7 +6,7 @@ const db = new URL(process.env.DATABASE_URL ?? 'postgresql://invalid/absent')
 const appDb = new URL(process.env.DATABASE_URL_APP ?? 'postgresql://invalid/absent')
 if (process.env.NODE_ENV !== 'test' || db.hostname !== '127.0.0.1' || appDb.hostname !== '127.0.0.1' || db.pathname !== '/feed_draft_collaboration_acceptance' || appDb.pathname !== db.pathname || process.env.K_SERVICE) throw new Error('Fixture requires test mode and both dedicated loopback database URLs')
 const folder = '/tmp/feed-collaboration-browser'; mkdirSync(folder, { recursive: true })
-const metrics = { review: {} as Record<string, number>, generation: 0, image: 0, synthesis: 0, reflection: 0, chat: 0, suggestion: 0, retrievedMemory: 0, blockedRemote: 0 }
+const metrics = { review: {} as Record<string, number>, generation: 0, image: 0, codexImage: 0, synthesis: 0, reflection: 0, chat: 0, suggestion: 0, retrievedMemory: 0, blockedRemote: 0 }
 const record = () => writeFileSync(`${folder}/transport-counts.json`, JSON.stringify(metrics, null, 2))
 const imageBytes = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII='
 const actualFetch = globalThis.fetch
@@ -77,6 +77,8 @@ const { bootOpenApi, getPool } = await import('../../src/boot.js')
 const { createOssUsageStore } = await import('../../src/db/oss-usage-store.js')
 const endpoint = (await getPool().query('SELECT current_database() AS name,host(inet_server_addr()) AS host')).rows[0]
 if (endpoint.name !== 'feed_draft_collaboration_acceptance' || endpoint.host !== '127.0.0.1') throw new Error('Refusing a non-fixture PostgreSQL endpoint')
-const boot = await bootOpenApi({ env: { GEMINI_API_KEY: 'fixture-transport-only', JWT_SECRET: 'fictional-feed-browser-signing-secret', NODE_ENV: 'test', API_URL: 'http://localhost:4800', APP_URL: 'http://localhost:3303', AUTHED_APP_URL: 'http://localhost:3303', AUTH_PORTAL_URL: 'http://localhost:3303', SMTP_HOST: '127.0.0.1', SMTP_PORT: 4899, SMTP_USER: 'fixture@example.com', SMTP_PASSWORD: 'fixture-only-unused', EMAIL_FROM_ADDRESS: 'fixture@example.com', LOCAL_FILES_DIR: `${folder}/files`, LOCAL_FILES_PUBLIC_URL: 'http://localhost:4800', PORT: '4800' }, ports: { usageStore: createOssUsageStore() }, runWorkers: true })
+const { createFeedCodexFixture } = await import('./feed-codex-transport.js')
+const codex = await createFeedCodexFixture(() => { metrics.codexImage++; record() })
+const boot = await bootOpenApi({ env: { GEMINI_API_KEY: 'fixture-transport-only', JWT_SECRET: 'fictional-feed-browser-signing-secret', NODE_ENV: 'test', API_URL: 'http://localhost:4800', APP_URL: 'http://localhost:3303', AUTHED_APP_URL: 'http://localhost:3303', AUTH_PORTAL_URL: 'http://localhost:3303', SMTP_HOST: '127.0.0.1', SMTP_PORT: 4899, SMTP_USER: 'fixture@example.com', SMTP_PASSWORD: 'fixture-only-unused', EMAIL_FROM_ADDRESS: 'fixture@example.com', LOCAL_FILES_DIR: `${folder}/files`, LOCAL_FILES_PUBLIC_URL: 'http://localhost:4800', PORT: '4800' }, ports: { usageStore: createOssUsageStore(), feedImage: { codex } }, runWorkers: true })
 await boot.start(); record()
 console.log('Feed acceptance API ready on http://localhost:4800 using the isolated local fixture.')

@@ -8,7 +8,10 @@
  * Spec: docs/plans/chatgpt-codex-oauth.md
  * [COMP:api/codex-provider]
  */
+import { randomUUID } from 'node:crypto'
 import {
+  createCodexImageProvider,
+  type CodexImageProvider,
   CodexAccountClient,
   CodexCatalogClient,
   CodexRpcClosedError,
@@ -62,6 +65,7 @@ export type StartCodexProviderManagerOptions = {
 }
 
 export interface CodexProviderManager {
+  images: CodexImageProvider
   provider: LLMProvider
   refresh(): Promise<CodexProviderStatus>
   status(): Promise<CodexProviderStatus>
@@ -98,6 +102,9 @@ class ManagedCodexProvider implements CodexProviderManager {
     | ((provider: OssPreferredProvider) => Promise<void>)
     | undefined
   readonly provider: LLMProvider
+  readonly images: CodexImageProvider
+  #imageEpoch = randomUUID()
+  #imageControllers = new Set<AbortController>()
 
   #runtime: Runtime | undefined
   #starting: Promise<void> | undefined
@@ -117,6 +124,23 @@ class ManagedCodexProvider implements CodexProviderManager {
     )
     this.#savePreferredProvider = options.savePreferredProvider
     this.provider = this.#createProviderProxy()
+    const images = createCodexImageProvider({ codexHome: this.#codexHome, startProcess: this.#startProcess,
+      models: this.#reviewedModels.filter(model => registryRow(model)?.status === 'active') })
+    this.images = {
+      inspect: async () => {
+        if (this.#closed) throw new Error('image_generation_unavailable')
+        const snapshot = await images.inspect()
+        return { ...snapshot, identity: `${this.#imageEpoch}.${snapshot.identity}` }
+      },
+      generate: async input => {
+        const prefix = `${this.#imageEpoch}.`
+        if (this.#closed || !input.snapshot.identity.startsWith(prefix)) throw new Error('generation_configuration_changed')
+        const controller = new AbortController(); this.#imageControllers.add(controller)
+        try { return await images.generate({ ...input, signal: AbortSignal.any([input.signal, controller.signal]),
+          snapshot: { ...input.snapshot, identity: input.snapshot.identity.slice(prefix.length) } }) }
+        finally { this.#imageControllers.delete(controller) }
+      },
+    }
   }
 
   async start(): Promise<void> {
@@ -173,10 +197,12 @@ class ManagedCodexProvider implements CodexProviderManager {
   }
 
   async startBrowserLogin(): Promise<CodexBrowserLogin> {
+    this.#invalidateImages()
     return (await this.#requireRuntime()).account.startBrowserLogin()
   }
 
   async startDeviceCodeLogin(): Promise<CodexDeviceCodeLogin> {
+    this.#invalidateImages()
     return (await this.#requireRuntime()).account.startDeviceCodeLogin()
   }
 
@@ -185,6 +211,7 @@ class ManagedCodexProvider implements CodexProviderManager {
   }
 
   async logout(): Promise<void> {
+    this.#invalidateImages()
     await (await this.#requireRuntime()).account.logout()
     this.#availability.setModelCatalog(PROVIDER_ID, null)
     this.#lastStatus = disconnectedStatus(true, this.#preferredProvider())
@@ -202,6 +229,7 @@ class ManagedCodexProvider implements CodexProviderManager {
   async close(): Promise<void> {
     if (this.#closed) return
     this.#closed = true
+    this.#invalidateImages()
     if (this.#restartTimer) clearTimeout(this.#restartTimer)
     this.#restartTimer = undefined
     this.#availability.setModelCatalog(PROVIDER_ID, null)
@@ -210,6 +238,11 @@ class ManagedCodexProvider implements CodexProviderManager {
     runtime?.removeCloseListener()
     runtime?.account.close()
     await runtime?.process.close()
+  }
+
+  #invalidateImages(): void {
+    this.#imageEpoch = randomUUID()
+    for (const controller of this.#imageControllers) controller.abort()
   }
 
   async #ensureRuntime(): Promise<void> {

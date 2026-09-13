@@ -67,6 +67,14 @@ export const en = {
     "revoke": "Revoke confirmation"
 },
   feedGeneration: {
+    quotaUsage: "Subscription usage",
+    quotaUnknown: "Exact quota usage is unavailable.",
+    imageProvider: "Image provider",
+    imageGemini: "Gemini 3.1 Flash Image",
+    imageCodex: "Codex (ChatGPT subscription)",
+    codexConnection: "Connect ChatGPT in Settings to use Codex image generation. Your subscription must support images.",
+    costSubscription: "Uses your connected ChatGPT subscription quota. Exact quota usage is unavailable. No Brian image surcharge.",
+
     briefHint: "Describe what belongs here…",
     openDetails: "Edit or generate",
     closeDetails: "Back to draft",

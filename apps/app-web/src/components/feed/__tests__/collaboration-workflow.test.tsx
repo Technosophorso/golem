@@ -9,8 +9,9 @@ import { TextSelection } from '@tiptap/pm/state';
 import type { FeedCommand, FeedEdit, FeedTarget, FeedPlaceholderAttrs, FeedGenerationEstimate } from '@use-brian/shared';
 import { applyFeedEdits, createFeedAnchor, importLegacyFeed, projectFeed, proposeFeedReplacement } from '@use-brian/doc-model';
 import { en } from '@/lib/i18n/dictionaries/en';
-const state = vi.hoisted(() => ({ http: vi.fn(), upload: vi.fn(), image: vi.fn(), messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
+const state = vi.hoisted(() => ({ http: vi.fn(), upload: vi.fn(), image: vi.fn(), edition: 'oss', messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
 vi.mock('@/components/doc/doc-file-url', () => ({ fetchDocFileBlob: (...args: unknown[]) => state.image(...args) }));
+vi.mock('@/lib/runtime-public-config', () => ({ publicRuntimeConfig: () => ({ apiUrl: 'http://localhost:4000', edition: state.edition }) }));
 vi.mock('@/lib/auth-fetch', () => ({ authFetch: (...args: unknown[]) => state.http(...args) }));
 vi.mock('@/lib/use-post-media', () => ({ usePostMedia: () => ({ upload: state.upload, resolve: vi.fn(), uploading: false }) }));
 vi.mock('@/lib/i18n/client', () => ({ useT: () => en, useLocale: () => 'en' }));
@@ -454,6 +455,26 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     await click(en.feedGeneration.confirm);
     expect(JSON.parse(state.http.mock.calls[2]![1].body)).toEqual(first);
     expect(controls.onCommand).not.toHaveBeenCalled();
+  });
+  it('offers both image providers in OSS, sends the explicit choice, and clears confirmation when it changes', async () => {
+    const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' }; const controls = generationControls(); const segmentId = crypto.randomUUID();
+    const estimate: FeedGenerationEstimate = { id: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), revision: 2, segmentId, slot, count: 1, model: 'gpt-image-2', tier: 'image', price: { currency: 'USD', maximumUsd: null, rateVersion: 'fixture', billing: 'subscription' }, inputCharacters: 500, maxTokens: 4096, sources: [], omissions: [], confirmationRequired: true };
+    state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ estimate }) });
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} onAction={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
+    expect(button(en.feedGeneration.imageProvider).textContent).toContain(en.feedGeneration.imageGemini);
+    await click(en.feedGeneration.imageProvider);
+    const choose = async (label: string) => { const option = [...document.querySelectorAll<HTMLElement>('[role=option]')].find(node => node.textContent?.includes(label)); expect(option).toBeTruthy(); await act(async () => option!.click()); };
+    await choose(en.feedGeneration.imageCodex);
+    expect(state.http).not.toHaveBeenCalled();
+    await click(en.feedGeneration.generate);
+    expect(JSON.parse(state.http.mock.calls[0]![1].body)).toMatchObject({ imageProvider: 'openai-codex', count: 1 });
+    expect(document.body.textContent).toContain(en.feedGeneration.costSubscription);
+    expect(document.body.textContent).toContain(en.feedGeneration.quotaUnknown);
+    expect(document.body.textContent).not.toContain(en.feedGeneration.costIncluded);
+    await click(en.feedGeneration.imageProvider); await choose(en.feedGeneration.imageGemini);
+    expect(document.querySelector(`[aria-label="${en.feedGeneration.estimateTitle}"]`)).toBeNull();
+    expect(state.http).toHaveBeenCalledTimes(1);
   });
   it('scenarios 5 and 8: stale candidates remain visible with Keep for later and cannot overwrite a changed slot', async () => {
     const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();

@@ -54,6 +54,14 @@ export const ja: Dictionary = {
     "revoke": "確定を取り消す"
 },
   feedGeneration: {
+    quotaUsage: "サブスクリプション利用枠",
+    quotaUnknown: "正確な消費量は不明です。",
+    imageProvider: "画像プロバイダー",
+    imageGemini: "Gemini 3.1 Flash Image",
+    imageCodex: "Codex（ChatGPT サブスクリプション）",
+    codexConnection: "設定で ChatGPT に接続してください。画像生成に対応したサブスクリプションが必要です。",
+    costSubscription: "接続した ChatGPT サブスクリプションの利用枠を消費します。正確な消費量は不明です。Brian の画像追加料金はありません。",
+
     briefHint: "ここに入れる内容をメモ…",
     openDetails: "編集または生成",
     closeDetails: "下書きに戻る",

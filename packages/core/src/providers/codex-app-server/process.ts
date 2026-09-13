@@ -35,7 +35,8 @@ const INFERENCE_REQUEST_METHODS = new Set([
   'turn/interrupt',
 ])
 
-const IMAGE_REQUEST_METHODS = new Set([...INFERENCE_REQUEST_METHODS, 'modelProvider/capabilities/read'])
+const IMAGE_REQUEST_METHODS = new Set([...P0_REQUEST_METHODS, 'account/read', 'model/list',
+  'modelProvider/capabilities/read', 'thread/start', 'turn/start', 'turn/interrupt', 'thread/unsubscribe'])
 
 const DISABLED_INFERENCE_FEATURES = [
   'apps',

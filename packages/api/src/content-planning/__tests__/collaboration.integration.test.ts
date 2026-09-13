@@ -539,7 +539,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 const imageBytes = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII='
 describe('[COMP:feed/draft-generation] durable image and output integration', () => {
-  it('scenarios 4-5 and 8-9: persists native image bytes once, accepts in place, exports ordered assets and blocks unfinished or stale approval', async () => {
+  it.each(['gemini', 'openai-codex'] as const)('scenarios 4-5 and 8-9: %s persists bytes once, accepts in place, exports ordered assets and blocks unfinished or stale approval', async imageProvider => {
     const f = await generationFixture(); const dir = await mkdtemp(join(tmpdir(), 'feed-image-'))
     try {
       await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [{ type: 'generationPlaceholder', attrs: { ...f.slot, kind: 'image', briefRevision: 1, altIntent: 'Orchard diagram' } }] }] }])
@@ -551,24 +551,25 @@ describe('[COMP:feed/draft-generation] durable image and output integration', ()
       await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: imageSlot, replacement: [{ ...imageSlot, attrs: { ...imageSlot.attrs, briefRevision: 2, references: [{ fileId: reference.value.id }] } }] }] }])
       const fetcher = vi.fn(async () => new Response(JSON.stringify({ candidates: [{ finishReason: 'STOP', content: { parts: [{ inlineData: { mimeType: 'image/png', data: imageBytes } }] } }], usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 1120, candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1120 }] } })))
       const settle = vi.fn(async () => undefined)
-      const service = createFeedGenerationService(createFeedGenerationPort(async () => { throw new Error('Image must not use text provider') }, { files, transport: aiStudioTransport('fixture-key'), fetcher, billing: { quote: () => 2, available: async () => 10, settle } }))
+      const codex = { inspect: vi.fn(async () => ({ model: 'gpt-image-2', orchestratorModel: 'gpt-5.6-sol', identity: 'fixture-identity' })), generate: vi.fn(async () => ({ image: { data: imageBytes, mimeType: 'image/png' as const }, usage: { inputTokens: 0, outputTokens: 0, measured: false } })) }
+      const service = createFeedGenerationService(createFeedGenerationPort(async () => { throw new Error('Image must not use text provider') }, { files, codex, transport: aiStudioTransport('fixture-key'), fetcher, billing: { quote: () => 2, available: async () => 10, settle } }))
       let snapshot = await getFeedCollaboration(f.actor)
       const savedUnfinished = await readFeedSaveProjection(f.actor, snapshot.copy!.revision, 'threads')
       await expect(assertFeedSavedReady(f.actor, savedUnfinished!.canonical, 'threads')).rejects.toMatchObject({ code: 'unfinished_slot' })
       await expect(exportFeedArticle(f.actor, snapshot.copy!.revision, false, files)).rejects.toMatchObject({ code: 'acknowledge_omitted_slots' })
       const draftZip = await JSZip.loadAsync(await exportFeedArticle(f.actor, snapshot.copy!.revision, true, files)); expect(await draftZip.file('article.html')!.async('string')).not.toContain(f.slot.brief)
-      const estimate = await service.estimate(f.actor, { ...f.request, expectedRevision: snapshot.copy!.revision, count: 1 })
-      expect(estimate.price).toMatchObject({ billing: 'metered', credits: 2 }); expect(fetcher).not.toHaveBeenCalled()
+      const estimate = await service.estimate(f.actor, { ...f.request, expectedRevision: snapshot.copy!.revision, count: 1, imageProvider })
+      expect(estimate.price).toMatchObject(imageProvider === 'gemini' ? { billing: 'metered', credits: 2 } : { billing: 'subscription', maximumUsd: null }); expect(fetcher).not.toHaveBeenCalled(); expect(codex.generate).not.toHaveBeenCalled()
       const queued = await service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
       const active = (await claimFeedRun(['image_generation']))!; expect(active.id).toBe(queued.id)
       await service.handler(active, new AbortController().signal)
       snapshot = await getFeedCollaboration(f.actor); const candidate = snapshot.suggestions[0]!
       expect(snapshot.copy!.revision).toBe(estimate.revision); expect(candidate.sourceRunId).toBe(queued.id)
-      expect(fetcher).toHaveBeenCalledTimes(1); expect(settle).toHaveBeenCalledTimes(1)
+      expect(fetcher).toHaveBeenCalledTimes(imageProvider === 'gemini' ? 1 : 0); expect(codex.generate).toHaveBeenCalledTimes(imageProvider === 'openai-codex' ? 1 : 0); expect(settle).toHaveBeenCalledTimes(imageProvider === 'gemini' ? 1 : 0)
       const row = (await pool.query("SELECT id,mime,metadata,storage_uri,sensitivity,compartments FROM workspace_files WHERE workspace_id=$1 AND path LIKE '/doc/feed/%'", [f.workspaceId])).rows[0]
       expect(row).toMatchObject({ mime: 'image/png', sensitivity: 'internal', compartments: ['editorial'], metadata: { feedGeneration: { runId: queued.id, sourceRevision: estimate.revision } } }); expect(row.storage_uri).toMatch(/^file:/)
       await pool.query("UPDATE feed_editorial_runs SET status='pending' WHERE id=$1", [queued.id]); await service.handler((await claimFeedRun(['image_generation']))!, new AbortController().signal)
-      expect(fetcher).toHaveBeenCalledTimes(1); expect(settle).toHaveBeenCalledTimes(1)
+      expect(fetcher).toHaveBeenCalledTimes(imageProvider === 'gemini' ? 1 : 0); expect(codex.generate).toHaveBeenCalledTimes(imageProvider === 'openai-codex' ? 1 : 0); expect(settle).toHaveBeenCalledTimes(imageProvider === 'gemini' ? 1 : 0)
       expect((await pool.query("SELECT id FROM workspace_files WHERE workspace_id=$1", [f.workspaceId])).rows).toHaveLength(2)
       await f.command([{ kind: 'decide', suggestionId: candidate.id, outcome: 'accepted' }])
       snapshot = await getFeedCollaboration(f.actor); const archive = await exportFeedArticle(f.actor, snapshot.copy!.revision, false, files)

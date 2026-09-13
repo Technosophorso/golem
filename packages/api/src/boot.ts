@@ -914,7 +914,7 @@ export interface OpenApiPorts {
   feedHistorySql?: string;
   // ── Billing — open default: allow-all / no-op ──
   /** Real DB credit gate; default allows every turn. */
-  feedImage?: { config?: import('@use-brian/shared').FeedImageConfig; billing?: import('./content-planning/generation-port.js').FeedGenerationBilling };
+  feedImage?: { codex?: import('@use-brian/core').CodexImageProvider; config?: import('@use-brian/shared').FeedImageConfig; billing?: import('./content-planning/generation-port.js').FeedGenerationBilling };
   checkCreditBudget?: CreditBudgetGate
   /** Edition-local DB usage recorder; default no-op for bespoke compositions. */
   usageStore?: UsageStore
@@ -4650,7 +4650,8 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     : null
 
   const feedReviewContext = createFeedReviewContextLoader(ports.feedHistorySql)
-  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' }), { transport: vertexTx ?? (env.GEMINI_API_KEY ? aiStudioTransport(env.GEMINI_API_KEY) : undefined), resolveWorkspaceKey: resolveWorkspaceByoGeminiKey, files: filesApi ?? undefined, usageStore, config: ports.feedImage?.config, billing: ports.feedImage?.billing }), feedReviewContext)
+  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' }), { transport: vertexTx ?? (env.GEMINI_API_KEY ? aiStudioTransport(env.GEMINI_API_KEY) : undefined), resolveWorkspaceKey: resolveWorkspaceByoGeminiKey, files: filesApi ?? undefined, usageStore, codex: codexProviderManager?.images ?? ports.feedImage?.codex,
+      config: ports.feedImage?.config, billing: ports.feedImage?.billing }), feedReviewContext)
   app.use('/api/chat', optionalAuth(env.JWT_SECRET), chatRoutes({
     feedGeneration,
     feedReviewContext,

@@ -59,3 +59,33 @@ describe('[COMP:feed/draft-generation] configured image execution', () => {
     await expect(port.resolve({ workspaceId: randomUUID(), userId: randomUUID(), assistantId: randomUUID(), sessionId: randomUUID() }, 'image', 'standard')).rejects.toMatchObject({ code: 'image_generation_unavailable' }); expect(key).not.toHaveBeenCalled()
   })
 })
+
+
+describe('[COMP:feed/draft-generation] explicit Codex selection', () => {
+  const actor = { workspaceId: randomUUID(), userId: randomUUID(), assistantId: randomUUID(), sessionId: randomUUID() }
+  it('quotes subscription quota without dispatch, leaves text routing independent, and never charges Brian credits', async () => {
+    const codex = { inspect: vi.fn(async () => ({ model: 'gpt-image-2', orchestratorModel: 'gpt-5.6-sol', identity: 'account-one' })),
+      generate: vi.fn(async () => ({ error: 'image_provider_rejected' as const, usage: { inputTokens: 0, outputTokens: 0, measured: false } })) }
+    const fetcher = vi.fn(); const quote = vi.fn(); const recordUsage = vi.fn(async () => undefined)
+    const text = vi.fn(async () => ({ model: 'fixture-text', tier: 'standard', providerKeySource: 'user' as const, inputCharacters: 1000, maxTokens: 1000, call: vi.fn() }))
+    const port = createFeedGenerationPort(text, { files: {} as FilesApi, codex, fetcher, transport: aiStudioTransport('fixture-key'), billing: { quote, available: vi.fn(), settle: vi.fn() }, usageStore: { recordUsage } as never })
+    expect(feedGenerationEstimateRequestSchema.parse({ ...context.request, imageProvider: 'openai-codex' }).imageProvider).toBe('openai-codex')
+    expect(feedGenerationEstimateRequestSchema.safeParse({ ...context.request, imageProvider: 'unreviewed' }).success).toBe(false)
+    const image = await port.resolve(actor, 'image', 'max', 'openai-codex')
+    expect(image.price(100)).toEqual({ currency: 'USD', maximumUsd: null, rateVersion: 'codex-subscription:gpt-image-2', billing: 'subscription' })
+    expect(codex.generate).not.toHaveBeenCalled(); expect(quote).not.toHaveBeenCalled(); expect(fetcher).not.toHaveBeenCalled()
+    await image.call({ prompt: 'One diagram', systemPrompt: 'One image', signal: AbortSignal.timeout(1000) })
+    expect(codex.generate).toHaveBeenCalledTimes(1); expect(recordUsage).toHaveBeenCalledWith(expect.objectContaining({ actualCostUsd: 0, providerKeySource: 'user' }))
+    expect(fetcher).not.toHaveBeenCalled()
+    expect((await port.resolve(actor, 'text', 'standard', 'openai-codex')).model).toBe('fixture-text')
+    const first = image.identity; codex.inspect.mockResolvedValue({ model: 'gpt-image-2', orchestratorModel: 'gpt-5.6-sol', identity: 'account-two' })
+    expect((await port.resolve(actor, 'image', 'standard', 'openai-codex')).identity).not.toBe(first)
+  })
+  it('never falls back to configured Gemini when Codex is absent or disconnected', async () => {
+    const fetcher = vi.fn(); const options = { files: {} as FilesApi, fetcher, transport: aiStudioTransport('fixture-key') }
+    await expect(createFeedGenerationPort(vi.fn(), options).resolve(actor, 'image', 'standard', 'openai-codex')).rejects.toMatchObject({ code: 'image_generation_unavailable' })
+    const codex = { inspect: vi.fn().mockRejectedValue(new Error('image_generation_unavailable')), generate: vi.fn() }
+    await expect(createFeedGenerationPort(vi.fn(), { ...options, codex }).resolve(actor, 'image', 'standard', 'openai-codex')).rejects.toThrow('image_generation_unavailable')
+    expect(fetcher).not.toHaveBeenCalled(); expect(codex.generate).not.toHaveBeenCalled()
+  })
+})

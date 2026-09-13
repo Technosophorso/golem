@@ -54,6 +54,14 @@ export const zh: Dictionary = {
     "revoke": "撤銷確認"
 },
   feedGeneration: {
+    quotaUsage: "訂閱額度",
+    quotaUnknown: "無法預先確定額度用量。",
+    imageProvider: "圖片供應商",
+    imageGemini: "Gemini 3.1 Flash Image",
+    imageCodex: "Codex（ChatGPT 訂閱）",
+    codexConnection: "請在設定中連接 ChatGPT。訂閱須支援圖片生成。",
+    costSubscription: "使用已連接的 ChatGPT 訂閱額度。無法預先確定額度用量。Brian 不收取圖片附加費。",
+
     briefHint: "描述這裡要放的內容…",
     openDetails: "編輯或生成",
     closeDetails: "返回草稿",
