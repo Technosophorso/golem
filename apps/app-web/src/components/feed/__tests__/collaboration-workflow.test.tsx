@@ -362,6 +362,55 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(state.http).not.toHaveBeenCalled();
   });
+  it.each(['text', 'image'] as const)('keeps a new %s marker visible before persistence, through stale save echoes and failed saves', async kind => {
+    const doc = importLegacyFeed({ text: `/${kind} A diagram for later`, postFormat: 'post', threadSegments: [], media: [] });
+    const emitted: FeedEdit[][] = [];
+    const props = { generation: generationControls(), threads: [], onEdit: (edits: FeedEdit[]) => emitted.push(edits), onSelection: vi.fn(), onAction: vi.fn(), onOpenThread: vi.fn() };
+    act(() => root.render(<CompositionEditor {...props} composition={doc} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    act(() => { view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc))); view.someProp('handleKeyDown', handler => handler(view, new KeyboardEvent('keydown', { key: 'Enter' }))); });
+    // Do not echo onEdit yet: the editor is ahead of the persisted parent props.
+    const marker = host.querySelector<HTMLElement>('[data-feed-slot]');
+    expect(marker).not.toBeNull();
+    const input = marker!.querySelector('input')!;
+    expect(input.value).toBe('A diagram for later');
+    const inserted = applyFeedEdits(doc, emitted[0]!).composition;
+    act(() => view.dispatch(view.state.tr.insertText('Keep writing.')));
+    const continued = applyFeedEdits(inserted, emitted[1]!).composition;
+    const caret = view.state.selection.from;
+    for (const stale of [inserted, doc]) {
+      act(() => root.render(<CompositionEditor {...props} composition={stale} pendingLocalSave />));
+      expect(host.querySelector('[data-feed-slot]')).toBe(marker);
+      expect(marker!.querySelector('input')).toBe(input);
+      expect(input.value).toBe('A diagram for later');
+      expect(view.state.selection.from).toBe(caret);
+    }
+    await click(en.feedGeneration.openDetails);
+    expect(button(en.feedGeneration.generate).disabled).toBe(true);
+    act(() => root.render(<CompositionEditor {...props} composition={continued} pendingLocalSave={false} />));
+    expect(host.querySelector('[data-feed-slot]')).toBe(marker);
+    expect(marker!.querySelector('input')).toBe(input);
+    expect(button(en.feedGeneration.generate).disabled).toBe(false);
+    expect(state.http).not.toHaveBeenCalled();
+  });
+  it('updates a visible marker from the editor transaction even while saved attributes lag behind', () => {
+    const doc = composition(); const slot = generationSlot(); doc.segments[0]!.content = [{ type: 'generationPlaceholder', attrs: slot }];
+    const emitted: FeedEdit[][] = [];
+    const props = { generation: generationControls(), threads: [], onEdit: (edits: FeedEdit[]) => emitted.push(edits), onSelection: vi.fn(), onAction: vi.fn(), onOpenThread: vi.fn() };
+    act(() => root.render(<CompositionEditor {...props} composition={doc} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable=true]')!)!;
+    const input = host.querySelector('input')!;
+    act(() => view.dispatch(view.state.tr.setNodeMarkup(0, undefined, { ...slot, brief: 'Updated brief.', briefRevision: 1 })));
+    expect(host.querySelector('input')).toBe(input);
+    expect(input.value).toBe('Updated brief.');
+    act(() => root.render(<CompositionEditor {...props} composition={doc} pendingLocalSave />));
+    expect(input.value).toBe('Updated brief.');
+    const saved = applyFeedEdits(doc, emitted[0]!).composition;
+    act(() => root.render(<CompositionEditor {...props} composition={saved} />));
+    expect(host.querySelector('input')).toBe(input);
+    expect(input.value).toBe('Updated brief.');
+    expect(state.http).not.toHaveBeenCalled();
+  });
   it('Enter in a saved end-of-document brief creates a following paragraph and leaves the marker intact', () => {
     const doc = composition(); const slot = generationSlot(); doc.segments[0]!.content = [{ type: 'generationPlaceholder', attrs: slot }];
     const onEdit = vi.fn();

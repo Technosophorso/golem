@@ -14,7 +14,7 @@ import { history, undo, redo } from '@tiptap/pm/history';
 import { undoInputRule } from '@tiptap/pm/inputrules';
 import { feedMarkdownInputRules, feedMarkdownPaste } from './editor-markdown';
 import type { Node as PMNode } from '@tiptap/pm/model';
-import { feedSchema, feedParagraph, applyFeedEdits, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, diffFeedComposition, validateFeedComposition, feedTargetQuote } from '@use-brian/doc-model';
+import { feedSchema, feedParagraph, canonicalFeedValue, applyFeedEdits, insertFeedPlaceholder, locateFeedNode, duplicateFeedNode, diffFeedComposition, validateFeedComposition, feedTargetQuote } from '@use-brian/doc-model';
 import type { FeedComposition, FeedTarget, FeedEdit, FeedNode, FeedAnchor } from '@use-brian/shared';
 import { useT } from '@/lib/i18n/client';
 import type { FeedCommentThread } from '@/lib/feed-collaboration';
@@ -57,7 +57,7 @@ export function CompositionEditor(props: {
 
 function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { segmentId: string }) {
   const t = useT().feedCollaboration; const host = useRef<HTMLDivElement>(null); const viewRef = useRef<EditorView | null>(null); const latest = useRef(props); latest.current = props;
-  const [slotMounts, setSlotMounts] = useState<{ id: string; dom: HTMLElement }[]>([]);
+  const [slotMounts, setSlotMounts] = useState<{ id: string; dom: HTMLElement; node: FeedNode }[]>([]);
   const frameRef = useRef<HTMLDivElement>(null);
   const [selectionTop, setSelectionTop] = useState<number | null>(null);
   const [selectionBelow, setSelectionBelow] = useState(false);
@@ -92,12 +92,28 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
         }, Tab: sinkListItem(feedSchema.nodes.listItem!), 'Shift-Tab': liftListItem(feedSchema.nodes.listItem!) }), new Plugin({ key: decorationKey, props: { decorations: state => decorations(state.doc) } })] }),
       nodeViews: props.generation ? { generationPlaceholder(node) {
         const dom = document.createElement('div'); const slotId = String(node.attrs.id); dom.contentEditable = 'false'; dom.dataset.placeholderId = slotId; dom.dataset.blockId = slotId;
-        setSlotMounts(mounts => [...mounts.filter(item => item.id !== slotId), { id: slotId, dom }]);
-        return { dom, update(next) { return next.type.name === 'generationPlaceholder' && next.attrs.id === slotId; }, ignoreMutation: () => true, stopEvent: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
+        let renderedNode = node;
+        setSlotMounts(mounts => [...mounts.filter(item => item.id !== slotId), { id: slotId, dom, node: cleanNode(node) }]);
+        return { dom, update(next) {
+          if (next.type.name !== 'generationPlaceholder' || next.attrs.id !== slotId) return false;
+          if (!renderedNode.eq(next)) {
+            renderedNode = next;
+            setSlotMounts(mounts => mounts.map(item => item.dom === dom ? { ...item, node: cleanNode(next) } : item));
+          }
+          return true;
+        }, ignoreMutation: () => true, stopEvent: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
       }, image(node) {
         const dom = document.createElement('div'); const blockId = String(node.attrs.id); dom.contentEditable = 'false'; dom.dataset.blockId = blockId;
-        setSlotMounts(mounts => [...mounts.filter(item => item.id !== blockId), { id: blockId, dom }]);
-        return { dom, update(next) { return next.type.name === 'image' && next.attrs.id === blockId; }, ignoreMutation: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
+        let renderedNode = node;
+        setSlotMounts(mounts => [...mounts.filter(item => item.id !== blockId), { id: blockId, dom, node: cleanNode(node) }]);
+        return { dom, update(next) {
+          if (next.type.name !== 'image' || next.attrs.id !== blockId) return false;
+          if (!renderedNode.eq(next)) {
+            renderedNode = next;
+            setSlotMounts(mounts => mounts.map(item => item.dom === dom ? { ...item, node: cleanNode(next) } : item));
+          }
+          return true;
+        }, ignoreMutation: () => true, destroy() { setSlotMounts(mounts => mounts.filter(item => item.dom !== dom)); } };
       } } : undefined,
       editable: () => !latest.current.readOnly,
       attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-[max(20rem,calc(100dvh-16rem))] p-5 pr-14 md:pr-5 text-base leading-relaxed outline-none [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_h3]:text-lg [&_h4]:font-semibold [&_h5]:font-semibold [&_h6]:font-semibold [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
@@ -214,10 +230,15 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     <div ref={host} className={styles.surface} />
     {selectionTop !== null && !props.readOnly ? <div className={`absolute left-2 right-2 z-20 ${selectionBelow ? '' : '-translate-y-full'}`} style={{ top: selectionTop }}><FeedSelectionActions onAction={props.onAction} /></div> : null}
     {props.generation ? slotMounts.map(mount => {
-      let found: ReturnType<typeof locateFeedNode>; try { found = locateFeedNode(props.composition, props.segmentId, mount.id); } catch { return null; }
-      if (found.node.type === 'image') return createPortal(<FeedGenerationImage workspaceId={props.generation!.workspaceId} fileId={found.node.attrs.fileId} alt={found.node.attrs.alt ?? ''} />, mount.dom, mount.id);
-      if (found.node.type !== 'generationPlaceholder') return null;
-      return createPortal(<GenerationPlaceholder slot={found.node.attrs} segmentId={props.segmentId} controls={props.generation!} onEdit={props.onEdit} onContinue={() => continueAfterSlot(mount.id)}
+      // The visible editor can be ahead of the saved parent composition. Its
+      // node snapshot owns rendering; persistence only gates remote actions.
+      const node = mount.node;
+      if (node.type === 'image') return createPortal(<FeedGenerationImage workspaceId={props.generation!.workspaceId} fileId={node.attrs.fileId} alt={node.attrs.alt ?? ''} />, mount.dom, mount.id);
+      if (node.type !== 'generationPlaceholder') return null;
+      let savedNode: FeedNode | undefined;
+      try { savedNode = locateFeedNode(props.composition, props.segmentId, mount.id).node; } catch { /* A newly inserted marker is still saving. */ }
+      const pending = props.generation!.pending || Boolean(props.pendingLocalSave) || !savedNode || canonicalFeedValue(node) !== canonicalFeedValue(savedNode);
+      return createPortal(<GenerationPlaceholder slot={node.attrs} segmentId={props.segmentId} controls={{ ...props.generation!, pending }} onEdit={props.onEdit} onContinue={() => continueAfterSlot(mount.id)}
         onSelect={() => { const view = viewRef.current; if (!view) return; let position: number | undefined; view.state.doc.descendants((node, pos) => { if (node.attrs.id === mount.id) position = pos; }); if (position !== undefined && (!(view.state.selection instanceof NodeSelection) || view.state.selection.from !== position)) view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, position))); }} onAction={props.onAction} />, mount.dom, mount.id);
     }) : null}
 
