@@ -449,3 +449,16 @@ require or import a developer's personal Codex login.
   browser responses, or test fixtures.
 - The public README says **Supported**, not **Planned**, only after all gates
   above pass.
+
+## Feed image extension (2026-09)
+
+The ordinary chat provider retains its image-generation prohibition. A separate
+explicit Feed image surface enables only the pinned native image tool with no
+execution environments or Brian dynamic tools. It discovers subscription and
+provider capabilities before confirmation, freezes the selected account/model
+identity, and consumes the public image completion item into a bounded image
+receipt. No global Codex credentials, model-provided filesystem paths, raw
+internal events, or provider fallback are used. Each completed candidate still
+requires Feed acceptance. The estimate clearly identifies ChatGPT subscription
+usage, unknown quota cost, and zero Brian surcharge. Tests cover both the
+ordinary-chat exclusion and the dedicated image tool against the pinned binary.

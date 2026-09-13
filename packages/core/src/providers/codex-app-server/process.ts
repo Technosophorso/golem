@@ -35,6 +35,8 @@ const INFERENCE_REQUEST_METHODS = new Set([
   'turn/interrupt',
 ])
 
+const IMAGE_REQUEST_METHODS = new Set([...INFERENCE_REQUEST_METHODS, 'modelProvider/capabilities/read'])
+
 const DISABLED_INFERENCE_FEATURES = [
   'apps',
   'artifact',
@@ -111,6 +113,13 @@ export const CODEX_INFERENCE_HARDENING_ARGS: readonly string[] = [
   ...DISABLED_INFERENCE_FEATURES.flatMap((feature) => ['--disable', feature]),
 ]
 
+/** Feed-only image profile; ordinary inference still denies the image tool. */
+export const CODEX_IMAGE_HARDENING_ARGS: readonly string[] = [
+  ...CODEX_INFERENCE_HARDENING_ARGS.filter((value, index, all) =>
+    value !== 'image_generation' && !(value === '--disable' && all[index + 1] === 'image_generation')),
+  '--enable', 'image_generation',
+]
+
 const ALLOWED_ENV_KEYS = [
   'PATH',
   'SystemRoot',
@@ -147,7 +156,7 @@ export type CodexCommand = {
 export type StartCodexAppServerOptions = {
   codexHome?: string
   command?: CodexCommand
-  surface?: 'foundation' | 'account' | 'inference'
+  surface?: 'foundation' | 'account' | 'inference' | 'image'
   clientVersion?: string
   maxFrameBytes?: number
   maxPendingRequests?: number
@@ -222,7 +231,9 @@ export async function startCodexAppServer(
   )
   const command = options.command ?? (await resolvePinnedCodexCommand())
   const allowedRequestMethods =
-    options.surface === 'inference'
+    options.surface === 'image'
+      ? IMAGE_REQUEST_METHODS
+      : options.surface === 'inference'
       ? INFERENCE_REQUEST_METHODS
       : options.surface === 'account'
         ? ACCOUNT_REQUEST_METHODS
@@ -273,7 +284,7 @@ export async function startCodexAppServer(
       [
         ...(command.argsPrefix ?? []),
         'app-server',
-        ...(options.surface === 'inference' ? CODEX_INFERENCE_HARDENING_ARGS : []),
+        ...(options.surface === 'image' ? CODEX_IMAGE_HARDENING_ARGS : options.surface === 'inference' ? CODEX_INFERENCE_HARDENING_ARGS : []),
         '--listen',
         'stdio://',
       ],
@@ -304,7 +315,7 @@ export async function startCodexAppServer(
       output: child.stdin,
       maxFrameBytes:
         options.maxFrameBytes ??
-        (options.surface === 'inference' ? DEFAULT_INFERENCE_MAX_FRAME_BYTES : undefined),
+        (options.surface === 'image' ? 64 * 1024 * 1024 : options.surface === 'inference' ? DEFAULT_INFERENCE_MAX_FRAME_BYTES : undefined),
       maxPendingRequests: options.maxPendingRequests,
       requestTimeoutMs: options.requestTimeoutMs,
       allowedRequestMethods,
