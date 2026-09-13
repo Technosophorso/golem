@@ -103,6 +103,7 @@ export function createDbCrmIntakeReadStore(integration?: CrmIntegrationAuthority
     return page('definitions', workspaceId, filters,
       `SELECT d.id, d.definition_key AS "definitionKey", d.label, d.active,
               d.current_version AS "currentVersion", v.field_catalog AS fields,
+              COALESCE(v.schema_snapshot->'attachments','[]'::jsonb) AS attachments,
               v.identity_policy AS "identityPolicy",
               v.schema_snapshot->'identityVerification' AS "identityVerification",
               CASE WHEN v.schema_snapshot ? 'identityVerification' THEN v.created_by_user_id END AS "verificationAcknowledgedByUserId",
