@@ -1,7 +1,7 @@
 /**
  * Conversation compaction.
  *
- * Full compaction: summarize entire conversation into a 6-section summary.
+ * Full compaction: summarize entire conversation into a 7-section summary.
  * Memory extraction captures facts BEFORE compaction runs.
  * Post-compaction: model sees [summary] + [memories] + [cached results].
  */
@@ -53,7 +53,7 @@ const CIRCUIT_BREAKER_MAX_FAILURES = 3
 // ── Compact prompts (per profile) ──────────────────────────────
 
 /**
- * Linear profile: single 6-section summary. Used for web and cron where
+ * Linear profile: single 7-section summary. Used for web and cron where
  * sessions are typically single-topic or where the topic structure
  * doesn't need to survive compaction.
  */
@@ -67,10 +67,11 @@ Your summary should include:
 
 1. User's Current Request: What is the user trying to accomplish right now?
 2. Decisions Made: What has been decided? (destinations, dates, activities, preferences expressed during this conversation)
-3. Work In Progress: What was being actively worked on? Include specifics.
-4. All User Messages: List every user message that is not a tool result.
-5. Open Questions: What was the user asked but hasn't answered yet?
-6. Next Step: What should happen next based on the most recent exchange?
+3. Attempted and Failed (Do Not Retry): What approaches or tool calls were tried and failed? Include the observed error or reason for failure and any blocking constraints. Do not retry under unchanged conditions. If none failed, write "None". Do not invent failures.
+4. Work In Progress: What was being actively worked on? Include specifics.
+5. All User Messages: List every user message that is not a tool result.
+6. Open Questions: What was the user asked but hasn't answered yet?
+7. Next Step: What should happen next based on the most recent exchange?
 
 IMPORTANT: Be specific. "User wants to visit Tokyo" is not enough.
 "User is planning 5-day Tokyo trip March 10-15, vegetarian, budget ¥15,000/day food, Day 1-2 complete, Day 3 in progress" preserves continuity.
