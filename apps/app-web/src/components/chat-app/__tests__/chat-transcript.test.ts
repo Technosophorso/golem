@@ -242,3 +242,51 @@ describe("[COMP:app-web/chat-transcript] group-chat timeline metadata", () => {
     expect(formatTranscriptTime(stamp, "en")).toMatch(/2:05/);
   });
 });
+
+describe("[COMP:app-web/chat-transcript] activity notes across the fold", () => {
+  it("attaches a row's trailing prose to the next row's first tool and keeps earlier notes", () => {
+    const messages = coalesceAssistantRunMessages([
+      assistant("a1", "Let me check. Found it, now stock.", {
+        senderAssistantId: "assistant-a",
+        toolsUsed: [tool("t1")],
+        activityNotes: [
+          { id: "a1_note_0", text: "Let me check.", beforeToolId: "t1" },
+          { id: "a1_note_1", text: "Found it, now stock." },
+        ],
+      }),
+      assistant("a2", "", {
+        senderAssistantId: "assistant-a",
+        toolsUsed: [tool("t2")],
+      }),
+      assistant("a3", "Two in stock.", { senderAssistantId: "assistant-a" }),
+    ]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.activityNotes).toEqual([
+      { id: "a1_note_0", text: "Let me check.", beforeToolId: "t1" },
+      { id: "a1_note_1", text: "Found it, now stock.", beforeToolId: "t2" },
+    ]);
+  });
+
+  it("drops a trailing segment that never meets a tool, and the note that is the answer", () => {
+    const stray = coalesceAssistantRunMessages([
+      assistant("a1", "20", {
+        senderAssistantId: "assistant-a",
+        toolsUsed: [tool("t1")],
+        activityNotes: [{ id: "a1_note_1", text: "20" }],
+      }),
+      assistant("a2", "I have diagnosed it.", { senderAssistantId: "assistant-a" }),
+    ]);
+    expect(stray[0]?.text).toBe("I have diagnosed it.");
+    expect(stray[0]?.activityNotes).toBeUndefined();
+
+    const bookkeeping = coalesceAssistantRunMessages([
+      assistant("a1", "Done.", {
+        senderAssistantId: "assistant-a",
+        toolsUsed: [tool("saveMemory")],
+        activityNotes: [{ id: "a1_note_0", text: "Done.", beforeToolId: "saveMemory" }],
+      }),
+    ]);
+    expect(bookkeeping[0]?.text).toBe("Done.");
+    expect(bookkeeping[0]?.activityNotes).toBeUndefined();
+  });
+});

@@ -83,6 +83,7 @@ import {
   ChatMarkdown,
   useChatSession,
   useMessageStream,
+  type ActivityNote,
   type ChatFileAttachment,
   type CitationSource,
   type DocumentAttachment,
@@ -155,6 +156,11 @@ import {
   type EventLog,
 } from "@/lib/build-events";
 import { describeToolFromInput } from "@/lib/tool-narration";
+import {
+  collectToolResults,
+  finalizeActivityNotes,
+  restoreAssistantActivity,
+} from "@/lib/activity-receipt";
 import { authFetch } from "@/lib/auth-fetch";
 import { useT, useLocale, format } from "@/lib/i18n/client";
 import { cn } from "@/lib/utils";
@@ -180,7 +186,6 @@ import {
   rebindWorkspaceSessionAssistant,
   extractMessageText,
   extractPresentedDocuments,
-  extractToolUses,
   fetchSessionMessages,
   parseMessageAttachments,
   parsePresentedDocumentPayload,
@@ -703,6 +708,9 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
   const [citations, setCitations] = useState<CitationSource[]>([]);
   const [turnStartedAt, setTurnStartedAt] = useState<number | null>(null);
   const turnToolsRef = useRef<ToolUsed[]>([]);
+  // The receipt's intermediate prose: each segment the answer-reset is about
+  // to discard, captured at `tool_start` against the tool it preceded.
+  const turnNotesRef = useRef<ActivityNote[]>([]);
   const turnDocumentsRef = useRef<DocumentAttachment[]>([]);
   const turnCitationsRef = useRef<CitationSource[]>([]);
   const turnFileAttachmentsRef = useRef<ChatFileAttachment[]>([]);
@@ -727,6 +735,7 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
 
   const resetTurnActivity = useCallback(() => {
     turnToolsRef.current = [];
+    turnNotesRef.current = [];
     turnDocumentsRef.current = [];
     turnCitationsRef.current = [];
     turnFileAttachmentsRef.current = [];
@@ -776,6 +785,8 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
         turnStartedAtRef.current != null
           ? Date.now() - turnStartedAtRef.current
           : undefined;
+      const activityNotes =
+        tools.length > 0 ? finalizeActivityNotes(turnNotesRef.current, finalText) : undefined;
       return {
         id: `assistant-${Date.now()}`,
         role: "assistant",
@@ -783,6 +794,7 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
         timestamp: new Date(),
         ...(assistantId ? { senderAssistantId: assistantId } : {}),
         ...(tools.length > 0 ? { toolsUsed: tools } : {}),
+        ...(activityNotes ? { activityNotes } : {}),
         ...(finalDocuments.length > 0 ? { documents: finalDocuments } : {}),
         ...(activityDurationMs != null ? { activityDurationMs } : {}),
         ...(finalCitations.length > 0 ? { citations: finalCitations } : {}),
@@ -1091,28 +1103,18 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
    *  their `tool_use` blocks as a done-status receipt (re-narrated from each
    *  call's input, no timings — same as the dock's history restore). */
   const mapTranscriptRows = useCallback((rows: DocSessionMessage[]): SurfaceMessage[] => {
+    // Each call's outcome lives on the tool_result carrier row the transcript
+    // never renders — index them once so a failed call restores as `retried`.
+    const outcomes = collectToolResults(rows);
     const persistedRows: SurfaceMessage[] = rows
       .filter((r) => r.role === "user" || r.role === "assistant")
       .map((r) => {
         const parsedUser =
           r.role === "user" ? parseMessageAttachments(r.content) : null;
-        const toolsUsed =
+        const { toolsUsed, activityNotes } =
           r.role === "assistant"
-            ? extractToolUses(r.content).map((use): ToolUsed => {
-                const described = describeToolFromInput(
-                  use.name,
-                  use.input,
-                  tChat.toolNarration,
-                );
-                return {
-                  id: use.id,
-                  name: use.name,
-                  status: "done" as const,
-                  description: described.description,
-                  ...(described.url ? { url: described.url } : {}),
-                };
-              })
-            : [];
+            ? restoreAssistantActivity(r.content, outcomes, tChat.toolNarration, r.id)
+            : { toolsUsed: [], activityNotes: [] };
         const documents =
           r.role === "assistant" ? extractPresentedDocuments(r.content) : [];
         return {
@@ -1121,6 +1123,7 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
           text: parsedUser?.text ?? extractMessageText(r.content),
           timestamp: new Date(r.timestamp),
           ...(toolsUsed.length > 0 ? { toolsUsed } : {}),
+          ...(activityNotes.length > 0 ? { activityNotes } : {}),
           ...(documents.length > 0 ? { documents } : {}),
           ...(r.attachments && r.attachments.length > 0
             ? { fileAttachments: r.attachments }
@@ -2476,6 +2479,16 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
             // `pendingAnswerResetRef` above.
             if (!pendingAnswerResetRef.current) {
               pendingAnswerResetRef.current = true;
+              // Keep the segment as a receipt note before it is discarded —
+              // `finalizeActivityNotes` drops it again if it turns out to be
+              // the answer (answer-then-bookkeeping-tool turn).
+              const segment = turnTextRef.current.trim();
+              if (segment) {
+                turnNotesRef.current = [
+                  ...turnNotesRef.current,
+                  { id: `note-${id}`, text: segment, beforeToolId: id },
+                ];
+              }
               chat.dispatch({ type: "stream/reset" });
             }
             toolStartTimesRef.current.set(id, performance.now());
@@ -2546,6 +2559,8 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
                     ...tool,
                     description: narration.description,
                     ...(narration.url ? { url: narration.url } : {}),
+                    ...(narration.detail ? { detail: narration.detail } : {}),
+                    ...(Object.keys(inputPayload).length > 0 ? { input: inputPayload } : {}),
                   }
                 : tool,
             );
@@ -4321,6 +4336,7 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
                     {m.toolsUsed?.length ? (
                       <ChatActivitySummary
                         tools={m.toolsUsed}
+                        notes={m.activityNotes}
                         durationMs={m.activityDurationMs}
                       />
                     ) : null}
