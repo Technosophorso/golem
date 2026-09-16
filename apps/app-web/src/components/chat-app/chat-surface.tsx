@@ -787,6 +787,8 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
           : undefined;
       const activityNotes =
         tools.length > 0 ? finalizeActivityNotes(turnNotesRef.current, finalText) : undefined;
+      const activityReasoning =
+        tools.length > 0 ? turnReasoningRef.current.trim() || undefined : undefined;
       return {
         id: `assistant-${Date.now()}`,
         role: "assistant",
@@ -795,6 +797,7 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
         ...(assistantId ? { senderAssistantId: assistantId } : {}),
         ...(tools.length > 0 ? { toolsUsed: tools } : {}),
         ...(activityNotes ? { activityNotes } : {}),
+        ...(activityReasoning ? { activityReasoning } : {}),
         ...(finalDocuments.length > 0 ? { documents: finalDocuments } : {}),
         ...(activityDurationMs != null ? { activityDurationMs } : {}),
         ...(finalCitations.length > 0 ? { citations: finalCitations } : {}),
@@ -2586,6 +2589,8 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
                 ? payload.errorMessage
                 : undefined;
             const startedAtMs = toolStartTimesRef.current.get(id);
+            const output =
+              typeof payload.output === "string" && payload.output ? payload.output : undefined;
             const durationMs =
               startedAtMs != null
                 ? Math.max(0, Math.round(performance.now() - startedAtMs))
@@ -2597,6 +2602,7 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
                     status: isError ? ("retried" as const) : ("done" as const),
                     ...(durationMs != null ? { durationMs } : {}),
                     ...(isError && errorMessage ? { errorMessage } : {}),
+                    ...(output ? { output } : {}),
                   }
                 : tool,
             );
@@ -4337,6 +4343,7 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
                       <ChatActivitySummary
                         tools={m.toolsUsed}
                         notes={m.activityNotes}
+                        reasoning={m.activityReasoning}
                         durationMs={m.activityDurationMs}
                       />
                     ) : null}

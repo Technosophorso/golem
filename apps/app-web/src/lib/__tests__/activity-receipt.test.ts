@@ -11,8 +11,10 @@ import {
   buildReceiptItems,
   collectToolResults,
   finalizeActivityNotes,
+  outputExcerptOf,
   restoreAssistantActivity,
   summarizeActivity,
+  terminalFailureIds,
 } from "@/lib/activity-receipt";
 
 const narration = en.chat.toolNarration;
@@ -91,8 +93,18 @@ describe("[COMP:app-web/activity-receipt] restoreAssistantActivity", () => {
       status: "retried",
       errorMessage: "Error: Column Not Found: order_number",
     });
-    expect(toolsUsed[1]).toMatchObject({ status: "done" });
+    expect(toolsUsed[1]).toMatchObject({ status: "done", output: "{}" });
     expect(toolsUsed[1]?.errorMessage).toBeUndefined();
+    // The failed call keeps its raw output too, newlines intact.
+    expect(toolsUsed[0]?.output).toBe("Error:   Column Not Found:\n order_number");
+  });
+
+  it("caps the restored output at the stream's ~2 KB excerpt", () => {
+    expect(outputExcerptOf("a\r\nb\n\n\n\nc")).toBe("a\nb\n\nc");
+    const big = outputExcerptOf("z".repeat(9000));
+    expect(big).toHaveLength(2002);
+    expect(big.endsWith("\n…")).toBe(true);
+    expect(outputExcerptOf("  ")).toBe("");
   });
 
   it("clips a long error excerpt and ignores rows that are not arrays", () => {
@@ -212,5 +224,24 @@ describe("[COMP:app-web/activity-receipt] buildReceiptItems", () => {
     );
     expect(items).toHaveLength(1);
     expect(items[0]?.kind).toBe("group");
+  });
+});
+
+describe("[COMP:app-web/activity-receipt] terminalFailureIds", () => {
+  const call = (id: string, tool: string, status: ToolUsed["status"]): ToolUsed => ({
+    id,
+    name: "mcp_call",
+    status,
+    input: { server: "shopify", tool },
+  });
+
+  it("marks an errored call Failed only when no later call of the same tool followed", () => {
+    const failed = terminalFailureIds([
+      call("c1", "shopifyListOrders", "retried"), // followed by c2 → Retried
+      call("c2", "shopifyListOrders", "done"),
+      call("c3", "shopifyGetOrder", "retried"), // nothing followed → Failed
+      { id: "w1", name: "webSearch", status: "retried" }, // different tool, last → Failed
+    ]);
+    expect([...failed].sort()).toEqual(["c3", "w1"]);
   });
 });

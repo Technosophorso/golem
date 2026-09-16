@@ -21,10 +21,25 @@ import { describeToolFromInput, type NarrationDict } from "@/lib/tool-narration"
 export type ActivityDict = Dictionary["chat"]["activity"];
 
 /** A persisted call outcome, read from the paired `tool_result` row. */
-export type ToolOutcome = { isError: boolean; excerpt: string };
+export type ToolOutcome = {
+  isError: boolean;
+  /** One-line error excerpt (failed calls). */
+  excerpt: string;
+  /** Display excerpt of the result, newlines kept (all calls). */
+  output: string;
+};
 
 /** How much of a failed result the receipt quotes (matches the server's SSE excerpt). */
 const ERROR_EXCERPT_MAX = 200;
+/** How much of a stored result the Output disclosure shows (matches the stream's cap). */
+const OUTPUT_EXCERPT_MAX = 2_000;
+
+/** Same shape as the server's `toolOutputExcerpt`, applied to the stored row. */
+export function outputExcerptOf(content: string): string {
+  const tidy = content.replace(/\r\n?/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  if (!tidy) return "";
+  return tidy.length > OUTPUT_EXCERPT_MAX ? `${tidy.slice(0, OUTPUT_EXCERPT_MAX)}\n…` : tidy;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -53,6 +68,7 @@ export function collectToolResults(
           flat.length > ERROR_EXCERPT_MAX
             ? `${flat.slice(0, ERROR_EXCERPT_MAX - 3)}…`
             : flat,
+        output: outputExcerptOf(content),
       });
     }
   }
@@ -108,6 +124,7 @@ export function restoreAssistantActivity(
       ...(described.detail ? { detail: described.detail } : {}),
       ...(Object.keys(input).length > 0 ? { input } : {}),
       ...(outcome?.isError && outcome.excerpt ? { errorMessage: outcome.excerpt } : {}),
+      ...(outcome?.output ? { output: outcome.output } : {}),
     });
     if (pendingText.length > 0) {
       activityNotes.push({
@@ -245,6 +262,24 @@ export type ReceiptItem =
   | { kind: "note"; note: ActivityNote }
   | { kind: "step"; tool: ToolUsed }
   | { kind: "group"; key: string; label: string; tools: ToolUsed[] };
+
+/**
+ * Errored calls that nothing followed. Every errored call is `retried` in the
+ * data; the label is derived here: a later call of the same tool means the
+ * model tried again ("Retried"), no later call means the turn moved on
+ * without it ("Failed").
+ */
+export function terminalFailureIds(tools: ReadonlyArray<ToolUsed>): Set<string> {
+  const lastIndexByKey = new Map<string, number>();
+  tools.forEach((tool, index) => lastIndexByKey.set(groupKeyOf(tool), index));
+  const failed = new Set<string>();
+  tools.forEach((tool, index) => {
+    if (tool.status === "retried" && lastIndexByKey.get(groupKeyOf(tool)) === index) {
+      failed.add(tool.id);
+    }
+  });
+  return failed;
+}
 
 /** Consecutive calls fold together only when they are the same tool. */
 function groupKeyOf(tool: ToolUsed): string {

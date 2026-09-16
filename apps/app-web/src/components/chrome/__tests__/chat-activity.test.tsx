@@ -113,8 +113,8 @@ describe("[COMP:app-web/chat-activity] Live feed", () => {
     expect(html).toContain(dict.chat.researchStatus.starting);
   });
 
-  it("never strikes a retried step through; tags it and shows the error when expanded", () => {
-    const html = wrap(
+  it("never strikes an errored step through; tags it Failed when nothing followed, Retried when the tool ran again", () => {
+    const failedHtml = wrap(
       <ChatActivityFeed
         events={[step("t1", "Running proposeWorkflow")]}
         tools={[
@@ -128,9 +128,25 @@ describe("[COMP:app-web/chat-activity] Live feed", () => {
         defaultExpanded
       />,
     );
-    expect(html).not.toContain("line-through");
-    expect(html).toContain(dict.chat.activity.retried);
-    expect(html).toContain("workflow not found");
+    expect(failedHtml).not.toContain("line-through");
+    expect(failedHtml).toContain(dict.chat.activity.failed);
+    expect(failedHtml).not.toContain(dict.chat.activity.retried);
+    expect(failedHtml).toContain("workflow not found");
+
+    const retriedHtml = wrap(
+      <ChatActivityFeed
+        events={[step("t1", "Running proposeWorkflow"), step("t2", "Running proposeWorkflow")]}
+        tools={[
+          tool("t1", { status: "retried", errorMessage: "workflow not found" }),
+          tool("t2", { status: "done" }),
+        ]}
+        replyStreaming={false}
+        startedAt={null}
+        defaultExpanded
+      />,
+    );
+    expect(retriedHtml).toContain(dict.chat.activity.retried);
+    expect(retriedHtml).not.toContain(dict.chat.activity.failed);
   });
 
   it("renders reasoning rows italic in the feed", () => {
@@ -172,6 +188,30 @@ describe("[COMP:app-web/chat-activity] Live feed", () => {
     );
     expect(html).toMatch(/role="status"/);
     expect(html).toMatch(/aria-live="polite"/);
+  });
+});
+
+describe("[COMP:app-web/chat-activity] Live feed parity", () => {
+  it("names the running call's argument in the header and makes rows with input or output disclosable", () => {
+    const html = wrap(
+      <ChatActivityFeed
+        events={[step("t1", "Using shopifyListOrders (shopify)")]}
+        tools={[
+          tool("t1", {
+            name: "mcp_call",
+            status: "running",
+            description: "Using shopifyListOrders (shopify)",
+            detail: "query: name:#1042",
+            input: { server: "shopify", tool: "shopifyListOrders", args: { query: "name:#1042" } },
+          }),
+        ]}
+        replyStreaming={false}
+        startedAt={null}
+        defaultExpanded
+      />,
+    );
+    expect(html).toContain("Using shopifyListOrders (shopify) · query: name:#1042");
+    expect(html).toContain('aria-label="Show details"');
   });
 });
 
@@ -234,7 +274,7 @@ describe("[COMP:app-web/chat-activity] Post-turn receipt", () => {
     expect(html).not.toContain("query: name:#1042");
   });
 
-  it("shows the argument detail beside a lone step and marks a failed restore as retried", () => {
+  it("shows the argument detail beside a lone step and marks an unfollowed failed restore as Failed", () => {
     const html = wrap(
       <ChatActivitySummary
         tools={[
@@ -247,11 +287,41 @@ describe("[COMP:app-web/chat-activity] Post-turn receipt", () => {
       />,
     );
     expect(html).toContain("query: name:#1042");
-    expect(html).toContain("Retried");
     expect(html).toContain("Column Not Found: order_number");
     expect(html).not.toContain("line-through");
-    // A step with an input is a disclosure control for its JSON.
-    expect(html).toContain('aria-label="Show input"');
+    // A step with an input is a disclosure control for its details.
+    expect(html).toContain('aria-label="Show details"');
+    // Nothing followed the errored call, so it is a terminal failure.
+    expect(html).toContain("Failed");
+  });
+
+  it("labels an errored call Retried when a later call of the same tool followed, and counts group failures", () => {
+    const html = wrap(
+      <ChatActivitySummary
+        tools={[
+          shopify("c1", "order_number:1042", { status: "retried", errorMessage: "Column Not Found" }),
+          shopify("c2", "name:#1042"),
+        ]}
+        defaultExpanded
+      />,
+    );
+    expect(html).toContain("×2");
+    expect(html).toContain("1 failed");
+    expect(html).not.toContain(">Failed<");
+  });
+
+  it("shows a closed Thinking disclosure for a live turn's reasoning", () => {
+    const html = wrap(
+      <ChatActivitySummary
+        tools={[tool("t1")]}
+        reasoning="I should look this up first."
+        defaultExpanded
+      />,
+    );
+    expect(html).toContain("Thinking");
+    expect(html).not.toContain("I should look this up first.");
+    const restored = wrap(<ChatActivitySummary tools={[tool("t1")]} defaultExpanded />);
+    expect(restored).not.toContain("Thinking");
   });
 
   it("renders nothing without steps", () => {

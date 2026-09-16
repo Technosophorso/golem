@@ -290,3 +290,34 @@ describe("[COMP:app-web/chat-transcript] activity notes across the fold", () => 
     expect(bookkeeping[0]?.activityNotes).toBeUndefined();
   });
 });
+
+describe("[COMP:app-web/chat-transcript] coarse run duration on reload", () => {
+  it("restores the wall-clock from the human row to the run's final row for tool-bearing runs", () => {
+    const messages = coalesceAssistantRunMessages([
+      user("u0", "look it up"),
+      assistant("a1", "", { senderAssistantId: "assistant-a", toolsUsed: [tool("t1")] }),
+      assistant("a3", "Found it.", { senderAssistantId: "assistant-a" }),
+    ]);
+    // user at :00, final row at :03
+    expect(messages[1]?.activityDurationMs).toBe(3000);
+  });
+
+  it("leaves text-only replies, live values, and unordered timestamps alone", () => {
+    const messages = coalesceAssistantRunMessages([
+      user("u0", "hi"),
+      assistant("a1", "hello", { senderAssistantId: "assistant-a" }),
+      user("u1", "again"),
+      assistant("a2", "", {
+        senderAssistantId: "assistant-a",
+        toolsUsed: [tool("t1")],
+        activityDurationMs: 42,
+      }),
+    ]);
+    expect(messages[1]?.activityDurationMs).toBeUndefined();
+    expect(messages[3]?.activityDurationMs).toBe(42);
+    const noUser = coalesceAssistantRunMessages([
+      assistant("a1", "", { senderAssistantId: "assistant-a", toolsUsed: [tool("t1")] }),
+    ]);
+    expect(noUser[0]?.activityDurationMs).toBeUndefined();
+  });
+});

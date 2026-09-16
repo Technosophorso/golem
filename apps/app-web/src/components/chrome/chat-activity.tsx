@@ -46,6 +46,7 @@ import type { BuildEvent } from "@/lib/build-events";
 import {
   buildReceiptItems,
   summarizeActivity,
+  terminalFailureIds,
   type ReceiptItem,
 } from "@/lib/activity-receipt";
 import { cn } from "@/lib/utils";
@@ -189,6 +190,16 @@ function StepIcon({
  * One step row: status icon + narration + optional link + duration, with the
  * error excerpt beneath retried steps when `showError`.
  */
+/** The disclosure wiring a step row needs to open its Input / Output block. */
+type StepDisclosure = {
+  open: boolean;
+  onToggle: () => void;
+  inputLabel: string;
+  outputLabel: string;
+  showLabel: string;
+  hideLabel: string;
+};
+
 function StepRow({
   text,
   detail,
@@ -197,35 +208,36 @@ function StepRow({
   live,
   showError,
   retriedLabel,
+  failedLabel,
+  terminalFailure = false,
   expandable,
 }: {
   text: string;
   /** Argument summary shown muted after the narration ("· query: name:#1042"). */
   detail?: string;
   url?: string;
-  tool?: Pick<ToolUsed, "status" | "durationMs" | "errorMessage" | "input">;
+  tool?: Pick<ToolUsed, "status" | "durationMs" | "errorMessage" | "input" | "output">;
   live: boolean;
   showError: boolean;
   retriedLabel: string;
+  failedLabel: string;
+  /** An errored call nothing followed — reads "Failed" instead of "Retried". */
+  terminalFailure?: boolean;
   /**
-   * Receipt rows with a non-empty `input` toggle a pretty-printed JSON block
-   * under an "Input" caption. `{ open, onToggle, labels }` — live rows pass
-   * nothing and stay static.
+   * Rows with a known `input` or `output` toggle a block showing the
+   * pretty-printed input JSON and the output excerpt. Live rows and receipt
+   * rows share this; a row with neither stays static.
    */
-  expandable?: {
-    open: boolean;
-    onToggle: () => void;
-    inputLabel: string;
-    showLabel: string;
-    hideLabel: string;
-  };
+  expandable?: StepDisclosure;
 }) {
   const status = tool?.status ?? "done";
   const duration =
     tool?.durationMs != null && status !== "running"
       ? formatDuration(tool.durationMs)
       : "";
-  const canExpand = !!expandable && !!tool?.input && Object.keys(tool.input).length > 0;
+  const hasInput = !!tool?.input && Object.keys(tool.input).length > 0;
+  const hasOutput = !!tool?.output;
+  const canExpand = !!expandable && (hasInput || hasOutput);
   const label = (
     <>
       <span className="truncate">{text}</span>
@@ -281,8 +293,15 @@ function StepRow({
           )}
         </span>
         {status === "retried" ? (
-          <span className="shrink-0 rounded bg-muted px-1 py-px text-[9.5px] font-medium uppercase tracking-wide text-muted-foreground/70">
-            {retriedLabel}
+          <span
+            className={cn(
+              "shrink-0 rounded px-1 py-px text-[9.5px] font-medium uppercase tracking-wide",
+              terminalFailure
+                ? "bg-destructive/10 text-destructive/80"
+                : "bg-muted text-muted-foreground/70",
+            )}
+          >
+            {terminalFailure ? failedLabel : retriedLabel}
           </span>
         ) : null}
         {duration ? (
@@ -297,13 +316,27 @@ function StepRow({
         </div>
       ) : null}
       {canExpand && expandable.open ? (
-        <div className="pl-[22px] pt-1">
-          <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
-            {expandable.inputLabel}
-          </div>
-          <pre className="mt-0.5 max-h-48 overflow-auto rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-snug text-muted-foreground whitespace-pre-wrap break-words">
-            {JSON.stringify(tool!.input, null, 2)}
-          </pre>
+        <div className="flex flex-col gap-1.5 pl-[22px] pt-1">
+          {hasInput ? (
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+                {expandable.inputLabel}
+              </div>
+              <pre className="mt-0.5 max-h-48 overflow-auto rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-snug text-muted-foreground whitespace-pre-wrap break-words">
+                {JSON.stringify(tool!.input, null, 2)}
+              </pre>
+            </div>
+          ) : null}
+          {hasOutput ? (
+            <div>
+              <div className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground/60">
+                {expandable.outputLabel}
+              </div>
+              <pre className="mt-0.5 max-h-64 overflow-auto rounded-md bg-muted/50 px-2 py-1.5 text-[11px] leading-snug text-muted-foreground whitespace-pre-wrap break-words">
+                {tool!.output}
+              </pre>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>
@@ -343,11 +376,28 @@ export function ChatActivityFeed({
   const [userExpanded, setUserExpanded] = useState<boolean | null>(
     defaultExpanded ? true : null,
   );
+  // Live rows open to their Input / Output like receipt rows do.
+  const [openSteps, setOpenSteps] = useState<Set<string>>(() => new Set());
   const elapsed = useElapsed(startedAt);
   const logRef = useRef<HTMLDivElement | null>(null);
 
   const toolById = new Map(tools.map((tool) => [tool.id, tool]));
   const runningTool = tools.find((tool) => tool.status === "running");
+  const failedIds = terminalFailureIds(tools);
+  const disclosureFor = (toolId: string): StepDisclosure => ({
+    open: openSteps.has(toolId),
+    onToggle: () =>
+      setOpenSteps((prev) => {
+        const next = new Set(prev);
+        if (next.has(toolId)) next.delete(toolId);
+        else next.add(toolId);
+        return next;
+      }),
+    inputLabel: t.chat.activity.inputLabel,
+    outputLabel: t.chat.activity.outputLabel,
+    showLabel: t.chat.activity.showDetails,
+    hideLabel: t.chat.activity.hideDetails,
+  });
   const hasActivity = events.length > 0 || tools.length > 0;
 
   const expanded = userExpanded === true;
@@ -363,12 +413,14 @@ export function ChatActivityFeed({
   if (replyStreaming && !hasActivity) return null;
 
   // The most specific "what is happening right now" line.
+  const runningLabel = runningTool
+    ? `${runningTool.description ?? format(t.chat.toolNarration.generic, { name: runningTool.name })}${
+        runningTool.detail ? ` · ${runningTool.detail}` : ""
+      }`
+    : null;
   const headerLabel = replyStreaming
     ? t.chat.activity.writing
-    : (runningTool?.description ??
-      (runningTool
-        ? format(t.chat.toolNarration.generic, { name: runningTool.name })
-        : null) ??
+    : (runningLabel ??
       (researchPhase ? t.chat.researchStatus[researchPhase] : null) ??
       (tools.length > 0 ? t.chat.toolNarration.working : t.chat.thinking));
 
@@ -426,11 +478,15 @@ export function ChatActivityFeed({
               >
                 <StepRow
                   text={event.text}
+                  detail={event.toolId ? toolById.get(event.toolId)?.detail : undefined}
                   url={event.url}
                   tool={event.toolId ? toolById.get(event.toolId) : undefined}
                   live
                   showError={expanded}
                   retriedLabel={t.chat.activity.retried}
+                  failedLabel={t.chat.activity.failed}
+                  terminalFailure={!!event.toolId && failedIds.has(event.toolId)}
+                  expandable={event.toolId ? disclosureFor(event.toolId) : undefined}
                 />
               </div>
             ),
@@ -449,21 +505,27 @@ export function ChatActivityFeed({
 export function ChatActivitySummary({
   tools,
   notes,
+  reasoning,
   durationMs,
   defaultExpanded = false,
 }: {
   tools: ToolUsed[];
   /** Intermediate prose rows, each attached to the tool it preceded. */
   notes?: ActivityNote[];
+  /** The turn's verbatim reasoning — live turns only, never restored. */
+  reasoning?: string;
   durationMs?: number;
   defaultExpanded?: boolean;
 }) {
   const t = useT();
   const [expanded, setExpanded] = useState(defaultExpanded);
-  // Per-row disclosure: open groups (closed by default) and open inputs.
+  // Per-row disclosure: open groups (closed by default), open step
+  // details, and the Thinking block.
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => new Set());
   const [openInputs, setOpenInputs] = useState<Set<string>>(() => new Set());
+  const [thinkingOpen, setThinkingOpen] = useState(false);
   if (tools.length === 0) return null;
+  const failedIds = terminalFailureIds(tools);
 
   const summary = summarizeActivity(tools, t.chat.activity);
   const label =
@@ -496,12 +558,15 @@ export function ChatActivitySummary({
       live={false}
       showError
       retriedLabel={t.chat.activity.retried}
+      failedLabel={t.chat.activity.failed}
+      terminalFailure={failedIds.has(tool.id)}
       expandable={{
         open: openInputs.has(tool.id),
         onToggle: () => toggleIn(setOpenInputs, tool.id),
         inputLabel: t.chat.activity.inputLabel,
-        showLabel: t.chat.activity.showInput,
-        hideLabel: t.chat.activity.hideInput,
+        outputLabel: t.chat.activity.outputLabel,
+        showLabel: t.chat.activity.showDetails,
+        hideLabel: t.chat.activity.hideDetails,
       }}
     />
   );
@@ -522,7 +587,8 @@ export function ChatActivitySummary({
     }
     if (item.kind === "step") return stepRow(item.tool);
     const open = openGroups.has(item.key);
-    const failed = item.tools.some((tool) => tool.status === "retried");
+    const failures = item.tools.filter((tool) => tool.status === "retried").length;
+    const failed = failures > 0;
     return (
       <div key={item.key} className="min-w-0">
         <button
@@ -539,6 +605,11 @@ export function ChatActivitySummary({
           <span className="shrink-0 rounded bg-muted px-1 py-px text-[10px] font-medium tabular-nums text-muted-foreground/70">
             {format(t.chat.activity.groupCount, { count: item.tools.length })}
           </span>
+          {failed ? (
+            <span className="shrink-0 rounded bg-destructive/10 px-1 py-px text-[10px] font-medium tabular-nums text-destructive/80">
+              {format(t.chat.activity.groupFailed, { count: failures })}
+            </span>
+          ) : null}
           <ChevronRight
             aria-hidden
             className={cn(
@@ -582,6 +653,30 @@ export function ChatActivitySummary({
         )}
       >
         <div className="flex flex-col gap-1 border-l-2 border-border/60 pl-3">
+          {reasoning ? (
+            <div className="min-w-0">
+              <button
+                type="button"
+                onClick={() => setThinkingOpen((v) => !v)}
+                aria-expanded={thinkingOpen}
+                className="flex items-center gap-1 text-xs italic leading-snug text-muted-foreground/70 hover:text-foreground"
+              >
+                <span>{t.chat.activity.thinking}</span>
+                <ChevronRight
+                  aria-hidden
+                  className={cn(
+                    "size-2.5 shrink-0 text-muted-foreground/40 transition-transform duration-200",
+                    thinkingOpen && "rotate-90",
+                  )}
+                />
+              </button>
+              {thinkingOpen ? (
+                <pre className="mt-0.5 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-md bg-muted/40 px-2 py-1.5 font-sans text-[11px] italic leading-snug text-muted-foreground/70">
+                  {reasoning}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
           {items.map(renderItem)}
         </div>
       </div>

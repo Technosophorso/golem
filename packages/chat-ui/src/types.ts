@@ -78,6 +78,12 @@ export type ToolUsed = {
    * ("shopifyListOrders ×9") show it per call.
    */
   detail?: string
+  /**
+   * Display excerpt of a successful result (~2 KB) — live from the
+   * `tool_result` event, on reload from the persisted `tool_result` row.
+   * Shown under an "Output" caption when the step is opened.
+   */
+  output?: string
 }
 
 /**
@@ -158,6 +164,12 @@ export type Message = {
   toolsUsed?: ToolUsed[]
   /** Intermediate prose rows of the activity receipt, in run order. */
   activityNotes?: ActivityNote[]
+  /**
+   * The turn's verbatim reasoning, shown as a "Thinking" disclosure on the
+   * receipt. LIVE ONLY: reasoning is never persisted, so a restored message
+   * never carries it.
+   */
+  activityReasoning?: string
   /**
    * Total wall-clock of the turn that produced this assistant message —
    * drives the "Worked for 42s · 6 steps" activity receipt. Live turns

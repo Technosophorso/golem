@@ -255,11 +255,37 @@ export function coalesceAssistantRunMessages<T extends ChatSurfaceMessage>(
   }
   // A run's notes are only decidable once its answer is known: drop the
   // trailing segment that never met a tool and the note that IS the answer.
-  return rendered.map((message) => {
-    if (message.role !== "assistant" || !message.activityNotes) return message;
-    const activityNotes = finalizeActivityNotes(message.activityNotes, message.text);
-    if (activityNotes) return { ...message, activityNotes };
-    const { activityNotes: _dropped, ...rest } = message;
-    return rest as T;
+  // Restored runs also get a COARSE wall-clock — the human row that started
+  // the run to the run's final row — so the receipt keeps its duration after
+  // a reload (per-step timings stay live-only).
+  return rendered.map((message, index) => {
+    if (message.role !== "assistant") return message;
+    let next: T = message;
+    if (message.activityNotes) {
+      const activityNotes = finalizeActivityNotes(message.activityNotes, message.text);
+      if (activityNotes) next = { ...next, activityNotes };
+      else {
+        const { activityNotes: _dropped, ...rest } = next;
+        next = rest as T;
+      }
+    }
+    if (next.toolsUsed?.length && next.activityDurationMs == null) {
+      const previous = index > 0 ? rendered[index - 1] : undefined;
+      const durationMs = coarseRunDurationMs(previous, next);
+      if (durationMs != null) next = { ...next, activityDurationMs: durationMs };
+    }
+    return next;
   });
+}
+
+/** Wall-clock from the human row that opened a run to the run's final row. */
+function coarseRunDurationMs(
+  previous: ChatSurfaceMessage | undefined,
+  run: ChatSurfaceMessage,
+): number | undefined {
+  if (!previous || previous.role !== "user") return undefined;
+  const start = previous.timestamp.getTime();
+  const end = run.timestamp.getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
+  return end - start;
 }

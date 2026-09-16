@@ -1758,6 +1758,8 @@ export function FloatingChat({
         : undefined;
     const activityNotes =
       tools.length > 0 ? finalizeActivityNotes(turnNotesRef.current, finalText) : undefined;
+    const activityReasoning =
+      tools.length > 0 ? turnReasoningRef.current.trim() || undefined : undefined;
     return {
       id: assistantIdRef.current ?? `assistant-${Date.now()}`,
       role: "assistant",
@@ -1767,6 +1769,7 @@ export function FloatingChat({
       ...(views.length > 0 ? { views } : {}),
       ...(tools.length > 0 ? { toolsUsed: tools } : {}),
       ...(activityNotes ? { activityNotes } : {}),
+      ...(activityReasoning ? { activityReasoning } : {}),
       ...(activityDurationMs != null ? { activityDurationMs } : {}),
       ...(citations.length > 0 ? { citations } : {}),
       ...(fileAttachments.length > 0 ? { fileAttachments } : {}),
@@ -2205,6 +2208,8 @@ export function FloatingChat({
                   ? payload.errorMessage
                   : undefined;
               const startedAtMs = toolStartTimesRef.current.get(id);
+              const output =
+                typeof payload.output === "string" && payload.output ? payload.output : undefined;
               const durationMs =
                 startedAtMs != null
                   ? Math.max(0, Math.round(performance.now() - startedAtMs))
@@ -2216,6 +2221,7 @@ export function FloatingChat({
                       status: isError ? "retried" : "done",
                       ...(durationMs != null ? { durationMs } : {}),
                       ...(isError && errorMessage ? { errorMessage } : {}),
+                      ...(output ? { output } : {}),
                     }
                   : tool,
               );
@@ -4358,6 +4364,7 @@ function MessageBubble({
           <ChatActivitySummary
             tools={message.toolsUsed}
             notes={message.activityNotes}
+            reasoning={message.activityReasoning}
             durationMs={message.activityDurationMs}
           />
         ) : null}
