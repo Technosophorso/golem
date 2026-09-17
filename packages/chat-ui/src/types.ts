@@ -66,6 +66,42 @@ export type ToolUsed = {
   durationMs?: number
   /** Short error excerpt when the call failed (status `retried`). */
   errorMessage?: string
+  /**
+   * The call's parsed arguments — live from `tool_input`, on reload from the
+   * persisted `tool_use` block. The receipt renders a non-empty input under
+   * an expandable "Input" section.
+   */
+  input?: Record<string, unknown>
+  /**
+   * Argument summary ("query: name:#1042 · first: 50") for tools whose
+   * narration does not already carry their argument. Grouped receipt rows
+   * ("shopifyListOrders ×9") show it per call.
+   */
+  detail?: string
+  /**
+   * Display excerpt of a successful result (~2 KB) — live from the
+   * `tool_result` event, on reload from the persisted `tool_result` row.
+   * Shown under an "Output" caption when the step is opened.
+   */
+  output?: string
+}
+
+/**
+ * The model's intermediate prose in a multi-step turn ("Let me pull up that
+ * order…"), kept as a receipt row before the tool it preceded. A note is text
+ * that precedes a LATER tool call in the same run — the answer is still the
+ * last text segment. See docs/architecture/engine/live-streaming.md →
+ * "Chat: the activity feed" → Completed.
+ */
+export type ActivityNote = {
+  id: string
+  text: string
+  /**
+   * The tool call this prose preceded. Absent only transiently on a
+   * history row whose trailing text has not yet met the next row's first
+   * tool; `coalesceAssistantRunMessages` resolves or drops it.
+   */
+  beforeToolId?: string
 }
 
 /**
@@ -126,6 +162,14 @@ export type Message = {
   fileAttachments?: ChatFileAttachment[]
   citations?: CitationSource[]
   toolsUsed?: ToolUsed[]
+  /** Intermediate prose rows of the activity receipt, in run order. */
+  activityNotes?: ActivityNote[]
+  /**
+   * The turn's verbatim reasoning, shown as a "Thinking" disclosure on the
+   * receipt. LIVE ONLY: reasoning is never persisted, so a restored message
+   * never carries it.
+   */
+  activityReasoning?: string
   /**
    * Total wall-clock of the turn that produced this assistant message —
    * drives the "Worked for 42s · 6 steps" activity receipt. Live turns

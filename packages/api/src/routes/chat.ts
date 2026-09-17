@@ -26,6 +26,7 @@ import { insertClaimProvenance, getClaimsForLatestAssistantMessage } from '../db
 import type { SessionStateStore, SessionStateRecord, PlanStore, AmbientSurface, CrmEmailDraftStore } from '@use-brian/core'
 import { runProactiveCompaction } from './proactive-compaction.js'
 import { gateSessionRead } from './sessions.js'
+import { toolErrorExcerpt, toolOutputExcerpt } from './tool-result-excerpt.js'
 import { renderArtifactManifest } from '../files/artifact-manifest.js'
 import { promotePastedText, shouldPromotePaste } from '../files/paste-promotion.js'
 import type { ArtifactPromoter } from '../files/artifact-promote.js'
@@ -809,17 +810,6 @@ function extractMessageText(msg: { content: unknown }): string {
       .join(' ')
   }
   return ''
-}
-
-/**
- * Trim a tool-result error string into a single short line for the SSE
- * payload. Used by the chat UI to show *why* a tool failed in the
- * confirmation card; long stack traces are useless there and oversized
- * SSE frames hurt streaming.
- */
-function toolErrorExcerpt(content: string): string {
-  const flat = content.replace(/\s+/g, ' ').trim()
-  return flat.length > 200 ? `${flat.slice(0, 197)}…` : flat
 }
 
 /**
@@ -6239,6 +6229,9 @@ export function chatRoutes(options: WebChatOptions): Router {
                       isError: block.isError ?? false,
                       workerId,
                       errorMessage: block.isError ? toolErrorExcerpt(block.content) : undefined,
+                      // Sender's own stream only — the reduced room payload
+                      // below never carries what a connector returned.
+                      output: block.isError ? undefined : toolOutputExcerpt(block.content),
                     }
                     sendActivityEvent('tool_result', resultEvent, {
                       id: resultEvent.id,
@@ -6348,6 +6341,7 @@ export function chatRoutes(options: WebChatOptions): Router {
                           isError: block.isError ?? false,
                           workerId,
                           errorMessage: block.isError ? toolErrorExcerpt(block.content) : undefined,
+                          output: block.isError ? undefined : toolOutputExcerpt(block.content),
                         }
                         sendActivityEvent('tool_result', resultEvent, {
                           id: resultEvent.id,
@@ -7299,6 +7293,7 @@ export function chatRoutes(options: WebChatOptions): Router {
                   isError: block.isError ?? false,
                   spawnedWorkerId,
                   errorMessage: block.isError ? toolErrorExcerpt(block.content) : undefined,
+                  output: block.isError ? undefined : toolOutputExcerpt(block.content),
                 }
                 sendActivityEvent('tool_result', resultEvent, {
                   id: resultEvent.id,

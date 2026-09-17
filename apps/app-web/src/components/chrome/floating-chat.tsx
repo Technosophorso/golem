@@ -148,6 +148,7 @@ import {
   parseSSEStream,
   useChatSession,
   useMessageStream,
+  type ActivityNote,
   type ChatFileAttachment,
   type CitationSource,
   type Message,
@@ -203,13 +204,18 @@ import {
 } from "@/lib/surface-chat-seed";
 import {
   extractMessageText,
-  extractToolUses,
   fetchLatestSession,
   fetchSessionMessages,
   parseMessageAttachments,
   stopTurn,
   type MessageAttachmentRef,
 } from "@/lib/api/sessions";
+import {
+  collectToolResults,
+  finalizeActivityNotes,
+  restoreAssistantActivity,
+} from "@/lib/activity-receipt";
+import { coalesceAssistantRunMessages } from "@/components/chat-app/chat-transcript";
 import { shouldReopenSessionStream } from "@/lib/chat-session-events";
 import { MessageAttachments } from "@/components/doc/message-attachment-card";
 import {
@@ -1177,6 +1183,9 @@ export function FloatingChat({
   // event, merged into the finalized assistant message at stream end.
   const turnFileAttachmentsRef = useRef<ChatFileAttachment[]>([]);
   const turnToolsRef = useRef<ToolUsedWithOps[]>([]);
+  // The receipt's intermediate prose: each segment the answer-reset is about
+  // to discard, captured at `tool_start` against the tool it preceded.
+  const turnNotesRef = useRef<ActivityNote[]>([]);
   const turnWorkerDescriptionsRef = useRef<Map<string, string>>(new Map());
   // Accumulates the live `reasoning` SSE event text (verbatim model thinking),
   // streamed token-by-token alongside tool events. Reset per turn.
@@ -1700,6 +1709,7 @@ export function FloatingChat({
     turnCitationsRef.current = [];
     turnFileAttachmentsRef.current = [];
     turnToolsRef.current = [];
+    turnNotesRef.current = [];
     turnWorkerDescriptionsRef.current = new Map();
     turnReasoningRef.current = "";
     eventLogRef.current = EMPTY_LOG;
@@ -1746,6 +1756,10 @@ export function FloatingChat({
       tools.length > 0 && turnStartedAtRef.current != null
         ? Math.max(0, Date.now() - turnStartedAtRef.current)
         : undefined;
+    const activityNotes =
+      tools.length > 0 ? finalizeActivityNotes(turnNotesRef.current, finalText) : undefined;
+    const activityReasoning =
+      tools.length > 0 ? turnReasoningRef.current.trim() || undefined : undefined;
     return {
       id: assistantIdRef.current ?? `assistant-${Date.now()}`,
       role: "assistant",
@@ -1754,6 +1768,8 @@ export function FloatingChat({
       ...(turnVoiceRef.current ? { senderAssistantId: turnVoiceRef.current } : {}),
       ...(views.length > 0 ? { views } : {}),
       ...(tools.length > 0 ? { toolsUsed: tools } : {}),
+      ...(activityNotes ? { activityNotes } : {}),
+      ...(activityReasoning ? { activityReasoning } : {}),
       ...(activityDurationMs != null ? { activityDurationMs } : {}),
       ...(citations.length > 0 ? { citations } : {}),
       ...(fileAttachments.length > 0 ? { fileAttachments } : {}),
@@ -2056,6 +2072,16 @@ export function FloatingChat({
               // dispatches across a multi-tool step). See `pendingAnswerResetRef`.
               if (!pendingAnswerResetRef.current) {
                 pendingAnswerResetRef.current = true;
+                // Keep the segment as a receipt note before it is discarded —
+                // `finalizeActivityNotes` drops it again if it turns out to
+                // be the answer (answer-then-bookkeeping-tool turn).
+                const segment = stripFollowUps(turnTextRef.current).trim();
+                if (segment) {
+                  turnNotesRef.current = [
+                    ...turnNotesRef.current,
+                    { id: `note-${id}`, text: segment, beforeToolId: id },
+                  ];
+                }
                 session.dispatch({ type: "stream/reset" });
               }
               toolStartTimesRef.current.set(id, performance.now());
@@ -2134,6 +2160,8 @@ export function FloatingChat({
                       ...tool,
                       description: narration.description,
                       ...(narration.url ? { url: narration.url } : {}),
+                      ...(narration.detail ? { detail: narration.detail } : {}),
+                      ...(Object.keys(input).length > 0 ? { input } : {}),
                       // patchPage: per-op narration lines for the build log.
                       ...(narration.opLines ? { opLines: narration.opLines } : {}),
                     }
@@ -2180,6 +2208,8 @@ export function FloatingChat({
                   ? payload.errorMessage
                   : undefined;
               const startedAtMs = toolStartTimesRef.current.get(id);
+              const output =
+                typeof payload.output === "string" && payload.output ? payload.output : undefined;
               const durationMs =
                 startedAtMs != null
                   ? Math.max(0, Math.round(performance.now() - startedAtMs))
@@ -2191,6 +2221,7 @@ export function FloatingChat({
                       status: isError ? "retried" : "done",
                       ...(durationMs != null ? { durationMs } : {}),
                       ...(isError && errorMessage ? { errorMessage } : {}),
+                      ...(output ? { output } : {}),
                     }
                   : tool,
               );
@@ -3974,26 +4005,16 @@ function mapSessionRows(
   rows: Awaited<ReturnType<typeof fetchSessionMessages>>,
   narration: NarrationDict,
 ): MessageWithViews[] {
-  return rows
+  // Each call's outcome lives on the tool_result carrier row the transcript
+  // never renders — index them once so a failed call restores as `retried`.
+  const outcomes = collectToolResults(rows);
+  const mapped = rows
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m): MessageWithViews => {
-      const toolsUsed =
+      const { toolsUsed, activityNotes } =
         m.role === "assistant"
-          ? extractToolUses(m.content).map((use): ToolUsed => {
-              const described = describeToolFromInput(
-                use.name,
-                use.input,
-                narration,
-              );
-              return {
-                id: use.id,
-                name: use.name,
-                status: "done" as const,
-                description: described.description,
-                ...(described.url ? { url: described.url } : {}),
-              };
-            })
-          : [];
+          ? restoreAssistantActivity(m.content, outcomes, narration, m.id)
+          : { toolsUsed: [], activityNotes: [] };
       // User rows: split the persisted body into clean text + structured
       // attachment refs (base64 image thumbnails), so a restored message shows
       // the same thumbnail cards as the live send — not the "📎 filename"
@@ -4014,6 +4035,7 @@ function mapSessionRows(
           ? { senderAssistantId: m.senderAssistantId }
           : {}),
         ...(toolsUsed.length > 0 ? { toolsUsed } : {}),
+        ...(activityNotes.length > 0 ? { activityNotes } : {}),
         ...(m.attachments && m.attachments.length > 0
           ? { fileAttachments: m.attachments }
           : {}),
@@ -4025,9 +4047,13 @@ function mapSessionRows(
     .filter(
       (m) =>
         m.text.trim().length > 0 ||
+        m.toolsUsed?.length ||
         m.fileAttachments?.length ||
         m.userAttachments?.length,
     );
+  // One assistant row per query-loop round in storage; one reply per run on
+  // screen (the Chat app's fold, so a multi-step run keeps one receipt).
+  return coalesceAssistantRunMessages(mapped);
 }
 
 /**
@@ -4337,6 +4363,8 @@ function MessageBubble({
         {message.toolsUsed?.length ? (
           <ChatActivitySummary
             tools={message.toolsUsed}
+            notes={message.activityNotes}
+            reasoning={message.activityReasoning}
             durationMs={message.activityDurationMs}
           />
         ) : null}

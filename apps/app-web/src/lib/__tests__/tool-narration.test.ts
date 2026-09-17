@@ -12,6 +12,7 @@ import { en } from "@/lib/i18n/dictionaries/en";
 import {
   describeToolFromInput,
   staticToolLabel,
+  summarizeToolArgs,
 } from "@/lib/tool-narration";
 
 const dict = en.chat.toolNarration;
@@ -86,5 +87,39 @@ describe("[COMP:app-web/tool-narration] staticToolLabel", () => {
     // leak the raw placeholder string.
     expect(staticToolLabel(dict, "generic")).toBeUndefined();
     expect(staticToolLabel(dict, "definitelyUnknownTool")).toBeUndefined();
+  });
+});
+
+describe("[COMP:app-web/tool-narration] argument detail", () => {
+  it("summarises the first scalar args and skips nested values", () => {
+    expect(
+      summarizeToolArgs({ filter: { a: 1 }, query: "name:#1042", first: 50, verbose: true }),
+    ).toBe("query: name:#1042 · first: 50");
+    // The identifying argument leads even when the model emitted it last.
+    expect(summarizeToolArgs({ limit: 5, query: "pricing" })).toBe("query: pricing · limit: 5");
+    expect(summarizeToolArgs({ query: "" })).toBeUndefined();
+    expect(summarizeToolArgs("not an object")).toBeUndefined();
+    expect(summarizeToolArgs({ query: "x".repeat(60) })).toBe(`query: ${"x".repeat(37)}…`);
+  });
+
+  it("carries mcp_call args as detail so repeated calls read as different rows", () => {
+    const n = describeToolFromInput(
+      "mcp_call",
+      { server: "shopify", tool: "shopifyListOrders", args: { query: "name:#1042" } },
+      dict,
+    );
+    expect(n.description).toBe("Using shopifyListOrders (shopify)");
+    expect(n.detail).toBe("query: name:#1042");
+  });
+
+  it("gives prefixed-MCP and unlabelled tools an input detail, and input-aware lines none", () => {
+    expect(describeToolFromInput("mcp_cgov_searchDreps", { name: "x" }, dict).detail).toBe(
+      "name: x",
+    );
+    expect(describeToolFromInput("definitelyUnknownTool", { limit: 20 }, dict).detail).toBe(
+      "limit: 20",
+    );
+    expect(describeToolFromInput("webSearch", { query: "middle mile" }, dict).detail).toBeUndefined();
+    expect(describeToolFromInput("mcp_search", { query: "orders" }, dict).detail).toBeUndefined();
   });
 });
