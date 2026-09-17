@@ -533,6 +533,7 @@ export type CrmEntitlement = {
   renewalMode: "none" | "manual" | "auto";
   provider: string | null;
   providerEntitlementId: string | null;
+  sponsorshipAllocationId?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -564,7 +565,7 @@ export type CrmParticipation = {
   attendeeEmail: string | null;
   status: CrmParticipationStatus;
   sourceStatus: string;
-  sourceKind: "commerce" | "manual" | "form" | "workflow" | "import";
+  sourceKind: "commerce" | "source_order" | "manual" | "form" | "workflow" | "import";
   sourceId: string;
   commerceManaged: boolean;
   createdAt: string;
@@ -995,6 +996,7 @@ export function confirmCrmImport(
     mapping: CrmProductionImportMapping;
     dryRunHash: string;
     confirmed: true;
+    confirmationKey?: string;
   },
 ): Promise<CrmProductionImportJob> {
   return jsonRequest(`/api/crm/${encodeURIComponent(workspaceId)}/operations/imports`, {

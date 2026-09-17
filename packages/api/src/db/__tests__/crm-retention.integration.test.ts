@@ -40,7 +40,11 @@ async function fixture() {
   }
   const note=(id:string)=>pool.query(`INSERT INTO association_enquiry_notes(workspace_id,enquiry_id,body,actor_kind,actor_credential_id)
     VALUES($1,$2,'Private note','api_key','fixture')`,[workspaceId,id])
-  return {workspaceId,userId,contactId,context,policy,preview,execute,submission,note}
+  const attachment=(id:string)=>pool.query(`INSERT INTO association_submission_attachments(
+      workspace_id,submission_id,attachment_key,original_name,mime_type,content_bytes,size_bytes,sha256)
+    VALUES($1,$2,'business_card','card.png','image/png',$3,$4,repeat('a',64))`,
+    [workspaceId,id,Buffer.from('normalized fixture image'),Buffer.byteLength('normalized fixture image')])
+  return {workspaceId,userId,contactId,context,policy,preview,execute,submission,note,attachment}
 }
 async function count(table:string,workspaceId:string) {return Number((await pool.query(`SELECT count(*) count FROM ${table} WHERE workspace_id=$1`,[workspaceId])).rows[0].count)}
 describe('[COMP:crm/retention] Actual review and policy execution',()=>{
@@ -67,6 +71,7 @@ describe('[COMP:crm/retention] Actual review and policy execution',()=>{
     const f=await fixture();await f.policy()
     for(let i=0;i<105;i++)await f.submission()
     const id=(await pool.query('SELECT id FROM association_enquiries WHERE workspace_id=$1 LIMIT 1',[f.workspaceId])).rows[0].id
+    await f.attachment(id)
     const audit=(await pool.query("INSERT INTO association_audit_log(workspace_id,action,subject_kind,subject_id,actor_kind,actor_credential_id,metadata) VALUES($1,'fixture','submission',$2,'user','fixture','{\"private\":\"Private audit\"}') RETURNING id",[f.workspaceId,id])).rows[0].id
     const first=await f.preview();expect(first.domains).toContainEqual({domain:'association_enquiries',action:'delete',count:105})
     expect(await count('association_enquiries',f.workspaceId)).toBe(105)
@@ -76,7 +81,8 @@ describe('[COMP:crm/retention] Actual review and policy execution',()=>{
     await pool.query("UPDATE association_audit_log SET metadata='{\"private\":\"Changed private audit\"}' WHERE id=$1",[audit])
     await expect(f.execute(auditReview)).rejects.toMatchObject({details:{reason:'retention_preview_stale'}})
     const review=await f.preview(),executed=await f.execute(review)
-    expect(executed.receipt.changed).toMatchObject({submissions:105});expect(executed.duplicate).toBe(false)
+    expect(review.domains).toContainEqual({domain:'association_submission_attachments',action:'delete',count:1})
+    expect(executed.receipt.changed).toMatchObject({submissions:105,submissionAttachments:1});expect(executed.duplicate).toBe(false)
     expect(await count('association_enquiries',f.workspaceId)).toBe(0)
     expect(await count('association_enquiry_notes',f.workspaceId)).toBe(0)
     expect((await pool.query('SELECT metadata FROM association_audit_log WHERE id=$1',[audit])).rows[0].metadata).toEqual({retentionRedacted:true})
@@ -98,22 +104,25 @@ describe('[COMP:crm/retention] Actual review and policy execution',()=>{
   })
   it('redacts selected open fields and notes while retaining state and independent copies',async()=>{
     const f=await fixture();await f.policy({...BASE,openSubmissions:{afterSeconds:60,fields:['message','metadata','notes']}})
-    const id=await f.submission('in_progress');await f.note(id)
+    const id=await f.submission('in_progress');await f.note(id);await f.attachment(id)
     const review=await f.preview();expect(review.retainedCopies).toContain('independent_task_import_delivery_copies')
+    expect(review.domains).toContainEqual({domain:'association_submission_attachments',action:'delete',count:1})
     await f.execute(review)
     const row=(await pool.query('SELECT subject,message,submitted_data,status,contact_id FROM association_enquiries WHERE id=$1',[id])).rows[0]
     expect(row).toEqual({subject:'Private subject',message:'Removed by retention policy',submitted_data:{},status:'in_progress',contact_id:f.contactId})
     expect(await count('association_enquiry_notes',f.workspaceId)).toBe(0)
+    expect(await count('association_submission_attachments',f.workspaceId)).toBe(0)
     expect(await count('entities',f.workspaceId)).toBe(1)
   })
   it('supports metadata-only and notes-only policies without changing other submission content',async()=>{
     for(const field of ['metadata','notes'] as const) {
       const f=await fixture();await f.policy({...BASE,openSubmissions:{afterSeconds:60,fields:[field]}})
-      const id=await f.submission('new');await f.note(id);await f.execute(await f.preview())
+      const id=await f.submission('new');await f.note(id);await f.attachment(id);await f.execute(await f.preview())
       const row=(await pool.query('SELECT subject,message,submitted_data,status FROM association_enquiries WHERE id=$1',[id])).rows[0]
       expect(row.message).toBe('Private message');expect(row.status).toBe('new')
       expect(row.submitted_data).toEqual(field==='metadata'?{}:{sensitive:'Private form value'})
       expect(await count('association_enquiry_notes',f.workspaceId)).toBe(field==='notes'?0:1)
+      expect(await count('association_submission_attachments',f.workspaceId)).toBe(field==='metadata'?0:1)
     }
   })
   it('retains holds and live event attribution without starving eligible submissions beyond a full held page',async()=>{

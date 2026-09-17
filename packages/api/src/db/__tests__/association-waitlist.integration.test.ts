@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { afterAll, describe, expect, it } from 'vitest'
 import { associationWaitlistDefinition, AssociationWaitlistOfferInputSchema, CrmOperationsCommandSchema, type CrmOperationsContext, type AssociationActor } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createAssociationStore } from '../association-store.js'
 import { createCrmOperationsService } from '../../crm-operations/service.js'
 import { createDbCrmOperationsStore } from '../crm-operations-store.js'
@@ -11,14 +11,14 @@ import { EventInputSchema, TicketInputSchema } from '../../association/domain.js
 import { _resetCoalescerForTests } from '../../brain-stream/notify.js'
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore()
 const commerce = createAssociationStore(), operations = createCrmOperationsService(createDbCrmOperationsStore()), keys = createCrmIntegrationStore()
 async function fixture(capacity = 1) {
   const workspaceId = randomUUID(), userId = randomUUID()
   await pool.query('INSERT INTO users(id,auth_provider_id) VALUES($1::uuid,$1::text)', [userId])
   await pool.query("INSERT INTO workspaces(id,name,owner_user_id) VALUES($1,'Waitlist fixture',$2)", [workspaceId, userId])
   await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId])
-  await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const actor: AssociationActor = { credentialKind: 'user', credentialId: userId, actingUserId: userId }
   const eventId = String((await commerce.upsertEvent(workspaceId, EventInputSchema.parse({ slug: 'fixture', title: 'Waitlist fixture', startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity }), actor)).record.id)
   const ticketId = String((await commerce.upsertTicket(workspaceId, eventId, TicketInputSchema.parse({ key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 0, status: 'on_sale', capacity }), actor)).record.id)
@@ -75,8 +75,8 @@ describe('[COMP:crm/association-waitlist] Actual intake-backed offers', () => {
     const second = await f.offer()
     expect(second.record.orderId).not.toBe(first.record.orderId)
     await commerce.cancelOrder(f.workspaceId, String(second.record.orderId), f.actor)
-    const state = await modules.getAssociation(f.workspaceId)
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: state.version })
+    const state = await modules.get(f.workspaceId, 'association')
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: state.version })
     expect((await f.offer(promotionId)).record.orderId).toBe(first.record.orderId)
     await expect(f.offer()).rejects.toMatchObject({ code: 'module_disabled' })
     const queued = await f.submit()

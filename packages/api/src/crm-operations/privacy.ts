@@ -46,9 +46,15 @@ export const CRM_OPERATIONS_PRIVACY_TABLES = [
   'crm_segments',
   'association_membership_plans',
   'association_memberships',
+  'association_membership_source_imports',
+  'association_membership_checkouts',
+  'association_membership_offline_rescues',
   'association_events',
   'association_registrations',
   'association_inventory_boundaries',
+  'association_promotions',
+  'association_promotion_source_contact_uses',
+  'association_promotion_uses',
   'association_waitlist_offers',
   'association_integration_events',
   'association_audit_log',
@@ -88,6 +94,9 @@ EXPORT_PROJECTIONS.crm_import_sources = [
 ].join(',')
 EXPORT_PROJECTIONS.crm_address_suppression_tombstones = 'id,workspace_id,key_version,channel,purpose_key,reason_code,occurred_at,policy_version,created_at,expires_at,released_at,release_evidence_kind,release_evidence_id'
 EXPORT_PROJECTIONS.association_integration_events = 'id,workspace_id,provider,provider_event_id,provider_reference,occurred_at,target_kind,order_id,entitlement_id,contact_id,plan_id,state,attempts,cycle_attempts,next_attempt_at,last_error_code,created_at,updated_at,applied_at'
+EXPORT_PROJECTIONS.association_promotions = 'id,workspace_id,promotion_key,name,discount_type,percentage_basis_points,amount_minor,currency,buy_quantity,get_quantity,target_kind,target_ids,recurrence_mode,recurrence_cycles,apply_mode,valid_from,valid_to,max_uses,max_uses_per_contact,source_system,source_site,source_promotion_id,source_redeemed_uses,combines_with_member_price,release_on_full_refund,status,created_at,updated_at'
+EXPORT_PROJECTIONS.association_membership_source_imports = 'id,workspace_id,membership_id,source_system,source_site,source_membership_id,source_plan_id,source_member_id,source_order_id,source_subscription_id,source_payment_provider,source_payment_reference,source_status,source_renewal_status,source_payment_status,source_refund_status,purchased_at,cancelled_at,relationships,metadata,created_at'
+EXPORT_PROJECTIONS.association_membership_checkouts = 'id,workspace_id,contact_id,plan_id,status,currency,subtotal_minor,discount_minor,total_minor,promotion_id,promotion_snapshot,reservation_expires_at,provider,provider_reference,provider_coupon_reference,created_at,updated_at'
 
 EXPORT_PROJECTIONS.crm_import_file_cleanups='id,workspace_id,owner_user_id,file_id,before_at,policy_version,summary,status,attempts,next_attempt_at,leased_until,error_code,created_at,expires_at,queued_at,completed_at,replay_expires_at'
 EXPORT_PROJECTIONS.crm_erasure_journal='id,workspace_id,table_name,operation,captured_at'
@@ -173,10 +182,31 @@ export async function redactCrmOperationsForContact(
 
   await retireCrmImportCopies(client,workspaceId)
 
+  await client.query(
+    'UPDATE association_promotion_uses SET contact_id=NULL WHERE workspace_id=$1 AND contact_id=$2',
+    [workspaceId, contactId],
+  )
+  await client.query(
+    'UPDATE association_promotion_source_contact_uses SET contact_id=NULL WHERE workspace_id=$1 AND contact_id=$2',
+    [workspaceId, contactId],
+  )
+  await client.query(
+    'DELETE FROM association_membership_checkouts WHERE workspace_id=$1 AND contact_id=$2',
+    [workspaceId, contactId],
+  )
+
   // Commerce participation can be retention-bound and therefore uses a
   // pseudonymous shell. Non-commerce rows use the same shell because their
   // attendee columns are equally identifying and the event chronology may be
   // required independently of the erased subject.
+  await client.query(
+    `UPDATE association_registrations r SET eligible_membership_id=NULL
+      WHERE r.workspace_id=$1 AND EXISTS(
+        SELECT 1 FROM association_memberships m
+         WHERE m.workspace_id=r.workspace_id AND m.id=r.eligible_membership_id AND m.contact_id=$2
+      )`,
+    [workspaceId, contactId],
+  )
   await client.query(
     `UPDATE association_registrations
         SET attendee_contact_id=NULL, attendee_name='Erased participant',
@@ -194,7 +224,7 @@ export async function redactCrmOperationsForContact(
     [workspaceId, contactId],
   )
   await client.query(
-    `UPDATE crm_import_rows SET entity_id=NULL
+    `UPDATE crm_import_rows SET entity_id=NULL,result_refs='[]'::jsonb
       WHERE workspace_id=$1 AND entity_id=$2`,
     [workspaceId, contactId],
   )
@@ -205,6 +235,7 @@ export async function redactCrmOperationsForContact(
   for (const table of [
     'crm_suppression_events',
     'association_consent_events',
+    'association_membership_offline_rescues',
     'association_memberships',
     'association_enquiries',
     'association_external_identities',
@@ -277,6 +308,9 @@ export async function pruneCrmOperationsRetention(
       `DELETE FROM crm_intake_idempotency WHERE workspace_id=$1 AND status='retired'
         AND replay_expires_at<=clock_timestamp()`, [workspaceId])
     deleted.crm_intake_idempotency! += retiredReceiptsDeleted
+    await remove('association_submission_attachments',
+      `DELETE FROM association_submission_attachments WHERE workspace_id=$1
+        AND submission_id=ANY($2::uuid[])`, [workspaceId, submissionIds])
     await remove('association_enquiries',
       `DELETE FROM association_enquiries WHERE workspace_id=$1
         AND id=ANY($2::uuid[])`, [workspaceId, submissionIds])

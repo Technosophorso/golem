@@ -8,6 +8,10 @@ import {
   mayTransitionOrder,
   OrderCreateSchema,
   ProviderEventInputSchema,
+  PromotionImportSchema,
+  PromotionInputSchema,
+  SourceMembershipImportSchema,
+  TicketInputSchema,
 } from '../domain.js'
 
 const CONTACT_ID = '11111111-1111-4111-8111-111111111111'
@@ -63,6 +67,67 @@ describe('[COMP:crm/association-domain] bounded domain contracts', () => {
       }],
     })
     expect(result.success).toBe(false)
+  })
+
+  it('defaults ticket eligibility to the buyer and bounds attendee admission', () => {
+    const base = { key: 'member', name: 'Member ticket', currency: 'USD', priceMinor: 100 }
+    expect(TicketInputSchema.parse(base)).toMatchObject({ eligibilityRequired: false, eligibilityScope: 'buyer' })
+    expect(TicketInputSchema.parse({ ...base, memberPriceMinor: 25, eligiblePlanKeys: ['member'] }).eligibilityRequired).toBe(true)
+    expect(TicketInputSchema.safeParse({ ...base, memberPriceMinor: 25, eligiblePlanKeys: ['member'], eligibilityRequired: true, eligibilityScope: 'buyer_and_attendees' }).success).toBe(true)
+    expect(TicketInputSchema.safeParse({ ...base, eligibilityRequired: true }).success).toBe(false)
+    expect(TicketInputSchema.safeParse({ ...base, memberPriceMinor: 25, eligibilityScope: 'attendees' }).success).toBe(false)
+  })
+
+  it('requires explicit, bounded promotion terms without accepting a stored-code field', () => {
+    const base = { key: 'member-ten', name: 'Member 10%', code: 'EXAMPLE10', discountType: 'percentage' as const,
+      percentageBasisPoints: 1_000, targetKind: 'event' as const, targetIds: [TICKET_ID] }
+    expect(PromotionInputSchema.parse(base)).toMatchObject({ combinesWithMemberPrice: false, releaseOnFullRefund: false, status: 'draft' })
+    expect(PromotionInputSchema.safeParse({ ...base, percentageBasisPoints: null }).success).toBe(false)
+    expect(PromotionInputSchema.safeParse({ ...base, discountType: 'full', percentageBasisPoints: 1_000 }).success).toBe(false)
+    expect(PromotionInputSchema.safeParse({ ...base, discountType: 'buy_x_get_y', percentageBasisPoints: undefined, buyQuantity: 1, getQuantity: 1 }).success).toBe(true)
+    expect(PromotionInputSchema.safeParse({ ...base, discountType: 'fixed_amount', percentageBasisPoints: undefined,
+      amountMinor: 2_500, currency: 'HKD', targetKind: 'plan', recurrenceMode: 'repeating', recurrenceCycles: 3,
+      applyMode: 'once_per_order' }).success).toBe(true)
+    expect(PromotionInputSchema.safeParse({ ...base, targetKind: 'plan', recurrenceMode: 'repeating' }).success).toBe(false)
+    expect(PromotionInputSchema.safeParse({ ...base, targetKind: 'event', recurrenceMode: 'forever' }).success).toBe(false)
+    expect(PromotionInputSchema.safeParse({ ...base, codeDigest: 'a'.repeat(64) }).success).toBe(false)
+  })
+
+  it('admits digest-only promotion imports and requires complete history for per-contact caps', () => {
+    const promotion = {
+      key: 'member-ten', name: 'Member 10%', discountType: 'percentage' as const,
+      percentageBasisPoints: 1_000, targetKind: 'event' as const, targetIds: [TICKET_ID],
+      maxUses: 20, maxUsesPerContact: 2, status: 'active' as const,
+    }
+    const source = {
+      importJobId: '33333333-3333-4333-8333-333333333333', importRow: 2,
+      source: 'wix', sourceSite: 'oasahk.org', sourcePromotionId: 'coupon-1',
+      codeDigest: 'a'.repeat(64), promotion, sourceRedeemedUses: 2,
+      sourceContactUses: [{ contactId: CONTACT_ID, uses: 2 }],
+    }
+    expect(PromotionImportSchema.parse(source)).toMatchObject(source)
+    expect(PromotionImportSchema.safeParse({ ...source, promotion: { ...promotion, code: 'PLAINTEXT' } }).success).toBe(false)
+    expect(PromotionImportSchema.safeParse({ ...source, sourceContactUses: [] }).success).toBe(false)
+    expect(PromotionImportSchema.safeParse({ ...source, sourceRedeemedUses: 21 }).success).toBe(false)
+    expect(PromotionImportSchema.safeParse({ ...source,
+      sourceContactUses: [{ contactId: CONTACT_ID, uses: 3 }] }).success).toBe(false)
+  })
+
+  it('separates imported membership lineage from provider and automatic-renewal authority', () => {
+    const source = {
+      importJobId: '33333333-3333-4333-8333-333333333333', importRow: 2,
+      contactId: CONTACT_ID, planId: TICKET_ID, idempotencyKey: 'wix-membership:source-1',
+      status: 'active' as const, startsAt: '2026-08-01T00:00:00Z', endsAt: '2027-08-01T00:00:00Z',
+      source: 'wix', sourceSite: 'oasahk.org', sourceMembershipId: 'source-1',
+      sourcePlanId: 'plan-1', sourceSubscriptionId: 'subscription-1',
+      sourcePaymentProvider: 'stripe', sourcePaymentReference: 'sub_source_1',
+      sourceStatus: 'ACTIVE', sourceRenewalStatus: 'AUTO_RENEWING',
+      purchasedAt: '2026-08-01T00:00:00Z', relationships: { companyId: 'company-1' },
+    }
+    expect(SourceMembershipImportSchema.parse(source)).toMatchObject({ ...source, targetRenewalMode: 'none' })
+    expect(SourceMembershipImportSchema.safeParse({ ...source, targetRenewalMode: 'auto' }).success).toBe(false)
+    expect(SourceMembershipImportSchema.safeParse({ ...source, sourcePaymentReference: undefined }).success).toBe(false)
+    expect(SourceMembershipImportSchema.safeParse({ ...source, cancelledAt: '2026-07-01T00:00:00Z' }).success).toBe(false)
   })
 
   it('fingerprints equivalent object key order identically', () => {

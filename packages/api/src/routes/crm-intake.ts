@@ -13,6 +13,7 @@ import { z } from 'zod'
 import {
   CrmOperationsError,
   CrmIntakeIdentityProofSchema,
+  CrmSubmissionAttachmentSchema,
   boundedCrmObject,
   createRateLimiter,
   type CrmOperationsServicePort,
@@ -24,6 +25,7 @@ import {
 
 const BodySchema = z.object({
   fields: boundedCrmObject(1_048_576),
+  attachments: z.array(CrmSubmissionAttachmentSchema).max(5).optional(),
   identityProof: CrmIntakeIdentityProofSchema.optional(),
   externalIdentity: z.object({
     provider: z.string().trim().min(1).max(63),
@@ -82,7 +84,9 @@ export function crmIntakeRoutes(options: CrmIntakeRouteOptions): Router {
   router.post(
     '/crm/intake/:definitionKey/submissions',
     preflightRateLimit,
-    express.json({ limit: '1mb' }),
+    // One normalized image may carry up to 1 MiB of decoded content; canonical
+    // base64 plus the bounded field envelope fits below this parser limit.
+    express.json({ limit: '2mb' }),
     async (req, res) => {
       const idempotencyKey = req.get('Idempotency-Key')?.trim()
       if (!idempotencyKey || idempotencyKey.length > 200) {

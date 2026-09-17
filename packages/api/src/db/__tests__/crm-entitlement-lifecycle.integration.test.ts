@@ -32,7 +32,7 @@ async function fixture() {
 describe('[COMP:crm/entitlement-lifecycle] Actual canonical expiry and row races',()=>{
   afterAll(async()=>{_resetCoalescerForTests();await pool.end()})
   it('expires all 105 due manual grants independently of the disabled module and emits one event each',async()=>{
-    const f=await fixture();expect((await createWorkspaceModulesStore().getAssociation(f.workspaceId)).state).toBe('disabled')
+    const f=await fixture();expect((await createWorkspaceModulesStore().get(f.workspaceId, 'association')).state).toBe('disabled')
     for(let i=0;i<105;i++)await f.grant()
     await createCrmEntitlementWorker().tick()
     expect((await pool.query("SELECT count(*)::int count FROM association_memberships WHERE workspace_id=$1 AND status='expired'",[f.workspaceId])).rows[0].count).toBe(105)

@@ -253,6 +253,28 @@ describe('[COMP:api/context-scope-security-matrix] cross-path security matrix', 
     })
   }
 
+  it('upgrades a staged financial migration ledger without replaying its DDL', async () => {
+    const previousName = '537_association_order_financial_evidence.sql'
+    const currentName = '552_association_order_financial_evidence.sql'
+    const migrationsDir = fileURLToPath(new URL('../../../../packages/api/migrations', import.meta.url))
+    // The suite's fresh bootstrap already created these columns through 552.
+    // Represent the same schema installed by the old staged filename.
+    await db.query('UPDATE public._migrations SET name = $1 WHERE name = $2', [previousName, currentName])
+    try {
+      assert.equal(await migratePglite(db, migrationsDir), 1)
+      assert.equal(await migratePglite(db, migrationsDir), 0)
+      const ledger = await db.query<{ name: string }>(
+        'SELECT name FROM public._migrations WHERE name = ANY($1::text[]) ORDER BY name',
+        [[previousName, currentName, '537_saved_views_scope_guc_casts.sql']],
+      )
+      assert.deepEqual(ledger.rows.map(row => row.name),
+        [previousName, '537_saved_views_scope_guc_casts.sql', currentName])
+    } finally {
+      await db.query('INSERT INTO public._migrations (name) VALUES ($1) ON CONFLICT DO NOTHING', [currentName])
+      await db.query('DELETE FROM public._migrations WHERE name = $1', [previousName])
+    }
+  })
+
   it('reports an inaccessible id exactly like an unknown id and leaks no count', async () => {
     const scope = SCOPES.salesAtlas
     const predicate = buildAccessPredicate(access(scope), { alias: 'r', startIdx: 2 })

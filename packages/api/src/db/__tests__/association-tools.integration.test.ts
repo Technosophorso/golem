@@ -3,7 +3,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 import { createAssociationTools, createCrmOperationsTools, type CrmOperationsReadPort, type ToolContext, type Tool } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
 import { seedBuiltinPrimitiveCapabilities } from '../capability-seed.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createDbCrmOperationsStore } from '../crm-operations-store.js'
 import { createCrmOperationsService } from '../../crm-operations/service.js'
 import { createAssociationService } from '../../association/service.js'
@@ -12,7 +12,7 @@ import * as notifications from '../../brain-stream/notify.js'
 
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore()
 const crmService = createCrmOperationsService(createDbCrmOperationsStore())
 const tools = createAssociationTools(createAssociationService({ crmService }))
 const crmTools = createCrmOperationsTools({ service: crmService, reads: {} as CrmOperationsReadPort })
@@ -50,11 +50,11 @@ describe('[COMP:crm/association-tools] Native tools through real canonical trans
     const before = (await pool.query('SELECT home_apps FROM workspaces WHERE id=$1', [f.workspaceId])).rows
     const notified = vi.spyOn(notifications, 'notifyWorkspaceChange')
     try {
-      await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 1 })
+      await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 1 })
       expect(notified).toHaveBeenCalledExactlyOnceWith(f.workspaceId, 'workspace_config', 'update')
       expect((await pool.query('SELECT state FROM workspace_modules WHERE workspace_id=$1', [f.workspaceId])).rows[0].state).toBe('enabled')
-      await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 2 })
-      await expect(modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 1 })).rejects.toMatchObject({ code: 'stale_module_version' })
+      await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 2 })
+      await expect(modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 1 })).rejects.toMatchObject({ code: 'stale_module_version' })
       expect(notified).toHaveBeenCalledTimes(1)
     } finally { notified.mockRestore() }
     expect(await f.call(tools.getAssociationModuleStatus)).toMatchObject({ isError: true, data: { error: 'not_authorized' } })
@@ -68,19 +68,19 @@ describe('[COMP:crm/association-tools] Native tools through real canonical trans
       endsAt: '2099-01-01T11:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity: 1 } }))
     const ticketInput = { eventId: event.id, ticket: { key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 0, capacity: 1, status: 'on_sale' } }
     expect(await f.call(tools.saveAssociationTicket, ticketInput)).toMatchObject({ isError: true, data: { error: 'module_disabled' } })
-    await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 1 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 1 })
     const ticket = record(await f.call(tools.saveAssociationTicket, ticketInput))
     const input = { order: { contactId: f.contactId, idempotencyKey: randomUUID(), lines: [
       { ticketId: ticket.id, quantity: 1, attendees: [{ contactId: f.contactId, name: 'Example Attendee' }] },
     ] } }
     const order = record(await f.call(tools.createAssociationOrder, input))
     expect(record(await f.call(tools.createAssociationOrder, input)).id).toBe(order.id)
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
     expect(record(await f.call(tools.getAssociationOrder, { orderId: order.id })).status).toBe('pending')
     expect(await f.call(tools.createAssociationOrder, { order: { ...input.order, idempotencyKey: randomUUID() } }))
       .toMatchObject({ isError: true, data: { error: 'module_draining' } })
     expect(record(await f.call(tools.cancelAssociationOrder, { orderId: order.id })).status).toBe('cancelled')
-    await modules.act(f.workspaceId, f.userId, { action: 'finish_disable', expectedVersion: 3 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'finish_disable', expectedVersion: 3 })
     expect(record(await f.call(tools.getAssociationOrder, { orderId: order.id })).status).toBe('cancelled')
     const audit = await pool.query("SELECT actor_kind,actor_credential_id FROM association_audit_log WHERE workspace_id=$1 AND subject_kind IN('event','entitlement_plan','order')", [f.workspaceId])
     expect(audit.rows.length).toBeGreaterThanOrEqual(4)

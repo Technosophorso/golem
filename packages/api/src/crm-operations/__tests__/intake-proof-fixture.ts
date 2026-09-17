@@ -9,6 +9,7 @@ export function intakeProofFixture() {
     config,
     proof(workspaceId: string, command: RecordCrmSubmissionCommand, verifiedAt = new Date().toISOString(), definitionVersion = 1) {
       const requestHash = crmOperationsSha256({ definitionKey: command.definitionKey, fields: command.fields,
+        ...(command.attachments?.length ? { attachments: command.attachments } : {}),
         externalIdentity: command.externalIdentity ?? null, submittedAt: command.submittedAt ?? null })
       const envelope = { protocol: 'crm-intake-identity-v1', workspaceId, definitionKey: command.definitionKey,
         definitionVersion, idempotencyKey: command.idempotencyKey, requestHash, keyId: config.keyId, verifiedAt }

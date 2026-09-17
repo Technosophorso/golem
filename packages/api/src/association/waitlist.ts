@@ -6,7 +6,7 @@ import {
   type AssociationActor, type AssociationOrderCreateInput, type AssociationWaitlistOfferInput,
 } from '@use-brian/core'
 import { lockCrmIntegrationCredential } from '../db/crm-integration-store.js'
-import { lockAssociationModule, requireAssociationAdmission } from '../db/workspace-modules-store.js'
+import { lockAssociationModule, requireAssociationAdmission } from './workspace-module.js'
 import { lockAssociationInventory } from './inventory.js'
 import { queryCrmPage } from '../crm-operations/pagination.js'
 import type { AssociationListInput, AssociationPage, MutationResult } from '../db/association-store.js'

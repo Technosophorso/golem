@@ -25,7 +25,7 @@ const fields = {
   intakeDefinitions: ['definitionKey', 'label', 'active'],
   segments: ['segmentKey', 'name', 'description', 'entityKind', 'predicate'],
 }
-const definitionFields = ['fields', 'identityPolicy', 'identityVerification', 'allowedIdentityProvider', 'consentMappings', 'queueKey', 'ownerUserId', 'followUpTaskTemplate', 'followUpDueMinutes', 'maxPayloadBytes', 'workflowHint']
+const definitionFields = ['fields', 'attachments', 'identityPolicy', 'identityVerification', 'allowedIdentityProvider', 'consentMappings', 'queueKey', 'ownerUserId', 'followUpTaskTemplate', 'followUpDueMinutes', 'maxPayloadBytes', 'workflowHint']
 const stable = { recordFields: 'fieldKey', consentPurposes: 'purposeKey', entitlementPlans: 'key', events: 'slug', intakeDefinitions: 'definitionKey', segments: 'segmentKey' }
 
 function business(resource, row) {

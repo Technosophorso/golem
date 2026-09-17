@@ -97,6 +97,23 @@ describe('[COMP:crm/privacy-export] Actual privacy projection coverage',()=>{
     }
     expect(coverage.find(e=>e.domain==='crm_integration_credentials')?.classification).toBe('excluded')
   })
+  it('exports submission attachment metadata and digest without bulk-exporting image bytes',async()=>{
+    const f=await fixture(),submissionId=randomUUID(),attachmentId=randomUUID()
+    await pool.query(`INSERT INTO association_enquiries(id,workspace_id,contact_id,source,source_submission_id,request_fingerprint,subject,message,submitted_data)
+      VALUES($1::uuid,$2,$3,'fixture',$1::uuid::text,repeat('a',64),'Fixture submission','Fixture message','{}')`,[submissionId,f.workspaceId,f.contactId])
+    const bytes=Buffer.from('normalized private image bytes')
+    await pool.query(`INSERT INTO association_submission_attachments(
+      id,workspace_id,submission_id,attachment_key,original_name,mime_type,content_bytes,size_bytes,sha256)
+      VALUES($1,$2,$3,'business_card','card.png','image/png',$4,$5,repeat('b',64))`,
+    [attachmentId,f.workspaceId,submissionId,bytes,bytes.length])
+    const output=await collect(f.context,f.contactId)
+    expect(records(output,'association_submission_attachments')).toMatchObject([{
+      id:attachmentId,submission_id:submissionId,attachment_key:'business_card',
+      original_name:'card.png',mime_type:'image/png',size_bytes:bytes.length,sha256:'b'.repeat(64),
+    }])
+    expect(records(output,'association_submission_attachments')[0]).not.toHaveProperty('content_bytes')
+    expect(output.text).not.toContain(bytes.toString('base64'))
+  })
   it('pins the snapshot before the first byte, including domains fetched after concurrent updates',async()=>{
     const f=await fixture();await activity(f)
     const stream=streamCrmPrivacyExport(f.context,{contactId:f.contactId}),first=await stream.next(),lines=[first.value!]
@@ -151,16 +168,19 @@ describe('[COMP:crm/privacy-export] Actual privacy projection coverage',()=>{
     expect(output.text).not.toContain(f.otherId)
   })
   it('exports attributed import lineage with shared raw source redaction and explicitly excludes unattributed failed rows',async()=>{
-    const f=await fixture(),{key}=await f.issue(),sourceId=randomUUID(),jobId=randomUUID(),bytes=Buffer.from('Name,Email\nSubject person,subject@example.com\nUnrelated person,unrelated@example.com\n')
+    const f=await fixture(),{key}=await f.issue(),sourceId=randomUUID(),jobId=randomUUID(),confirmationKey=randomUUID(),bytes=Buffer.from('Name,Email\nSubject person,subject@example.com\nUnrelated person,unrelated@example.com\n')
     await pool.query("INSERT INTO crm_import_sources(id,workspace_id,source_key,content_bytes,source_hash,credential_id,integration_grants) VALUES($1,$2,$3,$4,$5,$6,'[]')",[sourceId,f.workspaceId,randomUUID(),bytes,hash([bytes.toString()]),key.id])
-    await pool.query("INSERT INTO crm_import_jobs(id,workspace_id,source_id,integration_credential_id,integration_grants,entity_kind,mapping,mapping_hash,source_hash,total_rows) VALUES($1,$2,$3,$4,'[]','contact','{}',$5,$5,3)",[jobId,f.workspaceId,sourceId,key.id,'a'.repeat(64)])
+    await pool.query("INSERT INTO crm_import_jobs(id,workspace_id,source_id,integration_credential_id,integration_grants,entity_kind,mapping,mapping_hash,source_hash,total_rows,confirmation_key) VALUES($1,$2,$3,$4,'[]','contact','{}',$5,$5,3,$6)",[jobId,f.workspaceId,sourceId,key.id,'a'.repeat(64),confirmationKey])
     for(const [row,entity] of [[1,f.contactId],[2,f.otherId],[3,null]])await pool.query("INSERT INTO crm_import_rows(workspace_id,job_id,row_number,input_hash,status,entity_id) VALUES($1,$2,$3,$4,$5,$6)",[f.workspaceId,jobId,row,'a'.repeat(64),entity?'completed':'failed',entity])
+    await pool.query("UPDATE crm_import_rows SET result_refs=$1 WHERE workspace_id=$2 AND job_id=$3 AND row_number=1",[JSON.stringify([{kind:'contact',id:f.contactId}]),f.workspaceId,jobId])
     await pool.query("INSERT INTO crm_import_errors(workspace_id,job_id,row_number,error_code,message,row_snapshot) VALUES($1,$2,3,'invalid_input','Unattributed input',$3)",[f.workspaceId,jobId,JSON.stringify({email:otherEmail})])
     const output=await collect(f.context,f.contactId)
-    expect(records(output,'crm_import_rows')).toMatchObject([{row_number:1,entity_id:f.contactId}])
+    expect(records(output,'crm_import_jobs')).toMatchObject([{id:jobId,confirmation_key:null}])
+    expect(records(output,'crm_import_rows')).toMatchObject([{row_number:1,entity_id:f.contactId,result_refs:[{kind:'contact',id:f.contactId}]}])
     expect(records(output,'crm_import_errors')).toEqual([])
     expect(records(output,'crm_import_sources')).toMatchObject([{id:sourceId,content_bytes:null,integration_grants:null}])
     const workspace=await collect(f.context)
+    expect(records(workspace,'crm_import_jobs')).toMatchObject([{id:jobId,confirmation_key:confirmationKey}])
     const source=records(workspace,'crm_import_sources')[0]!.content_bytes as {encoding:string;data:string}
     expect(Buffer.from(source.data,'base64')).toEqual(bytes)
     for(const row of records(workspace,'crm_integration_credentials'))expect(row).not.toHaveProperty('secret_hash')

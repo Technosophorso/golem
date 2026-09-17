@@ -52,9 +52,9 @@ export async function inspectCrmRetention(client:PoolClient,workspaceId:string,b
     ) retained FROM association_enquiries q WHERE q.workspace_id=$1 AND q.status IN('resolved','spam') AND q.updated_at<$2
     ORDER BY q.id LIMIT 501`,[workspaceId,resolved,submissionHolds,contactHolds])
   const open=cutoff('openSubmissions',policy?.openSubmissions?.afterSeconds)
+  const openRedactionFields=policy?.openSubmissions?.fields ?? []
   if(open && policy?.openSubmissions) {
-    const fields=policy.openSubmissions.fields
-    const nonempty=fields.map(field=>field==='notes'
+    const nonempty=openRedactionFields.map(field=>field==='notes'
       ? 'EXISTS(SELECT 1 FROM association_enquiry_notes n WHERE n.workspace_id=q.workspace_id AND n.enquiry_id=q.id)'
       : field==='metadata'?"q.submitted_data<>'{}'::jsonb":`q.${field}<>$5`).join(' OR ')
     await select('open','association_enquiries','redact',`SELECT q.id,q.xmin::text version,
@@ -102,6 +102,7 @@ export async function inspectCrmRetention(client:PoolClient,workspaceId:string,b
   // the configured horizon and retained set until a domain-specific resolution.
   for(const [name,domain,seconds] of [
     ['audit','association_audit_log',policy?.auditSeconds],['financialRecords','association_orders',policy?.financialRecordsSeconds],
+    ['membershipRescueFinancialRecords','association_membership_offline_rescues',policy?.financialRecordsSeconds],
   ] as const) {
     const date=cutoff(name,seconds)
     if(date)await select(name,domain,'retain',`SELECT id,xmin::text version,true retained FROM ${domain}
@@ -113,6 +114,8 @@ export async function inspectCrmRetention(client:PoolClient,workspaceId:string,b
     ['association_audit_log','subject_id',plan.targets.submissions ?? []],
     ['workspace_audit_log','subject_id',plan.targets.submissions ?? []],
     ['association_enquiry_notes','enquiry_id',[...(plan.targets.submissions ?? []),...(plan.targets.open ?? [])]],
+    ['association_submission_attachments','submission_id',[...(plan.targets.submissions ?? []),
+      ...(openRedactionFields.includes('metadata') ? (plan.targets.open ?? []) : [])]],
     ['crm_intake_idempotency','submission_id',plan.targets.submissions ?? []],
     ['crm_import_rows','job_id',plan.targets.imports ?? []],
     ['crm_import_chunks','job_id',plan.targets.imports ?? []],
@@ -132,6 +135,7 @@ export async function inspectCrmRetention(client:PoolClient,workspaceId:string,b
     }
     await client.query('CLOSE retention_versions')
     if(isAudit)plan.domains.push({domain:table,action:'redact',count:audited})
+    if(table==='association_submission_attachments'&&audited)plan.domains.push({domain:table,action:'delete',count:audited})
   }
   if(plan.targets.submissions?.length && !approved.policy.intakeReplay) {
     const missing=await client.query<{count:number}>(`SELECT count(*)::int count FROM crm_intake_idempotency
@@ -157,11 +161,13 @@ export async function applyCrmRetention(client:PoolClient,workspaceId:string,pla
     await retireCrmIntakeReceipts(client,workspaceId,{submissionIds:plan.targets.submissions},plan.evaluatedAt)
     changed.associationAudit=(await client.query("UPDATE association_audit_log SET metadata=jsonb_build_object('retentionRedacted',true) WHERE workspace_id=$1 AND subject_id=ANY($2::uuid[])",[workspaceId,plan.targets.submissions])).rowCount ?? 0
     changed.workspaceAudit=(await client.query("UPDATE workspace_audit_log SET details=jsonb_build_object('retentionRedacted',true) WHERE workspace_id=$1 AND subject_id=ANY($2::uuid[])",[workspaceId,plan.targets.submissions])).rowCount ?? 0
+    changed.submissionAttachments=(await client.query('DELETE FROM association_submission_attachments WHERE workspace_id=$1 AND submission_id=ANY($2::uuid[])',[workspaceId,plan.targets.submissions])).rowCount ?? 0
     await apply('submissions','DELETE FROM association_enquiries WHERE workspace_id=$1 AND id=ANY($2::uuid[])')
   }
   const fields=plan.policy?.openSubmissions?.fields ?? []
   if(fields.length && plan.targets.open?.length) {
     if(fields.includes('notes'))changed.notes=(await client.query('DELETE FROM association_enquiry_notes WHERE workspace_id=$1 AND enquiry_id=ANY($2::uuid[])',[workspaceId,plan.targets.open])).rowCount ?? 0
+    if(fields.includes('metadata'))changed.submissionAttachments=(changed.submissionAttachments ?? 0)+((await client.query('DELETE FROM association_submission_attachments WHERE workspace_id=$1 AND submission_id=ANY($2::uuid[])',[workspaceId,plan.targets.open])).rowCount ?? 0)
     const assignments=fields.filter(f=>f!=='notes').map(f=>f==='metadata'?"submitted_data='{}'::jsonb":`${f}=$3`)
     if(assignments.length)await apply('open',`UPDATE association_enquiries SET ${assignments.join(',')}
       WHERE workspace_id=$1 AND id=ANY($2::uuid[])`,assignments.some(a=>a.includes('$3'))?[REDACTED]:[])

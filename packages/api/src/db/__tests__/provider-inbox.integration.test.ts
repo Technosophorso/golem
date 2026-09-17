@@ -6,7 +6,7 @@ import type { Pool } from 'pg'
 import { afterAll, describe, expect, it } from 'vitest'
 import { type AssociationActor, type AssociationProviderEventInput, ProviderEntitlementEventSchema } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createAssociationStore } from '../association-store.js'
 import { createProviderEntitlementInbox } from '../../association/provider-entitlements.js'
 import { createProviderInboxWorker } from '../../association/provider-inbox-worker.js'
@@ -15,14 +15,14 @@ import { EventInputSchema, TicketInputSchema, OrderCreateSchema } from '../../as
 import { _resetCoalescerForTests } from '../../brain-stream/notify.js'
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore(), store = createAssociationStore(), keys = createCrmIntegrationStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore(), store = createAssociationStore(), keys = createCrmIntegrationStore()
 async function fixture() {
   const workspaceId = randomUUID(), userId = randomUUID(), contactId = randomUUID()
   await pool.query('INSERT INTO users(id,auth_provider_id) VALUES($1::uuid,$1::text)', [userId])
   await pool.query("INSERT INTO workspaces(id,name,owner_user_id) VALUES($1,'Provider fixture',$2)", [workspaceId, userId])
   await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId])
   await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional buyer',$3,'manual')", [contactId, workspaceId, userId])
-  await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const human: AssociationActor = { credentialKind: 'user', credentialId: userId, actingUserId: userId }, actor: AssociationActor = { credentialKind: 'api_key', credentialId: randomUUID() }
   const eventId = String((await store.upsertEvent(workspaceId, EventInputSchema.parse({ slug: 'fixture', title: 'Provider fixture', startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity: 10 }), human)).record.id)
   const ticketId = String((await store.upsertTicket(workspaceId, eventId, TicketInputSchema.parse({ key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 1000, status: 'on_sale', capacity: 10 }), human)).record.id)
@@ -111,20 +111,33 @@ describe('[COMP:crm/provider-inbox] Actual durable normalized receipts', () => {
   })
   it('retains invalid evidence as a reconciliation receipt and retries the same input after the binding is repaired', async () => {
     const f = await fixture()
-    await expect(f.apply()).rejects.toMatchObject({ code: 'conflict', details: { receiptState: 'needs_reconciliation' } })
+    const key = await keys.create(f.workspaceId, f.userId, { label: 'Provider inbox backend', expiresAt: '2099-01-01T00:00:00Z',
+      grants: [{ operation: 'association.provider_events.write', selectors: { providerKeys: ['fixture'], eventIds: [f.eventId] } }] })
+    const integration = (await keys.authenticate(key.oneTimeSecret))!
+    const backend = { credentialKind: 'integration_key' as const, credentialId: integration.credentialId, integration }
+    await expect(f.apply({}, undefined, backend)).rejects.toMatchObject({ code: 'conflict', details: { receiptState: 'needs_reconciliation' } })
     const failed = await receipt(f.workspaceId, f.evidence.eventId)
     expect(failed).toMatchObject({ state: 'needs_reconciliation', attempts: 1, last_error_code: 'conflict' })
     await expect(store.retryProviderEventReceipt(f.workspaceId, failed.id)).rejects.toMatchObject({ code: 'conflict' })
     expect((await receipt(f.workspaceId, f.evidence.eventId)).attempts).toBe(1)
-    await expect(f.apply({ amountMinor: 999 })).rejects.toMatchObject({ code: 'idempotency_conflict' })
+    await expect(f.apply({ amountMinor: 999 }, undefined, backend)).rejects.toMatchObject({ code: 'idempotency_conflict' })
     await f.bind()
-    const applied = await f.apply()
+    const applied = await store.resolveProviderReceipt(f.workspaceId, failed.id, f.human)
     expect(applied).toMatchObject({ created: true, receipt: { id: failed.id, state: 'applied', attempts: 2 } })
-    expect((await f.apply()).created).toBe(false)
+    expect((await store.resolveProviderReceipt(f.workspaceId, failed.id, f.human)).created).toBe(false)
     expect(await counts(f.workspaceId)).toEqual({ evidence: 1, transitions: 1, notifications: 2 })
+    expect((await pool.query("SELECT count(*)::int n FROM association_audit_log WHERE workspace_id=$1 AND action='provider_receipt.retry_requested'", [f.workspaceId])).rows[0].n).toBe(2)
     const persisted = await receipt(f.workspaceId, f.evidence.eventId)
     expect(persisted.admitted_actor).toEqual(failed.admitted_actor)
     expect(JSON.stringify(persisted)).not.toContain('private database error')
+  })
+  it('requires a backend resubmission when the stored identity cannot be revalidated', async () => {
+    const f = await fixture()
+    await expect(f.apply()).rejects.toMatchObject({ code: 'conflict' })
+    const failed = await receipt(f.workspaceId, f.evidence.eventId)
+    await f.bind()
+    await expect(store.resolveProviderReceipt(f.workspaceId, failed.id, f.human)).rejects.toMatchObject({ code: 'not_authorized' })
+    expect((await f.apply()).receipt).toMatchObject({ id: failed.id, state: 'applied' })
   })
   it('rolls back domain effects when receipt acknowledgement fails and retries without duplicating evidence', async () => {
     const f = await fixture(); await f.bind()
@@ -162,6 +175,8 @@ describe('[COMP:crm/provider-inbox] Actual durable normalized receipts', () => {
     await keys.revoke(f.workspaceId, f.userId, actor.credentialId)
     await expect(store.retryProviderEventReceipt(f.workspaceId, saved.id)).rejects.toMatchObject({ code: 'credential_revoked' })
     expect((await receipt(f.workspaceId, f.evidence.eventId))).toMatchObject({ state: 'needs_reconciliation', last_error_code: 'credential_revoked', attempts: 0 })
+    await expect(store.resolveProviderReceipt(f.workspaceId, saved.id, f.human)).rejects.toMatchObject({ code: 'credential_revoked' })
+    expect((await receipt(f.workspaceId, f.evidence.eventId))).toMatchObject({ state: 'needs_reconciliation', last_error_code: 'credential_revoked', attempts: 0 })
     const replacement = await issue()
     expect((await f.apply({}, undefined, replacement)).receipt).toMatchObject({ state: 'applied' })
     const after = await receipt(f.workspaceId, f.evidence.eventId)
@@ -179,7 +194,7 @@ describe('[COMP:crm/provider-inbox] Actual durable normalized receipts', () => {
   it('applies provider periods while commerce is disabled, suppresses semantic duplicates and preserves terminal renewal lineage', async () => {
     const f = await fixture(), m = await membership(f)
     await store.cancelOrder(f.workspaceId, f.orderId, f.human)
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
     const grant = await m.submit(), id = String(grant.record.id)
     expect(grant).toMatchObject({ receipt: { state: 'applied', entitlementId: id }, record: { providerPeriodId: 'period-1', status: 'active' } })
     await m.submit({ ...m.event, eventId: randomUUID() })
@@ -191,6 +206,45 @@ describe('[COMP:crm/provider-inbox] Actual durable normalized receipts', () => {
     const renewed = await m.submit(next)
     expect(renewed.record).toMatchObject({ predecessorId: id, providerPeriodId: 'period-2', status: 'active' })
     expect(renewed.record.id).not.toBe(id)
+  })
+  it('retains verified membership refunds and disputes for policy review without changing the entitlement', async () => {
+    const f = await fixture(), m = await membership(f), granted = await m.submit(), id = String(granted.record.id)
+    await m.submit(ProviderEntitlementEventSchema.parse({
+      ...m.event,
+      eventId: randomUUID(),
+      occurredAt: '2026-09-03T00:00:00Z',
+      command: { kind: 'update_entitlement', entitlementId: id, renewalMode: 'none' },
+    }))
+    const before = await pool.query('SELECT status,ends_at,renewal_mode FROM association_memberships WHERE workspace_id=$1 AND id=$2', [f.workspaceId, id])
+    const review = ProviderEntitlementEventSchema.parse({
+      ...m.event,
+      eventId: randomUUID(),
+      occurredAt: '2026-09-02T00:00:00Z',
+      command: {
+        kind: 'review_entitlement_financial_event', entitlementId: id,
+        adjustmentReference: 'fictional-refund', adjustmentKind: 'refund', adjustmentStatus: 'succeeded',
+        amountMinor: 1000, currency: 'USD', paymentIntentId: 'fictional-payment-intent',
+      },
+    })
+    const reviewed = await m.submit(review)
+    expect(reviewed).toMatchObject({ created: false, record: { id, status: 'active' }, receipt: {
+      state: 'needs_reconciliation', attempts: 1, errorCode: 'membership_refund_policy_pending', entitlementId: id,
+    } })
+    expect((await pool.query('SELECT status,ends_at,renewal_mode FROM association_memberships WHERE workspace_id=$1 AND id=$2', [f.workspaceId, id])).rows)
+      .toEqual(before.rows)
+    expect((await m.submit(review)).receipt).toMatchObject({
+      state: 'needs_reconciliation', attempts: 2, errorCode: 'membership_refund_policy_pending',
+    })
+    expect((await pool.query("SELECT count(*)::int n FROM association_audit_log WHERE workspace_id=$1 AND action='crm.entitlement.changed'", [f.workspaceId])).rows[0].n).toBe(2)
+    const dispute = ProviderEntitlementEventSchema.parse({
+      ...review,
+      eventId: randomUUID(),
+      occurredAt: '2026-09-04T00:00:00Z',
+      command: { ...review.command, adjustmentReference: 'fictional-dispute', adjustmentKind: 'dispute', adjustmentStatus: 'open' },
+    })
+    expect((await m.submit(dispute)).receipt).toMatchObject({
+      state: 'needs_reconciliation', errorCode: 'membership_dispute_policy_pending', entitlementId: id,
+    })
   })
   it('rejects mismatched periods and out-of-order entitlement changes with durable visible receipts', async () => {
     const f = await fixture(), m = await membership(f), id = String((await m.submit()).record.id)

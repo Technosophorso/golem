@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto'
 import {setTimeout} from 'node:timers/promises'
 import {afterAll,describe,expect,it} from 'vitest'
 import {getPool,getAppPool} from '../client.js'
-import {createWorkspaceModulesStore,finishAssociationDrain} from '../workspace-modules-store.js'
+import {createAssociationWorkspaceModulesStore,finishAssociationDrain} from '../../association/workspace-module.js'
 import {createAssociationStore} from '../association-store.js'
 import {createAssociationService} from '../../association/service.js'
 import {createCrmOperationsService} from '../../crm-operations/service.js'
@@ -12,14 +12,14 @@ import {EventInputSchema,TicketInputSchema,OrderCreateSchema} from '../../associ
 import {_resetCoalescerForTests} from '../../brain-stream/notify.js'
 const {assertLocalFixture}=await import(new URL('../../../../../scripts/crm/local-fixture.mjs',import.meta.url).href)
 await assertLocalFixture()
-const pool=getPool(),appPool=getAppPool(),modules=createWorkspaceModulesStore(),commerce=createAssociationStore(),service=createAssociationService({crmService:createCrmOperationsService(createDbCrmOperationsStore())})
+const pool=getPool(),appPool=getAppPool(),modules=createAssociationWorkspaceModulesStore(),commerce=createAssociationStore(),service=createAssociationService({crmService:createCrmOperationsService(createDbCrmOperationsStore())})
 async function fixture() {
   const workspaceId=randomUUID(),userId=randomUUID(),contactId=randomUUID()
   await pool.query('INSERT INTO users(id,auth_provider_id) VALUES($1::uuid,$1::text)',[userId])
   await pool.query("INSERT INTO workspaces(id,name,owner_user_id) VALUES($1,'Reservation fixture',$2)",[workspaceId,userId])
   await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')",[workspaceId,userId])
   await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional attendee',$3,'manual')",[contactId,workspaceId,userId])
-  await modules.act(workspaceId,userId,{action:'enable',expectedVersion:1})
+  await modules.act(workspaceId, userId, 'association', {action:'enable',expectedVersion:1})
   const actor={credentialKind:'user' as const,credentialId:userId,actingUserId:userId}
   const event=await commerce.upsertEvent(workspaceId,EventInputSchema.parse({slug:'fixture-event',title:'Fixture event',startsAt:'2099-01-01T12:00:00Z',endsAt:'2099-01-01T14:00:00Z',timezone:'UTC',mode:'venue',status:'published',capacity:1000}),actor)
   const ticket=await commerce.upsertTicket(workspaceId,String(event.record.id),TicketInputSchema.parse({key:'standard',name:'Standard',currency:'USD',priceMinor:0,status:'on_sale',capacity:1000}),actor)
@@ -31,7 +31,7 @@ async function fixture() {
     return id
   }
   const expire=(id:string)=>service.execute(context,{kind:'expire_due_order',orderId:id})
-  const drain=async()=>modules.act(workspaceId,userId,{action:'request_disable',expectedVersion:(await modules.getAssociation(workspaceId)).version})
+  const drain=async()=>modules.act(workspaceId, userId, 'association', {action:'request_disable',expectedVersion:(await modules.get(workspaceId, 'association')).version})
   return {workspaceId,userId,context,actor,order,expire,drain}
 }
 async function blocked(fragment:string) {
@@ -48,7 +48,7 @@ describe('[COMP:crm/association-lifecycle] Actual reservation expiry and durable
     const f=await fixture();for(let i=0;i<105;i++)await f.order()
     expect((await f.drain()).module.state).toBe('draining')
     await createAssociationLifecycleWorker().tick()
-    expect((await modules.getAssociation(f.workspaceId)).state).toBe('disabled')
+    expect((await modules.get(f.workspaceId, 'association')).state).toBe('disabled')
     expect((await pool.query("SELECT count(*)::int count FROM association_orders WHERE workspace_id=$1 AND status='cancelled'",[f.workspaceId])).rows[0].count).toBe(105)
     expect((await pool.query("SELECT count(*)::int count FROM association_registrations WHERE workspace_id=$1 AND status='cancelled'",[f.workspaceId])).rows[0].count).toBe(105)
     await createAssociationLifecycleWorker().tick()
@@ -67,10 +67,10 @@ describe('[COMP:crm/association-lifecycle] Actual reservation expiry and durable
     const f=await fixture(),id=await f.order();await f.drain()
     expect((await Promise.all([f.expire(id),f.expire(id)])).filter(r=>r.created)).toHaveLength(1)
     expect((await Promise.all([finishAssociationDrain(f.workspaceId),finishAssociationDrain(f.workspaceId)])).filter(Boolean)).toHaveLength(1)
-    const disabled=await modules.getAssociation(f.workspaceId)
-    await modules.act(f.workspaceId,f.userId,{action:'enable',expectedVersion:disabled.version})
+    const disabled=await modules.get(f.workspaceId, 'association')
+    await modules.act(f.workspaceId, f.userId, 'association', {action:'enable',expectedVersion:disabled.version})
     expect(await finishAssociationDrain(f.workspaceId)).toBe(false)
-    expect((await modules.getAssociation(f.workspaceId)).state).toBe('enabled')
+    expect((await modules.get(f.workspaceId, 'association')).state).toBe('enabled')
   })
   it('rechecks stale expiry candidates and refuses expiry authority from a member or unrelated job',async()=>{
     const f=await fixture(),id=await f.order(),other=await fixture()
@@ -102,7 +102,7 @@ describe('[COMP:crm/association-lifecycle] Actual reservation expiry and durable
       await writer.query("UPDATE workspace_modules SET state='enabled',version=version+1 WHERE workspace_id=$1 AND module_key='association'",[f.workspaceId])
       pending=finishAssociationDrain(f.workspaceId);await blocked('SELECT version FROM workspace_modules')
       await writer.query('COMMIT');expect(await pending).toBe(false)
-      expect((await modules.getAssociation(f.workspaceId)).state).toBe('enabled')
+      expect((await modules.get(f.workspaceId, 'association')).state).toBe('enabled')
     }finally{await writer.query('ROLLBACK').catch(()=>{});writer.release();if(pending)await pending}
   })
   it('rolls back order and registration state if audit fails, and retries safely',async()=>{

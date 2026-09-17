@@ -30,6 +30,9 @@
         { "key": "private_note", "label": "Private application note", "type": "text", "mapping": { "kind": "submission_only" } },
         { "key": "news", "label": "Receive news", "type": "boolean", "required": true, "mapping": { "kind": "submission_only" } }
       ],
+      "attachments": [
+        { "key": "supporting_image", "label": "Supporting image", "maxBytes": 1048576, "mimeTypes": ["image/jpeg", "image/png", "image/webp"], "required": false }
+      ],
       "consentMappings": [{ "fieldKey": "news", "grantedValue": true, "purposeKey": "community_news", "locale": "en" }]
     } } }
   ],

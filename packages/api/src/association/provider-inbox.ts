@@ -17,7 +17,10 @@ export type ProviderInboxRow = {
 export type ProviderInboxResult = { record: Record<string, unknown>; created: boolean; receipt: Record<string, unknown> }
 export type ProviderInboxHandlers = {
   authorize(client: PoolClient, envelope: ProviderInboxEnvelope, actor: AssociationActor, admittedActor?: AssociationActor): Promise<{ contactId: string; planId: string | null; entitlementId: string | null }>
-  apply(client: PoolClient, envelope: ProviderInboxEnvelope, actor: AssociationActor): Promise<{ record: Record<string, unknown>; created: boolean }>
+  apply(client: PoolClient, envelope: ProviderInboxEnvelope, actor: AssociationActor): Promise<{
+    record: Record<string, unknown>; created: boolean;
+    reviewReason?: 'membership_refund_policy_pending' | 'membership_dispute_policy_pending';
+  }>
   read(client: PoolClient, row: ProviderInboxRow): Promise<Record<string, unknown>>
 }
 async function transaction<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -32,7 +35,7 @@ function normalize(raw: ProviderInboxEnvelope): ProviderInboxEnvelope {
   if (value.target === 'entitlement') {
     const command = value.event.command
     if (command.kind === 'grant_entitlement') command.startsAt = crmPageInstant(command.startsAt)
-    if (command.endsAt) command.endsAt = crmPageInstant(command.endsAt)
+    if ('endsAt' in command && command.endsAt) command.endsAt = crmPageInstant(command.endsAt)
   }
   return value
 }
@@ -132,11 +135,16 @@ export async function receiveProviderInbox(pool: Pool, raw: ProviderInboxEnvelop
       const row = (await client.query<ProviderInboxRow>('SELECT * FROM association_integration_events WHERE workspace_id=$1 AND id=$2 FOR UPDATE', [workspaceId, admitted.id])).rows[0]
       if (!row || row.state !== 'processing' || row.lease_token !== lease) throw new CrmOperationsError('conflict', 'Provider receipt lease changed.', { reason: 'lease_lost' })
       const applied = await handlers.apply(client, envelope, actor)
-      const saved = (await client.query<ProviderInboxRow>(`UPDATE association_integration_events SET state='applied',applied_at=clock_timestamp(),updated_at=clock_timestamp(),
-        entitlement_id=CASE WHEN target_kind='entitlement' THEN $3::uuid ELSE entitlement_id END,
-        lease_token=NULL,lease_expires_at=NULL,last_error_code=NULL WHERE id=$1 AND lease_token=$2 RETURNING *`,
-        [row.id, lease, envelope.target === 'entitlement' ? applied.record.id : null])).rows[0]
-      return { ...applied, receipt: publicReceipt(saved) }
+      const saved = applied.reviewReason
+        ? (await client.query<ProviderInboxRow>(`UPDATE association_integration_events SET state='needs_reconciliation',applied_at=NULL,
+          updated_at=clock_timestamp(),entitlement_id=CASE WHEN target_kind='entitlement' THEN $3::uuid ELSE entitlement_id END,
+          lease_token=NULL,lease_expires_at=NULL,last_error_code=$4 WHERE id=$1 AND lease_token=$2 RETURNING *`,
+          [row.id, lease, envelope.target === 'entitlement' ? applied.record.id : null, applied.reviewReason])).rows[0]
+        : (await client.query<ProviderInboxRow>(`UPDATE association_integration_events SET state='applied',applied_at=clock_timestamp(),updated_at=clock_timestamp(),
+          entitlement_id=CASE WHEN target_kind='entitlement' THEN $3::uuid ELSE entitlement_id END,
+          lease_token=NULL,lease_expires_at=NULL,last_error_code=NULL WHERE id=$1 AND lease_token=$2 RETURNING *`,
+          [row.id, lease, envelope.target === 'entitlement' ? applied.record.id : null])).rows[0]
+      return { record: applied.record, created: applied.created, receipt: publicReceipt(saved) }
     })
   } catch (error) {
     const code = errorCode(error)

@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 const { planManifest, manifestCommand, sameManifestBefore } = await import(new URL('../../../../../scripts/crm/manifest-plan.mjs', import.meta.url).href)
+const { parseManifest } = await import(new URL('../../../../../scripts/crm/manifest-client.mjs', import.meta.url).href)
 const fixture = JSON.parse(readFileSync(new URL('../../../../../scripts/crm/fixtures/community-manifest.v1.json', import.meta.url), 'utf8'))
 const empty = () => ({ recordFields: [], pipelines: [], consentPurposes: [], entitlementPlans: [], events: [], intakeDefinitions: [], segments: [],
   segmentCatalogs: { person: [], company: [], deal: [] } })
@@ -64,5 +65,27 @@ describe('[COMP:crm/manifest] Pure identity resolution and command planning', ()
     expect(sameManifestBefore(step, { ...step, before: { ...step.before, title: 'Concurrent title' } })).toBe(false)
     const plan = { id: randomUUID(), ...fixture.entitlementPlans[0].value, planKey: 'community', feeMinor: '0', benefits: [] }
     expect(planManifest({ ...base, entitlementPlans: fixture.entitlementPlans }, { ...empty(), entitlementPlans: [plan] }).changes).toEqual([])
+  })
+
+  it('retains attachment policy in an existing intake-definition projection', () => {
+    const parsed = parseManifest(fixture)
+    const value = parsed.intakeDefinitions[0].value
+    const catalog = {
+      ...empty(),
+      recordFields: [{ id: randomUUID(), ...fixture.recordFields[0].value, isRequired: false, archivedAt: null }],
+      consentPurposes: [{ id: randomUUID(), description: '', archivedAt: null, ...fixture.consentPurposes[0].value }],
+    }
+    const row = {
+      id: randomUUID(), definitionKey: value.definitionKey, label: value.label, active: true,
+      currentVersion: 1, ...value.definition,
+    }
+    expect(planManifest({ ...base, intakeDefinitions: parsed.intakeDefinitions }, {
+      ...catalog, intakeDefinitions: [row],
+    }).changes).toEqual([])
+    const missing = structuredClone(row)
+    delete missing.attachments
+    expect(planManifest({ ...base, intakeDefinitions: parsed.intakeDefinitions }, {
+      ...catalog, intakeDefinitions: [missing],
+    }).changes).toMatchObject([{ resource: 'intakeDefinitions', ref: 'community_application', action: 'update' }])
   })
 })

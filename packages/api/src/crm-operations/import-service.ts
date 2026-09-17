@@ -15,6 +15,10 @@ import type {
   AccessContext,
   CrmOperationsContext,
   CrmOperationsServicePort,
+  CrmHistoricalSubmissionImportPort,
+  AssociationPromotionImportPort,
+  AssociationSourceMembershipImportPort,
+  AssociationSourceOrderImportPort,
   EntityLinksStore,
   FilesApi,
   StableExternalIdentity,
@@ -22,7 +26,7 @@ import type {
   CrmPage,
   CrmPageQuery,
 } from '@use-brian/core'
-import { CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
+import { AssociationPromotionImportSchema, AssociationSourceMembershipImportSchema, AssociationSourceOrderImportSchema, CrmIntegrationGrantsSchema, CrmOperationsError } from '@use-brian/core'
 import { createCompany, createContact, createDeal, updateContact, type CrmWriteTransaction } from '../db/crm.js'
 import { updateCrmCustomFields } from '../db/crm-r2.js'
 import { getEntityById, updateEntity } from '../db/entities-store.js'
@@ -50,6 +54,32 @@ const BASE_TARGETS = new Set([
   'entitlementStatus', 'entitlementStartsAt', 'entitlementEndsAt',
   'entitlementRenewalMode', 'participationEventId', 'participationSourceId',
   'participationStatus', 'participationHistoricalImport', 'participantName', 'participantEmail',
+  'historicalSubmissionSource', 'historicalSubmissionSite', 'historicalSubmissionForm',
+  'historicalSubmissionId', 'historicalSubmissionOccurredAt', 'historicalSubmissionStatus',
+  'historicalSubmissionFieldsJson', 'historicalSubmissionSubject',
+  'historicalSubmissionMessage', 'historicalSubmissionQueueKey',
+  'sourceOrderSource', 'sourceOrderSite', 'sourceOrderId',
+  'sourceOrderOccurredAt', 'sourceOrderStatus', 'sourceOrderCurrency',
+  'sourceOrderSubtotalMinor', 'sourceOrderDiscountMinor', 'sourceOrderTotalMinor',
+  'sourceOrderRefundedMinor', 'sourceOrderReservationExpiresAt',
+  'sourceOrderProvider', 'sourceOrderProviderReference', 'sourceOrderLinesJson',
+  'sourceOrderMetadataJson',
+  'promotionSource', 'promotionSite', 'promotionId', 'promotionKey', 'promotionName',
+  'promotionCodeDigest', 'promotionDiscountType', 'promotionPercentageBasisPoints',
+  'promotionAmountMinor', 'promotionCurrency', 'promotionBuyQuantity', 'promotionGetQuantity',
+  'promotionTargetKind', 'promotionTargetIdsJson', 'promotionRecurrenceMode',
+  'promotionRecurrenceCycles', 'promotionApplyMode',
+  'promotionValidFrom', 'promotionValidTo', 'promotionMaxUses', 'promotionMaxUsesPerContact',
+  'promotionCombinesWithMemberPrice', 'promotionReleaseOnFullRefund', 'promotionStatus',
+  'promotionSourceRedeemedUses', 'promotionSourceContactUsesJson',
+  'sourceMembershipSource', 'sourceMembershipSite', 'sourceMembershipId',
+  'sourceMembershipPlanId', 'sourceMembershipMemberId', 'sourceMembershipOrderId',
+  'sourceMembershipSubscriptionId', 'sourceMembershipPaymentProvider',
+  'sourceMembershipPaymentReference', 'sourceMembershipStatus',
+  'sourceMembershipRenewalStatus', 'sourceMembershipPaymentStatus',
+  'sourceMembershipRefundStatus', 'sourceMembershipPurchasedAt',
+  'sourceMembershipCancelledAt', 'sourceMembershipRelationshipsJson',
+  'sourceMembershipMetadataJson',
 ])
 
 function validTarget(target: string): boolean {
@@ -89,6 +119,7 @@ export const CrmImportPreflightSchema = ImportInputSchema.refine(hasOneSource, '
 export const CrmImportConfirmSchema = ImportInputSchema.extend({
   confirmed: z.literal(true),
   dryRunHash: z.string().regex(/^[0-9a-f]{64}$/),
+  confirmationKey: z.string().uuid().optional(),
 }).strict().refine(hasOneSource, 'Choose exactly one import source.')
 
 type ImportInput = z.infer<typeof CrmImportPreflightSchema>
@@ -134,6 +165,7 @@ export type CrmImportJob = {
 type ImportJobRow = CrmImportJob & {
   mappingHash: string
   sourceHash: string
+  confirmationKey: string | null
   createdByUserId: string | null
   integrationCredentialId: string | null
   integrationGrants: CrmIntegrationGrant[] | null
@@ -154,6 +186,51 @@ type ImportCustomDefinition = {
 }
 
 type ImportServiceContext = CrmOperationsContext
+
+const IMPORT_RESULT_KINDS = [
+  'contact', 'company', 'deal', 'consent', 'suppression', 'entitlement',
+  'participation', 'submission', 'order', 'registration', 'promotion',
+] as const
+type ImportResultKind = typeof IMPORT_RESULT_KINDS[number]
+type ImportResultRef = { kind: ImportResultKind; id: string; sourceId?: string }
+type ImportRowResult = { entityId: string | null; resultRefs: ImportResultRef[] }
+
+const ImportResultIdSchema = z.string().uuid()
+
+function resultId(record: Record<string, unknown>, label: string): string {
+  const parsed = ImportResultIdSchema.safeParse(record.id)
+  if (!parsed.success) throw new Error(`${label} did not return a stable id.`)
+  return parsed.data
+}
+
+function resultRef(kind: ImportResultKind, record: Record<string, unknown>, sourceId?: unknown): ImportResultRef {
+  const ref: ImportResultRef = { kind, id: resultId(record, kind) }
+  if (sourceId !== undefined) {
+    if (typeof sourceId !== 'string' || sourceId.length < 1 || sourceId.length > 500) {
+      throw new Error(`${kind} did not return a valid source id.`)
+    }
+    ref.sourceId = sourceId
+  }
+  return ref
+}
+
+function sourceRegistrationId(record: Record<string, unknown>): unknown {
+  const metadata = record.attendeeMetadata
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return undefined
+  const historical = (metadata as Record<string, unknown>).historicalSource
+  if (!historical || typeof historical !== 'object' || Array.isArray(historical)) return undefined
+  return (historical as Record<string, unknown>).registrationId
+}
+
+function uniqueResultRefs(refs: ImportResultRef[]): ImportResultRef[] {
+  const seen = new Set<string>()
+  return refs.filter((ref) => {
+    const key = JSON.stringify([ref.kind, ref.id, ref.sourceId ?? null])
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
 
 function hashBytes(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex')
@@ -252,6 +329,133 @@ function isUuid(value: string | undefined): boolean {
   return !!value && z.string().uuid().safeParse(value).success
 }
 
+const HistoricalSubmissionFieldsSchema = z.record(
+  z.string().trim().min(1).max(500),
+  z.unknown(),
+).refine(
+  (value) => Buffer.byteLength(JSON.stringify(value), 'utf8') <= 1_048_576,
+  'Historical submission data must be no more than 1 MiB.',
+)
+
+function historicalSubmissionFields(raw: string | undefined): Record<string, unknown> {
+  if (!raw) throw new Error('Historical submission data is required.')
+  let parsed: unknown
+  try { parsed = JSON.parse(raw) }
+  catch { throw new Error('Historical submission data must be a JSON object.') }
+  const result = HistoricalSubmissionFieldsSchema.safeParse(parsed)
+  if (!result.success) throw new Error(result.error.issues[0]?.message ?? 'Historical submission data is invalid.')
+  return result.data
+}
+
+function jsonValue(raw: string | undefined, label: string, fallback?: unknown): unknown {
+  if (!raw) {
+    if (fallback !== undefined) return fallback
+    throw new Error(`${label} is required.`)
+  }
+  try { return JSON.parse(raw) }
+  catch { throw new Error(`${label} must contain valid JSON.`) }
+}
+
+function sourceOrderInput(values: Record<string, string>, importJobId: string, importRow: number) {
+  return AssociationSourceOrderImportSchema.parse({
+    importJobId,
+    importRow,
+    contactId: values.contactId,
+    source: values.sourceOrderSource,
+    sourceSite: values.sourceOrderSite,
+    sourceOrderId: values.sourceOrderId,
+    occurredAt: values.sourceOrderOccurredAt,
+    status: values.sourceOrderStatus,
+    currency: values.sourceOrderCurrency,
+    subtotalMinor: Number(values.sourceOrderSubtotalMinor),
+    discountMinor: Number(values.sourceOrderDiscountMinor ?? '0'),
+    totalMinor: Number(values.sourceOrderTotalMinor),
+    refundedMinor: Number(values.sourceOrderRefundedMinor ?? '0'),
+    reservationExpiresAt: values.sourceOrderReservationExpiresAt,
+    provider: values.sourceOrderProvider,
+    providerReference: values.sourceOrderProviderReference,
+    lines: jsonValue(values.sourceOrderLinesJson, 'Source order lines'),
+    metadata: jsonValue(values.sourceOrderMetadataJson, 'Source order metadata', {}),
+  })
+}
+
+function sourceMembershipInput(values: Record<string, string>, importJobId: string, importRow: number) {
+  return AssociationSourceMembershipImportSchema.parse({
+    importJobId,
+    importRow,
+    contactId: values.contactId,
+    planId: values.entitlementPlanId,
+    idempotencyKey: values.entitlementIdempotencyKey,
+    status: values.entitlementStatus ?? 'pending',
+    startsAt: values.entitlementStartsAt,
+    endsAt: values.entitlementEndsAt,
+    targetRenewalMode: values.entitlementRenewalMode ?? 'none',
+    source: values.sourceMembershipSource,
+    sourceSite: values.sourceMembershipSite,
+    sourceMembershipId: values.sourceMembershipId,
+    sourcePlanId: values.sourceMembershipPlanId,
+    sourceMemberId: values.sourceMembershipMemberId,
+    sourceOrderId: values.sourceMembershipOrderId,
+    sourceSubscriptionId: values.sourceMembershipSubscriptionId,
+    sourcePaymentProvider: values.sourceMembershipPaymentProvider,
+    sourcePaymentReference: values.sourceMembershipPaymentReference,
+    sourceStatus: values.sourceMembershipStatus,
+    sourceRenewalStatus: values.sourceMembershipRenewalStatus,
+    sourcePaymentStatus: values.sourceMembershipPaymentStatus,
+    sourceRefundStatus: values.sourceMembershipRefundStatus,
+    purchasedAt: values.sourceMembershipPurchasedAt,
+    cancelledAt: values.sourceMembershipCancelledAt,
+    relationships: jsonValue(values.sourceMembershipRelationshipsJson, 'Source membership relationships', {}),
+    metadata: jsonValue(values.sourceMembershipMetadataJson, 'Source membership metadata', {}),
+  })
+}
+
+function importBoolean(raw: string | undefined, label: string): boolean {
+  const normalized = raw?.trim().toLowerCase()
+  if (['true', 'yes', '1', 'on'].includes(normalized ?? '')) return true
+  if (['false', 'no', '0', 'off'].includes(normalized ?? '')) return false
+  throw new Error(`${label} must be true/false, yes/no, 1/0, or on/off.`)
+}
+
+function optionalNumber(raw: string | undefined): number | undefined {
+  return raw === undefined ? undefined : Number(raw)
+}
+
+function promotionImportInput(values: Record<string, string>, importJobId: string, importRow: number) {
+  return AssociationPromotionImportSchema.parse({
+    importJobId,
+    importRow,
+    source: values.promotionSource,
+    sourceSite: values.promotionSite,
+    sourcePromotionId: values.promotionId,
+    codeDigest: values.promotionCodeDigest,
+    promotion: {
+      key: values.promotionKey,
+      name: values.promotionName,
+      discountType: values.promotionDiscountType,
+      percentageBasisPoints: optionalNumber(values.promotionPercentageBasisPoints),
+      amountMinor: optionalNumber(values.promotionAmountMinor),
+      currency: values.promotionCurrency,
+      buyQuantity: optionalNumber(values.promotionBuyQuantity),
+      getQuantity: optionalNumber(values.promotionGetQuantity),
+      targetKind: values.promotionTargetKind,
+      targetIds: jsonValue(values.promotionTargetIdsJson, 'Promotion target IDs'),
+      recurrenceMode: values.promotionRecurrenceMode,
+      recurrenceCycles: optionalNumber(values.promotionRecurrenceCycles),
+      applyMode: values.promotionApplyMode,
+      validFrom: values.promotionValidFrom,
+      validTo: values.promotionValidTo,
+      maxUses: optionalNumber(values.promotionMaxUses),
+      maxUsesPerContact: optionalNumber(values.promotionMaxUsesPerContact),
+      combinesWithMemberPrice: importBoolean(values.promotionCombinesWithMemberPrice, 'Promotion member-price combination'),
+      releaseOnFullRefund: importBoolean(values.promotionReleaseOnFullRefund, 'Promotion refund release'),
+      status: values.promotionStatus,
+    },
+    sourceRedeemedUses: Number(values.promotionSourceRedeemedUses),
+    sourceContactUses: jsonValue(values.promotionSourceContactUsesJson, 'Promotion source contact usage', []),
+  })
+}
+
 function validateMappedRow(
   kind: CrmImportEntityKind,
   row: { row: number; cells: string[]; malformedReason?: string },
@@ -327,6 +531,28 @@ function validateMappedRow(
   for (const field of ['entitlementStartsAt', 'entitlementEndsAt']) {
     if (values[field] && Number.isNaN(Date.parse(values[field]))) add('invalid_instant', 'Value must be an ISO timestamp.', field)
   }
+  const sourceMembershipFields = [
+    values.sourceMembershipSource, values.sourceMembershipSite, values.sourceMembershipId,
+    values.sourceMembershipPlanId, values.sourceMembershipMemberId, values.sourceMembershipOrderId,
+    values.sourceMembershipSubscriptionId, values.sourceMembershipPaymentProvider,
+    values.sourceMembershipPaymentReference, values.sourceMembershipStatus,
+    values.sourceMembershipRenewalStatus, values.sourceMembershipPaymentStatus,
+    values.sourceMembershipRefundStatus, values.sourceMembershipPurchasedAt,
+    values.sourceMembershipCancelledAt, values.sourceMembershipRelationshipsJson,
+    values.sourceMembershipMetadataJson,
+  ]
+  const hasSourceMembership = sourceMembershipFields.some((value) => value !== undefined)
+  if (hasSourceMembership && !(
+    values.sourceMembershipSource && values.sourceMembershipSite && values.sourceMembershipId
+    && values.sourceMembershipPlanId && values.sourceMembershipStatus
+    && values.sourceMembershipRenewalStatus && values.sourceMembershipPurchasedAt
+    && values.entitlementPlanId && values.entitlementIdempotencyKey && values.entitlementStartsAt
+  )) add('incomplete_source_membership', 'Source membership identity, plan, status, renewal state, purchase time, and target entitlement are required together.', 'sourceMembershipSource')
+  if (hasSourceMembership) {
+    if (kind !== 'operations') add('invalid_source_membership_kind', 'Source memberships require an operations import.', 'sourceMembershipSource')
+    try { sourceMembershipInput(values, '00000000-0000-4000-8000-000000000000', row.row) }
+    catch (error) { add('invalid_source_membership', error instanceof Error ? error.message : 'Source membership evidence is invalid.', 'sourceMembershipSource') }
+  }
   const hasParticipation = values.participationEventId || values.participationSourceId || values.participationStatus || values.participationHistoricalImport
   if (hasParticipation && !(values.participationEventId && values.participationSourceId && values.participantName)) {
     add('incomplete_participation', 'Participation event, source, and attendee name are required together.', 'participationEventId')
@@ -340,6 +566,90 @@ function validateMappedRow(
   if (values.participantEmail && !z.string().email().safeParse(values.participantEmail).success) {
     add('invalid_email', 'Participant email is invalid.', 'participantEmail')
   }
+  const hasHistoricalSubmission = [
+    values.historicalSubmissionSource, values.historicalSubmissionSite,
+    values.historicalSubmissionForm, values.historicalSubmissionId,
+    values.historicalSubmissionOccurredAt, values.historicalSubmissionStatus,
+    values.historicalSubmissionFieldsJson,
+  ].some(Boolean)
+  if (hasHistoricalSubmission && !(
+    values.historicalSubmissionSource && values.historicalSubmissionSite
+    && values.historicalSubmissionForm && values.historicalSubmissionId
+    && values.historicalSubmissionOccurredAt && values.historicalSubmissionStatus
+    && values.historicalSubmissionFieldsJson
+  )) add('incomplete_historical_submission', 'Historical submission source, site, form, ID, time, state, and JSON data are required together.', 'historicalSubmissionSource')
+  if (values.historicalSubmissionSource && !/^[a-z][a-z0-9_-]{0,62}$/.test(values.historicalSubmissionSource)) {
+    add('invalid_catalog_key', 'Historical submission source must be a stable source key.', 'historicalSubmissionSource')
+  }
+  for (const field of ['historicalSubmissionSite', 'historicalSubmissionForm', 'historicalSubmissionId']) {
+    if (values[field] && values[field].length > 500) add('value_too_long', 'Historical source identifiers are limited to 500 characters.', field)
+  }
+  if (values.historicalSubmissionOccurredAt) {
+    try { crmPageInstant(values.historicalSubmissionOccurredAt) }
+    catch { add('invalid_instant', 'Historical submission time must be an ISO timestamp with a timezone and at most six fractional digits.', 'historicalSubmissionOccurredAt') }
+  }
+  if (values.historicalSubmissionStatus && !['new', 'in_progress', 'resolved', 'spam'].includes(values.historicalSubmissionStatus)) {
+    add('invalid_submission_status', 'Historical submission state must be new, in_progress, resolved, or spam.', 'historicalSubmissionStatus')
+  }
+  if (values.historicalSubmissionSubject && values.historicalSubmissionSubject.length > 300) {
+    add('value_too_long', 'Historical submission subject is limited to 300 characters.', 'historicalSubmissionSubject')
+  }
+  if (values.historicalSubmissionMessage && values.historicalSubmissionMessage.length > 20_000) {
+    add('value_too_long', 'Historical submission message is limited to 20000 characters.', 'historicalSubmissionMessage')
+  }
+  if (values.historicalSubmissionQueueKey && !/^[a-z][a-z0-9_-]{0,62}$/.test(values.historicalSubmissionQueueKey)) {
+    add('invalid_catalog_key', 'Historical submission queue must be a stable key.', 'historicalSubmissionQueueKey')
+  }
+  if (values.historicalSubmissionFieldsJson) {
+    try { historicalSubmissionFields(values.historicalSubmissionFieldsJson) }
+    catch (error) { add('invalid_submission_data', error instanceof Error ? error.message : 'Historical submission data is invalid.', 'historicalSubmissionFieldsJson') }
+  }
+  const sourceOrderFields = [
+    values.sourceOrderSource, values.sourceOrderSite, values.sourceOrderId,
+    values.sourceOrderOccurredAt, values.sourceOrderStatus, values.sourceOrderCurrency,
+    values.sourceOrderSubtotalMinor, values.sourceOrderDiscountMinor, values.sourceOrderTotalMinor,
+    values.sourceOrderRefundedMinor, values.sourceOrderReservationExpiresAt,
+    values.sourceOrderProvider, values.sourceOrderProviderReference,
+    values.sourceOrderLinesJson, values.sourceOrderMetadataJson,
+  ]
+  const hasSourceOrder = sourceOrderFields.some(Boolean)
+  if (hasSourceOrder && !(
+    values.sourceOrderSource && values.sourceOrderSite && values.sourceOrderId
+    && values.sourceOrderOccurredAt && values.sourceOrderStatus && values.sourceOrderCurrency
+    && values.sourceOrderSubtotalMinor && values.sourceOrderTotalMinor && values.sourceOrderLinesJson
+  )) add('incomplete_source_order', 'Source order source, site, ID, time, state, currency, subtotal, total, and line JSON are required together.', 'sourceOrderSource')
+  if (hasSourceOrder) {
+    try { sourceOrderInput(values, '00000000-0000-4000-8000-000000000000', row.row) }
+    catch (error) { add('invalid_source_order', error instanceof Error ? error.message : 'Source order evidence is invalid.', 'sourceOrderLinesJson') }
+  }
+  const promotionFields = [
+    values.promotionSource, values.promotionSite, values.promotionId, values.promotionKey,
+    values.promotionName, values.promotionCodeDigest, values.promotionDiscountType,
+    values.promotionPercentageBasisPoints, values.promotionAmountMinor, values.promotionCurrency,
+    values.promotionBuyQuantity, values.promotionGetQuantity, values.promotionTargetKind,
+    values.promotionTargetIdsJson, values.promotionRecurrenceMode, values.promotionRecurrenceCycles,
+    values.promotionApplyMode, values.promotionValidFrom,
+    values.promotionValidTo, values.promotionMaxUses, values.promotionMaxUsesPerContact,
+    values.promotionCombinesWithMemberPrice, values.promotionReleaseOnFullRefund,
+    values.promotionStatus, values.promotionSourceRedeemedUses, values.promotionSourceContactUsesJson,
+  ]
+  const hasPromotion = promotionFields.some((value) => value !== undefined)
+  if (hasPromotion && !(
+    values.promotionSource && values.promotionSite && values.promotionId
+    && values.promotionKey && values.promotionName && values.promotionCodeDigest
+    && values.promotionDiscountType && values.promotionTargetKind && values.promotionTargetIdsJson
+    && values.promotionCombinesWithMemberPrice && values.promotionReleaseOnFullRefund
+    && values.promotionStatus && values.promotionSourceRedeemedUses !== undefined
+  )) add('incomplete_promotion', 'Source, site, promotion ID, key, name, digest, rule, targets, policies, status, and redeemed usage are required together.', 'promotionSource')
+  if (hasPromotion) {
+    if (kind !== 'operations') add('invalid_promotion_kind', 'Promotions require an operations import.', 'promotionSource')
+    if (values.contactId || hasConsent || hasSuppression || hasEntitlement || hasParticipation
+      || hasHistoricalSubmission || hasSourceOrder) {
+      add('mixed_promotion', 'A promotion import row cannot contain contact or other operations evidence.', 'promotionSource')
+    }
+    try { promotionImportInput(values, '00000000-0000-4000-8000-000000000000', row.row) }
+    catch (error) { add('invalid_promotion', error instanceof Error ? error.message : 'Promotion evidence is invalid.', 'promotionSource') }
+  }
   if (values.currencyCode && !/^[a-z]{3}$/i.test(values.currencyCode)) {
     add('invalid_currency', 'Currency must be a three-letter ISO code.', 'currencyCode')
   }
@@ -348,11 +658,11 @@ function validateMappedRow(
   } catch (error) {
     add('invalid_custom_value', error instanceof Error ? error.message : 'Custom field value is invalid.')
   }
-  if (kind === 'operations' && !isUuid(values.contactId)) {
+  if (kind === 'operations' && !hasPromotion && !isUuid(values.contactId)) {
     add('required_field', 'Operations rows require a contact UUID.', 'contactId')
   }
-  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation)) {
-    add('required_operation', 'An operations row must contain consent, suppression, entitlement, or participation evidence.')
+  if (kind === 'operations' && !(hasConsent || hasSuppression || hasEntitlement || hasParticipation || hasHistoricalSubmission || hasSourceOrder || hasPromotion)) {
+    add('required_operation', 'An operations row must contain consent, suppression, entitlement, participation, historical submission, source order, or promotion evidence.')
   }
   return errors
 }
@@ -364,7 +674,8 @@ function csvCell(value: unknown): string {
 
 function jobProjection(row: ImportJobRow): CrmImportJob {
   const { mappingHash: _mappingHash, sourceHash: _sourceHash, createdByUserId: _createdBy,
-    integrationCredentialId: _credential, integrationGrants: _grants, ...job } = row
+    confirmationKey: _confirmationKey, integrationCredentialId: _credential,
+    integrationGrants: _grants, ...job } = row
   return job
 }
 
@@ -373,7 +684,8 @@ export type CrmProductionImportService = ReturnType<typeof createCrmProductionIm
 export function createCrmProductionImportService(deps: {
   filesApi?: FilesApi
   sources?: CrmImportSources
-  operationsForTransaction: (client: PoolClient) => CrmOperationsServicePort
+  operationsForTransaction: (client: PoolClient) => CrmOperationsServicePort & CrmHistoricalSubmissionImportPort
+  associationForTransaction?: (client: PoolClient) => AssociationSourceOrderImportPort & AssociationPromotionImportPort & AssociationSourceMembershipImportPort
   pool?: Pool
   entityLinks?: EntityLinksStore
 }) {
@@ -555,7 +867,7 @@ export function createCrmProductionImportService(deps: {
       `SELECT id, workspace_id AS "workspaceId", staged_file_id AS "stagedFileId",
               source_id AS "sourceId", integration_credential_id AS "integrationCredentialId", integration_grants AS "integrationGrants",
               entity_kind AS "entityKind", status, privacy_erased AS "privacyErased", privacy_erased_at AS "privacyErasedAt", mapping, mapping_hash AS "mappingHash",
-              source_hash AS "sourceHash", total_rows AS "totalRows",
+              source_hash AS "sourceHash", confirmation_key AS "confirmationKey", total_rows AS "totalRows",
               processed_rows AS "processedRows", succeeded_rows AS "succeededRows",
               failed_rows AS "failedRows", next_chunk_index AS "nextChunkIndex",
               created_by_user_id AS "createdByUserId", created_at AS "createdAt",
@@ -582,12 +894,14 @@ export function createCrmProductionImportService(deps: {
       `INSERT INTO crm_import_jobs (
          id, workspace_id, staged_file_id, entity_kind, status, mapping,
          mapping_hash, source_hash, trusted_identity, total_rows,
-         created_by_user_id, confirmed_by_user_id, source_id, integration_credential_id, integration_grants
-       ) VALUES ($1,$2,$3,$4,'ready',$5::jsonb,$6,$7,$8,$9,$10,$10,$11,$12,$13::jsonb)
+         created_by_user_id, confirmed_by_user_id, source_id, integration_credential_id, integration_grants,
+         confirmation_key
+       ) VALUES ($1,$2,$3,$4,'ready',$5::jsonb,$6,$7,$8,$9,$10,$10,$11,$12,$13::jsonb,$14)
+       ON CONFLICT (workspace_id,confirmation_key) WHERE confirmation_key IS NOT NULL DO NOTHING
        RETURNING id, workspace_id AS "workspaceId", staged_file_id AS "stagedFileId",
          source_id AS "sourceId", integration_credential_id AS "integrationCredentialId", integration_grants AS "integrationGrants",
          entity_kind AS "entityKind", status, privacy_erased AS "privacyErased", privacy_erased_at AS "privacyErasedAt", mapping, mapping_hash AS "mappingHash",
-         source_hash AS "sourceHash", total_rows AS "totalRows",
+         source_hash AS "sourceHash", confirmation_key AS "confirmationKey", total_rows AS "totalRows",
          processed_rows AS "processedRows", succeeded_rows AS "succeededRows",
          failed_rows AS "failedRows", next_chunk_index AS "nextChunkIndex",
          created_by_user_id AS "createdByUserId", created_at AS "createdAt",
@@ -595,15 +909,45 @@ export function createCrmProductionImportService(deps: {
       [id, context.workspaceId, input.stagedFileId ?? null, input.entityKind, JSON.stringify(input.mapping),
         mappingHash(input.mapping), parsed.sourceHash, !!input.mapping.trustedIdentitySource,
         parsed.rows.length, context.actor.kind === 'user' ? context.actor.userId : null, input.sourceId ?? null,
-        parsed.sourceAuthority?.credentialId ?? null, parsed.sourceAuthority ? JSON.stringify(parsed.sourceAuthority.grants) : null],
+        parsed.sourceAuthority?.credentialId ?? null, parsed.sourceAuthority ? JSON.stringify(parsed.sourceAuthority.grants) : null,
+        input.confirmationKey ?? null],
     ).catch((error: unknown) => {
       if (error instanceof Error && 'code' in error && error.code === '55000' && error.message === 'import_source_retired') {
         throw new CrmOperationsError('conflict', 'The CRM import source was erased before confirmation. Its receipt cannot restore the CSV.', { reason: 'import_source_retired' })
       }
       throw error
     })
-    console.info('[crm-import] job confirmed', { workspaceId: context.workspaceId, jobId: id, totalRows: parsed.rows.length })
-    return jobProjection(result.rows[0])
+    if (result.rows[0]) {
+      console.info('[crm-import] job confirmed', { workspaceId: context.workspaceId, jobId: id, totalRows: parsed.rows.length })
+      return jobProjection(result.rows[0])
+    }
+    if (!input.confirmationKey) throw new Error('CRM import confirmation returned no job.')
+    const replay = await query<ImportJobRow>(
+      `SELECT id, workspace_id AS "workspaceId", staged_file_id AS "stagedFileId",
+              source_id AS "sourceId", integration_credential_id AS "integrationCredentialId", integration_grants AS "integrationGrants",
+              entity_kind AS "entityKind", status, privacy_erased AS "privacyErased", privacy_erased_at AS "privacyErasedAt", mapping, mapping_hash AS "mappingHash",
+              source_hash AS "sourceHash", confirmation_key AS "confirmationKey", total_rows AS "totalRows",
+              processed_rows AS "processedRows", succeeded_rows AS "succeededRows",
+              failed_rows AS "failedRows", next_chunk_index AS "nextChunkIndex",
+              created_by_user_id AS "createdByUserId", created_at AS "createdAt",
+              updated_at AS "updatedAt", completed_at AS "completedAt"
+         FROM crm_import_jobs WHERE workspace_id=$1 AND confirmation_key=$2`,
+      [context.workspaceId, input.confirmationKey],
+    )
+    const existing = replay.rows[0]
+    const sameActor = context.actor.kind === 'user'
+      ? existing?.createdByUserId === context.actor.userId
+      : existing?.integrationCredentialId === parsed.sourceAuthority?.credentialId
+    if (!existing || existing.privacyErased || !sameActor
+      || existing.stagedFileId !== (input.stagedFileId ?? null)
+      || existing.sourceId !== (input.sourceId ?? null)
+      || existing.entityKind !== input.entityKind
+      || existing.mappingHash !== mappingHash(input.mapping)
+      || existing.sourceHash !== parsed.sourceHash) {
+      throw new CrmOperationsError('idempotency_conflict', 'This import confirmation key was already used for different input or authority.')
+    }
+    jobContext(context, existing, 'write')
+    return jobProjection(existing)
   }
 
   async function findImportedEntity(workspaceId: string, importKey: string, client: PoolClient): Promise<string | null> {
@@ -642,8 +986,9 @@ export function createCrmProductionImportService(deps: {
     row: { row: number; cells: string[] },
     customCatalog: ReadonlyMap<string, ImportCustomDefinition>,
     transaction: CrmWriteTransaction,
-    operations: CrmOperationsServicePort,
-  ): Promise<string | null> {
+    operations: CrmOperationsServicePort & CrmHistoricalSubmissionImportPort,
+    association?: AssociationSourceOrderImportPort & AssociationPromotionImportPort & AssociationSourceMembershipImportPort,
+  ): Promise<ImportRowResult> {
     const values = mappedValues(row.cells, job.mapping)
     requireImportRowAuthority(context, job.entityKind, values, job.mapping.trustedIdentitySource)
     const attributionUserId = context.actor.kind === 'user' ? context.actor.userId : await sources().attributionUser(context, transaction.client)
@@ -656,6 +1001,7 @@ export function createCrmProductionImportService(deps: {
     }
     const importKey = `${job.id}:${row.row}`
     let entityId = await findImportedEntity(context.workspaceId, importKey, transaction.client)
+    const resultRefs: ImportResultRef[] = []
     if (!entityId && job.entityKind === 'contact') {
       let stableIdentity: StableExternalIdentity | undefined
       if (job.mapping.trustedIdentitySource && values.identityProvider && values.identityProviderInstance && values.identitySubject) {
@@ -744,6 +1090,8 @@ export function createCrmProductionImportService(deps: {
     }
 
     const contactId = job.entityKind === 'contact' ? entityId : values.contactId
+    if (entityId && job.entityKind !== 'operations') resultRefs.push({ kind: job.entityKind, id: entityId })
+    if (contactId && job.entityKind === 'operations') resultRefs.push({ kind: 'contact', id: contactId })
     const importContext: CrmOperationsContext = {
       ...context,
       actor: context.actor.kind === 'user' ? { kind: 'import', jobId: job.id, userId: context.actor.userId } : context.actor,
@@ -755,16 +1103,17 @@ export function createCrmProductionImportService(deps: {
       })
     }
     if (contactId && values.consentPurposeKey) {
-      await operations.execute(importContext, {
+      const saved = await operations.execute(importContext, {
         kind: 'record_consent', contactId, purposeKey: values.consentPurposeKey,
         action: values.consentAction as 'granted' | 'withdrawn', source: values.consentSource,
         provider: 'import', providerEventId: `${job.id}:${row.row}:consent:${values.consentPurposeKey}`,
         ...(values.consentOccurredAt ? { occurredAt: values.consentOccurredAt } : {}),
         metadata: { importJobId: job.id, importRow: row.row },
       })
+      resultRefs.push(resultRef('consent', saved.record))
     }
     if (contactId && values.suppressionChannel) {
-      await operations.execute(importContext, {
+      const saved = await operations.execute(importContext, {
         kind: 'record_suppression', contactId,
         channel: values.suppressionChannel as 'all' | 'email' | 'sms' | 'phone' | 'whatsapp' | 'telegram' | 'slack',
         action: values.suppressionAction as 'suppressed' | 'released',
@@ -774,9 +1123,10 @@ export function createCrmProductionImportService(deps: {
         ...(values.suppressionOccurredAt ? { occurredAt: values.suppressionOccurredAt } : {}),
         metadata: { importJobId: job.id, importRow: row.row },
       })
+      resultRefs.push(resultRef('suppression', saved.record))
     }
-    if (contactId && values.entitlementPlanId) {
-      await operations.execute(importContext, {
+    if (contactId && values.entitlementPlanId && !values.sourceMembershipSource) {
+      const saved = await operations.execute(importContext, {
         kind: 'grant_entitlement', contactId, planId: values.entitlementPlanId,
         idempotencyKey: values.entitlementIdempotencyKey,
         status: (values.entitlementStatus || 'pending') as 'pending' | 'active' | 'expired' | 'cancelled',
@@ -784,9 +1134,19 @@ export function createCrmProductionImportService(deps: {
         endsAt: values.entitlementEndsAt || undefined,
         renewalMode: (values.entitlementRenewalMode || 'none') as 'none' | 'manual' | 'auto',
       })
+      resultRefs.push(resultRef('entitlement', saved.record))
+    }
+    if (contactId && values.sourceMembershipSource) {
+      if (!association) throw new Error('Association source membership importer is unavailable.')
+      const saved = await association.importSourceMembership({
+        workspaceId: context.workspaceId,
+        actor: importContext.actor,
+        authority: { ...context.authority, canRead: true, canReconcileProvider: false },
+      }, sourceMembershipInput(values, job.id, row.row))
+      resultRefs.push(resultRef('entitlement', saved.record, values.sourceMembershipId))
     }
     if (contactId && values.participationEventId) {
-      await operations.execute(importContext, {
+      const saved = await operations.execute(importContext, {
         kind: 'record_participation', contactId, eventId: values.participationEventId,
         sourceKind: 'import', sourceId: values.participationSourceId,
         ...(values.participationHistoricalImport === 'true' ? { historicalImport: true } : {}),
@@ -795,8 +1155,54 @@ export function createCrmProductionImportService(deps: {
         attendeeEmail: values.participantEmail,
         metadata: { importJobId: job.id, importRow: row.row },
       })
+      resultRefs.push(resultRef('participation', saved.record, values.participationSourceId))
     }
-    return entityId ?? contactId ?? null
+    if (contactId && values.historicalSubmissionSource) {
+      const saved = await operations.importHistoricalSubmission(importContext, {
+        importJobId: job.id,
+        importRow: row.row,
+        contactId,
+        source: values.historicalSubmissionSource,
+        sourceSite: values.historicalSubmissionSite,
+        sourceForm: values.historicalSubmissionForm,
+        sourceSubmissionId: values.historicalSubmissionId,
+        submittedAt: values.historicalSubmissionOccurredAt,
+        status: values.historicalSubmissionStatus as 'new' | 'in_progress' | 'resolved' | 'spam',
+        fields: historicalSubmissionFields(values.historicalSubmissionFieldsJson),
+        subject: values.historicalSubmissionSubject ?? 'Historical form submission',
+        message: values.historicalSubmissionMessage ?? 'Imported historical form submission.',
+        queueKey: values.historicalSubmissionQueueKey ?? 'general',
+      })
+      resultRefs.push(resultRef('submission', saved.record, values.historicalSubmissionId))
+    }
+    if (contactId && values.sourceOrderSource) {
+      if (!association) throw new Error('Association source order importer is unavailable.')
+      const saved = await association.importSourceOrder({
+        workspaceId: context.workspaceId,
+        actor: importContext.actor,
+        authority: { ...context.authority, canRead: true, canReconcileProvider: false },
+      }, sourceOrderInput(values, job.id, row.row))
+      resultRefs.push(resultRef('order', saved.record, values.sourceOrderId))
+      const registrations = saved.record.registrations
+      if (!Array.isArray(registrations)) throw new Error('Source order did not return its registrations.')
+      for (const registration of registrations) {
+        if (!registration || typeof registration !== 'object' || Array.isArray(registration)) {
+          throw new Error('Source order returned an invalid registration.')
+        }
+        const record = registration as Record<string, unknown>
+        resultRefs.push(resultRef('registration', record, sourceRegistrationId(record)))
+      }
+    }
+    if (values.promotionSource) {
+      if (!association) throw new Error('Association promotion importer is unavailable.')
+      const saved = await association.importPromotion({
+        workspaceId: context.workspaceId,
+        actor: importContext.actor,
+        authority: { ...context.authority, canRead: true, canReconcileProvider: false },
+      }, promotionImportInput(values, job.id, row.row))
+      resultRefs.push(resultRef('promotion', saved.record, values.promotionId))
+    }
+    return { entityId: entityId ?? contactId ?? null, resultRefs: uniqueResultRefs(resultRefs) }
   }
 
   async function resume(context: ImportServiceContext, jobId: string): Promise<CrmImportJob> {
@@ -876,12 +1282,14 @@ export function createCrmProductionImportService(deps: {
         await client.query('SAVEPOINT crm_import_row')
         try {
           if (validation.length > 0) throw new Error(validation.map((error) => error.message).join(' '))
-          const entityId = await executeRow(context, job, row, customCatalog, { client, afterCommit: (effect) => { effects.push(effect) } }, deps.operationsForTransaction(client))
+          const rowResult = await executeRow(context, job, row, customCatalog,
+            { client, afterCommit: (effect) => { effects.push(effect) } },
+            deps.operationsForTransaction(client), deps.associationForTransaction?.(client))
           await client.query(
-            `INSERT INTO crm_import_rows (workspace_id,job_id,row_number,input_hash,status,entity_id)
-             VALUES ($1,$2,$3,$4,'completed',$5)
+            `INSERT INTO crm_import_rows (workspace_id,job_id,row_number,input_hash,status,entity_id,result_refs)
+             VALUES ($1,$2,$3,$4,'completed',$5,$6::jsonb)
              ON CONFLICT (job_id,row_number) DO NOTHING`,
-            [context.workspaceId, job.id, row.row, inputHash, entityId],
+            [context.workspaceId, job.id, row.row, inputHash, rowResult.entityId, JSON.stringify(rowResult.resultRefs)],
           )
           await client.query('RELEASE SAVEPOINT crm_import_row')
           succeeded += 1
@@ -952,7 +1360,7 @@ export function createCrmProductionImportService(deps: {
       sql: `SELECT id,workspace_id AS "workspaceId",staged_file_id AS "stagedFileId",
          source_id AS "sourceId",integration_credential_id AS "integrationCredentialId",integration_grants AS "integrationGrants",
          entity_kind AS "entityKind",status,privacy_erased AS "privacyErased",privacy_erased_at AS "privacyErasedAt",mapping,mapping_hash AS "mappingHash",
-         source_hash AS "sourceHash",total_rows AS "totalRows",processed_rows AS "processedRows",
+         source_hash AS "sourceHash",confirmation_key AS "confirmationKey",total_rows AS "totalRows",processed_rows AS "processedRows",
          succeeded_rows AS "succeededRows",failed_rows AS "failedRows",
          next_chunk_index AS "nextChunkIndex",created_by_user_id AS "createdByUserId",
          created_at AS "createdAt",updated_at AS "updatedAt",completed_at AS "completedAt"
@@ -1000,5 +1408,21 @@ export function createCrmProductionImportService(deps: {
     ].join('\r\n')
   }
 
-  return { dryRun, confirm, resume, cancel, list, get, errorsCsv }
+  async function resultsCsv(context: ImportServiceContext, jobId: string): Promise<string | null> {
+    requireImportOperation(context, 'crm.imports.read')
+    const job = await loadJob(context.workspaceId, jobId)
+    if (!job) return null
+    jobContext(context, job, 'read')
+    const result = await query<{ rowNumber: number; status: string; inputHash: string; resultRefs: ImportResultRef[] }>(
+      `SELECT row_number AS "rowNumber",status,input_hash AS "inputHash",result_refs AS "resultRefs"
+         FROM crm_import_rows WHERE workspace_id=$1 AND job_id=$2 ORDER BY row_number`,
+      [context.workspaceId, jobId],
+    )
+    return [
+      ['row', 'status', 'input_hash', 'result_refs'].join(','),
+      ...result.rows.map((row) => [row.rowNumber, row.status, row.inputHash, JSON.stringify(row.resultRefs)].map(csvCell).join(',')),
+    ].join('\r\n')
+  }
+
+  return { dryRun, confirm, resume, cancel, list, get, errorsCsv, resultsCsv }
 }
