@@ -14,7 +14,11 @@ import {
 import type { CrmIntegrationPrincipal, CrmIntegrationStore } from '../db/crm-integration-store.js'
 import { CreateCrmIntegrationCredentialSchema } from '../db/crm-integration-store.js'
 import { createDbCrmIntakeReadStore, type DbCrmOperationsReadStore } from '../db/crm-intake-store.js'
-import { createCrmIntegrationRecordReadStore } from '../db/crm-integration-records.js'
+import {
+  createCrmIntegrationRecordReadStore, CrmIntegrationMemberProfileUpdateSchema,
+  CrmIntegrationMemberVerifiedEmailUpdateSchema,
+  type CrmIntegrationMemberProfile,
+} from '../db/crm-integration-records.js'
 import { CrmPipelinesQuerySchema, CrmRecordFieldsQuerySchema } from '../db/crm-config-catalog.js'
 import { MAX_CRM_IMPORT_SOURCE_BYTES, type CrmImportSources } from '../db/crm-import-sources.js'
 import type { CrmProductionImportService } from '../crm-operations/import-service.js'
@@ -41,6 +45,11 @@ export function crmIntegrationRoutes(options: {
   imports?: CrmProductionImportService
   importSources?: CrmImportSources
   reads?: (principal: CrmIntegrationPrincipal) => DbCrmOperationsReadStore
+  memberProfiles?: (principal: CrmIntegrationPrincipal) => {
+    getMemberProfile(id: unknown): Promise<CrmIntegrationMemberProfile | null>
+    updateMemberProfile(id: unknown, update: unknown): Promise<CrmIntegrationMemberProfile | null>
+    updateMemberVerifiedEmail(id: unknown, update: unknown): Promise<CrmIntegrationMemberProfile | null>
+  }
 }): Router {
   const router = Router()
   router.use(async (req, res, next) => {
@@ -55,6 +64,7 @@ export function crmIntegrationRoutes(options: {
   })
   const principal = (res: Response): CrmIntegrationPrincipal => res.locals.crmIntegration as CrmIntegrationPrincipal
   const reads = (res: Response) => (options.reads ?? createDbCrmIntakeReadStore)(principal(res))
+  const memberProfiles = (res: Response) => (options.memberProfiles ?? createCrmIntegrationRecordReadStore)(principal(res))
   const endpoint = (fn: (req: Request, res: Response) => Promise<void>) => async (req: Request, res: Response) => {
     try { await fn(req, res) } catch (error) { associationErrorResponse(error, res) }
   }
@@ -102,12 +112,43 @@ export function crmIntegrationRoutes(options: {
     if (csv === null) { res.status(404).json({ error: 'not_found' }); return }
     res.type('text/csv').attachment('crm-import-errors.csv').send(csv)
   }))
+  router.get('/operations/imports/:id/results.csv', endpoint(async (req, res) => {
+    const csv = await imports().resultsCsv(crmIntegrationContext(principal(res)), UUID.parse(req.params.id))
+    if (csv === null) { res.status(404).json({ error: 'not_found' }); return }
+    res.type('text/csv').attachment('crm-import-results.csv').send(csv)
+  }))
   for (const [path, list] of [['audit', listCrmOperationsAudit], ['event-delivery', listCrmEventDelivery]] as const) {
     router.get(`/operations/${path}`, endpoint(async (req, res) => {
       requireCrmIntegrationOperation(principal(res), 'crm.audit.read')
       res.json(await list(principal(res).workspaceId, CrmPageQuerySchema.parse(req.query)))
     }))
   }
+  router.get('/operations/member-profiles/:id', endpoint(async (req, res) => {
+    requireCrmIntegrationOperation(principal(res), 'crm.records.read')
+    const profile = await memberProfiles(res).getMemberProfile(req.params.id)
+    if (!profile) { res.status(404).json({ error: 'not_found' }); return }
+    res.set('Cache-Control', 'no-store').json({ profile })
+  }))
+  router.patch('/operations/member-profiles/:id', endpoint(async (req, res) => {
+    requireCrmIntegrationOperation(principal(res), 'crm.records.read')
+    requireCrmIntegrationOperation(principal(res), 'crm.records.write')
+    const profile = await memberProfiles(res).updateMemberProfile(
+      req.params.id,
+      CrmIntegrationMemberProfileUpdateSchema.parse(req.body),
+    )
+    if (!profile) { res.status(404).json({ error: 'not_found' }); return }
+    res.set('Cache-Control', 'no-store').json({ profile })
+  }))
+  router.patch('/operations/member-profiles/:id/verified-email', endpoint(async (req, res) => {
+    requireCrmIntegrationOperation(principal(res), 'crm.records.read')
+    requireCrmIntegrationOperation(principal(res), 'crm.records.write')
+    const profile = await memberProfiles(res).updateMemberVerifiedEmail(
+      req.params.id,
+      CrmIntegrationMemberVerifiedEmailUpdateSchema.parse(req.body),
+    )
+    if (!profile) { res.status(404).json({ error: 'not_found' }); return }
+    res.set('Cache-Control', 'no-store').json({ profile })
+  }))
   router.get('/operations/records', endpoint(async (req, res) => {
     res.json(await createCrmIntegrationRecordReadStore(principal(res)).list(req.query))
   }))

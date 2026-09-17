@@ -64,7 +64,7 @@ export function createAssociationTools(service: AssociationServicePort) {
       'Create or update an event ticket by its stable key using canonical inventory validation. Enumerate CRM event ids and plan keys first.',
       z.object({ eventId: Id, ticket: AssociationTicketInputSchema }).strict(), false, false, input => ({ kind: 'save_ticket', ...input })),
     listAssociationOrders: command('listAssociationOrders',
-      'Read order history, including while the module is disabled. Filters use returned event/contact ids.' + followPages,
+      'Read order history and currency-grouped settled/refund/pending totals, including while the module is disabled. Filters use returned event/contact ids.' + followPages,
       AssociationListPageSchema.extend({ eventId: Id.optional(), contactId: Id.optional(), status: AssociationOrderStatusSchema.optional() }).strict(),
       true, true, input => ({ kind: 'list_orders', ...input })),
     getAssociationOrder: command('getAssociationOrder',

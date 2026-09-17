@@ -1,0 +1,51 @@
+import { describe, it, expect, vi } from 'vitest'
+import { createGeminiImageProvider, parseGeminiImageReceipt } from '../gemini-image.js'
+import { aiStudioTransport, vertexTransport } from '../google-transport.js'
+import { FEED_IMAGE_CAPABILITY, feedImageCost } from '@use-brian/shared'
+const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII='
+const output = (parts: unknown[] = [{ inlineData: { mimeType: 'image/png', data: png } }]) => ({ responseId: 'fictional-response', candidates: [{ finishReason: 'STOP', content: { parts } }], usageMetadata: { promptTokenCount: 100, candidatesTokenCount: 1120, thoughtsTokenCount: 12, candidatesTokensDetails: [{ modality: 'IMAGE', tokenCount: 1120 }] } })
+describe('[COMP:core/gemini-image] native HTTP contract', () => {
+  it('sends one bounded generateContent request through AI Studio auth and retains MIME and measured usage', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(output())))
+    const result = await createGeminiImageProvider(aiStudioTransport('fictional-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'A fictional blue square', aspectRatio: '16:9', signal: AbortSignal.timeout(1000) })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    const [url, init] = fetcher.mock.calls[0]!
+    expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent')
+    expect(init.headers['x-goog-api-key']).toBe('fictional-key')
+    expect(JSON.parse(init.body).generationConfig).toMatchObject({ candidateCount: 1, responseModalities: ['IMAGE'], responseFormat: { image: { imageSize: '1K', aspectRatio: '16:9' } } })
+    expect(result).toMatchObject({ image: { mimeType: 'image/png', data: png }, responseId: 'fictional-response', usage: { inputTokens: 100, outputTokens: 1132, imageTokens: 1120, measured: true } })
+    expect(feedImageCost(FEED_IMAGE_CAPABILITY.rates, 100, 1132, 1120)).toBeCloseTo(0.067286)
+  })
+  it('uses Vertex endpoint and bearer token without alternate-host fallback', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 404 }))
+    const result = await createGeminiImageProvider(vertexTransport({ project: 'fixture-project', location: 'asia-east2', tokenSource: async () => 'fixture-token' }), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) })
+    expect(fetcher.mock.calls[0]![0]).toContain('https://asia-east2-aiplatform.googleapis.com/v1/projects/fixture-project/locations/asia-east2/')
+    expect(fetcher.mock.calls[0]![1].headers.Authorization).toBe('Bearer fixture-token')
+    expect(result.error).toBe('image_provider_rejected'); expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('refuses missing transport and credentials before HTTP', async () => {
+    const fetcher = vi.fn(); const input = { model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) }
+    await expect(createGeminiImageProvider(undefined, fetcher).generate(input)).rejects.toThrow('unavailable')
+    await expect(createGeminiImageProvider(aiStudioTransport(undefined), fetcher).generate(input)).rejects.toThrow('unavailable')
+    expect(fetcher).not.toHaveBeenCalled()
+  })
+  it('retains a refusal or malformed receipt but never promotes text, thought images, invalid base64 or MIME', () => {
+    expect(parseGeminiImageReceipt({ promptFeedback: { blockReason: 'SAFETY' } }).error).toBe('image_refused')
+    expect(parseGeminiImageReceipt(output([{ text: 'Here is the image' }])).error).toBe('image_missing')
+    expect(parseGeminiImageReceipt(output([{ thought: true, inlineData: { mimeType: 'image/png', data: png } }])).error).toBe('image_missing')
+    for (const inlineData of [{ mimeType: 'image/png', data: 'not-base64!' }, { mimeType: 'text/plain', data: png }, { mimeType: 'image/jpeg', data: png }]) expect(parseGeminiImageReceipt(output([{ inlineData }])).error).toBe('image_malformed')
+    expect(parseGeminiImageReceipt(output([{ inlineData: { mimeType: 'image/png', data: png } }, { inlineData: { mimeType: 'image/png', data: png } }])).error).toBe('image_malformed')
+  })
+  it('rejects a truncated image with a valid signature while retaining the charged receipt', async () => {
+    const truncated = Buffer.from(png, 'base64').subarray(0, 40).toString('base64')
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(output([{ inlineData: { mimeType: 'image/png', data: truncated } }]))))
+    const receipt = await createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) })
+    expect(receipt).toMatchObject({ error: 'image_malformed', responseId: 'fictional-response', usage: { imageTokens: 1120, measured: true } })
+    expect(receipt.image).toBeUndefined(); expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('does not retry a transport timeout with an uncertain provider outcome', async () => {
+    const fetcher = vi.fn().mockRejectedValue(new DOMException('Timeout', 'TimeoutError'))
+    await expect(createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) })).rejects.toThrow('Timeout')
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+})

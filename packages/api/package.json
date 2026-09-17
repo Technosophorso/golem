@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:feed-browser": "tsx scripts/fixtures/feed-collaboration-server.ts",
     "migrate": "tsx scripts/migrate.ts",
     "migrate:doc-ydoc": "tsx scripts/migrate-doc-to-ydoc.ts",
     "token-report": "tsx scripts/token-report.ts",

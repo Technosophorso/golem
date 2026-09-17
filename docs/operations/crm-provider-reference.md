@@ -63,6 +63,14 @@ claims about the receipt. The cursor can be caught up while a receipt still
 needs reconciliation. Repair the cause and replay the identical event with
 current authorized credentials; do not mint a new event id to bypass a conflict.
 
+For an exact order-side-effect audit, use
+`GET /api/crm/integration/association/orders/:id/notifications`. The route first
+applies the caller's `association.read` event selectors to the order, then
+returns only notification rows whose source is that order. Pair it with
+`GET /api/crm/integration/association/provider-receipts?orderId=:id` when
+qualifying silent source-order imports. A wider notification-outbox read is not
+available to integration credentials.
+
 A timeout before the response leaves the cursor unchanged. A timeout after
 Brian commits behaves identically at this boundary: stable replay recovers its
 receipt. HTTP 429 persists Retry-After before another polling attempt. A crash

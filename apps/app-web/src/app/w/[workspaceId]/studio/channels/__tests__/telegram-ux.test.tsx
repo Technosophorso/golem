@@ -15,7 +15,7 @@ import {
   ChannelConfigSection,
   normalizeWhatsAppPhoneNumberInput,
   WhatsAppCloudChatSection,
-} from "../page";
+} from "../page-client";
 
 const confirmDialog = vi.hoisted(() =>
   vi.fn(async (_options: ConfirmOptions) => false),

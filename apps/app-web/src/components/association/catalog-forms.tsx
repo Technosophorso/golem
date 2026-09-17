@@ -3,7 +3,7 @@
 /** Native editors over the canonical generic catalogs and vertical tickets. [COMP:app-web/association] */
 import { useState } from "react";
 import { useT } from "@/lib/i18n/client";
-import { saveAssociationPlan,saveAssociationEvent,saveAssociationTicket,type AssociationPlan,type AssociationEvent,type AssociationTicket,type AssociationPlanSave } from "@/lib/api/association";
+import { saveAssociationPlan,saveAssociationEvent,saveAssociationTicket,saveAssociationPromotion,type AssociationPlan,type AssociationEvent,type AssociationTicket,type AssociationPromotion,type AssociationPlanSave,type AssociationPromotionSave } from "@/lib/api/association";
 import { Button } from "@/components/ui/button";
 import { AssociationField as Field,AssociationChoice as Choice,AssociationToggle as Toggle,useAssociationAction,associationInstant,associationLocalTime } from "./operator-controls";
 
@@ -54,7 +54,7 @@ export function AssociationEventForm({workspaceId,event,disabled,onSaved}:{works
 }
 export function AssociationTicketForm({workspaceId,eventId,ticket,disabled,onSaved}:{workspaceId:string;eventId:string;ticket?:AssociationTicket;disabled:boolean;onSaved:()=>void}) {
   const t=useT().associationPage.manage,action=useAssociationAction(workspaceId);
-  const [form,setForm]=useState(()=>({key:ticket?.key ?? "",name:ticket?.name ?? "",currency:ticket?.currency ?? "",priceMinor:Number(ticket?.priceMinor ?? 0),memberPriceMinor:ticket?.memberPriceMinor===null||ticket?.memberPriceMinor===undefined?null:Number(ticket.memberPriceMinor),eligiblePlanKeys:ticket?.eligiblePlanKeys ?? [],capacity:ticket?.capacity ?? null,perOrderLimit:ticket?.perOrderLimit ?? 10,saleStartsAt:associationLocalTime(ticket?.saleStartsAt),saleEndsAt:associationLocalTime(ticket?.saleEndsAt),status:ticket?.status ?? "draft"}));
+  const [form,setForm]=useState(()=>({key:ticket?.key ?? "",name:ticket?.name ?? "",currency:ticket?.currency ?? "",priceMinor:Number(ticket?.priceMinor ?? 0),memberPriceMinor:ticket?.memberPriceMinor===null||ticket?.memberPriceMinor===undefined?null:Number(ticket.memberPriceMinor),eligiblePlanKeys:ticket?.eligiblePlanKeys ?? [],eligibilityRequired:ticket?.eligibilityRequired ?? false,eligibilityScope:ticket?.eligibilityScope ?? "buyer" as AssociationTicket["eligibilityScope"],capacity:ticket?.capacity ?? null,perOrderLimit:ticket?.perOrderLimit ?? 10,saleStartsAt:associationLocalTime(ticket?.saleStartsAt),saleEndsAt:associationLocalTime(ticket?.saleEndsAt),status:ticket?.status ?? "draft"}));
   const set=<K extends keyof typeof form>(key:K,value:(typeof form)[K])=>setForm(old=>({...old,[key]:value}));
   return <form className="space-y-3 rounded-xl border border-border p-4" onSubmit={e=>{e.preventDefault();if(disabled)return;void action.run(`${t.save}: ${form.name}`,async()=>{await saveAssociationTicket(workspaceId,eventId,{...form,eligiblePlanKeys:form.eligiblePlanKeys.map(v=>v.trim()).filter(Boolean),saleStartsAt:associationInstant(form.saleStartsAt),saleEndsAt:associationInstant(form.saleEndsAt)});onSaved();});}}>
     <h3 className="font-semibold">{ticket?t.edit:t.newTicket}</h3><fieldset disabled={disabled||action.pending} className="grid min-w-0 gap-3 md:grid-cols-2">
@@ -68,8 +68,64 @@ export function AssociationTicketForm({workspaceId,eventId,ticket,disabled,onSav
       <Choice label={t.status} value={form.status} onChange={v=>set("status",v as typeof form.status)} values={["draft","on_sale","sold_out","closed"]}/>
       <Field label={t.saleStart} type="datetime-local" value={form.saleStartsAt} onChange={v=>set("saleStartsAt",v)}/>
       <Field label={t.saleEnd} type="datetime-local" value={form.saleEndsAt} onChange={v=>set("saleEndsAt",v)}/>
-      <Field label={t.eligiblePlans} value={form.eligiblePlanKeys.join(", ")} onChange={v=>set("eligiblePlanKeys",v.split(","))}/>
+      <Field label={t.eligiblePlans} value={form.eligiblePlanKeys.join(", ")} onChange={v=>setForm(old=>{const eligiblePlanKeys=v.split(",");return {...old,eligiblePlanKeys,eligibilityRequired:eligiblePlanKeys.some(key=>key.trim())?true:old.eligibilityRequired};})}/>
+      <Toggle label={t.eligibilityRequired} checked={form.eligibilityRequired} onChange={v=>set("eligibilityRequired",v)}/>
+      <Choice label={t.eligibilityScope} value={form.eligibilityScope} values={["buyer","attendees","buyer_and_attendees"]} onChange={v=>set("eligibilityScope",v as typeof form.eligibilityScope)}/>
     </fieldset><p className="text-sm text-muted-foreground">{t.timeHint}</p>{action.feedback}
+    <Button type="submit" className="min-h-11" disabled={disabled||action.pending}>{t.save}</Button>
+  </form>;
+}
+
+export function AssociationPromotionForm({workspaceId,promotion,disabled,onSaved}:{workspaceId:string;promotion?:AssociationPromotion;disabled:boolean;onSaved:()=>void}) {
+  const t=useT().associationPage.manage,action=useAssociationAction(workspaceId);
+  const [code,setCode]=useState("");
+  const [form,setForm]=useState<AssociationPromotionSave>(()=>({
+    key:promotion?.key ?? "",name:promotion?.name ?? "",discountType:promotion?.discountType ?? "percentage",
+    percentageBasisPoints:promotion?.percentageBasisPoints ?? 1000,amountMinor:promotion?.amountMinor===null||promotion?.amountMinor===undefined?null:Number(promotion.amountMinor),currency:promotion?.currency ?? null,
+    buyQuantity:promotion?.buyQuantity ?? null,getQuantity:promotion?.getQuantity ?? null,targetKind:promotion?.targetKind ?? "event",targetIds:promotion?.targetIds ?? [],
+    recurrenceMode:promotion?.recurrenceMode ?? "once",recurrenceCycles:promotion?.recurrenceCycles ?? null,applyMode:promotion?.applyMode ?? "each_eligible_item",
+    validFrom:associationLocalTime(promotion?.validFrom),validTo:associationLocalTime(promotion?.validTo),
+    maxUses:promotion?.maxUses ?? null,maxUsesPerContact:promotion?.maxUsesPerContact ?? null,
+    combinesWithMemberPrice:promotion?.combinesWithMemberPrice ?? false,releaseOnFullRefund:promotion?.releaseOnFullRefund ?? false,
+    status:promotion?.status ?? "draft",
+  }));
+  const set=<K extends keyof typeof form>(key:K,value:(typeof form)[K])=>setForm(old=>({...old,[key]:value}));
+  const percentage=form.percentageBasisPoints===null?"":String(form.percentageBasisPoints/100);
+  return <form className="space-y-3 rounded-xl border border-border p-4" onSubmit={e=>{e.preventDefault();if(disabled)return;
+    const targetIds=form.targetIds.map(id=>id.trim()).filter(Boolean);
+    void action.run(`${t.save}: ${form.name}`,async()=>{await saveAssociationPromotion(workspaceId,{...form,targetIds,
+      validFrom:associationInstant(form.validFrom ?? ""),validTo:associationInstant(form.validTo ?? ""),
+      ...(code.trim()?{code:code.trim()}:{}),
+      percentageBasisPoints:form.discountType==="percentage"?form.percentageBasisPoints:null,
+      amountMinor:form.discountType==="fixed_amount"?form.amountMinor:null,
+      currency:form.discountType==="fixed_amount"?form.currency:null,
+      buyQuantity:form.discountType==="buy_x_get_y"?form.buyQuantity:null,
+      getQuantity:form.discountType==="buy_x_get_y"?form.getQuantity:null,
+      recurrenceMode:form.targetKind==="plan"?form.recurrenceMode:"once",
+      recurrenceCycles:form.targetKind==="plan"&&form.recurrenceMode==="repeating"?form.recurrenceCycles:null,
+      applyMode:form.discountType==="buy_x_get_y"?"each_eligible_item":form.applyMode,
+    });setCode("");onSaved();},{description:t.promotionReview});}}>
+    <h3 className="font-semibold">{promotion?t.edit:t.newPromotion}</h3><fieldset disabled={disabled||action.pending} className="grid min-w-0 gap-3 md:grid-cols-2">
+      <Field label={t.key} value={form.key} onChange={v=>set("key",v)} required disabled={!!promotion} maxLength={63}/>
+      <Field label={t.name} value={form.name} onChange={v=>set("name",v)} required maxLength={200}/>
+      <Field label={promotion?t.replacementCode:t.promotionCode} value={code} onChange={setCode} required={!promotion} autoComplete="off" minLength={3} maxLength={100}/>
+      <Choice label={t.discountType} value={form.discountType} values={["percentage","fixed_amount","full","buy_x_get_y"]} onChange={v=>set("discountType",v as typeof form.discountType)}/>
+      {form.discountType==="percentage"?<Field label={t.percentageDiscount} type="number" min={0.01} max={100} step={0.01} value={percentage} onChange={v=>set("percentageBasisPoints",v?Math.round(Number(v)*100):null)} required/>:null}
+      {form.discountType==="fixed_amount"?<><Field label={t.fixedAmountMinor} type="number" min={1} step={1} value={form.amountMinor===null?"":String(form.amountMinor)} onChange={v=>set("amountMinor",v?Number(v):null)} required/><Field label={t.currency} value={form.currency ?? ""} onChange={v=>set("currency",v.toUpperCase())} required maxLength={3}/></>:null}
+      {form.discountType==="buy_x_get_y"?<><Field label={t.buyQuantity} type="number" min={1} max={1000} value={form.buyQuantity===null?"":String(form.buyQuantity)} onChange={v=>set("buyQuantity",v?Number(v):null)} required/><Field label={t.getQuantity} type="number" min={1} max={1000} value={form.getQuantity===null?"":String(form.getQuantity)} onChange={v=>set("getQuantity",v?Number(v):null)} required/></>:null}
+      <Choice label={t.promotionTarget} value={form.targetKind} values={["event","ticket","plan"]} onChange={v=>set("targetKind",v as typeof form.targetKind)}/>
+      <Field label={t.targetIds} multiline value={form.targetIds.join("\n")} onChange={v=>set("targetIds",v.split(/[\n,]/))} required maxLength={4000}/>
+      {form.targetKind==="plan"?<Choice label={t.recurrenceMode} value={form.recurrenceMode} values={["once","forever","repeating"]} onChange={v=>set("recurrenceMode",v as typeof form.recurrenceMode)}/>:null}
+      {form.targetKind==="plan"&&form.recurrenceMode==="repeating"?<Field label={t.recurrenceCycles} type="number" min={2} max={120} value={form.recurrenceCycles===null?"":String(form.recurrenceCycles)} onChange={v=>set("recurrenceCycles",v?Number(v):null)} required/>:null}
+      {form.discountType!=="buy_x_get_y"?<Choice label={t.applyMode} value={form.applyMode} values={["once_per_order","each_eligible_item"]} onChange={v=>set("applyMode",v as typeof form.applyMode)}/>:null}
+      <Field label={t.activeFrom} type="datetime-local" value={form.validFrom ?? ""} onChange={v=>set("validFrom",v)}/>
+      <Field label={t.activeTo} type="datetime-local" value={form.validTo ?? ""} onChange={v=>set("validTo",v)}/>
+      <Field label={t.maxUses} type="number" min={1} max={1000000} value={form.maxUses===null?"":String(form.maxUses)} onChange={v=>set("maxUses",v?Number(v):null)}/>
+      <Field label={t.maxUsesPerContact} type="number" min={1} max={10000} value={form.maxUsesPerContact===null?"":String(form.maxUsesPerContact)} onChange={v=>set("maxUsesPerContact",v?Number(v):null)}/>
+      <Toggle label={t.combinesWithMemberPrice} checked={form.combinesWithMemberPrice} onChange={v=>set("combinesWithMemberPrice",v)}/>
+      <Toggle label={t.releaseOnFullRefund} checked={form.releaseOnFullRefund} onChange={v=>set("releaseOnFullRefund",v)}/>
+      <Choice label={t.status} value={form.status} values={["draft","active","disabled"]} onChange={v=>set("status",v as typeof form.status)}/>
+    </fieldset><p className="text-sm text-muted-foreground">{t.promotionsHelp}</p><p className="text-sm text-muted-foreground">{t.targetIdsHelp}</p><p className="text-sm text-muted-foreground">{t.timeHint}</p>{action.feedback}
     <Button type="submit" className="min-h-11" disabled={disabled||action.pending}>{t.save}</Button>
   </form>;
 }

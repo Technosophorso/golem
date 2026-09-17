@@ -35,3 +35,4 @@ export {
 } from './context-budget.js'
 export type { FitResult } from './context-budget.js'
 export { createAccumulator, collectStream } from './accumulator.js'
+export { createGeminiImageProvider, parseGeminiImageReceipt, type GeminiImageReceipt, type GeneratedImageReceipt } from './gemini-image.js'

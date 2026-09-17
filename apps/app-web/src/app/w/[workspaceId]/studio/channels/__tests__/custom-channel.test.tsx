@@ -23,7 +23,7 @@ import {
   getCustomChannelState,
   submitCustomChannelInput,
 } from "@/lib/api/channels";
-import { BridgeTokenReveal, CustomBridgeSection } from "../page";
+import { BridgeTokenReveal, CustomBridgeSection } from "../page-client";
 
 vi.mock("@/lib/api/channels", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/channels")>();

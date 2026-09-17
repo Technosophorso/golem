@@ -4,7 +4,7 @@ import {query} from '../db/client.js'
 import {createAssociationService} from './service.js'
 import {createCrmOperationsService} from '../crm-operations/service.js'
 import {createDbCrmOperationsStore} from '../db/crm-operations-store.js'
-import {finishAssociationDrain} from '../db/workspace-modules-store.js'
+import {finishAssociationDrain} from './workspace-module.js'
 import {notifyWorkspaceChange} from '../brain-stream/notify.js'
 export function createAssociationLifecycleWorker(options:{
   enabled?:()=>boolean

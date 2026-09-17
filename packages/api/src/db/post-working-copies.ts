@@ -1,8 +1,13 @@
 /** Durable unfinished Feed compositions. [COMP:feed/post-working-copies] */
+import type { FeedComposition } from '@use-brian/shared'
 import { getPool, query } from './client.js'
 import { seedFirstContentDraftMessage, withPlatformTitlePrefix, type ContentPlanningPlatform, type PostMedia } from './content-planning-store.js'
 
 export type PostWorkingContent = {
+  schemaVersion?: 2
+  composition?: FeedComposition
+  goalId?: string | null
+  reviewMonth?: string
   title: string
   privateBrief: string
   text: string
@@ -59,6 +64,7 @@ export const postWorkingCopiesStore = {
       if (input.create && !created && (session.userId !== userId || !previous)) {
         throw new WorkingCopyError(409)
       }
+      if (previous?.content.schemaVersion === 2 || input.content.schemaVersion === 2) throw new WorkingCopyError(409)
       if (previous?.mutationId === input.mutationId) {
         await client.query('COMMIT')
         return previous

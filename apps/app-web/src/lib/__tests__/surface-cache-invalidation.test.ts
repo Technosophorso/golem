@@ -80,6 +80,7 @@ describe("[COMP:app-web/surface-cache-invalidation] routing table", () => {
       "live:w1",
       "chat-sessions:w1",
       "chat-shared:w1",
+      "feed-collaboration:w1",
     ]);
   });
 
@@ -208,6 +209,7 @@ describe("[COMP:app-web/surface-cache-invalidation] goal primitive and brain det
       "goals:w1",
       "triage:w1",
       "goal:w1:",
+      "feed-collaboration:w1",
     ]);
     expect(SURFACE_CACHE_SPINE_EVENTS).toContain(GOAL_REFRESH_EVENT);
   });

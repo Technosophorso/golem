@@ -25,6 +25,7 @@ import { listWorkspaceAssistants } from "@/lib/api/views";
 import { BRAIN_REFRESH_EVENT } from "@/lib/brain-events";
 import { relativeTime } from "@/components/doc/comment-primitives";
 import { Skeleton } from "@/components/skeleton";
+import { requestSidebarClose } from "@/lib/sidebar-close";
 
 type ChannelKey =
   | "web"
@@ -179,10 +180,13 @@ export function AuditSessionList({
           <li key={s.id}>
             <button
               type="button"
-              onClick={() => onSelect(s.id)}
+              onClick={() => {
+                onSelect(s.id);
+                requestSidebarClose();
+              }}
               aria-pressed={active}
               className={cn(
-                "flex w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors",
+                "flex min-h-11 w-full items-start gap-2 rounded-md px-2 py-1.5 text-left text-[13px] transition-colors",
                 active
                   ? "doc-nav-active text-sidebar-foreground"
                   : "text-sidebar-foreground/85 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",

@@ -1264,9 +1264,9 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
   // `model` is the platform tier's serving model; on a workspace custom
   // endpoint `turnProvider` is swapped out and the provider pins its own wire
   // id, so `model` never reaches a provider at all. Labelling an event with it
-  // points an investigator at a model that did not run: on 2026-08-24 a
-  // `channel_delivery_empty` blamed `gemini-3.7-flash` for a turn actually
-  // served by `custom:646340b5`. `turn_completed` already reports the truth via
+  // points an investigator at a model that did not run: a
+  // `channel_delivery_empty` blamed the managed Max model for a turn actually
+  // served by a custom endpoint. `turn_completed` already reports the truth via
   // `event.response.model`; this is the same answer for the events that fire
   // before a response exists to read it from.
   const analyticsModel = customLlmRuntime?.selector ?? model

@@ -88,6 +88,22 @@ describe('[COMP:api/session-live-publisher] turn_stream snapshots', () => {
     expect(last.payload.activity).toBeNull()
   })
 
+  it('drops intermediate tool narration from reconnect snapshots and clears applied-input segments', () => {
+    const { events, publisher, tick } = harness()
+    publisher.onTextDelta('I will look that up.')
+    publisher.onToolStart('searchBrain')
+    publisher.publish(true)
+    expect((events.at(-1)!.payload as { text: string }).text).toBe('')
+    tick(STREAM_PUBLISH_THROTTLE_MS + 1)
+    publisher.onTextDelta('The answer.')
+    expect((events.at(-1)!.payload as { text: string }).text).toBe('The answer.')
+    publisher.resetAnswer()
+    expect((events.at(-1)!.payload as { text: string }).text).toBe('')
+    tick(STREAM_PUBLISH_THROTTLE_MS + 1)
+    publisher.onTextDelta('Answer to the queued input.')
+    expect((events.at(-1)!.payload as { text: string }).text).toBe('Answer to the queued input.')
+  })
+
   it('bare snapshot carries no reasoning or attribution keys', () => {
     const { events, publisher } = harness()
     publisher.onTextDelta('hi')

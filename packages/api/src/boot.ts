@@ -1,3 +1,4 @@
+import { createFeedReviewContextLoader } from './content-planning/review-context.js'
 /**
  * bootOpenApi — the OPEN composition root for the Use Brian HTTP API.
  *
@@ -173,6 +174,13 @@ import {
 import { contentPlanRoutes } from './routes/content-plan.js'
 import { contentIdeasRoutes } from './routes/content-ideas.js'
 import { postWorkingCopiesRoutes } from './routes/post-working-copies.js'
+import { createFeedLearningHandler, reconcileFeedLearning } from './content-planning/learning.js'
+import { createFeedEditorialModelResolver, createFeedLearningModelResolver } from './content-planning/editorial-model.js'
+import { createFeedGenerationPort } from './content-planning/generation-port.js'
+import { createFeedGenerationService } from './content-planning/generation.js'
+import { createFeedReviewHandler } from './content-planning/review.js'
+import { createFeedEditorialWorker } from './workers/feed-editorial-worker.js'
+import { feedCollaborationRoutes } from './routes/feed-collaboration.js'
 import {
   selfHostFeedCloudRoutes,
   selfHostFeedManagedDistributionRoutes,
@@ -635,7 +643,7 @@ import { brainMcpRoutes } from './brain-mcp/server.js'
 import { associationRoutes } from './routes/association.js'
 import { createAssociationService } from './association/service.js'
 import { createAssociationStore } from './db/association-store.js'
-import { createWorkspaceModulesStore } from './db/workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from './association/workspace-module.js'
 import { createCrmIntegrationStore } from './db/crm-integration-store.js'
 import { crmIntegrationRoutes, crmIntegrationCredentialRoutes } from './routes/crm-integration.js'
 import { crmAssociationRoutes, associationMemberContext, workspaceModuleRoutes } from './routes/crm-association.js'
@@ -694,6 +702,8 @@ export interface OpenApiEnv {
   VERTEX_LOCATION?: string
   VERTEX_SERVICE_ACCOUNT_JSON?: string
   JWT_SECRET: string
+  /** Keyed digest secret for Association promotion-code lookup. */
+  ASSOCIATION_PROMOTION_HMAC_KEY?: string
   NODE_ENV: string
   API_URL: string
   APP_URL: string
@@ -903,8 +913,10 @@ export interface EpisodeIngestorDeps {
  * connectors absent.
  */
 export interface OpenApiPorts {
+  feedHistorySql?: string;
   // ── Billing — open default: allow-all / no-op ──
   /** Real DB credit gate; default allows every turn. */
+  feedImage?: { codex?: import('@use-brian/core').CodexImageProvider; config?: import('@use-brian/shared').FeedImageConfig; billing?: import('./content-planning/generation-port.js').FeedGenerationBilling };
   checkCreditBudget?: CreditBudgetGate
   /** Edition-local DB usage recorder; default no-op for bespoke compositions. */
   usageStore?: UsageStore
@@ -1609,8 +1621,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     emailProvider: getGlobalEmailInboxProvider,
   }))
   const crmOperationsService = createCrmOperationsService(createDbCrmOperationsStore(), { deliveries: crmDeliveries })
-  const associationStore = createAssociationStore()
-  const workspaceModulesStore = createWorkspaceModulesStore()
+  const associationStore = createAssociationStore(undefined, undefined, {
+    promotionHmacKey: env.ASSOCIATION_PROMOTION_HMAC_KEY,
+  })
+  const workspaceModulesStore = createAssociationWorkspaceModulesStore()
   const associationService = createAssociationService({ store: associationStore, modules: workspaceModulesStore, crmService: crmOperationsService })
   const crmIntegrationStore = createCrmIntegrationStore()
   const crmIntakeReadStore = createDbCrmIntakeReadStore()
@@ -4639,7 +4653,12 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       })
     : null
 
+  const feedReviewContext = createFeedReviewContextLoader(ports.feedHistorySql)
+  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' }), { transport: vertexTx ?? (env.GEMINI_API_KEY ? aiStudioTransport(env.GEMINI_API_KEY) : undefined), resolveWorkspaceKey: resolveWorkspaceByoGeminiKey, files: filesApi ?? undefined, usageStore, codex: codexProviderManager?.images ?? ports.feedImage?.codex,
+      config: ports.feedImage?.config, billing: ports.feedImage?.billing }), feedReviewContext)
   app.use('/api/chat', optionalAuth(env.JWT_SECRET), chatRoutes({
+    feedGeneration,
+    feedReviewContext,
     provider,
     artifactPromoter,
     checkCreditBudget: ports.checkCreditBudget,
@@ -4837,7 +4856,13 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const crmImportSources = createCrmImportSources()
   const crmProductionImports = createCrmProductionImportService({
     filesApi: filesApi ?? undefined, sources: crmImportSources,
-    operationsForTransaction: (client) => createCrmOperationsService(createDbCrmOperationsStore(getPool(), client)), entityLinks: entityLinksStore,
+    operationsForTransaction: (client) => createCrmOperationsService(createDbCrmOperationsStore(getPool(), client)),
+    associationForTransaction: (client) => createAssociationService({
+      store: createAssociationStore(getPool(), client),
+      modules: workspaceModulesStore,
+      crmService: createCrmOperationsService(createDbCrmOperationsStore(getPool(), client)),
+    }),
+    entityLinks: entityLinksStore,
   })
   app.use('/api/crm/integration', crmIntegrationRoutes({
     deliveries: crmDeliveries,
@@ -5036,6 +5061,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // and developing an idea must never require a credential in either edition.
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
+  app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration, reviewContext: feedReviewContext, files: filesApi ?? undefined }))
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its
@@ -6574,7 +6600,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     service: associationService, context: associationMemberContext(workspaceStore),
   }))
   app.use('/api/workspaces', requireAuth(env.JWT_SECRET), workspaceModuleRoutes({
-    workspaceStore, modules: workspaceModulesStore, service: associationService,
+    workspaceStore, modules: workspaceModulesStore,
   }))
   app.use('/api/crm', requireAuth(env.JWT_SECRET), crmIntegrationCredentialRoutes({ workspaceStore, credentials: crmIntegrationStore }))
   app.use('/api/crm', requireAuth(env.JWT_SECRET), crmOperationsRoutes({
@@ -7304,6 +7330,15 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // ── Decision reflection worker (human-decision learning Phase 4) ──
   // Daily user-scoped projection from minimized, deliberate decision evidence.
   // The store independently enforces thresholds and prohibited output.
+  const feedEditorialWorker = createFeedEditorialWorker({ handlers: {
+    confirmation_learning: createFeedLearningHandler(createFeedLearningModelResolver({ provider, configuredProviders, resolveBackgroundRuntime, usageStore })),
+    reconcile: reconcileFeedLearning,
+    text_generation: feedGeneration.handler,
+    image_generation: feedGeneration.handler,
+    review: createFeedReviewHandler(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget }), feedReviewContext),
+  } })
+  if (runWorkers) feedEditorialWorker.start()
+
   const decisionReflectionWorker = createDecisionReflectionWorker({
     modelCall: async ({ systemPrompt, prompt, maxTokens, attribution }) => {
       const workspaceId = await workspaceForAssistant(attribution.assistantId)
@@ -8456,6 +8491,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     skillReviewWorker.stop()
     playbookReflectionWorker.stop()
     decisionReflectionWorker.stop()
+    feedEditorialWorker.stop()
     embeddingWorker.stop()
     pollWorker.stop()
     programmaticBatchWorker?.stop()

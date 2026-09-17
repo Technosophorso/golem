@@ -11,7 +11,7 @@ import { I18nProvider } from "@/lib/i18n/client";
 import { en } from "@/lib/i18n/dictionaries/en";
 import type { Channel } from "@/lib/api/channels";
 import type { EmailInbox } from "@/lib/api/email-inboxes";
-import { AddChannelForm, ChannelDetail } from "../page";
+import { AddChannelForm, ChannelDetail } from "../page-client";
 
 const authFetch = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/auth-fetch", () => ({ authFetch }));

@@ -149,3 +149,6 @@ export {
   deriveRunStep,
   deriveRunBlockId,
 } from './run-presence.js'
+
+// Feed owns its composition domain; no Page or Office artifact is required.
+export * from './feed/model.js'

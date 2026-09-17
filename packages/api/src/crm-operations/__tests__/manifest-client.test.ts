@@ -31,6 +31,10 @@ describe('[COMP:crm/manifest] Private credential handling and complete pure disc
     })
     const manifest = parseManifest(fixture)
     expect(manifest.intakeDefinitions[0].value.definition.fields.find((field: { key: string }) => field.key === 'private_note').mapping.kind).toBe('submission_only')
+    expect(manifest.intakeDefinitions[0].value.definition.attachments).toEqual([{
+      key: 'supporting_image', label: 'Supporting image', maxBytes: 1_048_576,
+      mimeTypes: ['image/jpeg', 'image/png', 'image/webp'], required: false,
+    }])
     const catalogs = await discoverManifestCatalogs(client(fetchImpl), fixture)
     expect(catalogs.loaded).toHaveLength(7)
     expect(calls.filter((path) => path.endsWith('/segments'))).toHaveLength(3)

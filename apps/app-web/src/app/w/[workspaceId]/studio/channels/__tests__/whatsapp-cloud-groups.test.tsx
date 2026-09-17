@@ -10,7 +10,7 @@ import {
   listWhatsAppCloudGroups,
   type WhatsAppCloudGroup,
 } from "@/lib/api/channels";
-import { WhatsAppCloudGroupsSection } from "../page";
+import { WhatsAppCloudGroupsSection } from "../page-client";
 
 vi.mock("@/lib/api/channels", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/channels")>();

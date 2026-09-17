@@ -30,7 +30,13 @@ export async function lockAssociationInventory(client: PoolClient, workspaceId: 
 type InventoryScope = { event_id: string; ticket_id: string | null; event_key: string; ticket_key: string | null; capacity: number | null; used: number }
 
 /** Caller holds each affected event lock through commit. No attendee payload. */
-export async function refreshAssociationInventory(client: PoolClient, workspaceId: string, eventIds: string[], actorKind: string): Promise<void> {
+export async function refreshAssociationInventory(
+  client: PoolClient,
+  workspaceId: string,
+  eventIds: string[],
+  actorKind: string,
+  options: { emitEvents?: boolean } = {},
+): Promise<void> {
   if (!eventIds.length) return
   const scopes = (await client.query<InventoryScope>(
     `WITH occupied AS (
@@ -64,7 +70,7 @@ export async function refreshAssociationInventory(client: PoolClient, workspaceI
        SET sold_out=EXCLUDED.sold_out,revision=EXCLUDED.revision,capacity=EXCLUDED.capacity,used=EXCLUDED.used,updated_at=clock_timestamp()`,
       [workspaceId, scope.event_id, scope.ticket_id, soldOut, revision, scope.capacity, scope.used],
     )
-    if (!changed) continue
+    if (!changed || options.emitEvents === false) continue
     const eventType = soldOut ? 'association.inventory.sold_out' : 'association.inventory.available'
     const kind = scope.ticket_id ? 'ticket' : 'event', subjectId = scope.ticket_id ?? scope.event_id
     await client.query(
