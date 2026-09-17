@@ -124,7 +124,7 @@ const MEMORY_SELECT = `
 export async function createMemory(
   params: {
     assistantId: string
-    userId: string
+    userId: string | null
     appId?: string
     scope?: string
     tags?: string[]
@@ -155,6 +155,7 @@ export async function createMemory(
     linkedEntityIds?: readonly string[]
   },
   entityLinks?: EntityLinksStore,
+  transactionClient?: pg.PoolClient,
 ): Promise<Memory> {
   assertAuthorshipPresent('createMemory', params.createdByUserId)
   // `workspace_id` falls back to the row's assistant's workspace when
@@ -204,7 +205,8 @@ export async function createMemory(
   // Guard: only null `assistant_id` when `user_id` is set — otherwise the
   // row would be (NULL, NULL), which `memories_visibility_check` blocks.
   const shadow = params.shadow
-  const result = await query<Memory>(
+  const execute = transactionClient ? transactionClient.query.bind(transactionClient) : query
+  const result = await execute<Memory>(
     `INSERT INTO ${shadow ? 'memories_shadow' : 'memories'} (
        assistant_id, user_id, app_id, workspace_id,
        scope, tags, summary, detail,
@@ -1432,7 +1434,7 @@ export async function listMemoryUsers(): Promise<Array<{ assistantId: string; us
               ) AS "assistantId",
               m.user_id AS "userId"
          FROM memories m
-        WHERE m.valid_to IS NULL
+        WHERE m.valid_to IS NULL AND m.user_id IS NOT NULL
           ${excludeExternalPrincipalsSql('m.user_id')}
      ) t
      WHERE "assistantId" IS NOT NULL`,

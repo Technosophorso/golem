@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { systemContextParts, renderSystemContext } from '../system-context.js'
+import { systemContextParts, renderSystemContext, extractHistorySystemContext, COMPACTED_HISTORY_LEAD } from '../system-context.js'
 import { createGeminiProvider } from '../gemini.js'
 import { vertexTransport } from '../google-transport.js'
 import { createOpenAICompatProvider, DASHSCOPE_INTL_BASE_URL } from '../openai-compat.js'
@@ -151,5 +151,87 @@ describe('[COMP:providers/system-context] Stable/runtime system transport', () =
     expect(captured[0]).toMatchObject(context)
     expect(traceStart).toHaveBeenCalledWith(expect.objectContaining({ systemPrompt: renderSystemContext(context) }))
     traceStart.mockRestore()
+  })
+})
+
+// ── Compacted-history delivery ──────────────────────────────────
+// The compaction summary rides the messages array as `{ role: 'system' }`.
+// No adapter renders a system-role row as a conversation content, so every
+// adapter must hoist it into the system channel. These tests assert the WIRE
+// (captured request body), not the array — the gap that let the summary go
+// undelivered on Gemini and Anthropic from 2026-04-16 to 2026-09-17.
+// See docs/architecture/context-engine/compaction.md → "Summary delivery".
+
+const SUMMARY = '[Conversation compacted at 2026-09-17T00:00:00Z] MARKER_SUMMARY_7c1e: the user chose the Tokyo itinerary.'
+const BREADCRUMB = '[3 earlier message(s) omitted to fit the context window.]'
+const compactedHistory: Message[] = [
+  { role: 'system', content: SUMMARY },
+  { role: 'system', content: [{ type: 'text', text: BREADCRUMB }] },
+  { role: 'user', content: 'what did we decide earlier?' },
+]
+const historyBlock = `<compacted_history>\n${COMPACTED_HISTORY_LEAD}\n\n${SUMMARY}\n\n${BREADCRUMB}\n</compacted_history>`
+
+describe('[COMP:providers/system-context] Compacted-history delivery', () => {
+  it('extracts every non-empty system-role row in order and renders it between stable and runtime', () => {
+    expect(extractHistorySystemContext(compactedHistory)).toEqual([SUMMARY, BREADCRUMB])
+    expect(extractHistorySystemContext([{ role: 'system', content: '   ' }, ...messages])).toEqual([])
+    expect(systemContextParts({ ...context, historySystemContext: [SUMMARY, BREADCRUMB] }))
+      .toEqual([systemPrompt, historyBlock, runtimeBlock])
+    expect(systemContextParts({ systemPrompt, historySystemContext: [] })).toEqual([systemPrompt])
+    expect(renderSystemContext({ systemPrompt: '', historySystemContext: [SUMMARY, BREADCRUMB] })).toBe(historyBlock)
+  })
+
+  it('delivers the summary to Gemini in systemInstruction, never in contents, on stream + session + second send', async () => {
+    const bodies: Record<string, any>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (_url, init) => {
+      bodies.push(JSON.parse(init.body))
+      return sse({ candidates: [{ content: { role: 'model', parts: [{ text: 'Tokyo.' }] }, finishReason: 'STOP' }] })
+    }))
+    const provider = createGeminiProvider('test-key')
+    await drain(provider.stream({ model: 'gemini-flash', ...context, messages: compactedHistory }))
+    const session = provider.createSession({ model: 'gemini-flash', ...context })
+    await drain(session.send(compactedHistory))
+    await drain(session.send([{ role: 'user', content: 'and the hotel?' }]))   // tool-result-style follow-up: no system rows
+    expect(bodies).toHaveLength(3)
+    for (const body of bodies) {
+      expect(body.systemInstruction.parts).toEqual([{ text: systemPrompt }, { text: historyBlock }, { text: runtimeBlock }])
+      expect(JSON.stringify(body.contents)).not.toContain('MARKER_SUMMARY_7c1e')
+      expect(body.contents[0].role).toBe('user')
+    }
+  })
+
+  it('delivers the summary to Anthropic as a system block, never as a message', async () => {
+    anthropicCreate.mockImplementation(async () => (async function* () {
+      yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Tokyo.' } }
+    })())
+    const provider = createAnthropicProvider({ apiKey: 'test-key' })
+    await drain(provider.stream({ model: 'claude-haiku-4-5', ...context, messages: compactedHistory }))
+    const session = provider.createSession({ model: 'claude-haiku-4-5', ...context })
+    await drain(session.send(compactedHistory))
+    await drain(session.send([{ role: 'user', content: 'and the hotel?' }]))
+    expect(anthropicCreate).toHaveBeenCalledTimes(3)
+    for (const call of anthropicCreate.mock.calls) {
+      const req = call[0]
+      expect(req.system.map((b: { text: string }) => b.text)).toEqual([systemPrompt, historyBlock, runtimeBlock])
+      expect(JSON.stringify(req.messages)).not.toContain('MARKER_SUMMARY_7c1e')
+    }
+  })
+
+  it('routes the summary through the ordered system messages on OpenAI-compat, including the single-system retry', async () => {
+    const fetchFn = vi.fn()
+      .mockResolvedValueOnce(sse({ choices: [{ delta: { content: 'Tokyo.' }, finish_reason: 'stop' }] }))
+      .mockResolvedValueOnce(new Response('Only one system message is allowed', { status: 400 }))
+      .mockResolvedValueOnce(sse({ choices: [{ delta: { content: 'Tokyo.' }, finish_reason: 'stop' }] }))
+    const provider = createOpenAICompatProvider({ label: 'custom', baseURL: 'https://llm.example/v1', fetchFn })
+    await drain(provider.stream({ model: 'custom', ...context, messages: compactedHistory }))
+    const first = JSON.parse(fetchFn.mock.calls[0][1].body)
+    expect(first.messages.slice(0, 3)).toEqual([
+      { role: 'system', content: systemPrompt }, { role: 'system', content: historyBlock }, { role: 'system', content: runtimeBlock },
+    ])
+    expect(first.messages.slice(3).every((m: { role: string }) => m.role !== 'system')).toBe(true)
+    await drain(provider.stream({ model: 'custom', ...context, messages: compactedHistory }))
+    const retried = JSON.parse(fetchFn.mock.calls[2][1].body)
+    expect(retried.messages.filter((m: { role: string }) => m.role === 'system')).toHaveLength(1)
+    expect(retried.messages[0].content).toContain('MARKER_SUMMARY_7c1e')
   })
 })

@@ -71,6 +71,15 @@ describe('[COMP:api/crm-intake-route] public atomic CRM intake', () => {
     expect((await submit(app, { fields: {}, identityProof: { ...identityProof, privateKey: 'never_accept' } })).status).toBe(400)
     expect(service.execute).not.toHaveBeenCalled()
   })
+  it('forwards one bounded image attachment outside the definition-mapped field object', async () => {
+    const { app, service } = build()
+    const attachment = {
+      key: 'business_card', name: 'card.png', mimeType: 'image/png',
+      contentBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+    }
+    expect((await submit(app, { fields: { name: 'Fixture' }, attachments: [attachment] })).status).toBe(201)
+    expect(service.execute).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ attachments: [attachment] }))
+  })
   it('derives workspace, actor, and definition from authentication and returns bounded ids', async () => {
     const { app, service } = build()
     const response = await submit(app)
@@ -185,9 +194,9 @@ describe('[COMP:api/crm-intake-route] public atomic CRM intake', () => {
     expect(readStore.authenticate).toHaveBeenCalledTimes(3)
   })
 
-  it('rejects bodies above the dedicated 1 MiB parser limit', async () => {
+  it('rejects bodies above the dedicated 2 MiB parser limit', async () => {
     const { app, service } = build()
-    const response = await submit(app, { fields: { message: 'x'.repeat(1_048_577) } })
+    const response = await submit(app, { fields: { message: 'x'.repeat(2_097_153) } })
     expect(response.status).toBe(413)
     expect(service.execute).not.toHaveBeenCalled()
   })

@@ -1,7 +1,7 @@
 /**
  * Conversation compaction.
  *
- * Full compaction: summarize entire conversation into a 6-section summary.
+ * Full compaction: summarize entire conversation into a 7-section summary.
  * Memory extraction captures facts BEFORE compaction runs.
  * Post-compaction: model sees [summary] + [memories] + [cached results].
  */
@@ -53,7 +53,7 @@ const CIRCUIT_BREAKER_MAX_FAILURES = 3
 // ── Compact prompts (per profile) ──────────────────────────────
 
 /**
- * Linear profile: single 6-section summary. Used for web and cron where
+ * Linear profile: single 7-section summary. Used for web and cron where
  * sessions are typically single-topic or where the topic structure
  * doesn't need to survive compaction.
  */
@@ -67,10 +67,11 @@ Your summary should include:
 
 1. User's Current Request: What is the user trying to accomplish right now?
 2. Decisions Made: What has been decided? (destinations, dates, activities, preferences expressed during this conversation)
-3. Work In Progress: What was being actively worked on? Include specifics.
-4. All User Messages: List every user message that is not a tool result.
-5. Open Questions: What was the user asked but hasn't answered yet?
-6. Next Step: What should happen next based on the most recent exchange?
+3. Attempted and Failed (Do Not Retry): What approaches or tool calls were tried and failed? Include the observed error or reason for failure and any blocking constraints. Do not retry under unchanged conditions. If none failed, write "None". Do not invent failures.
+4. Work In Progress: What was being actively worked on? Include specifics.
+5. All User Messages: List every user message that is not a tool result.
+6. Open Questions: What was the user asked but hasn't answered yet?
+7. Next Step: What should happen next based on the most recent exchange?
 
 IMPORTANT: Be specific. "User wants to visit Tokyo" is not enough.
 "User is planning 5-day Tokyo trip March 10-15, vegetarian, budget ¥15,000/day food, Day 1-2 complete, Day 3 in progress" preserves continuity.
@@ -427,7 +428,7 @@ export type CompactionTier = 'standard' | 'pro'
  * budget downgrades), so the threshold matches the window the model will
  * see. Flash-class models (Standard `gemini-3.1-flash-lite` and Pro
  * `gemini-3-flash-preview`) use the standard ceiling; Pro 3.1 (research
- * escalation) and Flash 3.7 (Max default, with Flash 3.6 / 3.5 retained for
+ * escalation) and Flash 3.8 (Max default, with older Max Flash ids retained for
  * historical sessions) use the pro ceiling. All Max Flash models ship with a
  * 1M-token frontier window, so compacting them at the Flash Lite threshold
  * would silently shrink what the user paid 10 credits for.
@@ -435,12 +436,12 @@ export type CompactionTier = 'standard' | 'pro'
  * Matches by substring so both the `resolveModel` aliases (`gemini-flash`,
  * `gemini-3.1-flash-lite`, `gemini-pro`) and the real provider IDs
  * (`gemini-3-flash-preview`, `gemini-3.1-flash-lite` / its retired
- * `-preview` SKU, `gemini-3.7-flash`, legacy `gemini-3.6-flash` /
- * `gemini-3.5-flash`,
+ * `-preview` SKU, `gemini-3.8-flash`, older Max Flash ids,
  * `gemini-3.1-pro-preview`) classify correctly.
  */
 export function modelToCompactionTier(model: string): CompactionTier {
   if (
+    model.includes('gemini-3.8-flash') ||
     model.includes('gemini-3.7-flash') ||
     model.includes('gemini-3.6-flash') ||
     model.includes('gemini-3.5-flash')
@@ -462,6 +463,22 @@ export const CHANNEL_CLASS_MULTIPLIER: Record<ChannelClass, number> = {
 }
 
 /**
+ * Effective compaction threshold for a tier + channel class: the tier's
+ * base ceiling times the channel multiplier. Omitted `channelClass` = no
+ * multiplier (1.0). Shared by `needsCompaction` (the trigger) and by the
+ * proactive-compaction route's recent-tail budget, which is derived from
+ * this value so the verbatim tail scales with the trigger it sits under.
+ */
+export function compactionThreshold(
+  tier: CompactionTier,
+  channelClass?: ChannelClass,
+): number {
+  const baseThreshold = COMPACT_THRESHOLDS[tier]
+  const multiplier = channelClass ? CHANNEL_CLASS_MULTIPLIER[channelClass] : 1.0
+  return baseThreshold * multiplier
+}
+
+/**
  * Check if compaction is needed based on token count. Pass `channelClass`
  * to apply the per-channel multiplier; omitted = no multiplier (1.0).
  */
@@ -470,9 +487,7 @@ export function needsCompaction(
   tier: CompactionTier,
   channelClass?: ChannelClass,
 ): boolean {
-  const baseThreshold = COMPACT_THRESHOLDS[tier]
-  const multiplier = channelClass ? CHANNEL_CLASS_MULTIPLIER[channelClass] : 1.0
-  return estimateTokens(messages) >= baseThreshold * multiplier
+  return estimateTokens(messages) >= compactionThreshold(tier, channelClass)
 }
 
 // ── Idle-based compaction tiers (messaging channels) ───────────

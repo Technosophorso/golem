@@ -267,7 +267,7 @@ describe('[COMP:providers/gemini-input-parts] stripNonInputParts', () => {
 
   it('trims trailing model-prefill turns for Gemini 3.6+ only', () => {
     const history = [userText('translate this'), modelText('Translation:')]
-    expect(normalizeGeminiRequestContents(history, 'gemini-3.7-flash')).toEqual([
+    expect(normalizeGeminiRequestContents(history, 'gemini-3.8-flash')).toEqual([
       userText('translate this'),
     ])
     expect(normalizeGeminiRequestContents(history, 'gemini-3.6-flash')).toEqual([
@@ -473,7 +473,7 @@ describe('[COMP:providers/gemini-json-mode] responseFormat json → responseMime
 
     await drain(
       createGeminiProvider('test-key').stream({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-3.8-flash',
         systemPrompt: 'sys',
         messages: [{ role: 'user', content: 'chat' }],
         temperature: 0.7,

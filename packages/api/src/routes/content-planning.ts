@@ -1,3 +1,4 @@
+import { FeedCollaborationError } from '../db/feed-collaboration-store.js'
 /**
  * Open content-planning HTTP surface.
  *
@@ -292,6 +293,7 @@ export function contentPlanningRoutes(
         sessionId: req.params.sessionId,
         userId: ctx.userId,
         ...parsed,
+        expectedRevision: Number.isSafeInteger(req.body?.expectedRevision) ? req.body.expectedRevision : undefined,
       })
       // Reply ids are retained as planning context. No provider resolution is
       // attempted in OSS; approval moves the draft to the manual queue.
@@ -596,6 +598,7 @@ export function contentPlanningRoutes(
     },
   )
 
+  router.use((error: unknown, _req: import('express').Request, res: Response, next: import('express').NextFunction) => { if (error instanceof FeedCollaborationError) res.status(error.status).json({ error: error.code, code: error.code }); else next(error) })
   return router
 }
 
@@ -775,9 +778,9 @@ export function parseContentDraftBody(value: unknown):
       value.platform !== 'linkedin'
       || !isRecord(value.article)
       || typeof value.article.sourceUrl !== 'string'
-      || !isHttpUrl(value.article.sourceUrl)
+      || (!isHttpUrl(value.article.sourceUrl) && !(Number.isSafeInteger(value.expectedRevision) && value.article.sourceUrl === ''))
       || typeof value.article.title !== 'string'
-      || !value.article.title.trim()
+      || (!value.article.title.trim() && !Number.isSafeInteger(value.expectedRevision))
       || typeof value.article.description !== 'string'
     ) return 'invalid'
     article = {

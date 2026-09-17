@@ -182,6 +182,29 @@ export const CrmIntakeFieldDefinitionSchema = z.object({
 })
 export type CrmIntakeFieldDefinition = z.infer<typeof CrmIntakeFieldDefinitionSchema>
 
+export const CrmIntakeAttachmentPolicySchema = z.object({
+  key: CrmOperationsStableKeySchema,
+  label: z.string().trim().min(1).max(200),
+  required: z.boolean().default(false),
+  maxBytes: z.number().int().min(1).max(1_048_576),
+  mimeTypes: z.array(z.enum(['image/jpeg', 'image/png', 'image/webp'])).min(1).max(3),
+}).strict().superRefine((policy, ctx) => {
+  if (new Set(policy.mimeTypes).size !== policy.mimeTypes.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mimeTypes'], message: 'attachment MIME types must be unique' })
+  }
+})
+export type CrmIntakeAttachmentPolicy = z.infer<typeof CrmIntakeAttachmentPolicySchema>
+
+export const CrmSubmissionAttachmentSchema = z.object({
+  key: CrmOperationsStableKeySchema,
+  name: z.string().trim().min(1).max(200)
+    .refine((value) => !/[\\/\u0000-\u001f\u007f]/.test(value), 'attachment name must not contain a path or control character'),
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  contentBase64: z.string().min(4).max(1_398_104)
+    .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/, 'attachment must use canonical base64'),
+}).strict()
+export type CrmSubmissionAttachment = z.infer<typeof CrmSubmissionAttachmentSchema>
+
 export const CrmConsentAnswerMappingSchema = z.object({
   fieldKey: CrmOperationsStableKeySchema,
   grantedValue: z.union([z.string().max(200), z.boolean(), z.number()]),
@@ -200,6 +223,7 @@ export const CrmFollowUpTaskTemplateSchema = z.object({
 
 export const CrmIntakeDefinitionVersionInputSchema = z.object({
   fields: z.array(CrmIntakeFieldDefinitionSchema).min(1).max(100),
+  attachments: z.array(CrmIntakeAttachmentPolicySchema).max(5).optional(),
   identityPolicy: CrmIdentityPolicySchema,
   identityVerification: CrmIntakeVerificationConfigSchema.optional(),
   allowedIdentityProvider: CrmOperationsStableKeySchema.nullable().optional(),
@@ -216,6 +240,13 @@ export const CrmIntakeDefinitionVersionInputSchema = z.object({
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['fields'], message: 'field keys must be unique' })
   }
   const known = new Set(keys)
+  const attachmentKeys = (value.attachments ?? []).map((attachment) => attachment.key)
+  if (new Set(attachmentKeys).size !== attachmentKeys.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['attachments'], message: 'attachment keys must be unique' })
+  }
+  if (attachmentKeys.some((key) => known.has(key))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['attachments'], message: 'attachment keys must not duplicate field keys' })
+  }
   for (const [index, mapping] of value.consentMappings.entries()) {
     if (!known.has(mapping.fieldKey)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['consentMappings', index, 'fieldKey'], message: 'consent field must exist in the field catalog' })
@@ -269,11 +300,36 @@ export const RecordCrmSubmissionCommandSchema = z.object({
   definitionKey: CrmOperationsStableKeySchema,
   idempotencyKey: z.string().trim().min(1).max(200),
   fields: boundedCrmObject(1_048_576),
+  attachments: z.array(CrmSubmissionAttachmentSchema).max(5).optional(),
   externalIdentity: CrmExternalIdentityClaimSchema.optional(),
   identityProof: CrmIntakeIdentityProofSchema.optional(),
   submittedAt: CrmOperationsInstantSchema.optional(),
 }).strict()
 export type RecordCrmSubmissionCommand = z.infer<typeof RecordCrmSubmissionCommandSchema>
+
+/** Internal production-import envelope. It is deliberately absent from the
+ * public CRM command union and tool/REST adapters. */
+export const ImportHistoricalCrmSubmissionSchema = z.object({
+  importJobId: CrmOperationsUuidSchema,
+  importRow: z.number().int().positive(),
+  contactId: CrmOperationsUuidSchema,
+  source: CrmOperationsStableKeySchema,
+  sourceSite: z.string().trim().min(1).max(500),
+  sourceForm: z.string().trim().min(1).max(500),
+  sourceSubmissionId: z.string().trim().min(1).max(500),
+  submittedAt: CrmOperationsInstantSchema,
+  status: z.enum(['new', 'in_progress', 'resolved', 'spam']),
+  fields: boundedCrmObject(1_048_576),
+  subject: z.string().trim().min(1).max(300).default('Historical form submission'),
+  message: z.string().trim().min(1).max(20_000).default('Imported historical form submission.'),
+  queueKey: CrmOperationsStableKeySchema.default('general'),
+}).strict()
+export type ImportHistoricalCrmSubmission = z.infer<typeof ImportHistoricalCrmSubmissionSchema>
+export type ImportHistoricalCrmSubmissionResult = {
+  record: Record<string, unknown>
+  created: boolean
+  duplicate: boolean
+}
 
 export const UpdateCrmSubmissionCommandSchema = z.object({
   kind: z.literal('update_submission'),
@@ -415,6 +471,13 @@ export const UpdateCrmParticipationCommandSchema = z.object({
   participationId: CrmOperationsUuidSchema,
   status: z.enum(['registered', 'attended', 'cancelled', 'no_show']),
 })
+
+export const CorrectCrmParticipationCheckInCommandSchema = z.object({
+  kind: z.literal('correct_participation_check_in'),
+  participationId: CrmOperationsUuidSchema,
+  expectedStatus: z.literal('attended'),
+  reason: z.string().trim().min(5).max(500),
+}).strict()
 
 const CRM_ENTITLEMENT_TRANSITIONS = {
   pending: new Set(['pending', 'active', 'cancelled']),
@@ -589,6 +652,7 @@ export const CrmOperationsCommandSchema = z.union([
   UpdateCrmEntitlementCommandSchema,
   RecordCrmParticipationCommandSchema,
   UpdateCrmParticipationCommandSchema,
+  CorrectCrmParticipationCheckInCommandSchema,
   SetDealPipelineStageCommandSchema,
 ])
 export type CrmOperationsCommand = z.infer<typeof CrmOperationsCommandSchema>
@@ -620,6 +684,14 @@ export interface CrmOperationsServicePort {
     context: CrmOperationsContext,
     command: CrmOperationsCommand,
   ): Promise<CrmOperationsCommandResult>
+}
+
+/** Internal port used only by the confirmed production-import service. */
+export interface CrmHistoricalSubmissionImportPort {
+  importHistoricalSubmission(
+    context: CrmOperationsContext,
+    input: ImportHistoricalCrmSubmission,
+  ): Promise<ImportHistoricalCrmSubmissionResult>
 }
 
 export type CrmOperationsErrorCode =
@@ -720,9 +792,9 @@ export function assertCrmOperationsAuthority(
   if(command.kind==='expire_due_entitlement' && !(context.actor.kind==='system_job' && context.actor.job==='entitlement_expiry')) {
     throw new CrmOperationsError('not_authorized','Due entitlement expiry requires its dedicated system job.')
   }
-  if (['preview_import_file_cleanup', 'execute_import_file_cleanup', 'preview_retention', 'execute_retention', 'preview_contact_erasure', 'erase_contact_with_preview', 'save_privacy_policy', 'release_address_suppression', 'save_managed_mailbox_policy', 'save_mailbox_integration_grant'].includes(command.kind) && (context.actor.kind !== 'user'
+  if (['preview_import_file_cleanup', 'execute_import_file_cleanup', 'preview_retention', 'execute_retention', 'preview_contact_erasure', 'erase_contact_with_preview', 'save_privacy_policy', 'release_address_suppression', 'save_managed_mailbox_policy', 'save_mailbox_integration_grant', 'correct_participation_check_in'].includes(command.kind) && (context.actor.kind !== 'user'
     || !['owner', 'admin'].includes(context.authority.role))) {
-    throw new CrmOperationsError('not_authorized', 'Policy approval and suppression release require a workspace owner or admin member.')
+    throw new CrmOperationsError('not_authorized', 'This reviewed operation requires a workspace owner or admin member.')
   }
   if (context.actor.kind === 'integration_key' && context.authority.integration?.credentialId !== context.actor.credentialId) {
     throw new CrmOperationsError('not_authorized', 'Integration authority must come from its authenticated credential.')

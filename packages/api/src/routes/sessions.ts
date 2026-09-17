@@ -1,3 +1,5 @@
+import { findFeedThreadDraft } from '../content-planning/collaboration-service.js'
+import { getFeedCollaboration } from '../db/feed-collaboration-store.js'
 import { Router } from 'express'
 import { findOrCreateUser, getDefaultAssistant, getUserAssistant, getUserProfilesByIds, getWorkspacePrimaryAssistant } from '../db/users.js'
 import { addSessionMessage, createWorkspaceChatSession, findSessionByChannel, findSessionById, getSessionMessageById, getSessionMessages, isSharedChatSession, rebindSessionAssistant, renameSession, updateSessionMessageText } from '../db/sessions.js'
@@ -43,6 +45,8 @@ import { COMMENT_THREAD_CHANNEL_TYPE } from '../db/comment-thread-store.js'
 
 /** A session whose read-access we gate (the subset of fields the gate reads). */
 type GatedSession = {
+  id?: string
+  channelType?: string
   userId: string
   assistantId: string
   visibility: string | null
@@ -71,6 +75,12 @@ export async function gateSessionRead(
   jwtUserId: string,
   session: GatedSession,
 ): Promise<{ status: number; error: string } | null> {
+  if (session.channelType === 'feed_thread') {
+    const parent = session.id ? await findFeedThreadDraft(session.id) : null
+    if (!parent || parent.assistantId !== session.assistantId) return { status: 404, error: 'Draft discussion not found' }
+    try { await getFeedCollaboration({ userId: jwtUserId, assistantId: parent.assistantId, sessionId: parent.sessionId, kind: 'user' }); return null }
+    catch { return { status: 403, error: 'Draft access required' } }
+  }
   let assistantWorkspaceId: string | null = null
   let membershipClearance: 'public' | 'internal' | 'confidential' | null = null
   if (session.visibility === 'workspace' || session.mode === 'draft') {

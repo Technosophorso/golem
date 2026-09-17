@@ -11,7 +11,7 @@ import {getPool,getAppPool} from '../client.js'
 import {createCrmOperationsService} from '../../crm-operations/service.js'
 import {createDbCrmOperationsStore} from '../crm-operations-store.js'
 import {createAssociationStore} from '../association-store.js'
-import {createWorkspaceModulesStore} from '../workspace-modules-store.js'
+import {createAssociationWorkspaceModulesStore} from '../../association/workspace-module.js'
 import {createSoftDeleteStore} from '../soft-delete-store.js'
 import {EventInputSchema,TicketInputSchema,OrderCreateSchema} from '../../association/domain.js'
 import {_resetCoalescerForTests} from '../../brain-stream/notify.js'
@@ -56,7 +56,7 @@ describe('[COMP:operations/crm-recovery] Actual encrypted logical restore',()=>{
     const plan=await ops.execute(context,CrmOperationsCommandSchema.parse({kind:'save_entitlement_plan',key:'recovery',name:'Recovery',feeMinor:0,currency:'USD',billingPeriod:'annual'}))
     await ops.execute(context,{kind:'grant_entitlement',contactId,planId:String(plan.record.id),idempotencyKey:'recovery-membership',status:'active',startsAt:'2000-01-01T00:00:00Z',endsAt:'2099-01-01T00:00:00Z',renewalMode:'none'})
     const commerce=createAssociationStore(),actor={credentialKind:'user' as const,credentialId:userId,actingUserId:userId}
-    await createWorkspaceModulesStore().act(workspaceId,userId,{action:'enable',expectedVersion:1})
+    await createAssociationWorkspaceModulesStore().act(workspaceId,userId,'association',{action:'enable',expectedVersion:1})
     const event=await commerce.upsertEvent(workspaceId,EventInputSchema.parse({slug:'recovery',title:'Recovery',startsAt:'2099-01-01T12:00:00Z',endsAt:'2099-01-01T14:00:00Z',timezone:'UTC',mode:'venue',status:'published',capacity:2}),actor)
     const eventId=String(event.record.id),ticket=await commerce.upsertTicket(workspaceId,eventId,TicketInputSchema.parse({key:'standard',name:'Standard',priceMinor:0,currency:'USD',status:'on_sale',capacity:2}),actor)
     const order=await commerce.createOrder(workspaceId,OrderCreateSchema.parse({contactId,idempotencyKey:'recovery-order',lines:[{ticketId:ticket.record.id,quantity:1,attendees:[{contactId,name:'Fictional survivor'}]}]}),actor)

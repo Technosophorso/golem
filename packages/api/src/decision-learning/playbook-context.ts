@@ -6,7 +6,7 @@
  * [COMP:api/decision-playbook-context]
  */
 
-import { PLAYBOOK_BLOCK_CHAR_CAP } from '@use-brian/shared'
+import { PLAYBOOK_BLOCK_CHAR_CAP, type FeedLearningScope } from '@use-brian/shared'
 import type { AnalyticsLogger } from '@use-brian/core'
 
 import {
@@ -25,8 +25,9 @@ const SENSITIVITY_RANK: Record<Sensitivity, number> = {
 }
 
 export type DecisionPlaybookApplicability = {
-  kind: 'email' | 'tool'
+  kind: 'email' | 'tool' | 'feed'
   key?: string | null
+  scope?: FeedLearningScope
 }
 
 export type DecisionPlaybookContext = {
@@ -42,6 +43,11 @@ function isApplicable(
   rule: PlaybookPromptRule,
   operation: DecisionPlaybookApplicability | undefined,
 ): boolean {
+  if (rule.applicabilityKind === 'feed') {
+    const source = rule.feedScope; const target = operation?.scope
+    if (operation?.kind !== 'feed' || !source || !target) return false
+    return feedLearningScopeApplies({ ...source, sensitivity: rule.decisionSensitivity }, target)
+  }
   if (rule.appliesToUserId === null || rule.applicabilityKind === 'general') return true
   // A generic chat turn may invoke any supplied tool, so all user-specific
   // operation rules remain available. A frozen workflow context narrows to
@@ -50,6 +56,14 @@ function isApplicable(
   if (rule.applicabilityKind !== operation.kind) return false
   if (!rule.applicabilityKey) return true
   return Boolean(operation.key) && rule.applicabilityKey === operation.key
+}
+
+/** Feed references and native rules share one applicability boundary. */
+export function feedLearningScopeApplies(source: FeedLearningScope, target: FeedLearningScope): boolean {
+  return source.platform === target.platform && source.postFormat === target.postFormat && source.brandId === target.brandId
+    && source.compartments.every(id => target.compartments.includes(id))
+    && source.projectIds.every(id => target.projectIds.includes(id))
+    && SENSITIVITY_RANK[source.sensitivity] <= SENSITIVITY_RANK[target.sensitivity]
 }
 
 function orderRank(
@@ -96,6 +110,10 @@ export async function loadDecisionPlaybookContext(params: {
   externalPrincipal: boolean
   operationKind: string
   operationId: string
+  /** Feed shared review intersects the current draft audience before selection. */
+  allowedRuleIds?: readonly string[]
+  /** Source preview must not count as model application. Defaults to true. */
+  recordApplication?: boolean
   applicability?: DecisionPlaybookApplicability
   sourceKind?: string | null
   sourceId?: string | null
@@ -131,6 +149,7 @@ export async function loadDecisionPlaybookContext(params: {
   }
 
   const ordered = loaded
+    .filter(rule => !params.allowedRuleIds || params.allowedRuleIds.includes(rule.id))
     .filter((rule) => rule.appliesToUserId === null || (
       !params.externalPrincipal
       && params.actorUserId !== null
@@ -147,7 +166,7 @@ export async function loadDecisionPlaybookContext(params: {
     rule.createdBy === 'decision_reflection' && rule.appliesToUserId !== null)
 
   let decisionApplicationId: string | null = null
-  if (decisionRules.length > 0 && params.actorUserId && !params.externalPrincipal) {
+  if (params.recordApplication !== false && decisionRules.length > 0 && params.actorUserId && !params.externalPrincipal) {
     try {
       const application = await appendDecisionApplication({
         workspaceId: params.workspaceId,

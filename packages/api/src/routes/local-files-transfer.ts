@@ -147,6 +147,9 @@ export function localFilesTransferRoutes(opts: {
   }
 
   async function sendBlob(req: Request, res: Response): Promise<void> {
+    // Plain image requests omit Origin; keep their cached responses separate
+    // from subsequent CORS blob reads of the same signed URL.
+    res.vary('Origin')
     const grant = grantFromRequest(req)
     if (!grant || grant.action !== 'read' || !verifyLocalFileGrant(grant, grant.signature, opts.signingSecret)) {
       rejectGrant(req, res, 'read')

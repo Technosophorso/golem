@@ -131,8 +131,8 @@ export function associationIntentKey(workspaceId:string,operation:string,target:
   return `association-intent:${workspaceId}${viewerSuffix()}:${operation}:${target}`;
 }
 
-export function associationOrdersCacheKey(workspaceId: string, cursor: string | null): string {
-  return `association-orders:${workspaceId}${viewerSuffix()}:${cursor ?? "first"}`;
+export function associationOrdersCacheKey(workspaceId: string, cursor: string | null, filters = ""): string {
+  return `association-orders:${workspaceId}${viewerSuffix()}:${filters}:${cursor ?? "first"}`;
 }
 
 /**
@@ -183,6 +183,14 @@ export function crmRegionCacheKey(
  */
 export function feedWorkspaceCacheKey(workspaceId: string): string {
   return `feed-workspace:${workspaceId}${viewerSuffix()}`;
+}
+
+export function feedCollaborationCacheKey(workspaceId: string, assistantId: string, sessionId: string, threadId?: string): string {
+  return `feed-collaboration:${workspaceId}${viewerSuffix()}:${assistantId}:${sessionId}${threadId ? `:thread:${threadId}` : ''}`;
+}
+
+export function feedLearningCacheKey(workspaceId: string, assistantId: string, sessionId: string): string {
+  return `${feedCollaborationCacheKey(workspaceId, assistantId, sessionId)}:learning`;
 }
 
 export function feedSessionsCacheKey(workspaceId: string, platform: string): string {

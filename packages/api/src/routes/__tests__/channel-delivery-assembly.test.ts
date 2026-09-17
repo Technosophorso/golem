@@ -188,8 +188,8 @@ describe('[COMP:api/channel-delivery-assembly] empty-delivery wiring', () => {
   it('never labels an analytics event with the tier-resolved model', () => {
     // `model` is the platform tier's serving model; a workspace custom endpoint
     // swaps the provider out and pins its own wire id, so `model` never reaches
-    // a provider. Labelling with it blamed `gemini-3.7-flash` for a turn served
-    // by `custom:646340b5` on 2026-08-24.
+    // a provider. Labelling with it blamed the managed Max model for a turn served
+    // by a custom endpoint.
     expect(pipelineSource).not.toMatch(/sanitizeAnalytics\(model\)/)
     expect(pipelineSource).toContain(
       'const analyticsModel = customLlmRuntime?.selector ?? model',

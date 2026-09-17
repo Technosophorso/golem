@@ -3,7 +3,7 @@ import { setTimeout } from 'node:timers/promises'
 import { afterAll, describe, expect, it } from 'vitest'
 import { type CrmOperationsContext, type CrmOperationsCommand } from '@use-brian/core'
 import { getPool, getAppPool } from '../client.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createAssociationStore } from '../association-store.js'
 import { createCrmOperationsService } from '../../crm-operations/service.js'
 import { createDbCrmOperationsStore } from '../crm-operations-store.js'
@@ -11,7 +11,7 @@ import { EventInputSchema, TicketInputSchema, OrderCreateSchema } from '../../as
 import { _resetCoalescerForTests } from '../../brain-stream/notify.js'
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
-const pool = getPool(), appPool = getAppPool(), modules = createWorkspaceModulesStore()
+const pool = getPool(), appPool = getAppPool(), modules = createAssociationWorkspaceModulesStore()
 const commerce = createAssociationStore(), operations = createCrmOperationsService(createDbCrmOperationsStore())
 const eventInput = { slug: 'fixture-event', title: 'Inventory fixture', startsAt: '2099-01-01T12:00:00Z', endsAt: '2099-01-01T14:00:00Z', timezone: 'UTC', mode: 'venue', status: 'published', capacity: 1 }
 const ticketInput = { key: 'standard', name: 'Standard', currency: 'USD', priceMinor: 0, status: 'on_sale', capacity: 1 }
@@ -21,7 +21,7 @@ async function fixture(eventPatch: Record<string, unknown> = {}, withTicket = tr
   await pool.query("INSERT INTO workspaces(id,name,owner_user_id) VALUES($1,'Inventory fixture',$2)", [workspaceId, userId])
   await pool.query("INSERT INTO workspace_members(workspace_id,user_id,role) VALUES($1,$2,'owner')", [workspaceId, userId])
   await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional attendee',$3,'manual')", [contactId, workspaceId, userId])
-  await modules.act(workspaceId, userId, { action: 'enable', expectedVersion: 1 })
+  await modules.act(workspaceId, userId, 'association', { action: 'enable', expectedVersion: 1 })
   const actor = { credentialKind: 'user' as const, credentialId: userId, actingUserId: userId }
   const event = await commerce.upsertEvent(workspaceId, EventInputSchema.parse({ ...eventInput, ...eventPatch }), actor)
   const eventId = String(event.record.id)
@@ -117,6 +117,31 @@ describe('[COMP:crm/association-inventory] Actual admission and committed bounda
     expect((await boundaries(f.workspaceId)).filter(r => r.event_type === 'association.inventory.available')).toHaveLength(1)
     await expect(commerce.updateRegistration(f.workspaceId, String(saved.record.id), { status: 'checked_in' }, f.actor)).rejects.toMatchObject({ code: 'invalid_transition' })
   })
+  it('corrects commerce and generic check-ins only from the expected state and retains the reason in audit', async () => {
+    const commerceFixture = await fixture(), order = await commerceFixture.order(), orderId = String(order.record.id)
+    await commerce.confirmFreeOrder(commerceFixture.workspaceId, orderId, commerceFixture.actor)
+    const registrationId = String((await pool.query('SELECT id FROM association_registrations WHERE order_id=$1', [orderId])).rows[0].id)
+    await commerce.updateRegistration(commerceFixture.workspaceId, registrationId, { status: 'checked_in' }, commerceFixture.actor)
+    const corrected = await commerce.correctRegistrationCheckIn(commerceFixture.workspaceId, registrationId,
+      { expectedStatus: 'checked_in', reason: 'Scanned the wrong badge' }, commerceFixture.actor)
+    expect(corrected).toMatchObject({ status: 'confirmed', checkedInAt: null })
+    await expect(commerce.correctRegistrationCheckIn(commerceFixture.workspaceId, registrationId,
+      { expectedStatus: 'checked_in', reason: 'Repeated correction' }, commerceFixture.actor))
+      .rejects.toMatchObject({ code: 'conflict', details: { currentStatus: 'confirmed' } })
+    const genericFixture = await fixture({ capacity: null }, false), participation = await genericFixture.participation({ status: 'attended' })
+    const participationId = String(participation.record.id)
+    const generic = await operations.execute(genericFixture.context, { kind: 'correct_participation_check_in', participationId,
+      expectedStatus: 'attended', reason: 'Marked the wrong attendee' })
+    expect(generic.record).toMatchObject({ status: 'registered', checkedInAt: null })
+    await expect(operations.execute(genericFixture.context, { kind: 'correct_participation_check_in', participationId,
+      expectedStatus: 'attended', reason: 'Repeated correction' })).rejects.toMatchObject({ code: 'conflict', details: { currentStatus: 'registered' } })
+    const audits = (await pool.query("SELECT action,metadata FROM association_audit_log WHERE (workspace_id=$1 OR workspace_id=$2) AND action IN('registration.check_in_corrected','crm.participation.check_in_corrected') ORDER BY action",
+      [commerceFixture.workspaceId, genericFixture.workspaceId])).rows
+    expect(audits).toEqual([
+      { action: 'crm.participation.check_in_corrected', metadata: { from: 'attended', to: 'registered', reason: 'Marked the wrong attendee' } },
+      { action: 'registration.check_in_corrected', metadata: { from: 'checked_in', to: 'confirmed', reason: 'Scanned the wrong badge' } },
+    ])
+  })
   it('requires an explicit human admin historical import, records provenance and never consumes stock', async () => {
     const f = await fixture({ startsAt: '1999-01-01T12:00:00Z', endsAt: '1999-01-01T14:00:00Z' })
     const patch = { sourceKind: 'import' as const, historicalImport: true, sourceId: randomUUID(), status: 'attended' as const }
@@ -141,7 +166,31 @@ describe('[COMP:crm/association-inventory] Actual admission and committed bounda
       await writer.query("UPDATE association_memberships SET ends_at=clock_timestamp()-interval '1 second' WHERE id=$1", [id])
       pending = f.order(undefined, undefined, true)
       const rejected = expect(pending).rejects.toMatchObject({ code: 'member_price_ineligible' })
-      await blocked("status='active' ORDER BY id FOR SHARE")
+      await blocked('contact_id=ANY')
+      await writer.query('COMMIT'); await rejected
+      expect(await boundaries(f.workspaceId)).toEqual([])
+    } finally { await writer.query('ROLLBACK').catch(() => {}); writer.release(); if (pending) await pending.catch(() => {}) }
+  })
+  it('rechecks every attendee after a membership row-lock wait and refuses a concurrent revocation', async () => {
+    const f = await fixture({}, true, { priceMinor: 1000, memberPriceMinor: 500 })
+    const attendeeId = randomUUID()
+    await pool.query("INSERT INTO entities(id,workspace_id,kind,display_name,created_by_user_id,source) VALUES($1,$2,'person','Fictional member attendee',$3,'manual')", [attendeeId, f.workspaceId, f.userId])
+    const planId = (await pool.query("INSERT INTO association_membership_plans(workspace_id,plan_key,name,currency,fee_minor,billing_period) VALUES($1,'fixture','Fixture','USD',0,'annual') RETURNING id", [f.workspaceId])).rows[0].id
+    await pool.query("INSERT INTO association_memberships(workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,starts_at,ends_at) VALUES($1,$2,$3,$4,repeat('a',64),'active',clock_timestamp()-interval '1 day',clock_timestamp()+interval '1 day')", [f.workspaceId, f.contactId, planId, randomUUID()])
+    const attendeeMembershipId = (await pool.query("INSERT INTO association_memberships(workspace_id,contact_id,plan_id,idempotency_key,request_fingerprint,status,starts_at,ends_at) VALUES($1,$2,$3,$4,repeat('b',64),'active',clock_timestamp()-interval '1 day',clock_timestamp()+interval '1 day') RETURNING id", [f.workspaceId, attendeeId, planId, randomUUID()])).rows[0].id
+    await commerce.upsertTicket(f.workspaceId, f.eventId, TicketInputSchema.parse({ ...ticketInput,
+      priceMinor: 1000, memberPriceMinor: 500, eligiblePlanKeys: ['fixture'], eligibilityRequired: true, eligibilityScope: 'buyer_and_attendees' }), f.actor)
+    const input = OrderCreateSchema.parse({ contactId: f.contactId, idempotencyKey: randomUUID(), lines: [{
+      ticketId: f.ticketId, quantity: 1, useMemberPrice: true,
+      attendees: [{ contactId: attendeeId, name: 'Fictional member attendee' }],
+    }] })
+    const writer = await pool.connect(); let pending: ReturnType<typeof commerce.createOrder> | undefined
+    try {
+      await writer.query('BEGIN')
+      await writer.query("UPDATE association_memberships SET status='cancelled' WHERE id=$1", [attendeeMembershipId])
+      pending = commerce.createOrder(f.workspaceId, input, f.actor)
+      const rejected = expect(pending).rejects.toMatchObject({ code: 'attendee_membership_ineligible', details: { attendeeIndex: 0 } })
+      await blocked('contact_id=ANY')
       await writer.query('COMMIT'); await rejected
       expect(await boundaries(f.workspaceId)).toEqual([])
     } finally { await writer.query('ROLLBACK').catch(() => {}); writer.release(); if (pending) await pending.catch(() => {}) }

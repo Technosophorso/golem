@@ -30,7 +30,55 @@ export type ToolNarration = {
   url?: string;
   /** Per-op narration lines for patchPage — rendered as sub-rows. */
   opLines?: string[];
+  /**
+   * Argument summary ("query: name:#1042 · first: 50") for tools whose
+   * description does not already carry their argument — `mcp_call` (from
+   * `args`), server-prefixed MCP tools and the generic fallback (from the
+   * input). Input-aware narrations ("Searching \"middle mile\"") get none:
+   * the argument is already in the line.
+   */
+  detail?: string;
 };
+
+/** How many scalar arguments `summarizeToolArgs` names, and how long each value may be. */
+const DETAIL_MAX_ARGS = 2;
+const DETAIL_MAX_VALUE = 40;
+/**
+ * Identifying arguments lead the summary regardless of the order the model
+ * emitted them, so a row reads "query: pricing · limit: 5" and not the
+ * reverse.
+ */
+const DETAIL_LEAD_KEYS = ["query", "q", "search", "id", "name", "title", "path", "url"];
+
+/**
+ * "key: value · key: value" from the first scalar entries of a tool's
+ * arguments, so nine calls to the same tool read as nine different rows.
+ * Objects and arrays are skipped (a nested filter is not a one-line summary);
+ * empty strings are skipped; long values are clipped. Returns undefined when
+ * nothing scalar is there.
+ */
+export function summarizeToolArgs(args: unknown): string | undefined {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const entries = Object.entries(args as Record<string, unknown>);
+  const rank = (key: string) => {
+    const i = DETAIL_LEAD_KEYS.indexOf(key);
+    return i === -1 ? DETAIL_LEAD_KEYS.length : i;
+  };
+  // Stable: lead keys by their priority, everything else keeps model order.
+  entries.sort((a, b) => rank(a[0]) - rank(b[0]));
+  const parts: string[] = [];
+  for (const [key, value] of entries) {
+    if (parts.length >= DETAIL_MAX_ARGS) break;
+    if (typeof value === "string") {
+      const v = value.trim();
+      if (!v) continue;
+      parts.push(`${key}: ${clip(v, DETAIL_MAX_VALUE)}`);
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      parts.push(`${key}: ${String(value)}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
 
 /** First string-valued input field among `keys`, trimmed, or undefined. */
 function strField(
@@ -117,11 +165,18 @@ export function describeToolFromInput(
   if (name === "mcp_call") {
     const tool = strField(input, "tool", "name");
     const server = strField(input, "server");
+    const detail = summarizeToolArgs(input.args);
     if (tool && server) {
-      return { description: format(dict.usingMcp, { tool, server }) };
+      return {
+        description: format(dict.usingMcp, { tool, server }),
+        ...(detail ? { detail } : {}),
+      };
     }
     if (tool) {
-      return { description: format(dict.callingTool, { name: tool }) };
+      return {
+        description: format(dict.callingTool, { name: tool }),
+        ...(detail ? { detail } : {}),
+      };
     }
     return { description: dict.mcp_call };
   }
@@ -223,13 +278,18 @@ export function describeToolFromInput(
 
   // Server-prefixed MCP tool (`mcp_<server>_<tool>`) → "Using {tool} ({server})".
   const mcpMatch = name.match(/^mcp_([^_]+)_(.+)$/);
+  const inputDetail = summarizeToolArgs(input);
   if (mcpMatch) {
     return {
       description: format(dict.usingMcp, { tool: mcpMatch[2]!, server: mcpMatch[1]! }),
+      ...(inputDetail ? { detail: inputDetail } : {}),
     };
   }
 
-  return { description: format(dict.generic, { name }) };
+  return {
+    description: format(dict.generic, { name }),
+    ...(inputDetail ? { detail: inputDetail } : {}),
+  };
 }
 
 /**

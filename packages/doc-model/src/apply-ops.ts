@@ -34,6 +34,7 @@ import type { Block, Page } from '@use-brian/core/dist/views/blocks.js'
 import { blockSchema } from '@use-brian/core/dist/views/blocks.js'
 import { FRAGMENT_FIELD, ID_NODE_TYPES, META_MAP } from './schema.js'
 import { pageToYDoc, yDocToSnapshot } from './encode.js'
+import { DrawingCollaboration, findDrawing } from './drawing.js'
 
 /**
  * The doc op vocabulary, structurally identical to `Op` in
@@ -42,7 +43,7 @@ import { pageToYDoc, yDocToSnapshot } from './encode.js'
  * the shapes are asserted compatible by the chat-route wiring that feeds it.
  */
 export type DocOp =
-  | { op: 'add'; after: string | 'start' | 'end'; block: Block }
+  | { op: 'add'; after?: string | 'start' | 'end'; block: Block }
   | { op: 'edit'; blockId: string; patch: Partial<Block> }
   | { op: 'delete'; blockId: string }
   | { op: 'move'; blockId: string; after: string | 'start' | 'end' }
@@ -416,6 +417,9 @@ function applyOne(
       return
     }
     case 'add': {
+      // Canonical add ops omit `after` to append. Normalize before either
+      // anchor lookup: an unhealed list wrapper may itself have no blockId.
+      const after = op.after ?? 'end'
       // Resolve a tmp id to a stable server id and remember it so later
       // ops in this batch can reference the block by its tmp id.
       const origId = op.block.id
@@ -428,12 +432,12 @@ function applyOne(
       // Falls through to the flat insert below when there's no anchor item to
       // nest against (e.g. an `end`/`start` anchor) — degrade visible, not lost.
       const indent = rawIndentOf(block)
-      if (indent > 0 && op.after !== 'start' && op.after !== 'end') {
-        const anchorId = idMap[op.after] ?? op.after
+      if (indent > 0 && after !== 'start' && after !== 'end') {
+        const anchorId = idMap[after] ?? after
         if (addNested(frag, anchorId, block, indent)) return
       }
 
-      const at = resolveInsertIndex(frag, op.after, idMap)
+      const at = resolveInsertIndex(frag, after, idMap)
 
       // List-item blocks: if the insertion point abuts a list wrapper of the
       // SAME kind, fold the new item INTO that wrapper instead of dropping a
@@ -519,7 +523,23 @@ function applyOne(
         return
       }
       const merged = { ...current, ...op.patch, id } as Block
+      if (current.kind === 'drawing' && merged.kind === 'drawing' && !('scene' in op.patch) && Object.keys(op.patch).every(key => key === 'title')) {
+        const base = findDrawing(doc, id)
+        if (base) {
+          const drawing = new DrawingCollaboration(doc, base, () => true)
+          try { drawing.rename(merged.title ?? '') } finally { drawing.dispose() }
+          return
+        }
+      }
       if (merged.kind === 'drawing' && 'scene' in op.patch) delete merged.preview
+      if (merged.kind === 'drawing' && 'scene' in op.patch) delete merged.collaborationError
+      if (current.kind === 'drawing' && merged.kind === 'drawing' && loc.kind === 'top') {
+        const validated = blockSchema.parse(merged)
+        const node = frag.get(loc.index) as Y.XmlElement
+        node.setAttribute('block', JSON.stringify(validated))
+        node.setAttribute('drawingEpoch', crypto.randomUUID())
+        return
+      }
       if (loc.kind === 'top') {
         const rebuilt = buildBlockNodes(merged)
         if (rebuilt.length === 0) {

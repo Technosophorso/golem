@@ -10,7 +10,7 @@ import { createDbCrmIntakeReadStore } from '../crm-intake-store.js'
 import { createCrmIntegrationRecordReadStore } from '../crm-integration-records.js'
 import { createAssociationService } from '../../association/service.js'
 import { createAssociationStore } from '../association-store.js'
-import { createWorkspaceModulesStore } from '../workspace-modules-store.js'
+import { createAssociationWorkspaceModulesStore } from '../../association/workspace-module.js'
 import { createCrmIntegrationStore } from '../crm-integration-store.js'
 import { crmIntegrationContext } from '../../routes/crm-integration.js'
 import { getPool } from '../client.js'
@@ -22,7 +22,7 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
 const app = new pg.Pool({ connectionString: process.env.DATABASE_URL_APP })
 const crm = createCrmOperationsService(createDbCrmOperationsStore(pool))
 const commerce = createAssociationStore(pool)
-const modules = createWorkspaceModulesStore(pool, app)
+const modules = createAssociationWorkspaceModulesStore(pool, app)
 const keys = createCrmIntegrationStore(pool, app)
 const association = createAssociationService({ crmService: crm, store: commerce, modules })
 const legacy = { credentialKind: 'api_key' as const, credentialId: 'fixture' }
@@ -77,7 +77,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
     await expect(crm.execute(limited, CrmOperationsCommandSchema.parse({ kind: 'save_event', ...event('not-selected') }))).rejects.toMatchObject({ code: 'integration_scope_denied' })
     const after = await pool.query('SELECT count(*) FROM association_audit_log WHERE workspace_id=$1', [f.workspaceId])
     expect(after.rows).toEqual(before.rows)
-    expect((await modules.getAssociation(f.workspaceId)).state).toBe('disabled')
+    expect((await modules.get(f.workspaceId, 'association')).state).toBe('disabled')
     const audit = await pool.query('SELECT actor_kind,actor_credential_id FROM association_audit_log WHERE workspace_id=$1', [f.workspaceId])
     expect(audit.rows).toHaveLength(2)
     expect(audit.rows.every((row) => row.actor_kind === 'integration_key' && row.actor_credential_id === f.credentialId)).toBe(true)
@@ -181,7 +181,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
 
   it('rechecks stale credentials before every commerce mutation including exact order and provider replay', async () => {
     const f=await fixture()
-    await modules.act(f.workspaceId,f.userId,{ action: 'enable',expectedVersion: 1 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable',expectedVersion: 1 })
     const e=await commerce.upsertEvent(f.workspaceId,event('commerce-admission'),legacy), eventId=String(e.record.id)
     const t=await commerce.upsertTicket(f.workspaceId,eventId,{ ...ticket, priceMinor: 100 },legacy)
     const input=OrderCreateSchema.parse({ contactId: f.contactId,idempotencyKey: randomUUID(),lines: [
@@ -265,6 +265,94 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
     await expect(createCrmIntegrationRecordReadStore({ ...principal, grants: [{ operation: 'association.read', selectors: { eventIds: 'all' } }] }, pool).get(f.contactId))
       .rejects.toMatchObject({ code: 'integration_scope_denied' })
   })
+  it('bounds member profiles to one workspace and records field-only audited edits with stale-write protection', async () => {
+    const f = await fixture(), other = await fixture()
+    await pool.query(`UPDATE entities SET canonical_id='member@example.test', attributes=$3::jsonb
+      WHERE workspace_id=$1 AND id=$2`, [f.workspaceId, f.contactId, JSON.stringify({
+      email: 'member@example.test', phone: '+852 2000 0000', private_note: 'must remain private',
+      custom_fields: { organisation_name: 'Example Org', position: 'Member', private_field: 'must remain private' },
+    })])
+    const principal = { workspaceId: f.workspaceId, credentialId: f.credentialId, grants: [
+      { operation: 'crm.records.read' as const, selectors: {} },
+      { operation: 'crm.records.write' as const, selectors: {} },
+    ] }
+    const profiles = createCrmIntegrationRecordReadStore(principal, pool)
+    const before = await profiles.getMemberProfile(f.contactId)
+    expect(before).toMatchObject({
+      contactId: f.contactId, name: 'Fixture person', email: 'member@example.test',
+      phone: '+852 2000 0000', organisationName: 'Example Org', position: 'Member', mailingAddress: null,
+    })
+    expect(await profiles.getMemberProfile(other.contactId)).toBeNull()
+
+    const updated = await profiles.updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: before!.updatedAt,
+      name: 'Updated member',
+      phone: null,
+      mailingAddress: 'Fixture address',
+    })
+    expect(updated).toMatchObject({ name: 'Updated member', phone: null, mailingAddress: 'Fixture address' })
+    await expect(profiles.updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: before!.updatedAt,
+      position: 'Stale edit',
+    })).rejects.toMatchObject({ code: 'conflict' })
+    const stored = await pool.query<{ attributes: Record<string, unknown> }>(
+      'SELECT attributes FROM entities WHERE workspace_id=$1 AND id=$2', [f.workspaceId, f.contactId])
+    expect(stored.rows[0].attributes).toMatchObject({
+      email: 'member@example.test', private_note: 'must remain private',
+      custom_fields: { organisation_name: 'Example Org', position: 'Member', mailing_address: 'Fixture address', private_field: 'must remain private' },
+    })
+    const audit = await pool.query<{ actor_kind: string; actor_credential_id: string; metadata: Record<string, unknown> }>(
+      `SELECT actor_kind,actor_credential_id,metadata FROM association_audit_log
+        WHERE workspace_id=$1 AND action='crm.member_profile.updated' AND subject_id=$2`, [f.workspaceId, f.contactId])
+    expect(audit.rows).toEqual([{
+      actor_kind: 'integration_key', actor_credential_id: f.credentialId,
+      metadata: { fields: ['mailingAddress', 'name', 'phone'] },
+    }])
+    const verificationId = randomUUID()
+    const emailUpdated = await profiles.updateMemberVerifiedEmail(f.contactId, {
+      expectedUpdatedAt: updated!.updatedAt,
+      email: 'New.Member@Example.test',
+      verificationId,
+    })
+    expect(emailUpdated).toMatchObject({ email: 'new.member@example.test' })
+    expect(await profiles.updateMemberVerifiedEmail(f.contactId, {
+      expectedUpdatedAt: before!.updatedAt,
+      email: 'new.member@example.test',
+      verificationId,
+    })).toMatchObject({ email: 'new.member@example.test' })
+    const storedEmail = await pool.query<{ canonical_id: string; attributes: Record<string, unknown> }>(
+      'SELECT canonical_id,attributes FROM entities WHERE workspace_id=$1 AND id=$2', [f.workspaceId, f.contactId])
+    expect(storedEmail.rows[0]).toMatchObject({
+      canonical_id: 'new.member@example.test', attributes: { email: 'new.member@example.test', private_note: 'must remain private' },
+    })
+    const emailAudit = await pool.query<{ actor_kind: string; actor_credential_id: string; metadata: Record<string, unknown> }>(
+      `SELECT actor_kind,actor_credential_id,metadata FROM association_audit_log
+        WHERE workspace_id=$1 AND action='crm.member_profile.email_verified' AND subject_id=$2`, [f.workspaceId, f.contactId])
+    expect(emailAudit.rows).toEqual([{
+      actor_kind: 'integration_key', actor_credential_id: f.credentialId,
+      metadata: { fields: ['email'], verificationId },
+    }])
+    const duplicateId = randomUUID()
+    await pool.query(`INSERT INTO entities
+      (id,workspace_id,kind,display_name,canonical_id,attributes,created_by_user_id,source)
+      VALUES($1,$2,'person','Duplicate email',$3,$4::jsonb,$5,'manual')`,
+    [duplicateId, f.workspaceId, 'duplicate@example.test', JSON.stringify({ email: 'duplicate@example.test' }), f.userId])
+    await expect(profiles.updateMemberVerifiedEmail(f.contactId, {
+      expectedUpdatedAt: emailUpdated!.updatedAt,
+      email: 'duplicate@example.test',
+      verificationId: randomUUID(),
+    })).rejects.toMatchObject({ code: 'conflict', details: { reason: 'email_already_linked' } })
+    await expect(createCrmIntegrationRecordReadStore({
+      ...principal, grants: [{ operation: 'crm.records.read' as const, selectors: {} }],
+    }, pool).updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: emailUpdated!.updatedAt, name: 'Forbidden edit',
+    })).rejects.toMatchObject({ code: 'integration_scope_denied' })
+    await keys.revoke(f.workspaceId, f.userId, f.credentialId)
+    await expect(profiles.updateMemberProfile(f.contactId, {
+      expectedUpdatedAt: emailUpdated!.updatedAt, name: 'Revoked edit',
+    })).rejects.toMatchObject({ code: 'credential_revoked' })
+    expect(await profiles.getMemberProfile(f.contactId)).toMatchObject({ name: 'Updated member' })
+  })
   it('bounds traversal across new inserts and label edits, rejects cross-query cursors and pages all field definitions', async () => {
     const f = await fixture()
     const principal = { workspaceId: f.workspaceId, credentialId: f.credentialId,
@@ -310,7 +398,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
   })
   it('prevents ticket, mixed-order, by-id, provider and registration traversal across event grants', async () => {
     const f = await fixture()
-    await modules.act(f.workspaceId, f.userId, { action: 'enable', expectedVersion: 1 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'enable', expectedVersion: 1 })
     const a = await commerce.upsertEvent(f.workspaceId, event('event-a'), legacy)
     const b = await commerce.upsertEvent(f.workspaceId, event('event-b'), legacy)
     const aid = String(a.record.id), bid = String(b.record.id)
@@ -342,7 +430,7 @@ describe('[COMP:api/crm-integration-auth] Actual command and joined resource iso
     const page = await association.execute(ctx, AssociationCommandSchema.parse({ kind: 'module_blockers', limit: 1 }))
     expect(page.pendingOrders).toBe(1)
     expect(page.items?.[0].id).toBe(singleId)
-    await modules.act(f.workspaceId, f.userId, { action: 'request_disable', expectedVersion: 2 })
+    await modules.act(f.workspaceId, f.userId, 'association', { action: 'request_disable', expectedVersion: 2 })
     await association.execute(ctx, { kind: 'confirm_free_order', orderId: singleId })
     expect((await commerce.getOrder(f.workspaceId, singleId))?.status).toBe('paid')
     expect((await pool.query('SELECT count(*)::int AS count FROM association_provider_events WHERE workspace_id=$1', [f.workspaceId])).rows[0].count).toBe(0)

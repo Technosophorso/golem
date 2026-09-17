@@ -86,7 +86,7 @@ export type CrmOperationsReadPort = {
     contactId?: string
     eventId?: string
     status?: 'registered' | 'attended' | 'cancelled' | 'no_show'
-    sourceKind?: 'commerce' | 'manual' | 'form' | 'workflow' | 'import'
+    sourceKind?: 'commerce' | 'source_order' | 'manual' | 'form' | 'workflow' | 'import'
     limit?: number
   }): Promise<CrmPage<'participation'>>
   listPipelines(workspaceId: string, filters?: CrmPageQuery & {
@@ -561,13 +561,13 @@ export function createCrmOperationsTools(options: {
   })
   const listCrmParticipation = buildTool({
     name: 'listCrmParticipation', requiresCapability: 'crm', isReadOnly: true,
-    description: 'List canonical event participation with bounded contact, event, status, and source filters. Commerce-created registrations are mapped to generic lifecycle statuses and marked commerce_managed. Follow nextCursor with the same filters until it is null.',
+    description: 'List canonical event participation with bounded contact, event, status, and source filters. Order-backed registrations are mapped to generic lifecycle statuses and marked commerce_managed. Follow nextCursor with the same filters until it is null.',
     inputSchema: z.object({
       ...PageInput,
       contact_id: CrmOperationsUuidSchema.optional(),
       event_id: CrmOperationsUuidSchema.optional(),
       status: ParticipationStatusSchema.optional(),
-      source_kind: z.enum(['commerce', 'manual', 'form', 'workflow', 'import']).optional(),
+      source_kind: z.enum(['commerce', 'source_order', 'manual', 'form', 'workflow', 'import']).optional(),
       limit: z.number().int().min(1).max(100).default(50),
     }).strict(),
     async execute(input, context) {

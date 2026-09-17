@@ -9,6 +9,7 @@
  */
 import type { DoneWhenNode, EventSubscription, GoalBrief, GoalCompletionClaim, GoalCreateParams, GoalHostRef, GoalListFilters, GoalListRow, GoalMeans, GoalRecord, GoalStatus } from '@use-brian/core'
 import { query, queryWithRLS } from './client.js'
+import type pg from 'pg'
 import { notifyWorkspaceChange } from '../brain-stream/notify.js'
 import type { BrainChangeAction } from '../brain-stream/sse-fanout.js'
 
@@ -151,8 +152,14 @@ export async function createGoal(params: GoalCreateParams): Promise<GoalRecord> 
 }
 
 /** User-scoped read (RLS by workspace membership). */
-export async function getGoalById(userId: string, id: string): Promise<GoalRecord | null> {
-  const result = await queryWithRLS<GoalRow>(
+export async function getGoalById(userId: string, id: string, transactionClient?: pg.PoolClient): Promise<GoalRecord | null> {
+  // Feed confirmation freezes this existing primitive in its own transaction.
+  // Repeat the workspace-member read policy when using the owner connection.
+  const result = transactionClient ? await transactionClient.query<GoalRow>(
+    `SELECT ${FULL_SELECT} FROM goals WHERE id=$1 AND EXISTS
+      (SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=goals.workspace_id AND wm.user_id=$2) FOR SHARE`,
+    [id, userId],
+  ) : await queryWithRLS<GoalRow>(
     userId,
     `SELECT ${FULL_SELECT} FROM goals WHERE id = $1`,
     [id],

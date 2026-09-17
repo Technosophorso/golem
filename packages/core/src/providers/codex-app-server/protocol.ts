@@ -346,3 +346,15 @@ export type ThreadTokenUsageUpdatedNotification = z.infer<
 export type TurnCompletedNotification = z.infer<typeof TurnCompletedNotificationSchema>
 export type DynamicToolCallParams = z.infer<typeof DynamicToolCallParamsSchema>
 export type DynamicToolCallResponse = z.infer<typeof DynamicToolCallResponseSchema>
+
+// Public v2 schemas generated from the exact pinned runtime, not raw events.
+export const ModelProviderCapabilitiesResponseSchema = z.object({
+  imageGeneration: z.boolean(), namespaceTools: z.boolean(), webSearch: z.boolean(),
+})
+export const ImageCompletedNotificationSchema = z.object({
+  threadId: z.string().min(1).max(256), turnId: z.string().min(1).max(256),
+  item: z.object({ type: z.literal('imageGeneration'), id: z.string().min(1).max(256),
+    status: z.string().max(64), result: z.string().max(28 * 1024 * 1024),
+    revisedPrompt: z.string().nullable().optional(), savedPath: z.string().nullable().optional(),
+  }),
+})

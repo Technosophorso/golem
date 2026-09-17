@@ -13,6 +13,7 @@ import {
   CrmOperationsCommandSchema,
   CrmOperationsContextSchema,
   CrmOperationsError,
+  ImportHistoricalCrmSubmissionSchema,
   CrmLocaleWordingsSchema,
   CrmWordingLocaleSchema,
   CrmSegmentPredicateSchema,
@@ -21,6 +22,8 @@ import {
   isCrmConfigCommand,
   canonicalCrmRequest,
   crmOperationsSha256,
+  prepareCrmSubmissionAttachments,
+  requireCrmIntegrationResources,
   validateCrmSegmentCatalog,
   type CrmIntakeFieldDefinition,
   type CrmOperationsActor,
@@ -28,6 +31,7 @@ import {
   type CrmOperationsCommandResult,
   type CrmOperationsContext,
   type CrmOperationsServicePort,
+  type CrmHistoricalSubmissionImportPort,
   type CrmDeliveryServicePort,
   type CrmPrivacyServicePort,
   type CrmRetentionServicePort,
@@ -276,6 +280,7 @@ async function executeSubmission(
   const requestHash = crmOperationsSha256({
     definitionKey: command.definitionKey,
     fields: command.fields,
+    ...(command.attachments?.length ? { attachments: command.attachments } : {}),
     externalIdentity: command.externalIdentity ?? null,
     submittedAt: command.submittedAt ?? null,
   })
@@ -308,6 +313,7 @@ async function executeSubmission(
     })
   }
   const mapped = validateAndMapFields(definition, command.fields)
+  const attachments = await prepareCrmSubmissionAttachments(command.attachments ?? [], definition.attachments)
   const identityVerificationEvidence = verifyIntakeIdentity(context, definition, command, requestHash, now)
 
   let resolvedContactId: string | null = null
@@ -354,6 +360,7 @@ async function executeSubmission(
     identityVerificationEvidence,
   })
   const submissionId = recordId(submission, 'submission')
+  await tx.createSubmissionAttachments(submissionId, attachments)
 
   const emittedEventIds: string[] = []
   const auditIdentity: AuditIdentity = actorAuditIdentity(context.actor)
@@ -447,13 +454,62 @@ async function executeSubmission(
 export function createCrmOperationsService(
   store: CrmOperationsStore,
   options: CrmOperationsServiceOptions = {},
-): CrmOperationsServicePort {
+): CrmOperationsServicePort & CrmHistoricalSubmissionImportPort {
   const clock = options.now ?? (() => new Date())
   const makeCredentialId = options.randomCredentialId ?? randomUUID
   const makeSecret = options.randomSecret ?? (() => randomBytes(32).toString('base64url'))
   const hashCredentialSecret = options.hashCredentialSecret ?? hashSecret
 
   return {
+    async importHistoricalSubmission(rawContext, rawInput) {
+      const context = CrmOperationsContextSchema.parse(rawContext)
+      const input = ImportHistoricalCrmSubmissionSchema.parse(rawInput)
+      if (!context.authority.canWrite) {
+        throw new CrmOperationsError('not_authorized', 'CRM import write authority is required.')
+      }
+      if (context.actor.kind === 'import') {
+        if (context.actor.jobId !== input.importJobId || !['owner', 'admin'].includes(context.authority.role)) {
+          throw new CrmOperationsError('not_authorized', 'Historical submission imports require the current owner/admin import job.')
+        }
+      } else if (context.actor.kind === 'integration_key') {
+        if (context.authority.integration?.credentialId !== context.actor.credentialId) {
+          throw new CrmOperationsError('not_authorized', 'Historical import authority must come from its authenticated credential.')
+        }
+        requireCrmIntegrationResources(context.authority.integration, 'crm.submissions.write', { definitionIds: null })
+      } else {
+        throw new CrmOperationsError('not_authorized', 'Historical submissions are only available to the confirmed production importer.')
+      }
+      const requestFingerprint = crmOperationsSha256({
+        contactId: input.contactId,
+        source: input.source,
+        sourceSite: input.sourceSite,
+        sourceForm: input.sourceForm,
+        sourceSubmissionId: input.sourceSubmissionId,
+        submittedAt: input.submittedAt,
+        status: input.status,
+        subject: input.subject,
+        message: input.message,
+        queueKey: input.queueKey,
+        fields: input.fields,
+      })
+      return store.transaction(context, async (tx) => {
+        const saved = await tx.importHistoricalSubmission({ ...input, requestFingerprint })
+        if (saved.created) await audit(tx, context.actor, {
+          action: 'crm.submission.historical_imported',
+          subjectKind: 'submission',
+          subjectId: recordId(saved.record, 'historical submission'),
+          details: {
+            source: input.source,
+            sourceSite: input.sourceSite,
+            sourceForm: input.sourceForm,
+            sourceSubmissionId: input.sourceSubmissionId,
+            importJobId: input.importJobId,
+            importRow: input.importRow,
+          },
+        })
+        return { record: saved.record, created: saved.created, duplicate: !saved.created }
+      })
+    },
     async execute(rawContext, rawCommand) {
       const context = CrmOperationsContextSchema.parse(rawContext)
       const command = CrmOperationsCommandSchema.parse(rawCommand)
@@ -732,6 +788,19 @@ export function createCrmOperationsService(
             eventType: 'crm.participation.changed', eventKey: `crm.participation.changed:${command.participationId}:${String(record.updatedAt)}`,
             subjectKind: 'participation', subjectId: command.participationId,
             payload: { participationId: command.participationId, contactId: record.contactId, eventId: record.eventId, status: command.status, actorKind: context.actor.kind, occurredAt }, occurredAt,
+          })
+          return result(command.kind, record, { emittedEventIds: [eventId] })
+        }
+        if (command.kind === 'correct_participation_check_in') {
+          const record = await tx.correctParticipationCheckIn(command.participationId, command.expectedStatus)
+          if (!record) throw new CrmOperationsError('not_found', 'Participation was not found.')
+          await audit(tx, context.actor, { action: 'crm.participation.check_in_corrected', subjectKind: 'participation',
+            subjectId: command.participationId, details: { from: command.expectedStatus, to: 'registered', reason: command.reason } })
+          const eventId = await emit(tx, context, {
+            eventType: 'crm.participation.changed', eventKey: `crm.participation.changed:${command.participationId}:${String(record.updatedAt)}`,
+            subjectKind: 'participation', subjectId: command.participationId,
+            payload: { participationId: command.participationId, contactId: record.contactId, eventId: record.eventId,
+              status: 'registered', actorKind: context.actor.kind, occurredAt }, occurredAt,
           })
           return result(command.kind, record, { emittedEventIds: [eventId] })
         }

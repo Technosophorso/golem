@@ -19,7 +19,7 @@ import { I18nProvider } from "@/lib/i18n/client";
 import { en } from "@/lib/i18n/dictionaries/en";
 import type { Channel } from "@/lib/api/channels";
 import { updateChannel } from "@/lib/api/channels";
-import { ChannelDetail } from "../page";
+import { ChannelDetail } from "../page-client";
 
 vi.mock("@/lib/api/channels", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/channels")>();

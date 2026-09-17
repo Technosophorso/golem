@@ -114,6 +114,18 @@ describe('[COMP:providers/codex-process] managed Codex app-server process', () =
     await client.close()
   })
 
+  it('keeps account mutation and history injection out of the image surface', async () => {
+    const codexHome = await mkdtemp(join(tmpdir(), 'use-brian-codex-image-test-'))
+    cleanupPaths.push(codexHome)
+    const client = await startCodexAppServer({ codexHome, surface: 'image', command: { command: process.execPath, argsPrefix: [fakeServer] }, shutdownTimeoutMs: 500 })
+    try {
+      await expect(client.rpc.request('account/read', { refreshToken: false }, z.unknown())).resolves.toMatchObject({ account: null })
+      for (const method of ['account/login/start', 'account/logout', 'thread/inject_items']) {
+        await expect(client.rpc.request(method, {}, z.unknown())).rejects.toThrow(`RPC method is not enabled: ${method}`)
+      }
+    } finally { await client.close() }
+  })
+
   it('honors an already-aborted start without creating a process', async () => {
     const controller = new AbortController()
     controller.abort()

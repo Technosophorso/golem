@@ -2,13 +2,14 @@ import { beforeEach,describe,expect,it,vi } from "vitest";
 const api=vi.hoisted(()=>({fetch:vi.fn(),contact:vi.fn(),sendability:vi.fn()}));
 vi.mock("@/lib/auth-fetch",()=>({authFetch:api.fetch}));
 vi.mock("@/lib/api/crm",()=>({fetchCrmRecord:api.contact,checkCrmSendability:api.sendability}));
-import { listAssociationPage,exportAssociationAttendees,reserveAssociationOrder,offerAssociationPlace,saveAssociationEvent,saveAssociationPlan,saveAssociationTicket,checkInAssociationAttendee } from "@/lib/api/association";
+import { listAssociationPage,exportAssociationAttendees,exportAssociationOperationalRoster,reserveAssociationOrder,offerAssociationPlace,retryAssociationProviderReceipt,saveAssociationEvent,saveAssociationPlan,saveAssociationPromotion,saveAssociationTicket,checkInAssociationAttendee,correctAssociationCheckIn } from "@/lib/api/association";
 const response=(body:unknown,status=200)=>new Response(JSON.stringify(body),{status,headers:{"Content-Type":"application/json"}});
 const registration=(id:string,changes={})=>({id,attendeeContactId:`contact-${id}`,attendeeName:`Person ${id}`,attendeeEmail:`person-${id}@example.com`,status:"confirmed",...changes});
 beforeEach(()=>{vi.resetAllMocks();api.sendability.mockResolvedValue({verdict:"allowed"});api.contact.mockImplementation(async(_ws,id)=>({record:{kind:"contact",archivedAt:null,email:`person-${id.replace("contact-","")}@example.com`}}));});
 describe("[COMP:app-web/association] Native member wire contracts",()=>{
   it.each([
     ["plans","operations/entitlement-plans","plans"], ["events","operations/events","events"], ["memberships","operations/entitlements","entitlements"],
+    ["promotions","association/promotions","promotions"],
     ["waitlist","association/waitlist","submissions"], ["receipts","association/provider-receipts","receipts"], ["audit","operations/audit","entries"], ["deliveries","operations/event-delivery","events"],
   ] as const)("reads %s using its canonical envelope and cursor",async(resource,path,key)=>{
     api.fetch.mockResolvedValue(response({[key]:[{id:"one"}],nextCursor:"next/value"}));
@@ -39,11 +40,25 @@ describe("[COMP:app-web/association] Native member wire contracts",()=>{
     expect(api.fetch.mock.calls[3]).toEqual([expect.stringContaining("/registrations/stable-registration"),expect.objectContaining({method:"PATCH",body:'{"status":"checked_in"}'})]);
     for(const [,options] of api.fetch.mock.calls) expect(options.headers).toEqual({"Content-Type":"application/json"});
   });
+  it("retries one encoded provider receipt with an empty closed body",async()=>{
+    api.fetch.mockResolvedValue(response({result:{id:"order"},receipt:{id:"receipt/id",state:"applied"}}));
+    await retryAssociationProviderReceipt("workspace/id","receipt/id");
+    const [url,options]=api.fetch.mock.calls[0];
+    expect(url).toContain("/api/crm/workspace%2Fid/association/provider-receipts/receipt%2Fid/retry");
+    expect(JSON.parse(options.body)).toEqual({});
+  });
+  it("submits a reason and expected state for one check-in correction",async()=>{
+    api.fetch.mockResolvedValue(response({registration:{id:"registration/id",status:"confirmed"}}));
+    await correctAssociationCheckIn("workspace/id","registration/id","checked_in","Scanned the wrong badge");
+    const [url,options]=api.fetch.mock.calls[0];
+    expect(new URL(url,"https://app.example").pathname).toBe("/api/crm/workspace%2Fid/association/registrations/registration%2Fid/check-in-correction");
+    expect(JSON.parse(options.body)).toEqual({expectedStatus:"checked_in",reason:"Scanned the wrong badge"});
+  });
   it("keeps generic plan/event configuration separate from vertical tickets",async()=>{
     api.fetch.mockImplementation(async()=>response({}));
     // The shape is independently checked by canonical server schemas; this checks routing.
-    await saveAssociationPlan("w",{} as never);await saveAssociationEvent("w",{} as never);await saveAssociationTicket("w","event",{} as never);
-    expect(api.fetch.mock.calls.map(c=>new URL(c[0], "https://app.example").pathname)).toEqual(["/api/crm/w/operations/entitlement-plans","/api/crm/w/operations/events","/api/crm/w/association/events/event/tickets"]);
+    await saveAssociationPlan("w",{} as never);await saveAssociationEvent("w",{} as never);await saveAssociationTicket("w","event",{} as never);await saveAssociationPromotion("w",{} as never);
+    expect(api.fetch.mock.calls.map(c=>new URL(c[0], "https://app.example").pathname)).toEqual(["/api/crm/w/operations/entitlement-plans","/api/crm/w/operations/events","/api/crm/w/association/events/event/tickets","/api/crm/w/association/promotions"]);
   });
 });
 describe("[COMP:app-web/association] Complete consent-filtered attendee download",()=>{
@@ -72,5 +87,23 @@ describe("[COMP:app-web/association] Complete consent-filtered attendee download
     api.fetch.mockResolvedValueOnce(response({registrations:rows,nextCursor:null}));
     const csv=await exportAssociationAttendees("w","event","updates");expect(csv).toContain('"\' =SUM(1,2) ""quote"""');expect(api.sendability).toHaveBeenCalledTimes(1);
     api.fetch.mockImplementation(async()=>response({registrations:[],nextCursor:"loop"}));await expect(exportAssociationAttendees("w","event","updates")).rejects.toMatchObject({code:"invalid_cursor"});
+  });
+});
+describe("[COMP:app-web/association] Complete operational roster download",()=>{
+  const row=(id:string,changes={})=>({id,eventId:"event",orderId:`order-${id}`,orderLineId:`line-${id}`,ticketId:`ticket-${id}`,ticketKey:"standard",ticketName:"Standard",buyerContactId:`buyer-${id}`,attendeeContactId:`contact-${id}`,attendeeName:`Person ${id}`,attendeeEmail:`person-${id}@example.com`,phone:null,organisation:null,jobTitle:null,status:"reserved",checkedInAt:null,sourceKind:"commerce",sourceId:`line-${id}`,historicalImport:false,marketingConsent:false,ticketingConsent:true,policyVersion:null,policyAcceptedAt:null,questionResponses:null,createdAt:"2026-09-01T00:00:00Z",updatedAt:"2026-09-01T00:00:00Z",...changes});
+  it("retains non-consented and terminal rows, follows every cursor and escapes cells",async()=>{
+    api.fetch.mockResolvedValueOnce(response({registrations:[row("one",{attendeeName:" =SUM(1,2)",questionResponses:{diet:"none"}})],nextCursor:"next"}))
+      .mockResolvedValueOnce(response({registrations:[row("two",{status:"refunded",marketingConsent:null})],nextCursor:null}));
+    const csv=await exportAssociationOperationalRoster("w","event/id");
+    expect(csv.trim().split("\r\n")).toHaveLength(3);expect(csv).toContain('"\' =SUM(1,2)"');expect(csv).toContain('"{""diet"":""none""}"');
+    expect(csv).toContain('"refunded"');expect(csv).toContain('"false"');
+    expect(api.fetch.mock.calls.map(call=>new URL(call[0],"https://app.example").pathname)).toEqual([
+      "/api/crm/w/association/events/event%2Fid/operational-roster","/api/crm/w/association/events/event%2Fid/operational-roster"]);
+  });
+  it("fails closed on an invalid page or repeated cursor",async()=>{
+    api.fetch.mockResolvedValueOnce(response({registrations:null,nextCursor:null}));
+    await expect(exportAssociationOperationalRoster("w","event")).rejects.toMatchObject({code:"invalid_response"});
+    api.fetch.mockImplementation(async()=>response({registrations:[],nextCursor:"loop"}));
+    await expect(exportAssociationOperationalRoster("w","event")).rejects.toMatchObject({code:"invalid_cursor"});
   });
 });

@@ -138,6 +138,7 @@ import { format, useT } from "@/lib/i18n/client";
 import { cn } from "@/lib/utils";
 import { useCoarsePointer } from "@/lib/viewport";
 import { BrainGraphLoadingSkeleton } from "@/components/brain/graph-loading";
+import { AUDIT_ACCESS_STEP_MS } from "@/lib/turn-audit";
 
 /**
  * Minimum pointer-area radius on a coarse (touch) pointer, in SCREEN px
@@ -191,6 +192,14 @@ type Props = {
   highlightNames?: ReadonlySet<string> | null;
   /** Re-scope the highlight projection around ONE id (the panel's Reveal). */
   highlightRevealId?: string | null;
+  /** Active recorded access, within the stable full-turn highlight projection. */
+  accessIds?: readonly string[];
+  accessNames?: readonly string[];
+  /** A new key starts one finite pulse. Null pauses it; reduced motion is static. */
+  accessPulseKey?: string | null;
+  onAccessReady?: (ready: boolean) => void;
+  /** Collapse the groups legend in the short Audit pane, preserving access. */
+  auditMode?: boolean;
   onHighlightResolved?: (info: {
     visibleIds: string[];
     groupCounts: Record<string, number>;
@@ -416,6 +425,11 @@ export function BrainGraphView({
   highlightIds,
   highlightNames,
   highlightRevealId,
+  accessIds,
+  accessNames,
+  accessPulseKey,
+  onAccessReady,
+  auditMode = false,
   onHighlightResolved,
   loading,
 }: Props) {
@@ -1113,6 +1127,21 @@ export function BrainGraphView({
     }
   }, [motionDriver]);
 
+  const accessNodes = useMemo(() => graphData.nodes.filter((node) =>
+    !isBrainGraphGroupNode(node) && (accessIds?.includes(node.id) ||
+      accessNames?.includes(node.name.trim().toLowerCase())),
+  ), [graphData, accessIds, accessNames]);
+  const accessPulseStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    onAccessReady?.(!scopeLoading && !loading && Boolean(ForceGraph2D));
+  }, [onAccessReady, scopeLoading, loading, ForceGraph2D]);
+  useEffect(() => {
+    accessPulseStartRef.current = accessPulseKey && !reducedMotion && !scopeLoading && accessNodes.length > 0
+      ? performance.now() : null;
+    wake();
+    return () => { accessPulseStartRef.current = null; };
+  }, [accessPulseKey, reducedMotion, scopeLoading, accessNodes, wake]);
+
   // Visual-state changes → one frame at least.
   useEffect(() => {
     wake();
@@ -1467,6 +1496,8 @@ export function BrainGraphView({
       Object.values(highlightGroupCounts).reduce((a, b) => a + b, 0)
     : 0;
   const statsCopy = t.brainPage.graphView.stats;
+  const compactAudit = auditMode && dims !== null && (dims.w < 520 || dims.h < 360);
+  const GroupsLegendContainer = compactAudit ? "details" : "div";
   const chipCls =
     "rounded-md border border-[var(--graph-overlay-border)] bg-[var(--graph-overlay)] text-[11px] text-[var(--graph-overlay-fg)] shadow-sm backdrop-blur-md";
 
@@ -1591,13 +1622,16 @@ export function BrainGraphView({
         </div>
       )}
       {!showGraphLoader && colorMode === "group" && groupsLegend.rows.length > 1 && (
-        <div
+        <GroupsLegendContainer
+          key={compactAudit ? "compact" : "expanded"}
           className={cn(chipCls, "absolute bottom-2 left-2 z-10 w-[200px] px-1.5 py-1.5")}
           onPointerLeave={() => setLegendSpotlight(null)}
         >
-          <div className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide opacity-70">
+          {compactAudit ? <summary className="min-h-11 cursor-pointer content-center px-1 text-xs font-medium">
             {t.brainPage.graphView.groupsLegend.heading}
-          </div>
+          </summary> : <div className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide opacity-70">
+            {t.brainPage.graphView.groupsLegend.heading}
+          </div>}
           <ul className="flex flex-col">
             {groupsLegend.rows.map((row) => (
               <li key={row.community}>
@@ -1632,7 +1666,7 @@ export function BrainGraphView({
               </li>
             )}
           </ul>
-        </div>
+        </GroupsLegendContainer>
       )}
 
       {/* Color-mode toggle — Groups | Type. */}
@@ -1768,12 +1802,37 @@ export function BrainGraphView({
             );
           }}
           onRenderFramePre={(ctx: CanvasRenderingContext2D) => {
-            easePendingRef.current = false;
+            easePendingRef.current = accessPulseStartRef.current !== null &&
+              performance.now() - accessPulseStartRef.current < AUDIT_ACCESS_STEP_MS;
             paintHalos(ctx);
           }}
           onRenderFramePost={(ctx: CanvasRenderingContext2D, globalScale: number) => {
             if (colorMode === "group" && !hasGroupNodes) paintClusterLabels(ctx, globalScale);
             paintHoverEdgeLabels(ctx, globalScale);
+            // Pulse only actual visible accesses, never invent a traversal of
+            // the graph's relationships. The motion lease stops after one step.
+            const elapsed = accessPulseStartRef.current === null ? null : performance.now() - accessPulseStartRef.current;
+            ctx.save();
+            ctx.strokeStyle = colors.highlight;
+            ctx.lineWidth = 2 / globalScale;
+            for (const node of accessNodes) {
+              if (node.x === undefined || node.y === undefined) continue;
+              const radius = displayRadius(node);
+              ctx.globalAlpha = 0.9;
+              ctx.beginPath();
+              ctx.arc(node.x, node.y, radius + 5 / globalScale, 0, Math.PI * 2);
+              ctx.stroke();
+              if (elapsed === null || elapsed >= AUDIT_ACCESS_STEP_MS) continue;
+              for (const delay of [0, 0.35]) {
+                const progress = elapsed / AUDIT_ACCESS_STEP_MS - delay;
+                if (progress < 0) continue;
+                ctx.globalAlpha = (1 - progress) * 0.75;
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, radius + (5 + 26 * progress) / globalScale, 0, Math.PI * 2);
+                ctx.stroke();
+              }
+            }
+            ctx.restore();
             // The one decision the library cannot make: are eases still moving?
             settleMotion();
           }}

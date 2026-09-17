@@ -5,6 +5,7 @@ export type {
   CitationSource,
   DocumentAttachment,
   ToolUsed,
+  ActivityNote,
   ReplyTo,
   Session,
   PendingConfirmation,

@@ -33,6 +33,7 @@ const actions:Record<string,CrmPrivacyDomainReview['action']>={
   crm_identity_bindings:'delete',crm_entity_separations:'delete',crm_deal_contacts:'delete',
   association_external_identities:'delete',association_enquiries:'delete',association_enquiry_notes:'delete',
   association_consent_events:'delete',crm_suppression_events:'delete',association_memberships:'delete',
+  association_membership_offline_rescues:'delete',
   association_registrations:'redact',correction_audit:'redact',crm_delivery_receipts:'redact',
   crm_delivery_receipt_contacts:'delete',crm_intake_idempotency:'retire',crm_import_errors:'redact',crm_import_rows:'redact',
   association_audit_log:'redact',workspace_audit_log:'redact',
@@ -81,11 +82,13 @@ async function inspect(client:PoolClient,workspaceId:string,contactId:string) {
     domains.push({domain:entry.domain,action,count})
     if(action==='blocked'&&count)blockers.push({domain:entry.domain,reason:'crm_copy_resolution_required',count})
   }
-  const financial=(await client.query<{orders:number;lines:number}>(`SELECT
+  const financial=(await client.query<{orders:number;lines:number;rescues:number}>(`SELECT
     (SELECT count(*)::int FROM association_orders WHERE workspace_id=$1 AND contact_id=$2) orders,
-    (SELECT count(*)::int FROM association_order_lines l JOIN association_memberships m ON m.workspace_id=l.workspace_id AND m.id=l.eligible_membership_id WHERE l.workspace_id=$1 AND m.contact_id=$2) lines`,[workspaceId,contactId])).rows[0]!
+    (SELECT count(*)::int FROM association_order_lines l JOIN association_memberships m ON m.workspace_id=l.workspace_id AND m.id=l.eligible_membership_id WHERE l.workspace_id=$1 AND m.contact_id=$2) lines,
+    (SELECT count(*)::int FROM association_membership_offline_rescues WHERE workspace_id=$1 AND contact_id=$2 AND status IN('settled','reversed')) rescues`,[workspaceId,contactId])).rows[0]!
   if(financial.orders)blockers.push({domain:'association_orders',reason:'financial_retention_dependency',count:financial.orders})
   if(financial.lines)blockers.push({domain:'association_order_lines',reason:'financial_retention_dependency',count:financial.lines})
+  if(financial.rescues)blockers.push({domain:'association_membership_offline_rescues',reason:'financial_retention_dependency',count:financial.rescues})
   const unbound=(await client.query(`SELECT count(*)::int count FROM crm_intake_idempotency
     WHERE workspace_id=$1 AND contact_id=$2 AND status='committed' AND replay_policy_version IS NULL`,[workspaceId,contactId])).rows[0].count
   if(unbound&&!policy.policy.intakeReplay)blockers.push({domain:'crm_intake_idempotency',reason:'intake_replay_policy_unconfigured',count:unbound})

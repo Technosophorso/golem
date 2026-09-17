@@ -135,7 +135,7 @@ function expressionFor(rule: CrmSegmentRule, field: CatalogEntry, state: Compile
   if (rule.family === 'entitlement') {
     const plan = param(state, field.sourceKey)
     const at = state.pageTime ? '(SELECT at FROM crm_page_context)' : 'statement_timestamp()'
-    const effective = `crm_entitlement_is_effective(m.status,m.starts_at,m.ends_at,${at})`
+    const effective = `association_membership_is_effective(m.workspace_id,m.id,m.status,m.starts_at,m.ends_at,${at})`
     const column = field.sqlKind === 'starts_at' ? 'm.starts_at' : field.sqlKind === 'ends_at' ? 'm.ends_at'
       : `CASE WHEN m.status='active' AND NOT ${effective} THEN 'inactive' ELSE m.status END`
     return `(SELECT ${column} FROM association_memberships m

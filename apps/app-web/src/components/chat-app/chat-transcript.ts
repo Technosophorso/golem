@@ -1,5 +1,6 @@
-import type { Message } from "@use-brian/chat-ui";
+import type { ActivityNote, Message } from "@use-brian/chat-ui";
 import type { MessageAttachmentRef } from "@/lib/api/sessions";
+import { finalizeActivityNotes } from "@/lib/activity-receipt";
 
 /** Kept structural so the grouping seam remains compatible while the
  * document-viewer attachment graduates into the shared chat-ui package. */
@@ -149,6 +150,24 @@ function mergeUnique<T>(
   return merged;
 }
 
+/**
+ * Carry the run's intermediate prose across the row fold. A note the earlier
+ * row left unattached (text after its last tool call) precedes the later
+ * row's first tool, if it has one; otherwise it stays pending for the row
+ * after that, and the final pass drops whatever never met a tool.
+ */
+function mergeActivityNotes(
+  earlier: ChatSurfaceMessage,
+  later: ChatSurfaceMessage,
+): ActivityNote[] | undefined {
+  const firstLaterTool = later.toolsUsed?.[0]?.id;
+  const carried = (earlier.activityNotes ?? []).map((note) =>
+    !note.beforeToolId && firstLaterTool ? { ...note, beforeToolId: firstLaterTool } : note,
+  );
+  const merged = mergeUnique(carried, later.activityNotes, (entry) => entry.id);
+  return merged?.length ? merged : undefined;
+}
+
 function sameAssistantRun(
   earlier: ChatSurfaceMessage,
   later: ChatSurfaceMessage,
@@ -198,6 +217,7 @@ function mergeAssistantRows(
     later.toolsUsed,
     (entry) => entry.id,
   );
+  merged.activityNotes = mergeActivityNotes(earlier, later);
   merged.views = mergeUnique(
     earlier.views,
     later.views,
@@ -221,17 +241,51 @@ function mergeAssistantRows(
  * assistant is a hard boundary; otherwise the rows render as one message and
  * therefore one avatar.
  */
-export function coalesceAssistantRunMessages(
-  messages: ChatSurfaceMessage[],
-): ChatSurfaceMessage[] {
-  const rendered: ChatSurfaceMessage[] = [];
+export function coalesceAssistantRunMessages<T extends ChatSurfaceMessage>(
+  messages: T[],
+): T[] {
+  const rendered: T[] = [];
   for (const message of messages) {
     const previous = rendered.at(-1);
     if (previous && sameAssistantRun(previous, message)) {
-      rendered[rendered.length - 1] = mergeAssistantRows(previous, message);
+      rendered[rendered.length - 1] = mergeAssistantRows(previous, message) as T;
     } else {
       rendered.push(message);
     }
   }
-  return rendered;
+  // A run's notes are only decidable once its answer is known: drop the
+  // trailing segment that never met a tool and the note that IS the answer.
+  // Restored runs also get a COARSE wall-clock — the human row that started
+  // the run to the run's final row — so the receipt keeps its duration after
+  // a reload (per-step timings stay live-only).
+  return rendered.map((message, index) => {
+    if (message.role !== "assistant") return message;
+    let next: T = message;
+    if (message.activityNotes) {
+      const activityNotes = finalizeActivityNotes(message.activityNotes, message.text);
+      if (activityNotes) next = { ...next, activityNotes };
+      else {
+        const { activityNotes: _dropped, ...rest } = next;
+        next = rest as T;
+      }
+    }
+    if (next.toolsUsed?.length && next.activityDurationMs == null) {
+      const previous = index > 0 ? rendered[index - 1] : undefined;
+      const durationMs = coarseRunDurationMs(previous, next);
+      if (durationMs != null) next = { ...next, activityDurationMs: durationMs };
+    }
+    return next;
+  });
+}
+
+/** Wall-clock from the human row that opened a run to the run's final row. */
+function coarseRunDurationMs(
+  previous: ChatSurfaceMessage | undefined,
+  run: ChatSurfaceMessage,
+): number | undefined {
+  if (!previous || previous.role !== "user") return undefined;
+  const start = previous.timestamp.getTime();
+  const end = run.timestamp.getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
+  return end - start;
 }

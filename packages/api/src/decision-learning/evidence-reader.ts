@@ -31,8 +31,8 @@ export type DecisionPlaybookCorpusEntry = {
 export type NormalizedDecisionEvidence = {
   eventIds: string[]
   sourceObjectId: string
-  sourceKind: 'reviewed_email' | 'tool_denial'
-  applicabilityKind: 'email' | 'tool'
+  sourceKind: 'reviewed_email' | 'tool_denial' | 'feed_post'
+  applicabilityKind: 'email' | 'tool' | 'feed'
   applicabilityKey: string | null
   occurredAt: Date
   sensitivity: Sensitivity
@@ -323,4 +323,29 @@ export async function readDecisionEvidence(
     hasNewEvidence: bounded.some((item) =>
       newestLinkedEvidenceAt === null || item.occurredAt > newestLinkedEvidenceAt),
   }
+}
+
+/** Feed uses the native reflection bundle, with confirmed source references. */
+export async function readFeedDecisionEvidence(params: { assistantId: string; actorUserId: string; scope: import('@use-brian/shared').FeedLearningScope; cutoff?: Date; confirmationId?: string }, queryable: Queryable = getPool()): Promise<DecisionEvidenceBundle & { coverage: { eligible: number; retained: number; omitted: number } }> {
+  const { FEED_CONFIRMED_EVIDENCE_SQL, feedApplicabilityKey } = await import('../db/playbook-store.js')
+  const rows = (await queryable.query<{ id: string; sessionId: string; payload: Record<string, unknown>; scope: import('@use-brian/shared').FeedLearningScope; createdAt: Date; reason: string | null; total: string }>(`
+    SELECT de.id,de.session_id AS "sessionId",de.payload,fc.scope,de.created_at AS "createdAt",direct.reason,count(*) OVER() AS total
+    FROM decision_events de JOIN LATERAL (${FEED_CONFIRMED_EVIDENCE_SQL}) fc ON true
+    JOIN workspace_members member ON member.user_id=de.actor_user_id AND member.workspace_id=de.workspace_id
+    LEFT JOIN LATERAL (SELECT string_agg(part->>'text',E'\n') AS reason FROM feed_comment_threads t JOIN session_messages m ON m.session_id=t.transcript_session_id CROSS JOIN LATERAL jsonb_array_elements(m.content) part WHERE t.id::text=de.payload->>'reasonThreadId' AND t.session_id=de.session_id AND m.role='user' AND m.sender_user_id=de.actor_user_id AND m.created_at<=de.created_at AND fc.history->'messageIds' ? m.id::text AND (NOT(fc.history ? 'sourceHashes') OR fc.history->'sourceHashes'->>('message:'||m.id)=encode(sha256(convert_to(m.content::text,'UTF8')),'hex')) AND part->>'type'='text') direct ON true
+    WHERE de.assistant_id=$1 AND de.actor_user_id=$2 AND de.created_at>=now()-interval '30 days' AND fc.history_cutoff<=CASE WHEN $4::uuid IS NOT NULL THEN (SELECT history_cutoff FROM feed_post_confirmations WHERE id=$4 AND assistant_id=$1) ELSE coalesce($3::timestamptz,now()) END
+      ${excludeExternalPrincipalsSql('de.actor_user_id')}
+    ORDER BY de.created_at DESC,de.id DESC LIMIT 120`, [params.assistantId, params.actorUserId, params.cutoff ?? null, params.confirmationId ?? null])).rows
+  const key = feedApplicabilityKey(params.scope)
+  const grouped = new Map<string, NormalizedDecisionEvidence>()
+  for (const row of rows) {
+    if (feedApplicabilityKey(row.scope) !== key || !row.reason?.trim() || row.reason.length > 1000) continue
+    const existing = grouped.get(row.sessionId)
+    if (existing) { existing.eventIds.push(row.id); continue }
+    grouped.set(row.sessionId, { eventIds: [row.id], sourceObjectId: row.sessionId, sourceKind: 'feed_post', applicabilityKind: 'feed', applicabilityKey: key, occurredAt: row.createdAt, sensitivity: row.scope.sensitivity, reason: row.reason })
+  }
+  const evidence = [...grouped.values()].slice(0, 30)
+  const corpus = (await queryable.query<DecisionPlaybookCorpusEntry>(`SELECT rule,status,semantic_key AS "semanticKey",applies_to_user_id AS "appliesToUserId" FROM assistant_playbook_rules WHERE assistant_id=$1 AND (applies_to_user_id IS NULL OR applies_to_user_id=$2) ORDER BY created_at DESC LIMIT 100`, [params.assistantId, params.actorUserId])).rows
+  const eligible = Number(rows[0]?.total ?? 0); const retained = evidence.reduce((n, item) => n + item.eventIds.length, 0)
+  return { assistantId: params.assistantId, actorUserId: params.actorUserId, evidence, corpus, newestLinkedEvidenceAt: null, hasNewEvidence: evidence.length > 0, coverage: { eligible, retained, omitted: Math.max(0, eligible - retained) } }
 }

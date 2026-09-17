@@ -4,7 +4,7 @@ import { CrmOperationsError, requireCrmIntegrationResources, type AssociationAct
   type ProviderEntitlementEvent, type ProviderInboxEnvelope } from '@use-brian/core'
 import { createDbCrmOperationsStore } from '../db/crm-operations-store.js'
 import { lockCrmIntegrationCredential } from '../db/crm-integration-store.js'
-import { lockAssociationModule } from '../db/workspace-modules-store.js'
+import { lockAssociationModule } from './workspace-module.js'
 import { createCrmOperationsService } from '../crm-operations/service.js'
 import { requireProviderEntitlementActor } from '../crm-operations/entitlement-periods.js'
 import { receiveProviderInbox, type ProviderInboxHandlers, type ProviderInboxRow } from './provider-inbox.js'
@@ -52,25 +52,77 @@ export function createProviderEntitlementInbox(pool: Pool) {
       if (!(await client.query(`SELECT 1 FROM entities c JOIN association_membership_plans p ON p.workspace_id=c.workspace_id
         WHERE c.workspace_id=$1 AND c.id=$2 AND c.kind='person' AND c.valid_to IS NULL AND c.retracted_at IS NULL AND p.id=$3`,
         [workspaceId, target.contactId, target.planId])).rowCount) throw new CrmOperationsError('not_found', 'Entitlement contact or plan is unavailable.')
+      if (event.membershipCheckout) {
+        const evidence = event.membershipCheckout
+        const checkout = await client.query(`SELECT 1 FROM association_membership_checkouts
+          WHERE workspace_id=$1 AND id=$2 AND contact_id=$3 AND plan_id=$4
+            AND provider=$5 AND provider_reference=$6 AND provider_coupon_reference=$7
+            AND total_minor=$8 AND currency=$9 AND status IN('provider_bound','paid')
+            AND $10::timestamptz<=reservation_expires_at FOR SHARE`,
+        [workspaceId, evidence.id, target.contactId, target.planId, event.provider,
+          evidence.providerCheckoutReference, evidence.providerCouponReference,
+          evidence.amountMinor, evidence.currency, event.occurredAt])
+        if (!checkout.rowCount) {
+          throw new CrmOperationsError('conflict', 'Membership checkout evidence does not match an unexpired Brian reservation.',
+            { reason: 'membership_checkout_evidence_mismatch' })
+        }
+      }
       return target
     },
     async apply(client, envelope, actor) {
       const event = eventFor(envelope), command = event.command
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended('crm-provider-period:'||$1::uuid::text||':'||$2::text||':'||$3::text,0))", [workspaceId, event.provider, event.providerReference])
-      const later = await client.query(`SELECT 1 FROM association_integration_events WHERE workspace_id=$1 AND provider=$2 AND provider_reference=$3
-        AND target_kind='entitlement' AND state='applied' AND occurred_at>$4::timestamptz LIMIT 1`, [workspaceId, event.provider, event.providerReference, event.occurredAt])
-      if (later.rowCount) throw new CrmOperationsError('conflict', 'Newer verified provider state already exists.', { reason: 'provider_event_out_of_order' })
-      if (command.kind === 'update_entitlement') {
+      if (command.kind !== 'review_entitlement_financial_event') {
+        const later = await client.query(`SELECT 1 FROM association_integration_events WHERE workspace_id=$1 AND provider=$2 AND provider_reference=$3
+          AND target_kind='entitlement' AND state='applied' AND occurred_at>$4::timestamptz LIMIT 1`, [workspaceId, event.provider, event.providerReference, event.occurredAt])
+        if (later.rowCount) throw new CrmOperationsError('conflict', 'Newer verified provider state already exists.', { reason: 'provider_event_out_of_order' })
+      }
+      if (command.kind !== 'grant_entitlement') {
         const row = (await client.query<{ provider: string; provider_membership_id: string; provider_period_id: string; same: boolean }>(`SELECT provider,provider_membership_id,provider_period_id,
           ($3::text IS NULL OR status=$3) AND (NOT $4::boolean OR ends_at IS NOT DISTINCT FROM $5::timestamptz)
             AND ($6::text IS NULL OR renewal_mode=$6) same
           FROM association_memberships WHERE workspace_id=$1 AND id=$2 FOR UPDATE`,
-          [workspaceId, command.entitlementId, command.status ?? null, Object.hasOwn(command, 'endsAt'), command.endsAt ?? null, command.renewalMode ?? null])).rows[0]
-        if (!row || row.provider !== event.provider || row.provider_membership_id !== event.providerReference || row.provider_period_id !== event.providerPeriodId)
+          [workspaceId, command.entitlementId,
+            command.kind === 'update_entitlement' ? command.status ?? null : null,
+            command.kind === 'update_entitlement' && Object.hasOwn(command, 'endsAt'),
+            command.kind === 'update_entitlement' ? command.endsAt ?? null : null,
+            command.kind === 'update_entitlement' ? command.renewalMode ?? null : null])).rows[0]
+        const periodMismatch = command.kind === 'update_entitlement' && row?.provider_period_id !== event.providerPeriodId
+        if (!row || row.provider !== event.provider || row.provider_membership_id !== event.providerReference || periodMismatch)
           throw new CrmOperationsError('conflict', 'Provider object and period do not match the entitlement.')
+        if (command.kind === 'review_entitlement_financial_event') return {
+          record: await readMembership(client, workspaceId, command.entitlementId),
+          created: false,
+          reviewReason: command.adjustmentKind === 'refund'
+            ? 'membership_refund_policy_pending'
+            : 'membership_dispute_policy_pending',
+        }
         if (row.same) return { record: await readMembership(client, workspaceId, command.entitlementId), created: false }
       }
+      if (event.membershipCheckout && command.kind === 'grant_entitlement') {
+        const evidence = event.membershipCheckout
+        const checkout = await client.query(`SELECT 1 FROM association_membership_checkouts
+          WHERE workspace_id=$1 AND id=$2 AND contact_id=$3 AND plan_id=$4
+            AND provider=$5 AND provider_reference=$6 AND provider_coupon_reference=$7
+            AND total_minor=$8 AND currency=$9 AND status IN('provider_bound','paid')
+            AND $10::timestamptz<=reservation_expires_at FOR UPDATE`,
+        [workspaceId, evidence.id, command.contactId, command.planId, event.provider,
+          evidence.providerCheckoutReference, evidence.providerCouponReference,
+          evidence.amountMinor, evidence.currency, event.occurredAt])
+        if (!checkout.rowCount) {
+          throw new CrmOperationsError('conflict', 'Membership checkout evidence changed before entitlement application.',
+            { reason: 'membership_checkout_evidence_mismatch' })
+        }
+      }
       const result = await createCrmOperationsService(createDbCrmOperationsStore(pool, client)).execute(contextFor(workspaceId, actor, event), command)
+      if (event.membershipCheckout) {
+        await client.query(`UPDATE association_membership_checkouts SET status='paid',updated_at=clock_timestamp()
+          WHERE workspace_id=$1 AND id=$2 AND status='provider_bound'`, [workspaceId, event.membershipCheckout.id])
+        await client.query(`UPDATE association_promotion_uses SET state='redeemed',reservation_expires_at=NULL,
+            released_reason=NULL,updated_at=clock_timestamp()
+          WHERE workspace_id=$1 AND membership_checkout_id=$2 AND state='reserved'`,
+        [workspaceId, event.membershipCheckout.id])
+      }
       return { record: await readMembership(client, workspaceId, String(result.record.id)), created: result.duplicate !== true }
     },
     read: (client, row) => readMembership(client, workspaceId, row.entitlement_id!),

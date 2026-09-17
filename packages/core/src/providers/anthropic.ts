@@ -13,7 +13,7 @@
  * Spec: docs/architecture/engine/provider-abstraction.md → "Fallback wrapper".
  */
 import Anthropic from '@anthropic-ai/sdk'
-import { systemContextParts } from './system-context.js'
+import { systemContextParts, extractHistorySystemContext } from './system-context.js'
 import { providerAliasMap, providerModelIds } from '@use-brian/shared/model-registry'
 import type {
   ContentBlock,
@@ -214,13 +214,13 @@ type SystemBlock = { type: 'text'; text: string; cache_control?: { type: 'epheme
  * potentially benefit. This existing character heuristic is not a tokenizer
  * or a guarantee of eligibility; the provider enforces model-specific minima.
  */
-function buildSystem(systemPrompt: string, runtimeSystemContext?: string): SystemBlock[] | string {
-  const parts = systemContextParts({ systemPrompt, runtimeSystemContext })
+function buildSystem(systemPrompt: string, runtimeSystemContext?: string, historySystemContext?: string[]): SystemBlock[] | string {
+  const parts = systemContextParts({ systemPrompt, runtimeSystemContext, historySystemContext })
   if (parts.length === 0) return ''
   // Rough rule of thumb: 1 token ≈ 4 chars. Below ~4 KB the cache write
   // overhead can outweigh the discount, so send as plain string.
   const CACHE_MIN_CHARS = 4096
-  if (parts.length === 1 && !runtimeSystemContext?.trim() && systemPrompt.length < CACHE_MIN_CHARS) return systemPrompt
+  if (parts.length === 1 && systemPrompt.length < CACHE_MIN_CHARS) return systemPrompt
   return parts.map((text, index) => ({
     type: 'text', text,
     ...(index === 0 && systemPrompt.length >= CACHE_MIN_CHARS
@@ -235,6 +235,8 @@ async function* streamAnthropic(
   messages: AnthropicMessage[],
   options: {
     runtimeSystemContext?: string
+    /** Hoisted system-role rows — see `system-context.ts`. */
+    historySystemContext?: string[]
     maxTokens?: number
     temperature?: number
     tools?: ToolDefinition[]
@@ -271,7 +273,7 @@ async function* streamAnthropic(
       // the recovery answer, too high gives the model rope.
       max_tokens: options.maxTokens ?? 4096,
       ...(options.temperature !== undefined ? { temperature: options.temperature } : {}),
-      system: buildSystem(systemPrompt, options.runtimeSystemContext),
+      system: buildSystem(systemPrompt, options.runtimeSystemContext, options.historySystemContext),
       messages: sanitized,
       stream: true,
     },
@@ -355,6 +357,7 @@ export function createAnthropicProvider(options: AnthropicProviderOptions): LLMP
       const messages = toAnthropicMessages(request.messages)
       yield* streamAnthropic(client, modelId, request.systemPrompt, messages, {
         runtimeSystemContext: request.runtimeSystemContext,
+        historySystemContext: extractHistorySystemContext(request.messages),
         maxTokens: request.maxTokens,
         temperature: request.temperature,
         tools: request.tools,
@@ -368,12 +371,16 @@ export function createAnthropicProvider(options: AnthropicProviderOptions): LLMP
       // don't carry provider-specific state (Anthropic has no signature
       // round-trip), so this is correct and free of leaks.
       const history: AnthropicMessage[] = []
+      // System-role rows are dropped by toAnthropicMessages; keep their text
+      // across sends so the compaction summary survives a multi-step turn.
+      let historySystemContext: string[] = []
 
       return {
         async *send(messages: Message[], sendOpts?: SendOptions): AsyncIterable<StreamChunk> {
           // Suppress unused-var warning while preserving the SendOptions
           // signature — Anthropic has no per-call thinking-level toggle.
           void sendOpts
+          historySystemContext = [...historySystemContext, ...extractHistorySystemContext(messages)]
           const incoming = toAnthropicMessages(messages)
           if (history.length === 0) {
             history.push(...incoming)
@@ -384,6 +391,7 @@ export function createAnthropicProvider(options: AnthropicProviderOptions): LLMP
           const consolidated = mergeConsecutiveSameRole(history)
           yield* streamAnthropic(client, modelId, opts.systemPrompt, consolidated, {
             runtimeSystemContext: opts.runtimeSystemContext,
+            historySystemContext,
             maxTokens: opts.maxTokens,
             temperature: opts.temperature,
             tools: opts.tools,

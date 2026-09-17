@@ -1,6 +1,6 @@
 export type { StreamChunk, StreamFn, LLMProvider, ProviderRequest, ProviderSession, SessionOptions, Message, ContentBlock, ToolDefinition, ToolParameter, AssistantResponse, TokenUsage, StopReason } from './types.js'
 export { createGeminiProvider } from './gemini.js'
-export { systemContextParts, renderSystemContext } from './system-context.js'
+export { systemContextParts, renderSystemContext, extractHistorySystemContext, COMPACTED_HISTORY_LEAD } from './system-context.js'
 export type { SystemContext } from './system-context.js'
 export { createAnthropicProvider, classifyAnthropicError } from './anthropic.js'
 export type { AnthropicProviderOptions } from './anthropic.js'
@@ -35,3 +35,4 @@ export {
 } from './context-budget.js'
 export type { FitResult } from './context-budget.js'
 export { createAccumulator, collectStream } from './accumulator.js'
+export { createGeminiImageProvider, parseGeminiImageReceipt, type GeminiImageReceipt, type GeneratedImageReceipt } from './gemini-image.js'

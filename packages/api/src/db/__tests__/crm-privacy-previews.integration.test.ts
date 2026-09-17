@@ -78,8 +78,8 @@ describe('[COMP:crm/privacy-previews] Review-bound canonical erasure',()=>{
       VALUES($1,$2,$3,$4,'fixture',repeat('a',64),now())`,[membershipId,f.workspaceId,f.contactId,planId])
     await pool.query(`INSERT INTO association_events(id,workspace_id,slug,title,starts_at,ends_at,timezone,mode)
       VALUES($1,$2,'fixture','Fixture event',now(),now()+interval '1 hour','UTC','venue')`,[eventId,f.workspaceId])
-    await pool.query(`INSERT INTO association_registrations(id,workspace_id,event_id,attendee_contact_id,attendee_name,source_kind,source_id,request_fingerprint,status)
-      VALUES($1,$2,$3,$4,'Private attendee','manual','fixture',repeat('a',64),'registered')`,[registrationId,f.workspaceId,eventId,f.contactId])
+    await pool.query(`INSERT INTO association_registrations(id,workspace_id,event_id,attendee_contact_id,attendee_name,eligible_membership_id,source_kind,source_id,request_fingerprint,status)
+      VALUES($1,$2,$3,$4,'Private attendee',$5,'manual','fixture',repeat('a',64),'registered')`,[registrationId,f.workspaceId,eventId,f.contactId,membershipId])
     const audits:string[]=[]
     for(const [kind,id] of [['submission',enquiryId],['entitlement',membershipId],['participation',registrationId]]) {
       const result=await pool.query(`INSERT INTO association_audit_log(workspace_id,action,subject_kind,subject_id,actor_kind,actor_credential_id,metadata)
@@ -101,7 +101,8 @@ describe('[COMP:crm/privacy-previews] Review-bound canonical erasure',()=>{
     expect((await pool.query('SELECT * FROM association_audit_log WHERE id=$1',[untouched.id])).rows).toEqual([untouched])
     expect((await pool.query('SELECT id FROM association_enquiries WHERE id=$1',[enquiryId])).rowCount).toBe(0)
     expect((await pool.query('SELECT id FROM association_memberships WHERE id=$1',[membershipId])).rowCount).toBe(0)
-    expect((await pool.query('SELECT attendee_contact_id FROM association_registrations WHERE id=$1',[registrationId])).rows[0].attendee_contact_id).toBeNull()
+    expect((await pool.query('SELECT attendee_contact_id,eligible_membership_id FROM association_registrations WHERE id=$1',[registrationId])).rows[0])
+      .toEqual({attendee_contact_id:null,eligible_membership_id:null})
   })
   it('binds a preview to its creating current owner, workspace, subject and hash',async()=>{
     const f=await fixture(),other=await fixture(),preview=await f.preview()

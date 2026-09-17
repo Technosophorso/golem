@@ -66,7 +66,7 @@ describe('[COMP:crm/operations-privacy] CRM operations privacy lifecycle', () =>
     const result = await pruneCrmOperationsRetention(workspaceId, new Date('2026-01-01T00:00:00Z'))
     const sql = mocks.clientQuery.mock.calls.map(([statement]) => String(statement)).join('\n')
 
-    expect(result.total).toBe(10)
+    expect(result.total).toBe(12)
     expect(sql).toContain('DELETE FROM crm_import_sources')
     expect(sql).toContain('replay_expires_at<=clock_timestamp()')
     expect(sql).toContain('source_id=ANY($3::uuid[])')
@@ -75,6 +75,7 @@ describe('[COMP:crm/operations-privacy] CRM operations privacy lifecycle', () =>
     expect(sql).toContain("status='delivered'")
     expect(sql).not.toContain("status IN ('delivered','failed')")
     expect(sql).toContain('DELETE FROM crm_intake_idempotency')
+    expect(sql).toContain('DELETE FROM association_submission_attachments')
     expect(sql).toContain('DELETE FROM association_enquiries')
     expect(sql).not.toContain('DELETE FROM association_consent_events')
     expect(sql).not.toContain('DELETE FROM association_audit_log')

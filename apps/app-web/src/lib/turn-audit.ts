@@ -158,6 +158,16 @@ export function buildAuditTurns(messages: DocSessionMessage[]): AuditTurn[] {
   return turns;
 }
 
+/** Newest first, without changing the chronological numbering or rounds. */
+export function filterAuditTurns(turns: readonly AuditTurn[], query: string): AuditTurn[] {
+  const needle = query.trim().toLowerCase();
+  return turns.filter((turn) => !needle ||
+    [turn.prompt ?? "", turn.reply, ...turn.toolNames].some((text) =>
+      text.toLowerCase().includes(needle),
+    ),
+  ).sort((a, b) => Date.parse(b.at) - Date.parse(a.at) || b.index - a.index);
+}
+
 /**
  * One trace for a multi-round turn. The ledger keys a post-epoch run by its
  * LAST row, so a `full` trace there already holds every round and is
@@ -565,6 +575,30 @@ export function graphHighlightNames(summary: Pick<TraceSummary, "steps">): strin
     }
   }
   return out;
+}
+
+export type GraphAccessStep = {
+  key: string;
+  kind: "retrieval" | "tool_call";
+  toolName?: string;
+  ids: string[];
+  names: string[];
+};
+
+export const AUDIT_ACCESS_STEP_MS = 1400;
+
+/** Recorded accesses only, in execution order. Never infer a graph path. */
+export function graphAccessSteps(summary: Pick<TraceSummary, "steps">): GraphAccessStep[] {
+  return [...summary.steps].sort((a, b) => a.ordinal - b.ordinal).flatMap((step) => {
+    if (step.kind !== "retrieval" &&
+      !(step.kind === "tool_call" && isBrainRowTool(step.toolName))) return [];
+    const scoped = { steps: [step], retrievedRows: step.rows ?? [] };
+    const ids = graphHighlightIds(scoped);
+    const names = graphHighlightNames(scoped);
+    if (ids.length === 0 && names.length === 0) return [];
+    return [{ key: step.key, kind: step.kind as GraphAccessStep["kind"],
+      toolName: step.toolName, ids, names }];
+  });
 }
 
 // ── Presentation helpers ──────────────────────────────────────────────

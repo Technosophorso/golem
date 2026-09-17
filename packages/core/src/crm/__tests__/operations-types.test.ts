@@ -4,6 +4,7 @@ import {
   CrmIntakeDefinitionVersionInputSchema,
   CrmOperationsError,
   CrmOperationsContextSchema,
+  ImportHistoricalCrmSubmissionSchema,
   actorAuditIdentity,
   assertCrmOperationsAuthority,
   canonicalCrmRequest,
@@ -28,6 +29,20 @@ describe('[COMP:crm/operations-contract] CRM operations contracts', () => {
       expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, identityVerification: { ...definition.identityVerification, ...change } }).success).toBe(false)
     }
     expect(CrmOperationsCommandSchema.safeParse({ kind: 'record_submission', definitionKey: 'fixture', idempotencyKey: 'fixture', fields: {}, externalIdentity: { provider: 'fixture', subject: 'subject', verified: true } }).success).toBe(false)
+  })
+  it('bounds declared image attachments separately from mapped form fields', () => {
+    const field = { key: 'name', label: 'Name', type: 'text', required: true, mapping: { kind: 'base_field', field: 'name' } }
+    const attachment = { key: 'business_card', label: 'Business card', maxBytes: 1_048_576, mimeTypes: ['image/png'] }
+    const definition = { identityPolicy: 'new_or_review', fields: [field], attachments: [attachment] }
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse(definition).success).toBe(true)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [attachment, attachment] }).success).toBe(false)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [{ ...attachment, key: 'name' }] }).success).toBe(false)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [{ ...attachment, maxBytes: 1_048_577 }] }).success).toBe(false)
+    expect(CrmIntakeDefinitionVersionInputSchema.safeParse({ ...definition, attachments: [{ ...attachment, mimeTypes: ['image/svg+xml'] }] }).success).toBe(false)
+    expect(CrmOperationsCommandSchema.safeParse({
+      kind: 'record_submission', definitionKey: 'fixture', idempotencyKey: 'attachment-fixture', fields: { name: 'Fixture' },
+      attachments: [{ key: 'business_card', name: 'card.png', mimeType: 'image/png', contentBase64: 'aGVsbG8=' }],
+    }).success).toBe(true)
   })
   it('bounds locale maps and rejects client-owned wording evidence', () => {
     const save = { kind: 'save_consent_purpose', purposeKey: 'updates', label: 'Updates', wordingVersion: '1', wording: 'Default' }
@@ -102,6 +117,30 @@ describe('[COMP:crm/operations-contract] CRM operations contracts', () => {
       verified: true,
       fields: { name: 'Ari Example' },
     })).toThrowError(CrmOperationsError)
+  })
+
+  it('keeps historical submissions on the bounded internal import envelope', () => {
+    const input = {
+      importJobId: SESSION_ID,
+      importRow: 2,
+      contactId: USER_ID,
+      source: 'wix',
+      sourceSite: 'oasahk_org',
+      sourceForm: 'contact_form',
+      sourceSubmissionId: 'submission-42',
+      submittedAt: '2021-03-04T05:06:07.123456Z',
+      status: 'resolved',
+      fields: { answer: 'yes' },
+    }
+    expect(ImportHistoricalCrmSubmissionSchema.parse(input)).toMatchObject({
+      ...input,
+      subject: 'Historical form submission',
+      message: 'Imported historical form submission.',
+      queueKey: 'general',
+    })
+    expect(ImportHistoricalCrmSubmissionSchema.safeParse({ ...input, fields: [] }).success).toBe(false)
+    expect(ImportHistoricalCrmSubmissionSchema.safeParse({ ...input, submittedAt: '2021-03-04' }).success).toBe(false)
+    expect(CrmOperationsCommandSchema.safeParse({ kind: 'import_historical_submission', ...input }).success).toBe(false)
   })
 
   it('canonicalizes object key order for stable idempotency hashes', () => {

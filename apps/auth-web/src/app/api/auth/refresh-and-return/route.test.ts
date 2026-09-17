@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizedRetry } from './route'
+import { normalizedRetry } from './retry'
 
 describe('[COMP:app/outpost-auth] refresh retry bounds', () => {
   it('clamps negative, invalid, and oversized counters', () => {

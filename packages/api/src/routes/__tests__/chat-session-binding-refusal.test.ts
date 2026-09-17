@@ -45,11 +45,11 @@ describe('[COMP:api/chat-route] session-binding refusals are observable', () => 
   it('logs every refusal that ends the stream in the binding block', () => {
     const block = sessionBindingBlock()
     const refusals = block.match(/sendEvent\('error'/g) ?? []
-    // clearance refused · cross-assistant mismatch · per-user access denied
-    expect(refusals).toHaveLength(3)
+    // clearance · cross-assistant mismatch · per-user access · Feed target
+    expect(refusals).toHaveLength(4)
 
     // Each one is answered by a log call. `logSendRefusal` covers the two
-    // policy verdicts; the access gate logs inline.
+    // policy verdicts; the access and Feed target gates log inline.
     const logged =
       (block.match(/logSendRefusal\(/g) ?? []).length - 1 + // minus its definition
       (block.match(/eventName: 'chat_setup_error'/g) ?? []).length
@@ -66,9 +66,21 @@ describe('[COMP:api/chat-route] session-binding refusals are observable', () => 
       'assistant_clearance_exceeds_room',
       'session_assistant_mismatch',
       'session_access_denied',
+      'feed_context_invalid',
     ]) {
       expect(block).toContain(`code: '${code}'`)
     }
+  })
+
+  it('audits an invalid Feed target without recording draft text or target input', () => {
+    const block = sessionBindingBlock()
+    const refusal = block.slice(block.indexOf('} catch (error) {', block.indexOf('let feedTurnContext:')))
+    expect(refusal).toContain("error_type: sanitize('feed_context_invalid')")
+    expect(refusal).toContain("eventName: 'chat_setup_error'")
+    expect(refusal).toContain("stage: sanitize('session_binding')")
+    const metadata = refusal.slice(refusal.indexOf('metadata: {'), refusal.indexOf('res.end()'))
+    expect(metadata).not.toContain('feedTarget')
+    expect(metadata).not.toContain('error.message')
   })
 
   it('records what the refused session actually was', () => {

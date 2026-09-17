@@ -38,6 +38,7 @@ const definition: StoredIntakeDefinition = {
     { key: 'newsletter', label: 'Newsletter', type: 'boolean', required: true, mapping: { kind: 'submission_only' } },
     { key: 'private_note', label: 'Private note', type: 'text', required: false, mapping: { kind: 'custom_field', fieldKey: 'intake_note' } },
   ],
+  attachments: [],
   identityPolicy: 'new_or_review',
   allowedIdentityProvider: null,
   consentMappings: [{ fieldKey: 'newsletter', grantedValue: true, purposeKey: 'newsletter' }],
@@ -65,6 +66,7 @@ function makeTransaction(overrides: Partial<CrmOperationsTransaction> = {}) {
     updateContact: vi.fn().mockResolvedValue({ id: CONTACT_ID }),
     bindExternalIdentity: vi.fn().mockResolvedValue(undefined),
     createSubmission: vi.fn().mockResolvedValue({ id: SUBMISSION_ID, contactId: CONTACT_ID }),
+    createSubmissionAttachments: vi.fn().mockResolvedValue(undefined),
     createFollowUpTask: vi.fn().mockResolvedValue({ id: TASK_ID }),
     attachFollowUpTask: vi.fn().mockResolvedValue(undefined),
     getConsentPurpose: vi.fn().mockResolvedValue({
@@ -94,6 +96,7 @@ function makeTransaction(overrides: Partial<CrmOperationsTransaction> = {}) {
     updateEntitlement: vi.fn(),
     recordParticipation: vi.fn(),
     updateParticipation: vi.fn(),
+    correctParticipationCheckIn: vi.fn(),
     setDealPipelineStage: vi.fn(),
     appendDomainAudit: vi.fn().mockResolvedValue('domain-audit'),
     appendWorkspaceAudit: vi.fn().mockResolvedValue('workspace-audit'),
@@ -158,6 +161,7 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
       purpose: expect.objectContaining({ purposeKey: 'newsletter' }),
     }))
     expect(tx.attachFollowUpTask).toHaveBeenCalledWith(SUBMISSION_ID, TASK_ID)
+    expect(tx.createSubmissionAttachments).toHaveBeenCalledWith(SUBMISSION_ID, [])
     expect(tx.commitIdempotency).toHaveBeenCalledWith({
       claimId: 'claim-1', submissionId: SUBMISSION_ID, contactId: CONTACT_ID, followUpTaskId: TASK_ID,
     })
@@ -171,6 +175,59 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
       expect.objectContaining({ submissionId: SUBMISSION_ID, definitionKey: 'contact_form' }),
       expect.objectContaining({ contactId: CONTACT_ID, purposeKey: 'newsletter', action: 'granted' }),
     ]))
+  })
+
+  it('normalizes a declared image attachment before storing it with the submission', async () => {
+    const tx = makeTransaction({
+      getIntakeDefinition: vi.fn().mockResolvedValue({
+        ...definition,
+        attachments: [{
+          key: 'business_card', label: 'Business card', required: false,
+          maxBytes: 1_048_576, mimeTypes: ['image/png'],
+        }],
+      }),
+    })
+    const contentBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+    await createCrmOperationsService(makeStore(tx)).execute(context, {
+      ...submissionCommand,
+      attachments: [{ key: 'business_card', name: 'card.png', mimeType: 'image/png', contentBase64 }],
+    })
+    expect(tx.createSubmissionAttachments).toHaveBeenCalledOnce()
+    const saved = (tx.createSubmissionAttachments as ReturnType<typeof vi.fn>).mock.calls[0]![1][0]
+    expect(saved).toMatchObject({
+      key: 'business_card', originalName: 'card.png', mimeType: 'image/png',
+      sizeBytes: expect.any(Number), sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
+    expect(Buffer.isBuffer(saved.contentBytes)).toBe(true)
+    expect(saved.contentBytes.toString('base64')).not.toBe(contentBase64)
+  })
+
+  it('rejects attachments that the intake definition does not declare', async () => {
+    const tx = makeTransaction(), rolledBack = vi.fn()
+    await expect(createCrmOperationsService(makeStore(tx, rolledBack)).execute(context, {
+      ...submissionCommand,
+      attachments: [{
+        key: 'business_card', name: 'card.png', mimeType: 'image/png',
+        contentBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      }],
+    })).rejects.toMatchObject({ code: 'invalid_input', details: { attachmentKey: 'business_card' } })
+    expect(rolledBack).toHaveBeenCalledOnce()
+    expect(tx.createContact).not.toHaveBeenCalled()
+  })
+
+  it('rejects a missing required attachment before creating CRM records', async () => {
+    const tx = makeTransaction({
+      getIntakeDefinition: vi.fn().mockResolvedValue({
+        ...definition,
+        attachments: [{
+          key: 'business_card', label: 'Business card', required: true,
+          maxBytes: 1_048_576, mimeTypes: ['image/png'],
+        }],
+      }),
+    })
+    await expect(createCrmOperationsService(makeStore(tx)).execute(context, submissionCommand))
+      .rejects.toMatchObject({ code: 'invalid_input', details: { attachmentKey: 'business_card' } })
+    expect(tx.createContact).not.toHaveBeenCalled()
   })
 
   it('returns the committed bounded response on an identical replay without any semantic write', async () => {
@@ -251,7 +308,7 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
   })
 
   it.each([
-    'createContact', 'createSubmission', 'appendConsent', 'createFollowUpTask',
+    'createContact', 'createSubmission', 'createSubmissionAttachments', 'appendConsent', 'createFollowUpTask',
     'appendDomainAudit', 'appendWorkspaceAudit', 'emitDomainEvent', 'commitIdempotency',
   ])('propagates a %s failure through the transaction rollback seam', async (method) => {
     let rolledBack = false
@@ -364,6 +421,28 @@ describe('[COMP:crm/operations-service] canonical CRM operations service', () =>
     ])
     expect(JSON.stringify(payloads)).not.toContain('person@example.com')
     expect(JSON.stringify(payloads)).not.toContain('do not emit')
+  })
+
+  it('requires an owner/admin and audits an expected-state participation check-in correction', async () => {
+    const participationId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const tx = makeTransaction({ correctParticipationCheckIn: vi.fn().mockResolvedValue({
+      id: participationId, contactId: CONTACT_ID, eventId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      status: 'registered', checkedInAt: null, updatedAt: '2026-08-30T12:00:00.000Z',
+    }) })
+    const memberContext: CrmOperationsContext = { workspaceId: WORKSPACE_ID, actor: { kind: 'user', userId: USER_ID },
+      authority: { role: 'member', canWrite: true, canConfigure: false, trustedIdentitySources: [] } }
+    const service = createCrmOperationsService(makeStore(tx), { now: () => new Date('2026-08-30T12:00:00.000Z') })
+    const command = { kind: 'correct_participation_check_in' as const, participationId, expectedStatus: 'attended' as const,
+      reason: 'Marked the wrong attendee' }
+    await expect(service.execute(memberContext, command)).rejects.toMatchObject({ code: 'not_authorized' })
+    const owner = { ...memberContext, authority: { ...memberContext.authority, role: 'owner' as const, canConfigure: true } }
+    const result = await service.execute(owner, command)
+    expect(result.record).toMatchObject({ status: 'registered', checkedInAt: null })
+    expect(tx.correctParticipationCheckIn).toHaveBeenCalledWith(participationId, 'attended')
+    expect(tx.appendDomainAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'crm.participation.check_in_corrected',
+      metadata: { from: 'attended', to: 'registered', reason: 'Marked the wrong attendee' } }))
+    expect(tx.emitDomainEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: 'crm.participation.changed',
+      payload: expect.objectContaining({ status: 'registered' }) }))
   })
 
   it('emits one redacted domain event for a custom pipeline stage move', async () => {

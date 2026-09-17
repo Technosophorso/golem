@@ -30,7 +30,7 @@
  * docs/architecture/engine/provider-abstraction.md.
  */
 import { providerAliasMap, providerModelIds, type ModelProvider } from '@use-brian/shared/model-registry'
-import { systemContextParts } from './system-context.js'
+import { systemContextParts, extractHistorySystemContext } from './system-context.js'
 import type {
   ContentBlock,
   LLMProvider,
@@ -117,8 +117,11 @@ function toCCMessages(messages: Message[], supportsVision: boolean): CCMessage[]
   for (const msg of messages) {
     if (typeof msg.content === 'string') {
       if (msg.content.trim().length === 0) continue
-      if (msg.role === 'system') out.push({ role: 'system', content: msg.content })
-      else if (msg.role === 'assistant') out.push({ role: 'assistant', content: msg.content })
+      // System-role rows are hoisted into the ordered system messages by
+      // streamCompat (extractHistorySystemContext), never forwarded inline —
+      // an inline third system message would survive the single-system retry.
+      if (msg.role === 'system') continue
+      if (msg.role === 'assistant') out.push({ role: 'assistant', content: msg.content })
       else out.push({ role: 'user', content: msg.content })
       continue
     }
@@ -164,12 +167,8 @@ function toCCMessages(messages: Message[], supportsVision: boolean): CCMessage[]
         }
       }
     }
-    if (parts.length > 0) {
-      if (msg.role === 'system') {
-        out.push({ role: 'system', content: parts.filter((p) => p.type === 'text').map((p) => (p as { text: string }).text).join('\n') })
-      } else {
-        out.push({ role: 'user', content: parts.every((p) => p.type === 'text') ? parts.map((p) => (p as { text: string }).text).join('') : parts })
-      }
+    if (parts.length > 0 && msg.role !== 'system') {
+      out.push({ role: 'user', content: parts.every((p) => p.type === 'text') ? parts.map((p) => (p as { text: string }).text).join('') : parts })
     }
   }
   return out
@@ -305,7 +304,11 @@ async function* streamCompat(
   omitSchema = false,
   combineSystemMessages = false,
 ): AsyncGenerator<StreamChunk> {
-  const systemParts = systemContextParts({ systemPrompt, runtimeSystemContext: options.runtimeSystemContext })
+  const systemParts = systemContextParts({
+    systemPrompt,
+    runtimeSystemContext: options.runtimeSystemContext,
+    historySystemContext: extractHistorySystemContext(messages),
+  })
   const ccMessages: CCMessage[] = [
     ...(combineSystemMessages && systemParts.length > 1 ? [systemParts.join('\n\n')] : systemParts)
       .map((content) => ({ role: 'system' as const, content })),

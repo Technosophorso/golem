@@ -79,14 +79,52 @@ describe('[COMP:crm/production-import] Actual machine source, job and row author
     expect((await f.post(`imports/${id}/resume`, rotated.key.oneTimeSecret).send({})).body).toEqual(completed.body)
     expect((await pool.query('SELECT id FROM entities WHERE workspace_id=$1 AND valid_to IS NULL', [f.workspaceId])).rowCount).toBe(1)
     expect((await pool.query('SELECT id FROM crm_import_rows WHERE job_id=$1', [id])).rowCount).toBe(1)
+    const receipt = (await pool.query('SELECT input_hash,result_refs FROM crm_import_rows WHERE job_id=$1', [id])).rows[0]
+    expect(receipt.input_hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(receipt.result_refs).toEqual([
+      { kind: 'contact', id: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+      { kind: 'consent', id: expect.stringMatching(/^[0-9a-f-]{36}$/) },
+    ])
     const audit = await pool.query(`SELECT actor_kind,actor_credential_id FROM association_audit_log WHERE workspace_id=$1 AND actor_kind='integration_key'`, [f.workspaceId])
     expect(audit.rows).toHaveLength(1)
     expect(audit.rows[0]).toMatchObject({ actor_credential_id: rotated.principal.credentialId })
     const inspection = await f.issue(reading)
     expect(await imports.get(inspection.context, id)).toMatchObject({ id, status: 'completed' })
     expect((await imports.list(inspection.context)).jobs.map((job) => job.id)).toEqual([id])
+    expect(await imports.resultsCsv(inspection.context, id)).toContain(`2,completed,${receipt.input_hash},`)
+    const downloaded = await request(f.app).get(`/api/crm/integration/operations/imports/${id}/results.csv`)
+      .set('Authorization', `Bearer ${inspection.key.oneTimeSecret}`)
+    expect(downloaded.status).toBe(200)
+    expect(downloaded.headers['content-disposition']).toContain('crm-import-results.csv')
+    expect(downloaded.text).toBe(await imports.resultsCsv(inspection.context, id))
     await expect(imports.resume(inspection.context, id)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await expect(pool.query(`UPDATE crm_import_jobs SET mapping='{}'::jsonb WHERE id=$1`, [id])).rejects.toThrow('immutable')
+  })
+  it('deduplicates an exact confirmation key and rejects reuse for another immutable source', async () => {
+    const f = await fixture(), writer = await f.issue(), confirmationKey = randomUUID()
+    const firstSource = await sources.stage(writer.context, randomUUID(), Buffer.from(csv))
+    const firstInput = { sourceId: firstSource.sourceId, entityKind: 'contact' as const, mapping }
+    const checked = await imports.dryRun(writer.context, firstInput)
+    const [first, replay] = await Promise.all([
+      imports.confirm(writer.context, {
+        ...firstInput, confirmed: true, dryRunHash: checked.dryRunHash, confirmationKey,
+      }),
+      imports.confirm(writer.context, {
+        ...firstInput, confirmed: true, dryRunHash: checked.dryRunHash, confirmationKey,
+      }),
+    ])
+    expect(replay).toEqual(first)
+    expect((await pool.query('SELECT id FROM crm_import_jobs WHERE workspace_id=$1 AND confirmation_key=$2',
+      [f.workspaceId, confirmationKey])).rows).toEqual([{ id: first.id }])
+
+    const changedSource = await sources.stage(writer.context, randomUUID(), Buffer.from(csv.replace('Fixture Person', 'Changed Person')))
+    const changedInput = { ...firstInput, sourceId: changedSource.sourceId }
+    const changed = await imports.dryRun(writer.context, changedInput)
+    await expect(imports.confirm(writer.context, {
+      ...changedInput, confirmed: true, dryRunHash: changed.dryRunHash, confirmationKey,
+    })).rejects.toMatchObject({ code: 'idempotency_conflict' })
+    expect((await pool.query('SELECT id FROM crm_import_jobs WHERE workspace_id=$1 AND confirmation_key=$2',
+      [f.workspaceId, confirmationKey])).rowCount).toBe(1)
   })
   it('denies files, changed authority, unknown trust and out-of-scope rows before any entity side effect', async () => {
     const f = await fixture(), writer = await f.issue()
@@ -123,6 +161,7 @@ describe('[COMP:crm/production-import] Actual machine source, job and row author
     await expect(imports.resume(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await expect(imports.cancel(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     await expect(imports.errorsCsv(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
+    await expect(imports.resultsCsv(writer.context, otherJob)).rejects.toMatchObject({ code: 'integration_scope_denied' })
     const foreign = await fixture(), foreignKey = await foreign.issue()
     expect(await imports.get(foreignKey.context, job.id)).toBeNull()
   })
@@ -169,5 +208,49 @@ describe('[COMP:crm/production-import] Actual machine source, job and row author
     const before = await counts()
     expect(await imports.resume(writer.context, job.id)).toMatchObject({ status: 'completed', succeededRows: 1 })
     expect(await counts()).toEqual(before)
+  })
+
+  it('requires an all-definitions submission grant and source selector for machine historical forms', async () => {
+    const f = await fixture(), contactId = randomUUID()
+    await pool.query(`INSERT INTO entities (id,workspace_id,kind,display_name,attributes,created_by_user_id,source)
+      VALUES ($1,$2,'person','Machine history fixture','{}',$3,'manual')`, [contactId, f.workspaceId, f.userId])
+    const columns = ['contactId', 'historicalSubmissionSource', 'historicalSubmissionSite',
+      'historicalSubmissionForm', 'historicalSubmissionId', 'historicalSubmissionOccurredAt',
+      'historicalSubmissionStatus', 'historicalSubmissionFieldsJson']
+    const bytes = Buffer.from([columns.join(','), [contactId, 'wix', 'oasahk_org', 'contact_form',
+      'machine-row', '2020-01-01T00:00:00Z', 'resolved', '{}'].join(','), ''].join('\n'))
+    const mapping = { columns: Object.fromEntries(columns.map((column, index) => [index, column])) }
+
+    const missingSubmission = await f.issue([{
+      operation: 'crm.imports.write', selectors: { providerKeys: ['wix'], definitionIds: 'all' },
+    }])
+    const missingSource = await sources.stage(missingSubmission.context, randomUUID(), bytes)
+    await expect(imports.dryRun(missingSubmission.context, {
+      sourceId: missingSource.sourceId, entityKind: 'operations', mapping,
+    })).rejects.toMatchObject({ code: 'integration_scope_denied', operation: 'crm.submissions.write' })
+
+    const scoped = await f.issue([
+      { operation: 'crm.imports.write', selectors: { providerKeys: ['wix'], definitionIds: 'all' } },
+      { operation: 'crm.submissions.write', selectors: {} },
+    ])
+    const scopedSource = await sources.stage(scoped.context, randomUUID(), bytes)
+    await expect(imports.dryRun(scoped.context, {
+      sourceId: scopedSource.sourceId, entityKind: 'operations', mapping,
+    })).rejects.toMatchObject({ code: 'integration_scope_denied', operation: 'crm.submissions.write', dimension: 'definitionIds' })
+
+    const writer = await f.issue([
+      { operation: 'crm.imports.write', selectors: { providerKeys: ['wix'], definitionIds: 'all' } },
+      { operation: 'crm.submissions.write', selectors: { definitionIds: 'all' } },
+    ])
+    const source = await sources.stage(writer.context, randomUUID(), bytes)
+    const input = { sourceId: source.sourceId, entityKind: 'operations' as const, mapping }
+    const checked = await imports.dryRun(writer.context, input)
+    expect(checked).toMatchObject({ validRows: 1, failedRows: 0 })
+    const job = await imports.confirm(writer.context, { ...input, confirmed: true, dryRunHash: checked.dryRunHash })
+    expect(await imports.resume(writer.context, job.id)).toMatchObject({ status: 'completed', succeededRows: 1, failedRows: 0 })
+    expect((await pool.query(`SELECT actor_kind,actor_credential_id FROM association_audit_log
+      WHERE workspace_id=$1 AND action='crm.submission.historical_imported'`, [f.workspaceId])).rows)
+      .toEqual([{ actor_kind: 'integration_key', actor_credential_id: writer.principal.credentialId }])
+    expect((await pool.query(`SELECT count(*)::int AS count FROM crm_domain_event_outbox WHERE workspace_id=$1`, [f.workspaceId])).rows[0].count).toBe(0)
   })
 })

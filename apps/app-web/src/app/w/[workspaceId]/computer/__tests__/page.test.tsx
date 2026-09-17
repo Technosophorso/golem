@@ -23,7 +23,7 @@ vi.mock("@/lib/i18n/client", () => ({
   }),
 }));
 
-import BrowsersIndexPage, { BrowsersEmptyState } from "../page";
+import BrowsersIndexPage, { BrowsersEmptyState } from "../page-client";
 
 let root: Root | null = null;
 let container: HTMLElement | null = null;

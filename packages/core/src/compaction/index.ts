@@ -2,6 +2,7 @@ export {
   compactConversation,
   createCompactionCircuitBreaker,
   needsCompaction,
+  compactionThreshold,
   estimateTokens,
   estimateStringTokens,
   getIdleCompactionLevel,

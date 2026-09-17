@@ -399,7 +399,7 @@ importers:
   apps/doc-sync:
     dependencies:
       '@hocuspocus/server':
-        specifier: ^4.1.0
+        specifier: 4.2.0
         version: 4.2.0(y-protocols@1.0.7(yjs@13.6.31))(yjs@13.6.31)
       '@use-brian/api':
         specifier: workspace:*
@@ -883,6 +883,9 @@ importers:
       '@use-brian/core':
         specifier: workspace:*
         version: link:../core
+      '@use-brian/shared':
+        specifier: workspace:*
+        version: link:../shared
       prosemirror-model:
         specifier: ^1.25.2
         version: 1.25.9

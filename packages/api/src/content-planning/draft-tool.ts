@@ -1,9 +1,9 @@
 /**
  * Provider-independent draft-cardboard tool.
  *
- * The tool has no database or network side effects. Its input is emitted in
- * the chat stream and persisted with the session message so every edition can
- * render the same draft alternatives.
+ * Legacy use emits a read-only UI signal. Upgraded Feed drafts inject a
+ * capture callback that saves each alternative in immutable proposal storage
+ * before returning the signal. No provider call is made by this tool.
  *
  * [COMP:feed/content-planning-tool]
  */
@@ -24,6 +24,7 @@ const draftItemSchema = z.object({
   label: z.string().max(30).optional().describe(
     'Optional short tone or angle label shown above the draft.',
   ),
+  threadSegments: z.array(z.string().max(MAX_PROPOSED_DRAFT_CHARS)).min(1).max(100).optional().describe('For a whole X Thread alternative, supply the complete ordered bodies with the same number of segments as the current draft.'),
   imageBrief: z.string().max(2_000).optional().describe(
     'Optional written visual brief: subject, composition, and mood. Plain text, never a URL.',
   ),
@@ -41,7 +42,7 @@ const proposeDraftsInputSchema = z.object({
 
 export const PROPOSE_DRAFTS_TOOL_NAME = 'proposeDrafts'
 
-export function buildProposeDraftsTool(): Tool {
+export function buildProposeDraftsTool(options: { capture?: (input: z.infer<typeof proposeDraftsInputSchema>) => Promise<unknown> } = {}): Tool {
   return buildTool({
     requiresCapability: 'feed',
     homeAppToolSet: { app: 'feed', set: 'write' },
@@ -51,14 +52,16 @@ export function buildProposeDraftsTool(): Tool {
       'post bodies in this tool, not in the chat message. Reuse an index to ' +
       'revise an alternative and use the next unused index to add one.',
     inputSchema: proposeDraftsInputSchema,
-    isReadOnly: true,
-    isConcurrencySafe: true,
+    isReadOnly: !options.capture,
+    isConcurrencySafe: !options.capture,
     requiresConfirmation: false,
-    timeoutMs: 1_000,
+    timeoutMs: options.capture ? 15_000 : 1_000,
     async execute(input) {
+      const capture = options.capture ? await options.capture(input) : undefined
       return {
         data: {
           ok: true,
+          ...(capture ? { capture } : {}),
           count: input.drafts.length,
           indices: input.drafts.map((draft) => draft.index),
         },

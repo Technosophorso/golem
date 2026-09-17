@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { GET, resolveAppLoginReturn } from "../route";
+import { GET } from "../route";
+import { resolveAppLoginReturn } from "../login-return";
 import { webAppUrl } from "@/lib/primary-auth";
 import { ossSignedOutRedirect } from "@/lib/oss-entry";
 

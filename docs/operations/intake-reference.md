@@ -66,11 +66,13 @@ your trusted backend boundary; it is not a visitor authentication mechanism.
 
 | Request | Result |
 | --- | --- |
-| `POST /submissions/<definitionKey>` | Accept `{idempotencyKey, body: {fields, ...}}`; return `{receipt}` only after the queue commit. Queued/leased state is HTTP 202; an already terminal/failed receipt is HTTP 200 and retains its state. |
-| `GET /receipts/<id>` | Read state, timestamps, attempts, uncertainty, fixed error category and validated Brian result. No payload by default. |
-| `GET /receipts/<id>?includePayload=true` | Explicit private owner inspection; successful, retired and cancelled payloads are null. |
+| `POST /submissions/<definitionKey>` | Accept `{idempotencyKey, body: {fields, ...}}` and an optional opaque `continuation`; return `{receipt}` only after one queue transaction commits both. Queued/leased state is HTTP 202; an already terminal/failed receipt is HTTP 200 and retains its state. |
+| `GET /receipts/<id>` | Read intake and continuation state, timestamps, attempts, uncertainty, fixed error categories and validated Brian result. No payload by default. |
+| `GET /receipts/<id>?includePayload=true` | Explicit private owner inspection; successful, retired and cancelled payloads are null. A pending/failed continuation envelope remains visible here only. |
 | `POST /receipts/<id>/retry` | Require `{confirmed:true}`. Retry a permanent failure only within its original horizon, preserving the same key and body. |
 | `POST /receipts/<id>/cancel` | Require `{confirmed:true}`. Remove the local payload and prevent another lease; this is not Brian erasure or proof that an in-flight send never arrived. |
+| `POST /receipts/<id>/continuation/retry` | Require `{confirmed:true}`. Retry a failed post-intake continuation within the original horizon. It does not resubmit or change the delivered Brian record. |
+| `POST /receipts/<id>/continuation/cancel` | Require `{confirmed:true}`. Clear a pending/failed continuation. It does not undo the delivered Brian record. |
 
 The body may contain `fields`, `externalIdentity`, `submittedAt` and
 `identityProof` according to the configured Brian definition. It is frozen on
@@ -78,6 +80,15 @@ enqueue. An exact repeated enqueue returns the same receipt; changed reuse is
 HTTP 409. Retrying a lost acknowledgement with the same key recovers its id.
 A 202 means durably queued, not accepted by Brian. Persist the receipt/key and
 show the current state honestly to visitors.
+
+An embedding may supply a JSON-object continuation for route-specific work
+that must survive a closed browser. The queue fingerprints it separately,
+stores it in the same receipt transaction and never forwards it to Brian. A
+missing, added or changed continuation on a duplicate enqueue conflicts. After
+Brian returns a validated result, `tickContinuation` leases an envelope made of
+the receipt identity, minimized Brian result and frozen continuation. Only an
+explicit callback acknowledgement clears it. The embedding owns callback URL,
+authentication, payload validation and idempotent business effects.
 
 The fixture uses the direct peer address for its per-visitor limit and ignores
 forwarded-IP headers. Calls from one loopback peer share that limit. A real
@@ -106,6 +117,15 @@ embedding callback that reads that store.
 | `failed` | Inspect the fixed category/status and private payload; resolve credentials or configuration before an explicit retry. |
 | `paused` | The approved retry horizon expired or the next retry would exceed it. Inspect Brian and policy; automatic retry or a newly minted key could duplicate old work. |
 | `cancelled` | Local dispatch stopped and payload cleared. If `uncertain` is true, inspect Brian before claiming the request did not commit. |
+
+Continuation states are `pending`, `leased`, `delivered`, `failed`, `paused`
+and `cancelled`. They use the receipt's original deadline and independent
+leases/retry counters. HTTP 200/204 acknowledges delivery. Transport failures,
+202, 408, 425, 429 and 5xx retry the frozen envelope; other 4xx require an
+operator decision. The intake receipt can therefore be `delivered` while its
+continuation is still pending or failed. Cancelling intake before delivery also
+clears its continuation; after intake delivery use the continuation-specific
+action so the business record remains truthful.
 
 An old worker cannot overwrite cancellation or a newer completed lease.
 Process death after remote commit can still leave the local outcome uncertain;

@@ -46,6 +46,16 @@ beforeEach(() => {
 })
 
 describe('[COMP:api/decision-playbook-context] scoped prompt loader', () => {
+  it('Feed source previews intersect the audience without recording an application; the actual call records only included rules', async () => {
+    store.listActivePlaybookRulesForActor.mockResolvedValue([rule({ id: 'included' }), rule({ id: 'excluded' })])
+    const params = { workspaceId: WORKSPACE, assistantId: ASSISTANT, actorUserId: ACTOR, externalPrincipal: false, operationKind: 'feed_review', operationId: 'draft-fixture', allowedRuleIds: ['included'], logLabel: 'test' }
+    const preview = await loadDecisionPlaybookContext({ ...params, recordApplication: false })
+    expect(preview.appliedRuleIds).toEqual(['included']); expect(preview.decisionApplicationId).toBeNull()
+    expect(store.appendDecisionApplication).not.toHaveBeenCalled()
+    const applied = await loadDecisionPlaybookContext(params)
+    expect(applied.decisionApplicationId).toBeTruthy()
+    expect(store.appendDecisionApplication).toHaveBeenCalledWith(expect.objectContaining({ artifactRefs: [{ kind: 'assistant_playbook_rule', id: 'included' }] }))
+  })
   it('orders matching operation rules, general user rules, then assistant-wide rules', async () => {
     store.listActivePlaybookRulesForActor.mockResolvedValue([
       rule({ id: 'assistant', rule: 'Assistant-wide', createdBy: 'owner', appliesToUserId: null }),

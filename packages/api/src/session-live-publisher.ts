@@ -19,10 +19,8 @@
  *    so every cleared viewer renders the SAME feed the sender sees;
  *    oversized tool inputs degrade to `{}` (the client falls back to its
  *    static label). The `mirror` gate is evaluated by the CALLER per
- *    call (rooms mirror throughout; personal-chat high-volume activity only
- *    once the direct stream is dead; rare human-control activity mirrors
- *    throughout so a parallel Live client can intervene; background lanes
- *    always — they have no direct stream at all).
+ *    call. Chat and background lanes mirror throughout so proxy cuts cannot
+ *    leave authenticated reconnects without ongoing activity.
  *
  * Publishing is unconditionally safe: the bus is server-side and the only
  * exits are the `gateSessionRead`-gated relays. Do NOT add a "publish
@@ -52,6 +50,8 @@ export type TurnStreamPublisher = {
   onReasoningDelta(text: string): void
   /** A tool started before any reply text: surface its raw name, publish now. */
   onToolStart(name: string): void
+  /** An applied user input starts a new answer segment immediately. */
+  resetAnswer(): void
   /** Publish the current snapshot; `force` bypasses the throttle window. */
   publish(force: boolean): void
 }
@@ -60,9 +60,8 @@ export type TurnStreamPublisher = {
  * The chat route's `publishTurnStream` closure, lifted. State (reply
  * text, activity, reasoning) lives here; the caller feeds deltas and the
  * publisher decides when a snapshot actually goes out. `shouldPublish`
- * is re-evaluated per call because its inputs flip mid-turn (`clientGone`
- * flips thousands of lines below the closure's creation in chat.ts);
- * omit it for lanes that publish unconditionally (D6).
+ * is optional for consumers with an explicit publication policy; chat and
+ * background lanes publish unconditionally so proxies cannot hide a reconnect.
  */
 export function createTurnStreamPublisher(params: {
   sessionId: string
@@ -79,6 +78,7 @@ export function createTurnStreamPublisher(params: {
 }): TurnStreamPublisher {
   const now = params.now ?? Date.now
   let text = ''
+  let pendingAnswerReset = false
   let activity: string | null = null
   let reasoning = ''
   let lastPublishAt = 0
@@ -93,7 +93,7 @@ export function createTurnStreamPublisher(params: {
       kind: 'turn_stream',
       sessionId: params.sessionId,
       payload: {
-        text: text.slice(-STREAM_TEXT_CAP),
+        text: pendingAnswerReset ? '' : text.slice(-STREAM_TEXT_CAP),
         activity,
         ...(attribution
           ? {
@@ -108,6 +108,8 @@ export function createTurnStreamPublisher(params: {
 
   return {
     onTextDelta(delta: string): void {
+      if (pendingAnswerReset) text = ''
+      pendingAnswerReset = false
       text += delta
       activity = null
       publish(false)
@@ -117,10 +119,16 @@ export function createTurnStreamPublisher(params: {
       publish(false)
     },
     onToolStart(name: string): void {
+      pendingAnswerReset = true
       if (!text) {
         activity = name
         publish(true)
       }
+    },
+    resetAnswer(): void {
+      text = ''
+      pendingAnswerReset = false
+      publish(true)
     },
     publish,
   }
@@ -128,8 +136,7 @@ export function createTurnStreamPublisher(params: {
 
 /**
  * Publish one live-turn activity event onto the per-session bus (rooms:
- * multiplayer chat T13; personal turns after a disconnect; background
- * lanes throughout). Keeping the mirror gate, sender attribution, and
+ * multiplayer chat T13; personal and Feed turns; background lanes). Keeping the mirror gate, sender attribution, and
  * NOTIFY-size cap in one seam prevents any lane's stream from silently
  * becoming sender-only.
  *

@@ -3,6 +3,7 @@ import express from 'express'
 import request from 'supertest'
 import { describe, expect, it, vi } from 'vitest'
 import { CrmIntegrationScopeError, CrmOperationsError, type CrmOperationsServicePort, type AssociationServicePort } from '@use-brian/core'
+import { defineWorkspaceModuleRegistry } from '@use-brian/shared'
 import { crmIntegrationRoutes, crmIntegrationCredentialRoutes } from '../crm-integration.js'
 import { crmAssociationRoutes, associationMemberContext, workspaceModuleRoutes } from '../crm-association.js'
 import { createAssociationService } from '../../association/service.js'
@@ -20,16 +21,70 @@ const principal: CrmIntegrationPrincipal = { workspaceId, credentialId, grants: 
 function fixture(auth: CrmIntegrationPrincipal | null = principal) {
   const service = { execute: vi.fn().mockResolvedValue({ command: 'save_event', record: { id: eventId }, created: true }) }
   const association = { execute: vi.fn().mockRejectedValue(new CrmIntegrationScopeError('association.read')) }
+  const memberProfiles = {
+    getMemberProfile: vi.fn(),
+    updateMemberProfile: vi.fn(),
+    updateMemberVerifiedEmail: vi.fn(),
+  }
   const authenticate = vi.fn().mockResolvedValue(auth)
   const app = express()
   app.use(express.json())
-  app.use('/api/crm/integration', crmIntegrationRoutes({ credentials: { authenticate }, service: service as CrmOperationsServicePort, association: association as AssociationServicePort }))
+  app.use('/api/crm/integration', crmIntegrationRoutes({ credentials: { authenticate }, service: service as CrmOperationsServicePort,
+    association: association as AssociationServicePort, memberProfiles: () => memberProfiles }))
   const jwtGuard = vi.fn((_req, res) => res.status(401).json({ error: 'jwt_only' }))
   app.use('/api', jwtGuard)
-  return { app, service, association, authenticate, jwtGuard }
+  return { app, service, association, memberProfiles, authenticate, jwtGuard }
 }
 
 describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', () => {
+  it('exposes only the bounded member profile and requires record-write authority for edits', async () => {
+    const grants = [{ operation: 'crm.records.read', selectors: {} }, { operation: 'crm.records.write', selectors: {} }] as const
+    const f = fixture({ ...principal, grants: [...grants] })
+    const profile = { contactId: eventId, name: 'Fictional Member', email: 'member@example.test', phone: null,
+      organisationName: 'Example Org', position: null, mailingAddress: null, updatedAt: '2026-09-12T08:00:00.000Z' }
+    f.memberProfiles.getMemberProfile.mockResolvedValueOnce(profile)
+    const read = await request(f.app).get(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(read.status).toBe(200)
+    expect(read.body).toEqual({ profile })
+    expect(read.headers['cache-control']).toBe('no-store')
+
+    f.memberProfiles.updateMemberProfile.mockResolvedValueOnce({ ...profile, phone: '+852 2000 0000' })
+    const update = { expectedUpdatedAt: profile.updatedAt, phone: '+852 2000 0000' }
+    const written = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`).send(update)
+    expect(written.status).toBe(200)
+    expect(written.body.profile.phone).toBe('+852 2000 0000')
+    expect(f.memberProfiles.updateMemberProfile).toHaveBeenCalledWith(eventId, update)
+
+    const extra = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`).send({ ...update, email: 'other@example.test' })
+    expect(extra.status).toBe(400)
+    expect(f.memberProfiles.updateMemberProfile).toHaveBeenCalledTimes(1)
+
+    const verifiedEmail = { expectedUpdatedAt: profile.updatedAt, email: 'New.Member@Example.test', verificationId: credentialId }
+    f.memberProfiles.updateMemberVerifiedEmail.mockResolvedValueOnce({ ...profile, email: 'new.member@example.test' })
+    const emailWritten = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}/verified-email`)
+      .set('Authorization', `Bearer ${token}`).send(verifiedEmail)
+    expect(emailWritten.status).toBe(200)
+    expect(emailWritten.body.profile.email).toBe('new.member@example.test')
+    expect(f.memberProfiles.updateMemberVerifiedEmail).toHaveBeenCalledWith(eventId, {
+      ...verifiedEmail, email: 'new.member@example.test',
+    })
+  })
+  it('denies member-profile edits without crm.records.write', async () => {
+    const f = fixture({ ...principal, grants: [{ operation: 'crm.records.read', selectors: {} }] })
+    const response = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}`)
+      .set('Authorization', `Bearer ${token}`).send({ expectedUpdatedAt: '2026-09-12T08:00:00.000Z', name: 'New name' })
+    expect(response.status).toBe(403)
+    expect(f.memberProfiles.updateMemberProfile).not.toHaveBeenCalled()
+    const emailResponse = await request(f.app).patch(`/api/crm/integration/operations/member-profiles/${eventId}/verified-email`)
+      .set('Authorization', `Bearer ${token}`).send({
+        expectedUpdatedAt: '2026-09-12T08:00:00.000Z', email: 'new@example.test', verificationId: credentialId,
+      })
+    expect(emailResponse.status).toBe(403)
+    expect(f.memberProfiles.updateMemberVerifiedEmail).not.toHaveBeenCalled()
+  })
   it('exposes normalized provider receipts through the shared integration adapter', async () => {
     const f = fixture()
     f.association.execute.mockResolvedValueOnce({ command: 'reconcile_provider_entitlement', record: { id: eventId }, created: true, receipt: { id: credentialId, state: 'applied' } } as never)
@@ -43,6 +98,41 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(page.status).toBe(200)
     expect(page.body).toMatchObject({ receipts: [{ id: credentialId }], nextCursor: 'next-page' })
     expect(f.association.execute).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ kind: 'list_provider_receipts', limit: 10, state: 'retry' }))
+  })
+  it('exposes the closed order financial-evidence command to the scoped backend adapter', async () => {
+    const f = fixture(), event = { provider: 'stripe', providerReference: 'cs_fixture', adjustmentReference: 're_fixture',
+      eventId: 'evt_financial', kind: 'refund', status: 'succeeded', amountMinor: 400, currency: 'USD',
+      occurredAt: '2026-09-09T00:00:00Z', metadata: {} }
+    f.association.execute.mockResolvedValueOnce({ command: 'reconcile_provider_financial_event', record: { id: eventId, refundState: 'partial' },
+      created: true, receipt: { id: credentialId, state: 'applied' } } as never)
+    const accepted = await request(f.app).post(`/api/crm/integration/association/orders/${eventId}/provider-financial-events`)
+      .set('Authorization', `Bearer ${token}`).send(event)
+    expect(accepted.status).toBe(201)
+    expect(accepted.body).toMatchObject({ order: { id: eventId, refundState: 'partial' }, created: true, receipt: { state: 'applied' } })
+    expect(f.association.execute).toHaveBeenLastCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'integration_key', credentialId } }),
+      { kind: 'reconcile_provider_financial_event', orderId: eventId, event })
+  })
+  it('preserves order financial totals on the scoped integration list route', async () => {
+    const f = fixture(), summary = [{ currency: 'USD', orderCount: 1, settledOrderCount: 1, subtotalMinor: '1000',
+      discountMinor: '0', grossMinor: '1000', refundedMinor: '400', netMinor: '600', pendingMinor: '0' }]
+    f.association.execute.mockResolvedValueOnce({ command: 'list_orders', items: [{ id: eventId }], nextCursor: null,
+      financialSummary: summary } as never)
+    const response = await request(f.app).get(`/api/crm/integration/association/orders?eventId=${eventId}`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ orders: [{ id: eventId }], financialSummary: summary })
+  })
+  it('exposes notification evidence only through the exact order route', async () => {
+    const f = fixture()
+    f.association.execute.mockResolvedValueOnce({ command: 'list_order_notifications', items: [], nextCursor: null } as never)
+    const response = await request(f.app).get(`/api/crm/integration/association/orders/${eventId}/notifications?limit=10`)
+      .set('Authorization', `Bearer ${token}`)
+    expect(response.status).toBe(200)
+    expect(response.body).toEqual({ notifications: [], nextCursor: null })
+    expect(f.association.execute).toHaveBeenLastCalledWith(
+      expect.objectContaining({ workspaceId, actor: { kind: 'integration_key', credentialId } }),
+      { kind: 'list_order_notifications', orderId: eventId, limit: 10 },
+    )
   })
   it('runs before JWT-only guards, derives context from the CRM credential and exposes no secret', async () => {
     const f = fixture()
@@ -93,6 +183,13 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
       expect(f.jwtGuard).not.toHaveBeenCalled()
     },
   )
+  it('does not let an integration credential invoke the member receipt retry route', async () => {
+    const f = fixture()
+    const response = await request(f.app).post('/api/crm/integration/association/provider-receipts/00000000-0000-4000-8000-000000000000/retry')
+      .set('Authorization', `Bearer ${token}`).send({})
+    expect(response.status).toBe(403)
+    expect(response.body.error).toBe('integration_scope_denied')
+  })
   it('refuses body workspace/actor authority and command-level credential administration', async () => {
     const f = fixture()
     for (const field of ['workspaceId', 'actor', 'authority']) {
@@ -125,19 +222,111 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(workspaceStore.getRole).not.toHaveBeenCalled()
     expect(service.execute).not.toHaveBeenCalled()
   })
+  it('maps the authenticated member receipt retry route to the closed canonical command', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn().mockResolvedValue({ command: 'retry_provider_receipt', record: { id: eventId }, created: false,
+      receipt: { id: credentialId, state: 'applied' } }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const response = await request(app).post(`/api/crm/${workspaceId}/association/provider-receipts/${credentialId}/retry`).send({})
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ result: { id: eventId }, receipt: { id: credentialId, state: 'applied' }, created: false })
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'user', userId } }),
+      { kind: 'retry_provider_receipt', receiptId: credentialId })
+  })
+  it('maps the authenticated member roster route without exposing it on the integration adapter', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn().mockResolvedValue({ command: 'list_operational_roster', items: [{ id: eventId }], nextCursor: null }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use((req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const response = await request(app).get(`/api/crm/${workspaceId}/association/events/${eventId}/operational-roster?limit=25`)
+    expect(response.status).toBe(200)
+    expect(response.body).toEqual({ registrations: [{ id: eventId }], nextCursor: null })
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ workspaceId, actor: { kind: 'user', userId } }),
+      { kind: 'list_operational_roster', eventId, limit: 25 })
+    const integration = fixture()
+    expect((await request(integration.app).get(`/api/crm/integration/association/events/${eventId}/operational-roster`).set('Authorization', `Bearer ${token}`)).status).toBe(403)
+    expect(integration.association.execute).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'integration_key', credentialId } }),
+      { kind: 'list_operational_roster', eventId, limit: 50 })
+  })
+  it('maps owner promotion reads and writes to the closed canonical commands', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn()
+      .mockResolvedValueOnce({ command: 'list_promotions', items: [{ id: credentialId }], nextCursor: null })
+      .mockResolvedValueOnce({ command: 'save_promotion', record: { id: credentialId }, created: true }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const listed = await request(app).get(`/api/crm/${workspaceId}/association/promotions?status=active&limit=25`)
+    expect(listed.status).toBe(200)
+    expect(listed.body).toEqual({ promotions: [{ id: credentialId }], nextCursor: null })
+    expect(service.execute).toHaveBeenNthCalledWith(1, expect.objectContaining({ actor: { kind: 'user', userId } }),
+      { kind: 'list_promotions', status: 'active', limit: 25 })
+    const promotion = { key: 'launch', name: 'Launch offer', code: 'EXAMPLE-10', discountType: 'percentage',
+      percentageBasisPoints: 1_000, targetKind: 'event', targetIds: [eventId], combinesWithMemberPrice: false,
+      releaseOnFullRefund: false, status: 'active' }
+    const saved = await request(app).post(`/api/crm/${workspaceId}/association/promotions`).send(promotion)
+    expect(saved.status).toBe(201)
+    expect(saved.body).toEqual({ promotion: { id: credentialId }, created: true })
+    expect(service.execute).toHaveBeenNthCalledWith(2, expect.objectContaining({ actor: { kind: 'user', userId } }),
+      { kind: 'save_promotion', promotion: { ...promotion, recurrenceMode: 'once', applyMode: 'each_eligible_item' } })
+  })
+  it('maps the reviewed member check-in correction to its closed command', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const service = { execute: vi.fn().mockResolvedValue({ command: 'correct_check_in', record: { id: eventId, status: 'confirmed' } }) } as unknown as AssociationServicePort
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/crm/:workspaceId/association', crmAssociationRoutes({ service, context: associationMemberContext(workspaceStore) }))
+    const response = await request(app).post(`/api/crm/${workspaceId}/association/registrations/${eventId}/check-in-correction`)
+      .send({ expectedStatus: 'checked_in', reason: 'Scanned the wrong badge' })
+    expect(response.status).toBe(200)
+    expect(response.body).toEqual({ registration: { id: eventId, status: 'confirmed' } })
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ actor: { kind: 'user', userId } }), {
+      kind: 'correct_check_in', registrationId: eventId, correction: { expectedStatus: 'checked_in', reason: 'Scanned the wrong badge' },
+    })
+  })
   it('keeps member module reads separate from owner/admin actions and credential issuance', async () => {
     const workspaceStore = { getRole: vi.fn().mockResolvedValue('member') } as unknown as WorkspaceStore
     const credentials = { create: vi.fn(), listForMember: vi.fn() } as unknown as CrmIntegrationStore
     const modules = { listForMember: vi.fn().mockResolvedValue([{ state: 'disabled', version: 1 }]), act: vi.fn() } as unknown as WorkspaceModulesStore
-    const service = createAssociationService({ modules, store: {} as AssociationStore, crmService: {} as CrmOperationsServicePort })
     const app = express()
     app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
-    app.use('/api/workspaces', workspaceModuleRoutes({ workspaceStore, modules, service }))
+    app.use('/api/workspaces', workspaceModuleRoutes({ workspaceStore, modules }))
     app.use('/api/crm', crmIntegrationCredentialRoutes({ workspaceStore, credentials }))
     expect((await request(app).get(`/api/workspaces/${workspaceId}/modules`)).status).toBe(200)
     expect((await request(app).post(`/api/workspaces/${workspaceId}/modules/association/actions`).send({ action: 'enable', expectedVersion: 1 })).status).toBe(403)
     expect((await request(app).post(`/api/crm/${workspaceId}/operations/integration-credentials`).send({})).status).toBe(403)
     expect(modules.act).not.toHaveBeenCalled()
     expect(credentials.create).not.toHaveBeenCalled()
+  })
+  it('routes a second registered module without Association service changes', async () => {
+    const workspaceStore = { getRole: vi.fn().mockResolvedValue('owner') } as unknown as WorkspaceStore
+    const registry = defineWorkspaceModuleRegistry({ test_module: {
+      key: 'test_module', defaultState: 'disabled',
+      blockingCountCompatibility: { field: 'pendingJobs', blockerKey: 'pending_jobs' },
+    } } as const)
+    const modules = {
+      listForMember: vi.fn(),
+      act: vi.fn().mockResolvedValue({
+        module: { workspaceId, moduleKey: 'test_module', state: 'draining', version: 2 },
+        changed: true, blockingWork: [{ key: 'pending_jobs', count: 3 }],
+      }),
+    } as unknown as WorkspaceModulesStore
+    const app = express()
+    app.use(express.json(), (req, _res, next) => { req.userId = userId; next() })
+    app.use('/api/workspaces', workspaceModuleRoutes({ workspaceStore, modules, registry }))
+    const response = await request(app).post(`/api/workspaces/${workspaceId}/modules/test_module/actions`)
+      .send({ action: 'request_disable', expectedVersion: 1 })
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ changed: true, pendingJobs: 3,
+      module: { moduleKey: 'test_module' }, blockingWork: [{ key: 'pending_jobs', count: 3 }] })
+    expect(modules.act).toHaveBeenCalledWith(workspaceId, userId, 'test_module',
+      { action: 'request_disable', expectedVersion: 1 })
+    const unknown = await request(app).post(`/api/workspaces/${workspaceId}/modules/unregistered/actions`)
+      .send({ action: 'enable', expectedVersion: 0 })
+    expect(unknown.status).toBe(422)
+    expect(unknown.body.error).toBe('invalid_input')
   })
 })
