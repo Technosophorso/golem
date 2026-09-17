@@ -463,6 +463,22 @@ export const CHANNEL_CLASS_MULTIPLIER: Record<ChannelClass, number> = {
 }
 
 /**
+ * Effective compaction threshold for a tier + channel class: the tier's
+ * base ceiling times the channel multiplier. Omitted `channelClass` = no
+ * multiplier (1.0). Shared by `needsCompaction` (the trigger) and by the
+ * proactive-compaction route's recent-tail budget, which is derived from
+ * this value so the verbatim tail scales with the trigger it sits under.
+ */
+export function compactionThreshold(
+  tier: CompactionTier,
+  channelClass?: ChannelClass,
+): number {
+  const baseThreshold = COMPACT_THRESHOLDS[tier]
+  const multiplier = channelClass ? CHANNEL_CLASS_MULTIPLIER[channelClass] : 1.0
+  return baseThreshold * multiplier
+}
+
+/**
  * Check if compaction is needed based on token count. Pass `channelClass`
  * to apply the per-channel multiplier; omitted = no multiplier (1.0).
  */
@@ -471,9 +487,7 @@ export function needsCompaction(
   tier: CompactionTier,
   channelClass?: ChannelClass,
 ): boolean {
-  const baseThreshold = COMPACT_THRESHOLDS[tier]
-  const multiplier = channelClass ? CHANNEL_CLASS_MULTIPLIER[channelClass] : 1.0
-  return estimateTokens(messages) >= baseThreshold * multiplier
+  return estimateTokens(messages) >= compactionThreshold(tier, channelClass)
 }
 
 // ── Idle-based compaction tiers (messaging channels) ───────────

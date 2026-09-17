@@ -23,8 +23,11 @@ vi.mock('../../db/sessions.js', async () => {
 // `recordOverheadUsage` touches the (here-unmocked) UsageStore only when
 // a usageStore is passed, so tests omit it and the helper no-ops.
 
-import { findRecentSplit, houseKeepEpisodic, runProactiveCompaction } from '../proactive-compaction.js'
-import { createCompactionCircuitBreaker, estimateTokens } from '@use-brian/core'
+import {
+  findRecentSplit, houseKeepEpisodic, runProactiveCompaction,
+  recentTailBudgetTokens, RECENT_TAIL_BUDGET_RATIO,
+} from '../proactive-compaction.js'
+import { createCompactionCircuitBreaker, compactionThreshold, estimateTokens } from '@use-brian/core'
 import type { Message, EpisodicMemoryRecord, EpisodicStore, MemoryStore, LLMProvider, StreamChunk, AnalyticsLogger } from '@use-brian/core'
 import type { Session, SessionMessage } from '../../db/sessions.js'
 
@@ -37,8 +40,15 @@ const assistant = (text: string): Message => ({
   content: [{ type: 'text', text }],
 })
 
+const toolRound = (id: string, resultText: string): Message[] => ([
+  { role: 'assistant', content: [{ type: 'tool_use', id, name: 'webSearch', input: { q: 'x' } }] },
+  { role: 'user', content: [{ type: 'tool_result', toolUseId: id, name: 'webSearch', content: resultText }] },
+])
+/** A budget large enough that every fixture below fits in the tail. */
+const UNBOUNDED = 1_000_000
+
 describe('[COMP:api/proactive-compaction] findRecentSplit — current user turn is never compacted', () => {
-  it('keeps the current user turn in recent when the walk-back would swallow it (cron regression)', () => {
+  it('keeps the current user turn in recent and the head non-empty on short unconditional histories (cron regression)', () => {
     // Reproduces the prod shape behind the 2026-04-17 01:00 UTC empty-delivery
     // bug: 6 prior messages + 1 new user turn, unconditional compaction. The
     // old logic walked back to idx=0 (messages[0] is also a user) which left
@@ -47,40 +57,29 @@ describe('[COMP:api/proactive-compaction] findRecentSplit — current user turn 
       userText('每日行程同 Email 重點總結。'),         // 0 — prior run
       assistant('…'),                                  // 1
       userText('每日行程同 Email 重點總結。'),         // 2 — manual retry
-      userText('每日行程同 Email 重點總結。'),         // 3 — manual retry
+      userText('每日行程同 Email 重點總結。'),         // 3 — manual retry (previous turn pair floor)
       assistant('…'),                                  // 4
       assistant('…'),                                  // 5 — real answer
       userText('每日行程同 Email 重點總結。'),         // 6 — current turn
     ]
 
-    const split = findRecentSplit(messages)
+    const split = findRecentSplit(messages, { tailBudgetTokens: UNBOUNDED })
 
-    expect(split).toBe(6) // recent = [current user], compactable = first 6
-    expect(messages.slice(split)).toEqual([messages[6]])
-    expect(messages.slice(0, split)).toHaveLength(6)
+    // The whole history fits the budget, so the walk-back reaches 0; the
+    // snap lands on the previous-turn-pair floor (3), not the current turn.
+    expect(split).toBe(3)
+    expect(messages.slice(split)).toContain(messages[6])
+    expect(messages.slice(0, split)).toHaveLength(3)
+  })
+
+  it('snaps to the current turn when the floor is itself the head (two user turns only)', () => {
+    const messages: Message[] = [userText('first'), assistant('a'), userText('current')]
+    expect(findRecentSplit(messages, { tailBudgetTokens: UNBOUNDED })).toBe(2)
   })
 
   it('returns 0 for a single-user-message session (degenerate; caller handles empty compactable)', () => {
     const messages: Message[] = [userText('hi')]
-    expect(findRecentSplit(messages)).toBe(0)
-  })
-
-  it('leaves long conversations anchored at the first user turn within the KEEP_RECENT window', () => {
-    // 10 messages, plenty of prior context, user anchor 4 back from the end.
-    // Original KEEP_RECENT=6 path is unaffected by the short-history fix.
-    const messages: Message[] = [
-      userText('old'),        // 0
-      assistant('a0'),        // 1
-      userText('q1'),         // 2
-      assistant('a1'),        // 3
-      userText('q2'),         // 4 — splits here (first user anchor within last 6)
-      assistant('a2'),        // 5
-      assistant('a2b'),       // 6
-      userText('q3'),         // 7
-      assistant('a3'),        // 8
-      userText('current'),    // 9
-    ]
-    expect(findRecentSplit(messages)).toBe(4)
+    expect(findRecentSplit(messages, { tailBudgetTokens: UNBOUNDED })).toBe(0)
   })
 
   it('returns 0 when the only user messages are tool_result turns (no plain user text)', () => {
@@ -88,11 +87,81 @@ describe('[COMP:api/proactive-compaction] findRecentSplit — current user turn 
       { role: 'user', content: [{ type: 'tool_result', toolUseId: 't1', name: 'x', content: 'y' }] },
       assistant('a'),
     ]
-    expect(findRecentSplit(messages)).toBe(0)
+    expect(findRecentSplit(messages, { tailBudgetTokens: UNBOUNDED })).toBe(0)
   })
 
   it('returns 0 for an empty messages array', () => {
-    expect(findRecentSplit([])).toBe(0)
+    expect(findRecentSplit([], { tailBudgetTokens: UNBOUNDED })).toBe(0)
+  })
+})
+
+describe('[COMP:api/proactive-compaction] findRecentSplit — token-budgeted tail', () => {
+  const messages: Message[] = [
+    userText('old question, long enough to weigh a few tokens'),   // 0
+    assistant('old answer, long enough to weigh a few tokens'),    // 1
+    userText('q1 long enough to weigh a few tokens'),              // 2
+    assistant('a1 long enough to weigh a few tokens'),             // 3
+    userText('q2 long enough to weigh a few tokens'),              // 4
+    assistant('a2 long enough to weigh a few tokens'),             // 5
+    assistant('a2b long enough to weigh a few tokens'),            // 6
+    userText('q3 long enough to weigh a few tokens'),              // 7 — previous turn pair floor
+    assistant('a3 long enough to weigh a few tokens'),             // 8
+    userText('current turn'),                                      // 9
+  ]
+
+  it('anchors at the earliest plain user turn whose tail fits the budget', () => {
+    const budget = estimateTokens(messages.slice(4))
+    expect(findRecentSplit(messages, { tailBudgetTokens: budget })).toBe(4)
+  })
+
+  it('moves the anchor forward one user turn when the budget is one token short', () => {
+    const budget = estimateTokens(messages.slice(4)) - 1
+    expect(findRecentSplit(messages, { tailBudgetTokens: budget })).toBe(7)
+  })
+
+  it('never anchors on an assistant turn or a tool_result even when the budget lands there', () => {
+    // slice(5) fits but index 5 is an assistant turn; the anchor must be the
+    // next plain user turn inside the budget (7), not 5 or 6.
+    const budget = estimateTokens(messages.slice(5))
+    expect(findRecentSplit(messages, { tailBudgetTokens: budget })).toBe(7)
+  })
+
+  it('floors the tail at the previous turn pair even when it blows the budget (oversized tool result)', () => {
+    const withBigTool: Message[] = [
+      userText('q1'),                                   // 0
+      assistant('a1'),                                  // 1
+      userText('q2 — what was the source?'),            // 2 — floor
+      ...toolRound('t1', 'x'.repeat(40_000)),           // 3, 4 — ~10k tokens
+      assistant('a2'),                                  // 5
+      userText('current'),                              // 6
+    ]
+    // Budget far below the tool result: the budget anchor alone would be 6.
+    const split = findRecentSplit(withBigTool, { tailBudgetTokens: 50 })
+    expect(split).toBe(2)
+    expect(estimateTokens(withBigTool.slice(split))).toBeGreaterThan(50)
+  })
+
+  it('keeps the whole small history verbatim only up to the floor when everything fits (unconditional cron)', () => {
+    // A history that fits the budget entirely must still leave a non-empty
+    // head to summarize; the snap lands on the floor, not on the current turn.
+    expect(findRecentSplit(messages, { tailBudgetTokens: UNBOUNDED })).toBe(7)
+  })
+
+  it('does not count the prepended system summary as a tail anchor', () => {
+    const withSummary: Message[] = [{ role: 'system', content: '[Conversation compacted]' }, ...messages]
+    const budget = estimateTokens(messages.slice(4))
+    expect(findRecentSplit(withSummary, { tailBudgetTokens: budget })).toBe(5) // index 4 shifted by the summary row
+  })
+})
+
+describe('[COMP:api/proactive-compaction] recentTailBudgetTokens — derived from the compaction trigger', () => {
+  it('is RECENT_TAIL_BUDGET_RATIO of the effective threshold, channel multiplier included', () => {
+    expect(RECENT_TAIL_BUDGET_RATIO).toBe(0.15)
+    expect(recentTailBudgetTokens('pro', 'web')).toBe(Math.round(compactionThreshold('pro', 'web') * 0.15))
+    expect(recentTailBudgetTokens('pro', 'web')).toBe(9_000)
+    expect(recentTailBudgetTokens('standard', 'web')).toBe(6_300)
+    expect(recentTailBudgetTokens('pro', 'messaging')).toBe(4_500)
+    expect(recentTailBudgetTokens('standard', 'messaging')).toBe(3_150)
   })
 })
 

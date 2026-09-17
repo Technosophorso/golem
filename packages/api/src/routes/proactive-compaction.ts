@@ -16,7 +16,7 @@
  */
 
 import {
-  needsCompaction, compactConversation, extractMemoriesBeforeCompaction,
+  needsCompaction, compactionThreshold, compactConversation, extractMemoriesBeforeCompaction,
   ensureToolResultPairing,
   createCompactionCircuitBreaker, estimateTokens,
   fitMessagesToBudget, resolveInputTokenLimit, MODEL_CONTEXT_FIT_RATIO,
@@ -64,8 +64,26 @@ const COMPACT_SUMMARY_MAX_CHARS = 8_000
  */
 const EPISODIC_PROMOTION_THRESHOLD = 3
 
-/** How many recent messages to preserve verbatim after compaction. */
-const KEEP_RECENT = 6
+/**
+ * Fraction of the effective compaction threshold that the verbatim recent
+ * tail may occupy after compaction. Derived from the trigger rather than an
+ * absolute number so the tail scales with the window it sits under: Pro web
+ * 9,000 tokens, Standard web 6,300, messaging half of each. It replaced a
+ * fixed `KEEP_RECENT = 6` message count on 2026-09-17 — a count is blind to
+ * size (six messages can weigh 1k or 30k tokens). Not an env knob: raising
+ * it raises every post-compaction turn's input bill linearly.
+ */
+export const RECENT_TAIL_BUDGET_RATIO = 0.15
+
+/** Token budget for the verbatim tail preserved after compaction. */
+export function recentTailBudgetTokens(tier: CompactionTier, channelClass?: ChannelClass): number {
+  return Math.round(compactionThreshold(tier, channelClass) * RECENT_TAIL_BUDGET_RATIO)
+}
+
+export interface RecentSplitOptions {
+  /** Token budget for the verbatim tail. See `recentTailBudgetTokens`. */
+  tailBudgetTokens: number
+}
 
 /**
  * Find an index that splits the conversation into a "compactable" head and a
@@ -73,9 +91,16 @@ const KEEP_RECENT = 6
  * (not a tool_result). Gemini rejects contents that don't start with a user
  * message once the `system` boundary marker is skipped by the provider.
  *
- * Walks backwards from `messages.length - KEEP_RECENT`. If the initial split
- * would start the tail on an assistant turn or a tool_result, it extends the
- * tail further back until a genuine user message anchors it.
+ * The tail is sized by TOKENS: walk back from the end accumulating
+ * `estimateTokens` per message (CJK-aware) and anchor at the earliest plain
+ * user text message that keeps the tail within `tailBudgetTokens`.
+ *
+ * Floor: the tail always includes the previous turn pair — the plain user
+ * text message before the current one, plus everything after it (that
+ * turn's reply, tool rounds included) — even when that exceeds the budget.
+ * Follow-up deixis ("that", "the source of your search") points at the last
+ * exchange, which is the whole reason the tail exists; a floor the budget
+ * could cut would reintroduce the 2026-04-09 web-search regression.
  *
  * Invariant: the **current user turn** (the last plain user text message) is
  * always in `recent`, never in `compactable`. Otherwise the model would have
@@ -85,7 +110,7 @@ const KEEP_RECENT = 6
  *   compactable = messages.slice(0, splitIdx)
  *   recent      = messages.slice(splitIdx)
  */
-export function findRecentSplit(messages: Message[]): number {
+export function findRecentSplit(messages: Message[], options: RecentSplitOptions): number {
   if (messages.length === 0) return 0
 
   // Locate the current user turn. Split must stay at or before this index.
@@ -98,18 +123,34 @@ export function findRecentSplit(messages: Message[]): number {
   }
   if (lastUserIdx < 0) return 0 // no user anchor — degenerate, keep all as recent
 
-  let idx = Math.max(0, messages.length - KEEP_RECENT)
-  while (idx > 0 && !isPlainUserTextMessage(messages[idx])) {
-    idx--
+  // Floor anchor: the previous plain user text message (previous turn pair).
+  let floorIdx = lastUserIdx
+  for (let i = lastUserIdx - 1; i >= 0; i--) {
+    if (isPlainUserTextMessage(messages[i])) {
+      floorIdx = i
+      break
+    }
   }
 
-  // Short histories can walk all the way back to idx=0, leaving `compactable`
-  // empty — which the caller's unconditional path used to collapse into a
-  // lone boundary message, dropping the current user turn. Snap to the
-  // current turn so prior messages flow into `compactable` and the current
-  // turn alone stays verbatim in `recent`.
+  // Budget anchor: earliest plain user text message whose tail fits.
+  let budgetIdx = lastUserIdx
+  let tailTokens = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    tailTokens += estimateTokens([messages[i]])
+    if (tailTokens > options.tailBudgetTokens) break
+    if (isPlainUserTextMessage(messages[i])) budgetIdx = i
+  }
+
+  const idx = Math.min(budgetIdx, floorIdx)
+
+  // A walk-back that reaches idx=0 leaves `compactable` empty — which the
+  // caller's unconditional path used to collapse into a lone boundary
+  // message, dropping the current user turn. Snap forward so prior messages
+  // flow into `compactable`: to the floor (previous turn pair) when it sits
+  // past the head, else to the current turn alone. An empty head means
+  // nothing to summarize, so the floor yields only when it IS the head.
   if (idx === 0 && lastUserIdx > 0) {
-    return lastUserIdx
+    return floorIdx > 0 ? floorIdx : lastUserIdx
   }
   return idx
 }
@@ -399,7 +440,9 @@ export async function runProactiveCompaction(
     // tool_result pair (which is a "user with only tool_result" row,
     // not a plain user text). That means pairing each half separately
     // below is safe — no cross-boundary repair is ever needed.
-    const splitIdx = findRecentSplit(stampedWithSummary)
+    const splitIdx = findRecentSplit(stampedWithSummary, {
+      tailBudgetTokens: recentTailBudgetTokens(tier, channelClass),
+    })
     const firstRecentDbIdx = Math.max(0, splitIdx - summaryOffset)
 
     const stampedCompactable = stamped.slice(0, firstRecentDbIdx)
