@@ -1,4 +1,6 @@
 import pg from 'pg'
+import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
 const connectionString = process.env.CONTEXT_SCOPE_TEST_DATABASE_URL
@@ -210,5 +212,151 @@ describeIf('[COMP:api/context-scope-store] context scope schema integration', ()
     const inherited = await cacheInsert(scoped, 'scoped.txt')
     expect(inherited.rows[0].compartments).toEqual([])
     expect(inherited.rows[0].project_ids).toEqual([project])
+  })
+})
+
+describeIf('[COMP:api/context-scope-store] saved-page RLS after agent connection reuse', () => {
+  let connection: pg.Client
+
+  beforeEach(async () => {
+    connection = new pg.Client({ connectionString })
+    await connection.connect()
+    // Commit only connection-local settings, never fixtures. A fresh custom
+    // GUC reverts to '' (not SQL NULL) when this agent transaction finishes.
+    await connection.query('BEGIN READ ONLY')
+    await connection.query(`SELECT
+      set_config('app.agent_clearance', 'internal', true),
+      set_config('app.agent_compartments', '[]', true),
+      set_config('app.agent_project_ids', '[]', true)`)
+    await connection.query('COMMIT')
+    const settings = await connection.query(`SELECT
+      current_setting('app.agent_clearance', true) AS clearance,
+      current_setting('app.agent_compartments', true) AS teams,
+      current_setting('app.agent_project_ids', true) AS projects`)
+    expect(settings.rows).toEqual([{ clearance: '', teams: '', projects: '' }])
+
+    // Apply the real migration and create fixtures in one rolled-back
+    // transaction. The test works against the old policy without permanently
+    // migrating the developer's database, and cannot leave test rows behind.
+    await connection.query('BEGIN')
+    await connection.query(await readFile(
+      new URL('../../../migrations/537_saved_views_scope_guc_casts.sql', import.meta.url),
+      'utf8',
+    ))
+  })
+
+  afterEach(async () => {
+    if (connection) {
+      try {
+        await connection.query('ROLLBACK')
+      } finally {
+        await connection.end()
+      }
+    }
+  })
+
+  async function pageFixture() {
+    const owner = (await connection.query<{ id: string }>(
+      `INSERT INTO users (auth_provider, auth_provider_id)
+       VALUES ('test', 'page-scope-' || gen_random_uuid()) RETURNING id`,
+    )).rows[0].id
+    const workspace = (await connection.query<{ id: string }>(
+      `INSERT INTO workspaces (name, purpose, owner_user_id, is_personal)
+       VALUES ('Page scope test', 'test', $1, false) RETURNING id`, [owner],
+    )).rows[0].id
+    await connection.query(
+      `INSERT INTO workspace_members (workspace_id, user_id, role)
+       VALUES ($1, $2, 'owner')`, [workspace, owner],
+    )
+    const projects = (await connection.query<{ id: string }>(
+      `INSERT INTO workspace_projects (workspace_id, name, normalized_name, created_by)
+       VALUES ($1, 'Alpha', 'alpha', $2), ($1, 'Beta', 'beta', $2) RETURNING id`,
+      [workspace, owner],
+    )).rows.map(row => row.id)
+    const groupIds = [randomUUID(), randomUUID()]
+    const compartments = groupIds.map(id => `team:${id}`)
+    for (let i = 0; i < groupIds.length; i++) {
+      await connection.query(
+        `INSERT INTO workspace_groups
+           (id, workspace_id, name, created_by, kind, key, compartment_key)
+         VALUES ($1, $2, $3, $4, 'team', $3, $5)`,
+        [groupIds[i], workspace, `team-${i}`, owner, compartments[i]],
+      )
+      await connection.query(
+        `INSERT INTO workspace_compartments
+           (workspace_id, key, label, created_by, managed_by, managed_ref_id)
+         VALUES ($1, $2, $2, $3, 'team', $4)`,
+        [workspace, compartments[i], owner, groupIds[i]],
+      )
+    }
+    const spaces = (await connection.query<{ id: string }>(
+      `INSERT INTO teamspaces
+         (workspace_id, name, created_by, workspace_group_id, sensitivity)
+       VALUES ($1, 'General', $2, NULL, 'internal'),
+              ($1, 'Alpha', $2, $3, 'internal'),
+              ($1, 'Beta', $2, $4, 'internal'),
+              ($1, 'Restricted', $2, $3, 'confidential') RETURNING id`,
+      [workspace, owner, ...groupIds],
+    )).rows.map(row => row.id)
+    await connection.query(
+      'INSERT INTO teamspace_members (teamspace_id, user_id) VALUES ($1, $2)',
+      [spaces[0], owner],
+    )
+    const pages: [string, string, string | null][] = [
+      ['general', spaces[0], null],
+      ['project-a', spaces[0], projects[0]],
+      ['project-b', spaces[0], projects[1]],
+      ['team-a', spaces[1], null],
+      ['team-a-project-a', spaces[1], projects[0]],
+      ['team-b', spaces[2], null],
+      ['confidential', spaces[3], null],
+    ]
+    for (const [name, teamspace, project] of pages) {
+      await connection.query(
+        `INSERT INTO saved_views
+           (workspace_id, created_by, name, entity, view_type, teamspace_id, project_id)
+         VALUES ($1, $2, $3, 'tasks', 'table', $4, $5)`,
+        [workspace, owner, name, teamspace, project],
+      )
+    }
+    return { owner, workspace, projects, compartments, names: pages.map(([name]) => name).sort() }
+  }
+
+  async function namesAs(userId: string, workspace: string) {
+    await connection.query(`SELECT set_config('app.current_user_id', $1, true)`, [userId])
+    const result = await connection.query<{ name: string }>(
+      'SELECT name FROM saved_views WHERE workspace_id = $1 ORDER BY name', [workspace],
+    )
+    return result.rows.map(row => row.name)
+  }
+
+  it('reads human pages after agent commit and keeps nonmembers excluded', async () => {
+    const fixture = await pageFixture()
+    await connection.query('SET LOCAL ROLE app_user')
+    expect(await namesAs(fixture.owner, fixture.workspace)).toEqual(fixture.names)
+    expect(await namesAs('00000000-0000-0000-0000-000000000000', fixture.workspace)).toEqual([])
+    expect(await namesAs(randomUUID(), fixture.workspace)).toEqual([])
+  })
+
+  it('preserves Team, Project, clearance and universe grants on the repaired policy', async () => {
+    const fixture = await pageFixture()
+    await connection.query('SET LOCAL ROLE app_user')
+    const check = async (
+      clearance: string, teams: string[] | null | undefined, projects: string[] | null,
+      expected: string[],
+    ) => {
+      await connection.query(`SELECT
+        set_config('app.agent_clearance', $1, true),
+        set_config('app.agent_compartments', $2, true),
+        set_config('app.agent_project_ids', $3, true)`,
+      [clearance, teams === undefined ? '' : JSON.stringify(teams), JSON.stringify(projects)])
+      expect(await namesAs(fixture.owner, fixture.workspace)).toEqual(expected.sort())
+    }
+    await check('internal', [], [], ['general'])
+    await check('internal', [fixture.compartments[0]], [fixture.projects[0]],
+      ['general', 'project-a', 'team-a', 'team-a-project-a'])
+    await check('internal', undefined, null, ['general', 'project-a', 'project-b'])
+    await check('internal', null, null, fixture.names.filter(name => name !== 'confidential'))
+    await check('confidential', null, null, fixture.names)
   })
 })
