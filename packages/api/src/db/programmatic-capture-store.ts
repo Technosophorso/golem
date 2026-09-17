@@ -149,17 +149,17 @@ const PROFILE_COLS = `
 ` as const
 
 const RULE_COLS = `
-  id,
-  capture_profile_id AS "profileId",
-  rule_order AS "ruleOrder",
-  filter_type AS "filterType",
-  filter_params AS "filterParams",
-  routing_mode AS "routingMode",
-  routing_schedule AS "routingSchedule",
-  routing_timezone AS "routingTimezone",
-  episode_sensitivity AS "episodeSensitivity",
-  compartments,
-  project_ids AS "projectIds"
+  r.id,
+  r.capture_profile_id AS "profileId",
+  r.rule_order AS "ruleOrder",
+  r.filter_type AS "filterType",
+  r.filter_params AS "filterParams",
+  r.routing_mode AS "routingMode",
+  r.routing_schedule AS "routingSchedule",
+  r.routing_timezone AS "routingTimezone",
+  r.episode_sensitivity AS "episodeSensitivity",
+  r.compartments,
+  r.project_ids AS "projectIds"
 ` as const
 
 type ProfileRow = Omit<ProgrammaticCaptureProfile, 'assistantIds' | 'rules'>
@@ -281,7 +281,7 @@ export function createProgrammaticCaptureStore(): ProgrammaticCaptureStore {
       }
       const result = await queryWithRLS<ProgrammaticCaptureRule>(
         input.actingUserId,
-        `INSERT INTO ingest_rules
+        `INSERT INTO ingest_rules AS r
            (connector_instance_id, capture_profile_id, source, rule_order,
             filter_type, filter_params, routing_mode, routing_schedule,
             routing_timezone, alert, episode_sensitivity, compartments, project_ids)
@@ -406,7 +406,7 @@ export function createProgrammaticCaptureStore(): ProgrammaticCaptureStore {
       if (!target) return null
       const rules = await query<ProgrammaticCaptureRule>(
         `SELECT ${RULE_COLS}
-           FROM ingest_rules
+           FROM ingest_rules r
           WHERE capture_profile_id = $1 AND source = 'programmatic'
           ORDER BY rule_order ASC, id ASC`,
         [target.profileId],

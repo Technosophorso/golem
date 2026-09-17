@@ -6,6 +6,7 @@ import { codexProviderRoutes } from '../codex-provider.js'
 
 function manager(): CodexProviderManager {
   return {
+    images: { inspect: vi.fn(), generate: vi.fn() },
     provider: {
       name: 'openai-codex',
       models: [],

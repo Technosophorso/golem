@@ -186,6 +186,7 @@ export type FeedEditorialRunSummary = {
 /** Generation never changes a slot until its immutable candidate is accepted. */
 export const FEED_GENERATION_LIMITS = { version: 1, estimateMinutes: 30, textCandidates: 5, imageCandidates: 1, outputCharacters: 20_000, referenceBytes: 160_000, references: 20 } as const
 export const feedGenerationEstimateRequestSchema = z.object({
+  imageProvider: z.enum(['gemini', 'openai-codex']).optional(),
   mutationId: feedIdSchema, expectedRevision: revision, segmentId: feedIdSchema, slotId: feedIdSchema,
   model: z.enum(['standard', 'pro', 'max']).default('standard'), count: z.number().int().min(1).max(5).default(1),
   locale: z.enum(['en', 'ja', 'zh', 'zh-cn']).default('en'),
@@ -194,7 +195,7 @@ export type FeedGenerationEstimateRequest = z.infer<typeof feedGenerationEstimat
 export const feedGenerationRequestSchema = z.object({ mutationId: feedIdSchema, estimateId: feedIdSchema, confirmed: z.literal(true) }).strict()
 export type FeedGenerationRequest = z.infer<typeof feedGenerationRequestSchema>
 export type FeedGenerationCandidate = { applicationId?: string; id: string; runId: string; segmentId: string; slotId: string; sourceRevision: number; briefRevision: number; edits: FeedEdit[]; rationale: string }
-export type FeedGenerationPrice = { currency: 'USD'; maximumUsd: number | null; rateVersion: string; billing: 'included' | 'byo' | 'metered'; credits?: number }
+export type FeedGenerationPrice = { currency: 'USD'; maximumUsd: number | null; rateVersion: string; billing: 'included' | 'byo' | 'metered' | 'subscription'; credits?: number }
 export type FeedGenerationEstimate = {
   id: string; expiresAt: string; revision: number; segmentId: string; slot: FeedPlaceholderAttrs; count: number;
   model: string; tier: string; price: FeedGenerationPrice; inputCharacters: number; maxTokens: number;

@@ -40,10 +40,14 @@ import {
   Cpu,
   Database,
   MessageSquareText,
+  Pause,
+  Play,
+  RotateCcw,
   Route,
   Search,
   ShieldCheck,
   Wrench,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT, format } from "@/lib/i18n/client";
@@ -61,11 +65,14 @@ import { fetchBrainRow } from "@/lib/api/brain-inbox";
 import type { BrainContentCacheScope } from "@/lib/offline/brain-content-cache";
 import {
   buildAuditTurns,
+  AUDIT_ACCESS_STEP_MS,
   eagerToolInputRefs,
+  filterAuditTurns,
   formatPayloadPreview,
   formatTokens,
   graphHighlightIds,
   graphHighlightNames,
+  graphAccessSteps,
   humanizeToolName,
   mergeTurnTraces,
   retrievedPrimitiveLabel,
@@ -78,6 +85,7 @@ import {
 } from "@/lib/turn-audit";
 import { BrainGraphView } from "@/components/brain/graph-view";
 import { Skeleton } from "@/components/skeleton";
+import { BRAIN_REFRESH_EVENT } from "@/lib/brain-events";
 
 type Props = {
   workspaceId: string;
@@ -123,6 +131,14 @@ export function AuditPanel({
 
   // ── Transcript ────────────────────────────────────────────────────────
   const [messages, setMessages] = useState<DocSessionMessage[] | null>(null);
+  const [search, setSearch] = useState("");
+  const [refresh, setRefresh] = useState(0);
+  const selectedRowRef = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    const refresh = () => setRefresh((value) => value + 1);
+    window.addEventListener(BRAIN_REFRESH_EVENT, refresh);
+    return () => window.removeEventListener(BRAIN_REFRESH_EVENT, refresh);
+  }, []);
   useEffect(() => {
     setMessages(null);
     if (!sessionId) return;
@@ -131,30 +147,31 @@ export function AuditPanel({
       if (!controller.signal.aborted) setMessages(rows);
     });
     return () => controller.abort();
-  }, [sessionId]);
+  }, [sessionId, refresh]);
 
   const turns = useMemo(() => (messages ? buildAuditTurns(messages) : null), [messages]);
+  const visibleTurns = useMemo(() => turns ? filterAuditTurns(turns, search) : [], [turns, search]);
 
   // Report the turn list; default the selection to the newest turn when
   // nothing (or a stale id from another session) is selected.
   const onTurnsLoadedRef = useRef(onTurnsLoaded);
   onTurnsLoadedRef.current = onTurnsLoaded;
   useEffect(() => {
+    onTurnsLoadedRef.current(visibleTurns);
     if (!turns) return;
-    onTurnsLoadedRef.current(turns);
-    if (turns.length === 0) {
+    if (visibleTurns.length === 0) {
       if (turnId !== null) onSelectTurn(null);
       return;
     }
-    if (!turnId || !turns.some((turn) => turn.id === turnId)) {
-      onSelectTurn(turns[turns.length - 1]!.id);
+    if (!turnId || !visibleTurns.some((turn) => turn.id === turnId)) {
+      const linked = visibleTurns.find((turn) => turn.roundIds.includes(turnId ?? ""));
+      onSelectTurn((linked ?? visibleTurns[0])!.id);
     }
-  }, [turns, turnId, onSelectTurn]);
+  }, [turns, visibleTurns, turnId, onSelectTurn]);
 
-  const selectedTurn = useMemo(
-    () => turns?.find((turn) => turn.id === turnId) ?? null,
-    [turns, turnId],
-  );
+  useEffect(() => {
+    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [turnId, visibleTurns]);
 
   // ── Trace ─────────────────────────────────────────────────────────────
   const [trace, setTrace] = useState<{ turnId: string; summary: TraceSummary | null } | null>(
@@ -246,6 +263,40 @@ export function AuditPanel({
     return names.length > 0 ? new Set(names) : null;
   }, [summary]);
 
+  const accesses = useMemo(() => summary ? graphAccessSteps(summary) : [], [summary]);
+  const accessKey = JSON.stringify([sessionId, turnId, accesses]);
+  const [playback, setPlayback] = useState({ key: "", index: 0, playing: false, run: 0 });
+  const [reducedMotion, setReducedMotion] = useState(false);
+  const [documentVisible, setDocumentVisible] = useState(true);
+  const [graphReady, setGraphReady] = useState(false);
+  useEffect(() => {
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const updateMotion = () => setReducedMotion(motion.matches);
+    const updateVisibility = () => setDocumentVisible(document.visibilityState !== "hidden");
+    updateMotion();
+    updateVisibility();
+    motion.addEventListener("change", updateMotion);
+    document.addEventListener("visibilitychange", updateVisibility);
+    return () => {
+      motion.removeEventListener("change", updateMotion);
+      document.removeEventListener("visibilitychange", updateVisibility);
+    };
+  }, []);
+  useEffect(() => {
+    setPlayback({ key: accessKey, index: 0, playing: !reducedMotion && accesses.length > 0, run: 0 });
+  }, [accessKey, reducedMotion, accesses.length]);
+  const playing = playback.key === accessKey && playback.playing && !reducedMotion;
+  const activeAccess = playback.key === accessKey ? accesses[playback.index] : undefined;
+  useEffect(() => {
+    if (!playing || !documentVisible || !graphReady) return;
+    const timer = window.setTimeout(() => setPlayback((current) =>
+      current.index + 1 < accesses.length
+        ? { ...current, index: current.index + 1 }
+        : { ...current, playing: false },
+    ), AUDIT_ACCESS_STEP_MS);
+    return () => window.clearTimeout(timer);
+  }, [playing, playback.index, playback.run, accessKey, accesses.length, documentVisible, graphReady]);
+
   // Which highlighted ids the graph could actually place (reported by the
   // canvas after each projection) — drives the On graph / Not on graph
   // label per retrieved row.
@@ -316,7 +367,32 @@ export function AuditPanel({
     /* A flex COLUMN, not a plain block: the graph's root is `flex-1 min-h-0`
        and only fills a flex parent - in a block it measured its own empty
        height and painted a 200px strip. */
-    <section className="relative order-1 flex min-h-[240px] flex-1 flex-col lg:order-2 lg:min-h-0">
+    <section className="relative order-1 flex h-[280px] max-h-[42%] min-h-[200px] min-w-0 shrink-0 flex-col lg:order-2 lg:h-auto lg:max-h-none lg:flex-1 lg:min-h-0" aria-label={copy.brainAccess}>
+      <div className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border px-3 py-1">
+        <Database className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <div className="min-w-0 flex-1 text-xs">
+          <p className="font-medium">{copy.brainAccess}</p>
+          <p className="truncate text-muted-foreground" role="status">
+            {traceLoading ? copy.traceLoading : activeAccess
+              ? `${format(copy.accessPosition, { current: playback.index + 1, total: accesses.length })} · ${activeAccess.toolName ? humanizeToolName(activeAccess.toolName) : copy.steps.retrieval}`
+              : summary ? copy.noRecordedAccess : copy.traceUnavailable}
+          </p>
+        </div>
+        {accesses.length > 0 && <>
+          {reducedMotion ? (
+            <button type="button" aria-label={copy.nextAccess} className="flex size-11 shrink-0 items-center justify-center rounded-md hover:bg-muted" onClick={() => setPlayback((current) => ({ ...current, index: (current.index + 1) % accesses.length }))}>
+              <ChevronRight className="size-4" aria-hidden />
+            </button>
+          ) : (
+            <button type="button" aria-label={playing ? copy.pauseReplay : copy.playReplay} className="flex size-11 shrink-0 items-center justify-center rounded-md hover:bg-muted" onClick={() => setPlayback((current) => ({ ...current, playing: !current.playing }))}>
+              {playing ? <Pause className="size-4" aria-hidden /> : <Play className="size-4" aria-hidden />}
+            </button>
+          )}
+          <button type="button" aria-label={copy.replay} className="flex size-11 shrink-0 items-center justify-center rounded-md hover:bg-muted" onClick={() => setPlayback((current) => ({ key: accessKey, index: 0, playing: !reducedMotion, run: current.run + 1 }))}>
+            <RotateCcw className="size-4" aria-hidden />
+          </button>
+        </>}
+      </div>
       <BrainGraphView
         graph={graph ?? { nodes: [], edges: [], truncated: false }}
         workspaceId={workspaceId}
@@ -326,12 +402,17 @@ export function AuditPanel({
         highlightIds={highlightIds}
         highlightNames={highlightNames}
         highlightRevealId={revealId}
+        accessIds={activeAccess?.ids}
+        accessNames={activeAccess?.names}
+        accessPulseKey={playing ? `${accessKey}:${playback.index}:${playback.run}` : null}
+        onAccessReady={setGraphReady}
+        auditMode
         onHighlightResolved={handleHighlightResolved}
         onSelect={onOpenRow}
         onSelectSkillNode={onSelectSkillNode}
       />
       {((highlightIds && highlightIds.size > 0) || (highlightNames && highlightNames.size > 0)) && (
-        <div className="pointer-events-none absolute bottom-12 left-1/2 z-10 max-w-[80%] -translate-x-1/2 rounded-md border border-[var(--graph-overlay-border)] bg-[var(--graph-overlay)] px-2.5 py-1 text-center text-[11px] text-[var(--graph-overlay-fg)] shadow-sm backdrop-blur-md">
+        <div className="pointer-events-none absolute bottom-12 left-1/2 z-10 hidden max-w-[80%] -translate-x-1/2 rounded-md border border-[var(--graph-overlay-border)] bg-[var(--graph-overlay)] px-2.5 py-1 text-center text-[11px] text-[var(--graph-overlay-fg)] shadow-sm backdrop-blur-md lg:block">
           {copy.graphHint}
         </div>
       )}
@@ -356,8 +437,16 @@ export function AuditPanel({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <aside className="order-2 flex min-h-0 shrink-0 flex-col border-t border-border lg:order-1 lg:w-[400px] lg:border-r lg:border-t-0 xl:w-[440px]">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
+      <aside className="order-2 flex min-h-0 min-w-0 flex-1 flex-col border-t border-border lg:order-1 lg:w-[400px] lg:flex-none lg:border-r lg:border-t-0 xl:w-[440px]">
+        <div className="shrink-0 border-b border-border px-3 py-2">
+          <div className="flex items-center gap-2 rounded-md border border-input px-2 focus-within:border-ring [&_:focus-visible]:shadow-none">
+            <Search className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.searchTurns} aria-label={copy.searchTurns} className="h-11 min-w-0 flex-1 bg-transparent text-base outline-none md:text-sm [&::-webkit-search-cancel-button]:appearance-none" />
+            {search && <button type="button" onClick={() => setSearch("")} aria-label={copy.clearSearch} className="flex size-11 shrink-0 items-center justify-center rounded-md hover:bg-muted"><X className="size-4" aria-hidden /></button>}
+          </div>
+          <p className="mt-1 text-[11px] text-muted-foreground" role="status">{search.trim() ? format(copy.matchingTurns, { count: visibleTurns.length, total: turns?.length ?? 0 }) : copy.newestFirst}</p>
+        </div>
         <div className="min-h-0 flex-1 overflow-y-auto">
           {turns === null ? (
             <TurnsSkeleton />
@@ -366,22 +455,30 @@ export function AuditPanel({
               <p className="text-sm font-medium text-foreground">{copy.noTurnsTitle}</p>
               <p className="mt-1 text-xs text-muted-foreground">{copy.noTurnsBody}</p>
             </div>
+          ) : visibleTurns.length === 0 ? (
+            <p className="px-6 py-12 text-center text-sm text-muted-foreground">{copy.noMatchingTurns}</p>
           ) : (
             <ol className="flex flex-col">
-              {turns.map((turn) => {
+              {visibleTurns.map((turn) => {
                 const selected = turn.id === turnId;
                 return (
-                  <li key={turn.id} className="border-b border-border/70">
+                  <li key={turn.id} ref={selected ? selectedRowRef : undefined} className="border-b border-border/70">
                     <button
                       type="button"
-                      onClick={() => onSelectTurn(turn.id)}
+                      onClick={() => {
+                        onSelectTurn(turn.id);
+                        if (selected) setPlayback((current) => ({
+                          ...current, index: 0, playing: !reducedMotion && accesses.length > 0,
+                          run: current.run + 1,
+                        }));
+                      }}
                       aria-pressed={selected}
                       className={cn(
                         "flex w-full flex-col gap-1.5 px-4 py-3 text-left transition-colors",
                         selected ? "bg-muted/40" : "hover:bg-muted/25",
                       )}
                     >
-                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
                         <span className="font-medium text-foreground/80">
                           {format(copy.turnLabel, { index: turn.index })}
                         </span>

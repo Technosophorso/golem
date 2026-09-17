@@ -1,6 +1,39 @@
-import { describe, it, expect } from 'vitest'
-import { estimateTokens, needsCompaction, getIdleCompactionLevel, createCompactionCircuitBreaker, parseMultiTopicOutput, modelToCompactionTier, CHANNEL_CLASS_MULTIPLIER } from '../compact.js'
-import type { Message } from '../../providers/types.js'
+import { describe, it, expect, vi } from 'vitest'
+import { compactConversation, estimateTokens, needsCompaction, getIdleCompactionLevel, createCompactionCircuitBreaker, parseMultiTopicOutput, modelToCompactionTier, CHANNEL_CLASS_MULTIPLIER } from '../compact.js'
+import type { LLMProvider, Message, StreamFn } from '../../providers/types.js'
+
+describe('[COMP:compaction/full] failed-attempt preservation prompt', () => {
+  it.each(['linear', 'multi-topic'] as const)('requests failed-attempt retention only in the linear profile (%s)', async (profile) => {
+    const stream = vi.fn<StreamFn>(async function* () {
+      yield { type: 'text_delta', text: 'Summary' }
+    })
+    const provider: LLMProvider = {
+      name: 'mock',
+      models: ['mock'],
+      stream,
+      createSession() { throw new Error('Compaction must use stateless streaming') },
+    }
+    const messages: Message[] = [
+      { role: 'user', content: 'Read the report.' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'read-1', name: 'readReport', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', toolUseId: 'read-1', name: 'readReport', content: 'Access denied: report permission is missing.', isError: true }] },
+    ]
+
+    await compactConversation({ provider, model: 'mock', messages, systemPrompt: 'Summarize the supplied history.', profile })
+
+    const request = stream.mock.calls[0][0]
+    expect(request.messages.slice(0, -1)).toEqual(messages)
+    const prompt = request.messages.at(-1)?.content
+    if (profile === 'linear') {
+      expect(prompt).toMatch(/2\. Decisions Made:[^\n]+\n3\. Attempted and Failed \(Do Not Retry\):/)
+      expect(prompt).toContain('observed error or reason for failure')
+      expect(prompt).toContain('under unchanged conditions')
+      expect(prompt).toContain('If none failed, write "None". Do not invent failures.')
+    } else {
+      expect(prompt).not.toContain('Attempted and Failed (Do Not Retry)')
+    }
+  })
+})
 
 describe('[COMP:compaction/full] estimateTokens', () => {
   it('estimates string content', () => {

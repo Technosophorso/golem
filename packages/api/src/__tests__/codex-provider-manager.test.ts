@@ -94,6 +94,27 @@ function catalogModel(model: string, overrides: Record<string, unknown> = {}) {
 }
 
 describe('[COMP:api/codex-provider] OSS Codex provider manager', () => {
+  it('uses a dedicated image process for cheap discovery and invalidates its estimate on logout', async () => {
+    const chat = processHarness(); const image = processHarness()
+    const startProcess = vi.fn().mockResolvedValueOnce(chat.process).mockResolvedValueOnce(image.process)
+    const starting = startCodexProviderManager({ availability: new MutableProviderAvailability(), startProcess })
+    respond(chat, await waitForMethod(chat, 'account/read'), { account: null, requiresOpenaiAuth: true })
+    const manager = await starting
+    const inspecting = manager.images.inspect()
+    respond(image, await waitForMethod(image, 'account/read'), { account: { type: 'chatgpt', email: 'fixture@example.com', planType: 'pro' }, requiresOpenaiAuth: true })
+    respond(image, await waitForMethod(image, 'modelProvider/capabilities/read'), { imageGeneration: true, namespaceTools: true, webSearch: false })
+    respond(image, await waitForMethod(image, 'model/list'), { data: [catalogModel('gpt-5.6-sol')], nextCursor: null })
+    const snapshot = await inspecting
+    expect(snapshot).toMatchObject({ model: 'gpt-image-2', orchestratorModel: 'gpt-5.6-sol' })
+    expect(startProcess.mock.calls.map(call => call[0].surface)).toEqual(['inference', 'image'])
+    expect(image.close).toHaveBeenCalledOnce()
+    expect(image.outbound.some(frame => frame.method === 'turn/start')).toBe(false)
+    const logout = manager.logout(); respond(chat, await waitForMethod(chat, 'account/logout'), {}); await logout
+    await expect(manager.images.generate({ snapshot, prompt: 'A diagram', signal: new AbortController().signal })).rejects.toThrow('generation_configuration_changed')
+    expect(startProcess).toHaveBeenCalledTimes(2)
+    await manager.close()
+  })
+
   it('publishes only the reviewed intersection of registry and live account catalog', async () => {
     const harness = processHarness()
     const availability = new MutableProviderAvailability()

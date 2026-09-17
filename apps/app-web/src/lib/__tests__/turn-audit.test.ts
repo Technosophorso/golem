@@ -13,6 +13,8 @@ import {
   auditTurnUrl,
   buildAuditTurns,
   eagerToolInputRefs,
+  filterAuditTurns,
+  graphAccessSteps,
   formatPayloadPreview,
   formatTokens,
   graphHighlightIds,
@@ -48,6 +50,40 @@ function msg(
 const M1 = "11111111-1111-4111-8111-111111111111";
 const M2 = "22222222-2222-4222-8222-222222222222";
 const E1 = "33333333-3333-4333-8333-333333333333";
+
+describe("[COMP:app-web/turn-audit] browsing and access replay", () => {
+  const turns = buildAuditTurns([
+    msg("u1", "user", "Budget [draft]"),
+    msg("a1", "assistant", "The estimate is ready", { timestamp: "2026-09-01T10:00:00Z" }),
+    msg("u2", "user", "Find the launch plan"),
+    msg("a2", "assistant", [{ type: "tool_use", id: "call", name: "getEntity", input: {} }]),
+    msg("a3", "assistant", "Release on Friday", { timestamp: "2026-09-02T10:00:00Z" }),
+  ]);
+  it("shows newest first, preserving turn numbers and multi-round grouping", () => {
+    expect(filterAuditTurns(turns, "").map((turn) => [turn.id, turn.index, turn.rounds]))
+      .toEqual([["a3", 2, 2], ["a1", 1, 1]]);
+    expect(turns.map((turn) => turn.id)).toEqual(["a1", "a3"]);
+  });
+  it("searches prompts, replies and tools literally, with empty/no-match handling", () => {
+    for (const query of [" LAUNCH ", "friday", "getentity"]) {
+      expect(filterAuditTurns(turns, query).map((turn) => turn.id)).toEqual(["a3"]);
+    }
+    expect(filterAuditTurns(turns, "[draft]").map((turn) => turn.id)).toEqual(["a1"]);
+    expect(filterAuditTurns(turns, "missing")).toEqual([]);
+    expect(filterAuditTurns(turns, "  ")).toHaveLength(2);
+  });
+  it("replays actual retrieval and brain-tool steps in ordinal order, preserving repeated access", () => {
+    const summary = summarizeTrace({ fidelity: "legacy", preEpoch: true, sessionId: "fixture", steps: [
+      { ordinal: 4, kind: "tool_call", at: null, payloadRefs: [], metadata: { name: "getEntity", input: { id_or_name: "Launch plan" } } },
+      { ordinal: 3, kind: "tool_call", at: null, payloadRefs: [], metadata: { name: "sendMessage", input: { entityId: E1 } } },
+      { ordinal: 2, kind: "tool_call", at: null, payloadRefs: [], metadata: { name: "getMemory", input: { memoryId: M1 } } },
+      { ordinal: 1, kind: "retrieval", at: null, payloadRefs: [], metadata: { returnedRows: [{ primitive: "memory", rowId: M1 }] } },
+    ] });
+    expect(graphAccessSteps(summary).map((step) => [step.kind, step.ids, step.names]))
+      .toEqual([["retrieval", [M1], []], ["tool_call", [M1], []], ["tool_call", [], ["launch plan"]]]);
+    expect(graphAccessSteps({ steps: [] })).toEqual([]);
+  });
+});
 
 describe("[COMP:app-web/turn-audit] buildAuditTurns", () => {
   it("pairs each turn with the nearest preceding prompt and counts tools", () => {

@@ -35,7 +35,7 @@ export function FeedPostChat(props: {
         <span className="font-medium">{active ? t.commentConversation : t.selection}</span>
         <Button type="button" variant="secondary" size="sm" className="min-h-11 md:min-h-8 shrink-0" onClick={props.onWholePost}><ArrowLeft aria-hidden />{t.post}</Button>
       </div>
-      <blockquote className="max-h-20 overflow-y-auto whitespace-pre-wrap break-words border-l-2 pl-2 text-muted-foreground">{quote}</blockquote>
+      <blockquote className="h-20 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words border-l-2 pl-2 text-muted-foreground">{quote}</blockquote>
     </div> : null}
     {/* Hiding a context must not discard its draft input or active stream. */}
     <div hidden={Boolean(active)} inert={Boolean(active)} className="relative min-h-0 flex-1" data-feed-post-conversation>{props.mainChat}</div>

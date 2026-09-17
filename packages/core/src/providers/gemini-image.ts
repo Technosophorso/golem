@@ -2,12 +2,13 @@
 import { FEED_IMAGE_CAPABILITY } from '@use-brian/shared'
 import sharp from 'sharp'
 import type { GoogleTransport } from './google-transport.js'
-export type GeminiImageReceipt = {
+export type GeneratedImageReceipt = {
   image?: { data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' };
   error?: 'image_provider_rejected' | 'image_refused' | 'image_missing' | 'image_malformed';
   status?: number; responseId?: string;
   usage: { inputTokens: number; outputTokens: number; imageTokens?: number; measured: boolean };
 }
+export type GeminiImageReceipt = GeneratedImageReceipt
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const tokens = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
 export function parseGeminiImageReceipt(raw: unknown): GeminiImageReceipt {

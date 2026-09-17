@@ -1,5 +1,5 @@
 /** Configured generation providers and cheap, bounded reference reads. [COMP:feed/draft-generation] */
-import { calculateCost, createGeminiImageProvider, aiStudioTransport, type GeminiImageReceipt, type GoogleTransport, type FilesApi, type FilesContext, type UsageStore } from '@use-brian/core'
+import { calculateCost, createGeminiImageProvider, aiStudioTransport, type GeneratedImageReceipt, type CodexImageProvider, type GoogleTransport, type FilesApi, type FilesContext, type UsageStore } from '@use-brian/core'
 import { FEED_IMAGE_CAPABILITY, feedImageCost, type FeedImageConfig, type FeedMedia } from '@use-brian/shared'
 import { withFeedTransaction, FeedCollaborationError } from '../db/feed-collaboration-store.js'
 import { editorialActor, type FeedEditorialRun } from '../db/feed-editorial-runs-store.js'
@@ -12,19 +12,19 @@ import { walkFeed } from '@use-brian/doc-model'
 import type { FeedGenerationContext } from './generation.js'
 import { createPublicCustomLlmFetch } from '../custom-llm-public-fetch.js'
 export type FeedGenerationSource = { id: string; title: string; body: string; hash: string }
-export type FeedGenerationResolved = Omit<FeedEditorialModel, 'call'> & { identity: string; price(inputCharacters: number): FeedGenerationPrice; call(input: Parameters<FeedEditorialModel['call']>[0] & { slot?: FeedPlaceholderAttrs }): Promise<{ text: string; imageReceipt?: GeminiImageReceipt; usage?: unknown }> }
+export type FeedGenerationResolved = Omit<FeedEditorialModel, 'call'> & { identity: string; price(inputCharacters: number): FeedGenerationPrice; call(input: Parameters<FeedEditorialModel['call']>[0] & { slot?: FeedPlaceholderAttrs }): Promise<{ text: string; imageReceipt?: GeneratedImageReceipt; usage?: unknown }> }
 export type FeedGenerationPort = {
   billing?: FeedGenerationBilling;
-  persistImage?: (run: FeedEditorialRun, receipt: GeminiImageReceipt) => Promise<FeedMedia>;
-  resolve(actor: FeedModelIdentity, kind: 'text' | 'image', tier: string): Promise<FeedGenerationResolved>;
+  persistImage?: (run: FeedEditorialRun, receipt: GeneratedImageReceipt) => Promise<FeedMedia>;
+  resolve(actor: FeedModelIdentity, kind: 'text' | 'image', tier: string, imageProvider?: 'gemini' | 'openai-codex'): Promise<FeedGenerationResolved>;
   readReference(ref: FeedPlaceholderAttrs['references'][number]): Promise<{ source?: FeedGenerationSource; omission?: string }>;
 }
 export function createFeedGenerationPort(resolveText: FeedEditorialModelResolver, image: FeedImagePortOptions = {}): FeedGenerationPort {
   return {
     billing: image.billing,
     persistImage: (run, receipt) => persistFeedImage(image, run, receipt),
-    async resolve(actor, kind, tier) {
-      if (kind === 'image') return resolveFeedImage(image, actor)
+    async resolve(actor, kind, tier, imageProvider) {
+      if (kind === 'image') return imageProvider === 'openai-codex' ? resolveCodexFeedImage(image, actor) : resolveFeedImage(image, actor)
       const model = await resolveText(actor, tier); const rates = registryRow(model.model)?.rates
       const identity = feedEditorialHash({ model: model.model, tier: model.tier, maxTokens: model.maxTokens, inputCharacters: model.inputCharacters, rates, keySource: model.providerKeySource })
       return { ...model, identity, price(inputCharacters) {
@@ -71,6 +71,7 @@ export type FeedGenerationBilling = {
   settle(input: { workspaceId: string; userId: string; runId: string; model: string; actualCostUsd: number }): Promise<void>;
 }
 export type FeedImagePortOptions = {
+  codex?: CodexImageProvider;
   transport?: GoogleTransport;
   resolveWorkspaceKey?: (workspaceId: string) => Promise<string | null>;
   config?: FeedImageConfig;
@@ -106,7 +107,27 @@ async function resolveFeedImage(options: FeedImagePortOptions, actor: FeedModelI
     },
   }
 }
-async function persistFeedImage(options: FeedImagePortOptions, run: FeedEditorialRun, receipt: GeminiImageReceipt): Promise<FeedMedia> {
+async function resolveCodexFeedImage(options: FeedImagePortOptions, actor: FeedModelIdentity): Promise<FeedGenerationResolved> {
+  if (!options.codex || !options.files) throw new FeedCollaborationError(503, 'image_generation_unavailable')
+  const snapshot = await options.codex.inspect()
+  return { model: snapshot.model, tier: 'image', providerKeySource: 'user',
+    identity: feedEditorialHash({ provider: 'openai-codex', ...snapshot }),
+    inputCharacters: FEED_IMAGE_CAPABILITY.inputCharacters, maxTokens: FEED_IMAGE_CAPABILITY.outputTokens,
+    price() { return { currency: 'USD', maximumUsd: null, rateVersion: `codex-subscription:${snapshot.model}`, billing: 'subscription' } },
+    async call(input) {
+      const imageReceipt = await options.codex!.generate({ snapshot, prompt: `${input.systemPrompt}\n\n${input.prompt}`, signal: input.signal })
+      let usageRecorded = !options.usageStore
+      if (options.usageStore) { try {
+        await options.usageStore.recordUsage({ userId: actor.userId, assistantId: actor.assistantId, sessionId: actor.sessionId,
+          model: snapshot.model, modelTier: 'standard', inputTokens: 0, outputTokens: 0, actualCostUsd: 0,
+          source: 'included', triggerKey: 'feed_image_generation', providerKeySource: 'user' }); usageRecorded = true
+      } catch { /* Durable receipt retains unmeasured subscription usage. */ } }
+      return { text: '', imageReceipt, usage: { ...imageReceipt.usage, actualCostUsd: 0, model: snapshot.model,
+        orchestratorModel: snapshot.orchestratorModel, provider: 'openai-codex', providerKeySource: 'user', billing: 'subscription', usageRecorded } }
+    },
+  }
+}
+async function persistFeedImage(options: FeedImagePortOptions, run: FeedEditorialRun, receipt: GeneratedImageReceipt): Promise<FeedMedia> {
   if (!receipt.image || receipt.error) throw new FeedCollaborationError(422, receipt.error ?? 'image_missing')
   if (!options.files) throw new FeedCollaborationError(503, 'image_storage_unavailable')
   const actor = editorialActor(run); const context = run.context as FeedGenerationContext

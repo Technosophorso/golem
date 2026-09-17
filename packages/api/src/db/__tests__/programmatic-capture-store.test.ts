@@ -12,8 +12,30 @@ vi.mock('../client.js', () => ({
 
 import { createProgrammaticCaptureStore } from '../programmatic-capture-store.js'
 
-describe('[COMP:api/programmatic-capture] target resolution', () => {
-  beforeEach(() => vi.clearAllMocks())
+describe('[COMP:api/programmatic-capture] store queries', () => {
+  beforeEach(() => vi.resetAllMocks())
+
+  it('qualifies rule projections in profile joins and update returning clauses', async () => {
+    db.queryWithRLS.mockResolvedValue({ rows: [] })
+    const store = createProgrammaticCaptureStore()
+    await expect(store.listProfiles('user', 'workspace')).resolves.toEqual([])
+    await expect(store.updateRule({
+      actingUserId: 'user', workspaceId: 'workspace', profileId: 'profile', ruleId: 'rule',
+      rule: { filterType: 'always', routingMode: 'drop' },
+    })).resolves.toBeNull()
+
+    const joinedQueries = db.queryWithRLS.mock.calls
+      .map(([, sql]) => sql as string)
+      .filter((sql) => /(?:JOIN|FROM) programmatic_capture_profiles p/.test(sql))
+    expect(joinedQueries).toHaveLength(2)
+    for (const sql of joinedQueries) {
+      const projection = sql.includes('RETURNING')
+        ? sql.split('RETURNING')[1]!
+        : sql.split('SELECT')[1]!.split('FROM')[0]!
+      expect(projection.trim()).toMatch(/^r\.id,/)
+      expect(projection.trim().split(/,\s*/).every((column) => column.startsWith('r.'))).toBe(true)
+    }
+  })
 
   it('fails closed without an explicitly selected capture assistant', async () => {
     const store = createProgrammaticCaptureStore()

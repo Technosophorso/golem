@@ -928,14 +928,14 @@ function BrainPageInner() {
         const idx = auditTurns.findIndex((turn) => turn.id === auditTurnId);
         return (
           <BrainTopbarPager
-            current={(idx < 0 ? auditTurns.length - 1 : idx) + 1}
+            current={(idx < 0 ? 0 : idx) + 1}
             total={auditTurns.length}
             onPrev={() => {
-              const prev = auditTurns[(idx < 0 ? auditTurns.length - 1 : idx) - 1];
+              const prev = auditTurns[(idx < 0 ? 0 : idx) - 1];
               if (prev) setAuditTurnId(prev.id);
             }}
             onNext={() => {
-              const next = auditTurns[(idx < 0 ? auditTurns.length - 1 : idx) + 1];
+              const next = auditTurns[(idx < 0 ? 0 : idx) + 1];
               if (next) setAuditTurnId(next.id);
             }}
           />
@@ -1204,6 +1204,7 @@ function BrainPageInner() {
              the SAME cached graph the entries view renders. */
           activeId ? (
             <AuditPanel
+              key={`${activeId}:${auditSessionId}`}
               workspaceId={activeId}
               sessionId={auditSessionId}
               turnId={auditTurnId}

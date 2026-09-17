@@ -50,6 +50,7 @@ export {
 } from './protocol.js'
 export {
   CODEX_INFERENCE_HARDENING_ARGS,
+  CODEX_IMAGE_HARDENING_ARGS,
   buildCodexEnvironment,
   resolvePinnedCodexCommand,
   startCodexAppServer,
@@ -78,3 +79,5 @@ export {
   CodexTurnError,
   type CreateCodexAppServerProviderOptions,
 } from './provider.js'
+
+export { createCodexImageProvider, inspectCodexImage, generateCodexImage, CODEX_IMAGE_MODEL, type CodexImageSnapshot, type CodexImageProvider } from './image.js'
