@@ -10,6 +10,7 @@ import { associationOrdersCacheKey } from "@/lib/surface-prefetch";
 import { markSurfaceCacheStale, useCachedResource } from "@/lib/surface-cache";
 import { crmRecordHref } from "@/lib/crm-view";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { ListSurfaceSkeleton } from "@/components/chrome/surface-skeleton";
 import { AssociationField } from "./operator-controls";
@@ -83,8 +84,9 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
     <form className="grid gap-3 rounded-xl border border-border p-3 md:grid-cols-2 xl:grid-cols-5" onSubmit={event=>{event.preventDefault();applyFilters();}}>
       <AssociationField label={t.orderEventId} value={draft.eventId} onChange={eventId=>setDraft(previous=>({...previous,eventId}))}/>
       <AssociationField label={t.orderContactId} value={draft.contactId} onChange={contactId=>setDraft(previous=>({...previous,contactId}))}/>
-      <label className="flex min-w-0 flex-col gap-1 text-sm">{t.orderStatus}<select className="min-h-11 rounded-lg border border-border bg-background px-3 text-base" value={draft.status} onChange={event=>setDraft(previous=>({...previous,status:event.target.value as FilterDraft["status"]}))}>
-        <option value="">{t.allOrderStatuses}</option>{Object.entries(t.orderStates).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label>
+      <label className="flex min-w-0 flex-col gap-1 text-sm">{t.orderStatus}<Select value={draft.status} onValueChange={value=>setDraft(previous=>({...previous,status:(value ?? "") as FilterDraft["status"]}))}>
+        <SelectTrigger className="min-h-11 w-full text-base" aria-label={t.orderStatus}><SelectValue /></SelectTrigger>
+        <SelectContent><SelectItem value="">{t.allOrderStatuses}</SelectItem>{Object.entries(t.orderStates).map(([value,label])=><SelectItem value={value} key={value}>{label}</SelectItem>)}</SelectContent></Select></label>
       <AssociationField type="datetime-local" label={t.orderCreatedAfter} value={draft.createdAfter} onChange={createdAfter=>setDraft(previous=>({...previous,createdAfter}))}/>
       <AssociationField type="datetime-local" label={t.orderCreatedBefore} value={draft.createdBefore} onChange={createdBefore=>setDraft(previous=>({...previous,createdBefore}))}/>
       <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-5"><Button type="submit" className="min-h-11">{t.applyOrderFilters}</Button><Button type="button" variant="outline" className="min-h-11" onClick={clearFilters}>{t.clearOrderFilters}</Button></div>

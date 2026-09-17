@@ -4,6 +4,7 @@
  * both names lets old and new releases safely skip the same migration.
  */
 const migrationRenames = [
+  ['537_association_order_financial_evidence.sql', '552_association_order_financial_evidence.sql'],
   ['429_workspace_custom_llm_endpoints.sql', '434_workspace_custom_llm_endpoints.sql'],
   ['394_office_artifacts.sql', '3941_office_artifacts.sql'],
   ['395_office_templates_resources.sql', '3942_office_templates_resources.sql'],

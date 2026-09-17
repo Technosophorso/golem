@@ -4908,7 +4908,7 @@ type AssistantConnectorGrant = {
   allowedActions: string[];
 };
 
-export function EmailInboxSection({
+function EmailInboxSection({
   workspaceId,
   channel,
   inbox,

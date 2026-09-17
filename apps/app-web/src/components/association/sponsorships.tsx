@@ -4,6 +4,7 @@
 import {useMemo,useState} from "react";
 import {useT} from "@/lib/i18n/client";
 import {Button} from "@/components/ui/button";
+import {Select,SelectContent,SelectItem,SelectTrigger,SelectValue} from "@/components/ui/select";
 import type {CrmLookupRow} from "@/lib/api/crm";
 import {
   cancelAssociationSponsorshipAllocation,createAssociationSponsorshipAllocation,
@@ -48,15 +49,15 @@ export function AssociationSponsorships({workspaceId,canManage}:{workspaceId:str
       <form className="space-y-3" onSubmit={e=>{e.preventDefault();void submitAllocation();}}>
         <h3 className="font-semibold">{t.createAllocation}</h3><AssociationContactPicker workspaceId={workspaceId} onSelect={row=>{setSponsor(row);setSponsorMembershipId("");}}/>
         {sponsor?<p className="text-sm">{t.sponsor}: {sponsor.name}</p>:null}
-        <label className="flex flex-col gap-1 text-sm">{t.sponsorMembership}<select className={selectClass} value={sponsorMembershipId} onChange={e=>setSponsorMembershipId(e.target.value)} disabled={!canManage||!sponsor} required><option value="">{t.choose}</option>{directMemberships.map(row=><option key={row.id} value={row.id}>{row.planName} · {new Date(row.startsAt).toLocaleDateString()}</option>)}</select></label>
-        <label className="flex flex-col gap-1 text-sm">{t.beneficiaryPlan}<select className={selectClass} value={beneficiaryPlanId} onChange={e=>setBeneficiaryPlanId(e.target.value)} disabled={!canManage} required><option value="">{t.choose}</option>{freePlans.map(plan=><option key={plan.id} value={plan.id}>{plan.name}</option>)}</select></label>
+        <label className="flex flex-col gap-1 text-sm">{t.sponsorMembership}<Select value={sponsorMembershipId || null} onValueChange={value=>setSponsorMembershipId(value ?? "")} disabled={!canManage||!sponsor} required><SelectTrigger className={selectClass} aria-label={t.sponsorMembership}><SelectValue placeholder={t.choose}/></SelectTrigger><SelectContent>{directMemberships.map(row=><SelectItem key={row.id} value={row.id}>{row.planName} · {new Date(row.startsAt).toLocaleDateString()}</SelectItem>)}</SelectContent></Select></label>
+        <label className="flex flex-col gap-1 text-sm">{t.beneficiaryPlan}<Select value={beneficiaryPlanId || null} onValueChange={value=>setBeneficiaryPlanId(value ?? "")} disabled={!canManage} required><SelectTrigger className={selectClass} aria-label={t.beneficiaryPlan}><SelectValue placeholder={t.choose}/></SelectTrigger><SelectContent>{freePlans.map(plan=><SelectItem key={plan.id} value={plan.id}>{plan.name}</SelectItem>)}</SelectContent></Select></label>
         <div className="grid gap-3 sm:grid-cols-2"><AssociationField label={t.seats} type="number" min="1" max="10000" value={seatLimit} onChange={setSeatLimit}/><AssociationField label={t.ttl} type="number" min="1" max="2160" value={ttl} onChange={setTtl}/><AssociationField label={t.start} type="datetime-local" value={startsAt} onChange={setStartsAt}/><AssociationField label={t.end} type="datetime-local" value={endsAt} onChange={setEndsAt}/></div>
         {action.feedback}<AssociationIntentNotice reference={allocationIntent.reference} onReset={allocationIntent.reset} disabled={action.pending}/>
-        <Button type="submit" className="min-h-11" disabled={!canManage||action.pending||!sponsor}>{t.createAllocation}</Button>
+        <Button type="submit" className="min-h-11" disabled={!canManage||action.pending||!sponsor||!sponsorMembershipId||!beneficiaryPlanId}>{t.createAllocation}</Button>
       </form>
       <form className="space-y-3" onSubmit={e=>{e.preventDefault();void submitInvitation();}}>
         <h3 className="font-semibold">{t.issueInvitation}</h3>
-        <label className="flex flex-col gap-1 text-sm">{t.allocation}<select className={selectClass} value={allocationId} onChange={e=>{setAllocationId(e.target.value);setToken(null);}} required disabled={!canManage}><option value="">{t.choose}</option>{allocations.data?.items.filter(row=>row.status==="active").map(row=><option key={row.id} value={row.id}>{row.sponsorContactName} · {row.beneficiaryPlanName} · {row.allocatedSeats}/{row.seatLimit}</option>)}</select></label>
+        <label className="flex flex-col gap-1 text-sm">{t.allocation}<Select value={allocationId || null} onValueChange={value=>{setAllocationId(value ?? "");setToken(null);}} required disabled={!canManage}><SelectTrigger className={selectClass} aria-label={t.allocation}><SelectValue placeholder={t.choose}/></SelectTrigger><SelectContent>{allocations.data?.items.filter(row=>row.status==="active").map(row=><SelectItem key={row.id} value={row.id}>{row.sponsorContactName} · {row.beneficiaryPlanName} · {row.allocatedSeats}/{row.seatLimit}</SelectItem>)}</SelectContent></Select></label>
         <AssociationContactPicker workspaceId={workspaceId} onSelect={row=>{setNominee(row);setToken(null);}}/>{nominee?<p className="text-sm">{t.nominee}: {nominee.name}</p>:null}
         <AssociationIntentNotice reference={invitationIntent.reference} onReset={invitationIntent.reset} disabled={action.pending}/>
         <Button type="submit" className="min-h-11" disabled={!canManage||action.pending||!allocationId||!nominee}>{t.issueInvitation}</Button>
