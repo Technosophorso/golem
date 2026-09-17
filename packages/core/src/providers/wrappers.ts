@@ -260,6 +260,21 @@ function detectDegenerateTokens(buffer: string): boolean {
   return DEGENERATE_PATTERN.test(buffer)
 }
 
+/**
+ * Markdown / ASCII rule characters: a table delimiter cell (`|------------|`),
+ * a horizontal rule, a `==========` divider, a `──────` border, a TOC dot
+ * leader. Layout runs 10-80 of these by construction, and on token-level
+ * streaming the 10-char tail is guaranteed to land inside the run at some
+ * delta — so these only count as degenerate past `LAYOUT_RUN_LIMIT`, a length
+ * no legitimate rule reaches and every genuine loop (which runs to the output
+ * cap) sails past. Found 2026-09-17: the compaction summarizer wrote
+ * `| Item | Decision | Details |`, the delimiter row's first cell tripped the
+ * 10-char rule, and a 472-char stub was persisted as a session's whole memory
+ * of 69k tokens. See docs/architecture/engine/text-loop-prevention.md.
+ */
+const LAYOUT_RUN_CHARS = /[-=_*~.#|─━═┄┅┈┉╌╍]/
+const LAYOUT_RUN_LIMIT = 200
+
 function detectSingleTokenRepeat(buffer: string, minRepeat = 10): boolean {
   // Check if the last N characters are the same character repeated
   if (buffer.length < minRepeat) return false
@@ -269,7 +284,11 @@ function detectSingleTokenRepeat(buffer: string, minRepeat = 10): boolean {
   // boundary can land anywhere inside the run (found via prod 2026-08-19,
   // session ac542985 — `OASA          ●` pads with exactly 10 spaces).
   if (tail[0] === ' ' || tail[0] === '\t') return false
-  return tail.split('').every((c) => c === tail[0])
+  const ch = tail[0]
+  if (!tail.split('').every((c) => c === ch)) return false
+  if (!LAYOUT_RUN_CHARS.test(ch)) return true
+  const longTail = buffer.slice(-LAYOUT_RUN_LIMIT)
+  return longTail.length === LAYOUT_RUN_LIMIT && longTail.split('').every((c) => c === ch)
 }
 
 // ── N-gram repetition detector ─────────────────────────────────
@@ -497,7 +516,13 @@ export function wrapTextLoopPrevention(): StreamWrapper {
 
     // Already downstream — truncate rather than duplicate. Close the message
     // ourselves: `drainForUsage` consumed the inner stream's `message_end`.
+    // Say so: the closed message reads as a clean `end_turn` to every caller
+    // (a compaction summary persisted this way looks complete), so this line
+    // is the only evidence a later investigation gets.
     if (result.emittedText) {
+      console.warn(
+        `[text-loop] truncated an already-emitted stream (detector=${result.type}, kept=${result.cleanText.length} chars, model=${request.model})`,
+      )
       yield {
         type: 'message_end' as const,
         stopReason: 'end_turn' as const,

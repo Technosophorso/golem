@@ -405,3 +405,51 @@ describe('[COMP:providers/text-loop] Text loop prevention', () => {
     expect(response.content.some((b) => b.type === 'tool_use')).toBe(true)
   })
 })
+
+// ── Layout runs of rule characters (2026-09-17) ─────────────────
+// Token-level streaming guarantees the 10-char tail lands inside any 10+ run,
+// so a markdown table delimiter row or a horizontal rule used to truncate the
+// answer at that exact point. The compaction summarizer hit it on the OSS
+// stack: `| Item | Decision | Details |` and nothing after.
+
+function charChunks(text: string, size: number): string[] {
+  const out: string[] = []
+  for (let i = 0; i < text.length; i += size) out.push(text.slice(i, i + size))
+  return out
+}
+
+async function passThrough(text: string, chunk = 2): Promise<string> {
+  const stream = composeWrappers(mockStream(textChunks(charChunks(text, chunk))), wrapTextLoopPrevention())
+  const response = await collectStream(stream({ model: 'test', messages: [], systemPrompt: 'test' }))
+  return response.content.filter((b) => b.type === 'text').map((b) => b.type === 'text' ? b.text : '').join('')
+}
+
+describe('[COMP:providers/text-loop] Layout runs of rule characters are not loops', () => {
+  it('passes a markdown table with wide delimiter cells through untouched on token-sized deltas', async () => {
+    const table =
+      '## Decisions\n| Item | Decision | Details |\n|------------|----------------|--------------|\n' +
+      '| Codename | BLUEFIN-2291 | confirmed |\n| Budget | 47,300 USD | hard cap |\n| Vendor | Meridian | via Rotterdam |\n'
+    expect(await passThrough(table, 2)).toBe(table)
+    expect(await passThrough(table, 1)).toBe(table)
+  })
+
+  it('passes horizontal rules, dividers, borders, and dot leaders through untouched', async () => {
+    for (const rule of ['-'.repeat(30), '='.repeat(40), '─'.repeat(24), '_'.repeat(20), '*'.repeat(12), '.'.repeat(16)]) {
+      const text = `Section one.\n\n${rule}\n\nSection two, with the answer that must survive.\n`
+      expect(await passThrough(text, 2)).toBe(text)
+    }
+  })
+
+  it('still aborts a genuine rule-character loop once the run passes the layout limit', async () => {
+    const text = 'Loading' + '-'.repeat(400)
+    const out = await passThrough(text, 2)
+    expect(out.length).toBeLessThan(text.length)
+    expect(out.length).toBeGreaterThanOrEqual('Loading'.length + 200 - 2)
+  })
+
+  it('keeps the 10-char rule for non-layout characters', async () => {
+    const text = 'Result: ' + 'a'.repeat(40)
+    const out = await passThrough(text, 2)
+    expect(out.length).toBeLessThan('Result: '.length + 12)
+  })
+})
