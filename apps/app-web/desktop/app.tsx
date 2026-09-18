@@ -52,6 +52,7 @@ import { getDictionary } from "@/lib/i18n/dictionaries";
 import { ConfirmDialogProvider } from "@/components/ui/confirm-dialog";
 import { PromptDialogProvider } from "@/components/ui/prompt-dialog";
 import { KindPickerDialogProvider } from "@/components/ui/kind-picker-dialog";
+import { DesktopAddAccountProvider } from "@/components/desktop-add-account";
 import { WorkspaceContextProvider, type WorkspaceContextValue } from "@/lib/workspace-context";
 import { CustomThemesProvider } from "@/lib/custom-themes";
 import { DocSidebarDataProvider } from "@/components/doc/doc-sidebar-data";
@@ -334,6 +335,7 @@ export function App() {
         <ConfirmDialogProvider />
         <PromptDialogProvider />
         <KindPickerDialogProvider />
+        <DesktopAddAccountProvider />
       </I18nProvider>
     </ThemeProvider>
   );
@@ -773,8 +775,8 @@ const shell: React.CSSProperties = {
   alignItems: "center",
   justifyContent: "center",
   fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-  background: "#0b1020",
-  color: "#e9e9e7",
+  background: "var(--background)",
+  color: "var(--foreground)",
 };
 const dim: React.CSSProperties = { opacity: 0.6, fontSize: 13 };
 const button: React.CSSProperties = {

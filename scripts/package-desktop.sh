@@ -33,6 +33,7 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 
 # Export every var defined in the env file without echoing the values.
+set +x
 set -a
 # shellcheck disable=SC1090
 source "$ENV_FILE"
@@ -110,6 +111,16 @@ if [[ ${#missing[@]} -gt 0 ]]; then
   exit 1
 fi
 
+# Own the keychain lifecycle: electron-builder 25 passes the certificate password
+# where security requires the separately generated keychain password.
+source "$REPO_ROOT/scripts/desktop-keychain.sh"
+trap desktop_keychain_cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+echo "==> Preparing the temporary release signing keychain"
+desktop_keychain_prepare
+
 DMG="$REPO_ROOT/apps/app-desktop/release/usebrian.dmg"
 ZIP="$REPO_ROOT/apps/app-desktop/release/usebrian.zip"
 # The electron-updater feed: existing installs resolve the latest release, read
@@ -160,7 +171,7 @@ else
   echo "==> Building Siri App Intents extension"
   pnpm --filter @use-brian/app-desktop run build:siri
   echo "==> Packaging + signing + notarizing the app (Apple notary, a few min)"
-  pnpm --filter @use-brian/app-desktop exec electron-builder --mac
+  pnpm --filter @use-brian/app-desktop exec electron-builder --mac --publish never
 fi
 
 # electron-builder signs + notarizes + staples the .app (it submits the .zip),
@@ -172,13 +183,8 @@ fi
 if codesign -dv "$DMG" >/dev/null 2>&1 && xcrun stapler validate "$DMG" >/dev/null 2>&1; then
   echo "==> dmg already signed + notarized + stapled"
 else
-  SIGN_ID="$(security find-identity -v -p codesigning | awk '/Developer ID Application/ {print $2; exit}')"
-  if [[ -z "$SIGN_ID" ]]; then
-    echo "error: no 'Developer ID Application' identity in keychain to sign the dmg." >&2
-    exit 1
-  fi
-  echo "==> Signing the dmg (first run may prompt for keychain access — click 'Always Allow')"
-  codesign --force --timestamp --sign "$SIGN_ID" "$DMG"
+  echo "==> Signing the dmg with the release keychain"
+  codesign --force --timestamp --sign "$CSC_NAME" --keychain "$CSC_KEYCHAIN" "$DMG"
   echo "==> Notarizing the dmg (Apple notary, ~2-5 min)"
   xcrun notarytool submit "$DMG" \
     --apple-id "$APPLE_ID" \

@@ -226,11 +226,19 @@ type FetchLike = (input: string, init: {
   body: string;
 }) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
 
-type LocalSessionFetchLike = (input: string, init: RequestInit) => Promise<{
-  ok: boolean;
+/** Cookies observed on this response, already matched to its app-origin jar. */
+export interface LocalSessionCookie {
+  name: string;
+  value: string;
+}
+export interface LocalSessionResponse {
   status: number;
-  text: () => Promise<string>;
-}>;
+  location: string | null;
+  contentType: string | null;
+  body: string;
+  cookies: readonly LocalSessionCookie[];
+}
+export type LocalSessionFetchLike = (input: string, init: RequestInit) => Promise<LocalSessionResponse>;
 
 /**
  * Exchange a single-use code + PKCE verifier for the JWT pair, over TLS,
@@ -253,25 +261,71 @@ export async function exchangeCode(
   return (await res.json()) as DesktopSession;
 }
 
+/** Import only newly-issued cookies from the owner-authorized app response. */
+function localCookieSession(response: LocalSessionResponse, requireUser: boolean): DesktopSession {
+  const value = (name: string) => response.cookies.find((cookie) => cookie.name === name)?.value;
+  const accessToken = value("access_token");
+  const refreshToken = value("refresh_token");
+  const now = Math.floor(Date.now() / 1000);
+  if (!accessToken || !refreshToken || jwtExpSeconds(accessToken) <= now || jwtExpSeconds(refreshToken) <= now) {
+    throw new Error("Local desktop session did not issue a fresh token pair");
+  }
+  let user: DesktopSession["user"];
+  const userValue = value("user");
+  if (userValue) {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(userValue));
+      if (typeof parsed.id === "string" && parsed.id && typeof parsed.name === "string" &&
+          (typeof parsed.email === "string" || parsed.email === null)) {
+        user = { id: parsed.id, name: parsed.name, email: parsed.email ?? "" };
+      }
+    } catch { /* An incomplete mint must never adopt old jar data. */ }
+  }
+  if (requireUser && !user) throw new Error("Local desktop session did not issue an owner identity");
+  return { accessToken, refreshToken, user,
+    accessTokenExpiresIn: jwtExpSeconds(accessToken) - now,
+    refreshTokenExpiresIn: jwtExpSeconds(refreshToken) - now };
+}
+
 /**
- * Mint the OSS local-owner token pair directly for the bundled renderer.
- * The thin shell still visits app-web's cookie-setting trigger route; a
- * `file://` renderer has no app-origin cookie jar, so it persists this response
- * through the same safeStorage path as a PKCE exchange instead.
+ * The app-origin route owns the remote owner gate. Electron stops at its
+ * redirect and imports the fresh HttpOnly cookie trio into safeStorage.
  */
 export async function mintLocalDesktopSession(
-  apiUrl: string,
-  fetchImpl: LocalSessionFetchLike = fetch as unknown as LocalSessionFetchLike,
+  appUrl: string,
+  fetchImpl: LocalSessionFetchLike,
 ): Promise<DesktopSession> {
-  const res = await fetchImpl(`${apiUrl}/auth/local-session`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}",
+  const res = await fetchImpl(new URL("/api/auth/local-session", appUrl).href, {
+    method: "GET", redirect: "manual", credentials: "include",
   });
-  if (!res.ok) {
+  const destination = res.location ? new URL(res.location, appUrl) : null;
+  if (![302, 303, 307, 308].includes(res.status) || !destination ||
+      destination.origin !== new URL(appUrl).origin || destination.pathname === "/login") {
     throw new Error(`Local desktop session failed (HTTP ${res.status})`);
   }
-  return JSON.parse(await res.text()) as DesktopSession;
+  return localCookieSession(res, true);
+}
+
+/** Refresh through the app's internal-API bridge, preserving its public boundary. */
+export async function refreshLocalDesktopSession(
+  appUrl: string,
+  fetchImpl: LocalSessionFetchLike,
+): Promise<DesktopSession | null> {
+  const res = await fetchImpl(new URL("/api/auth/refresh", appUrl).href, {
+    method: "POST", redirect: "manual", credentials: "include",
+    headers: { "Content-Type": "application/json" }, body: "{}",
+  });
+  let body: { error?: string; accessToken?: string } | null = null;
+  if (res.contentType?.split(";")[0]?.trim().toLowerCase() === "application/json") {
+    try { body = JSON.parse(res.body); } catch { /* Gateway/errors remain transient. */ }
+  }
+  if (res.status === 401 && body && ["refresh_rejected", "no_refresh_token"].includes(body.error ?? "")) return null;
+  if (res.status !== 200 || !body || typeof body.accessToken !== "string") {
+    throw new Error(`Local desktop refresh failed (HTTP ${res.status})`);
+  }
+  const result = localCookieSession(res, false);
+  if (body.accessToken !== result.accessToken) throw new Error("Local desktop refresh cookie did not match its response");
+  return result;
 }
 
 // ── Session keep-alive ─────────────────────────────────────────

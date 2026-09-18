@@ -142,7 +142,7 @@ export function WorkspacePicker({
             <Link
               href={workspaceHref(workspace.id)}
               onClick={() => markOpened(workspace.id)}
-              className="group flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3.5 transition-all duration-200 hover:border-primary/40 hover:bg-accent active:bg-accent/80 hover-lift"
+              className="group flex items-center justify-between rounded-xl border border-border bg-card px-4 py-3.5 text-card-foreground transition-all duration-200 hover:border-primary/40 hover:bg-accent hover:text-accent-foreground active:bg-accent/80 hover-lift"
             >
               <div className="space-y-0.5">
                 <div className="text-sm font-medium">{workspace.name}</div>
@@ -169,7 +169,7 @@ export function WorkspacePicker({
     groups.pinned.length + groups.recent.length + groups.all.length > 0;
 
   return (
-    <div className="overflow-hidden rounded-2xl border border-border bg-card/95 shadow-sm backdrop-blur">
+    <div className="overflow-hidden rounded-2xl border border-border bg-card text-card-foreground shadow-sm">
       <div className="border-b border-border p-3">
         <label className="relative block">
           <Search
@@ -183,7 +183,7 @@ export function WorkspacePicker({
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder={t.searchPlaceholder}
-            className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-[16px] outline-none transition-colors placeholder:text-muted-foreground sm:h-10 md:text-sm"
+            className="h-11 w-full rounded-xl border border-border bg-background pl-9 pr-3 text-[16px] text-foreground outline-none transition-colors placeholder:text-muted-foreground sm:h-10 md:text-sm"
           />
         </label>
         {error ? (
@@ -337,7 +337,7 @@ function WorkspacePickerRow({
 }) {
   const t = useT().teams;
   return (
-    <li className="group flex min-w-0 items-center rounded-xl transition-colors hover:bg-accent">
+    <li className="group flex min-w-0 items-center rounded-xl transition-colors hover:bg-accent hover:text-accent-foreground">
       <Link
         href={href}
         onClick={onOpened}

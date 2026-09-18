@@ -41,7 +41,9 @@ vi.mock("@/lib/i18n/client", async () => {
   const { format } = await import("@/lib/i18n/format");
   return { useT: () => en, format };
 });
-vi.mock("@/lib/desktop-auth-source", () => ({ desktopBridge: () => null }));
+const { desktopBridgeMock, openAddAccountMock } = vi.hoisted(() => ({ desktopBridgeMock: vi.fn(), openAddAccountMock: vi.fn() }));
+vi.mock("@/lib/desktop-auth-source", () => ({ desktopBridge: desktopBridgeMock }));
+vi.mock("@/components/desktop-add-account", () => ({ openDesktopAddAccount: openAddAccountMock }));
 const { authFetchMock } = vi.hoisted(() => ({ authFetchMock: vi.fn() }));
 vi.mock("@/lib/auth-fetch", () => ({ authFetch: authFetchMock }));
 vi.mock("@/lib/primary-auth", () => ({
@@ -131,6 +133,8 @@ describe("[COMP:app-web/workspace-switcher] paints the shared workspace list", (
   beforeEach(() => {
     __resetWorkspaceCacheForTest();
     authFetchMock.mockReset();
+    desktopBridgeMock.mockReset().mockReturnValue(null);
+    openAddAccountMock.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -226,4 +230,27 @@ describe("[COMP:app-web/workspace-switcher] paints the shared workspace list", (
     expect(rowNames()).toEqual(["Acme", "Beta Robotics"]);
     expect(authFetchMock).not.toHaveBeenCalled();
   });
+  it("offers one desktop Add account entry instead of launching cloud or the standalone OSS page", async () => {
+    const addAccount = vi.fn(), chooseDeployment = vi.fn();
+    desktopBridgeMock.mockReturnValue({ addAccount, chooseDeployment, runLocal: vi.fn() });
+    setWorkspaces([{ id: "w1", name: "Example workspace" }]);
+    await mount(); await open();
+    expect(content()!.textContent).not.toContain("Use own deployment");
+    const add = [...content()!.querySelectorAll("button")].find(b => b.textContent === "Add another account")!;
+    await act(async () => add.click());
+    expect(openAddAccountMock).toHaveBeenCalledOnce();
+    expect(addAccount).not.toHaveBeenCalled();
+    expect(chooseDeployment).not.toHaveBeenCalled();
+  });
+  it("retains direct cloud add-account for an older bridge without local connection support", async () => {
+    const addAccount = vi.fn();
+    desktopBridgeMock.mockReturnValue({ addAccount });
+    setWorkspaces([{ id: "w1", name: "Example workspace" }]);
+    await mount(); await open();
+    const add = [...content()!.querySelectorAll("button")].find(b => b.textContent === "Add another account")!;
+    await act(async () => add.click());
+    expect(addAccount).toHaveBeenCalledOnce();
+    expect(openAddAccountMock).not.toHaveBeenCalled();
+  });
+
 });

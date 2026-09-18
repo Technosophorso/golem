@@ -74,6 +74,7 @@ import {
 import { getAccountsDir, type AccountDirEntry } from "@/lib/accounts";
 import { TeamAvatar } from "@/components/team-avatar";
 import { DesktopAccounts } from "@/components/desktop-accounts";
+import { openDesktopAddAccount } from "@/components/desktop-add-account";
 import { UserAvatar } from "@/components/ui/user-avatar";
 import {
   CreateWorkspaceForm,
@@ -349,8 +350,12 @@ export function WorkspaceSwitcher() {
   // `/login?addAccount=1` as before.
   function handleAddAccount() {
     setOpen(false);
-    const addViaShell =
-      desktopBridge()?.addAccount;
+    if (desktopBridge()?.runLocal) {
+      requestSidebarClose();
+      openDesktopAddAccount();
+      return;
+    }
+    const addViaShell = desktopBridge()?.addAccount;
     if (typeof addViaShell === "function") {
       addViaShell();
       return;
@@ -662,7 +667,7 @@ export function WorkspaceSwitcher() {
             >
               {t.addAnotherAccount}
             </button>
-            {desktopBridge()?.chooseDeployment && (
+            {!desktopBridge()?.runLocal && desktopBridge()?.chooseDeployment && (
               <button type="button" role="menuitem"
                 onClick={() => { setOpen(false); requestSidebarClose(); desktopBridge()?.chooseDeployment?.(); }}
                 className="min-h-11 rounded px-2 py-1.5 text-left text-sm hover:bg-muted">
