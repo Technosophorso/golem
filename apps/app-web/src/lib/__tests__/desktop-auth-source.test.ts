@@ -42,6 +42,7 @@ function loadPreload(
 ) {
   const invoke = vi.fn();
   const send = vi.fn();
+  const events = new Map<string, Function>();
   let bridge: DesktopBridge | undefined;
   runInNewContext(
     readFileSync(new URL("../../../../app-desktop/src/preload.cjs", import.meta.url), "utf8"),
@@ -54,15 +55,16 @@ function loadPreload(
           invoke,
           send,
           sendSync: (channel: string) => channel === "Use Brian:get-tokens" ? tokens : false,
-          on: vi.fn(),
+          on: (name: string, callback: Function) => events.set(name, callback),
         },
         webFrame: { getZoomFactor: () => 1 },
       }),
       process: { platform: "darwin", argv: bundled ? ["--usebrian-bundled"] : [] },
+      queueMicrotask,
     },
   );
   if (!bridge) throw new Error("Preload did not expose its bridge");
-  return { bridge, invoke, send };
+  return { bridge, invoke, send, events };
 }
 
 describe("[COMP:app-web/desktop-auth-source] isDesktopAuth", () => {
@@ -368,5 +370,23 @@ describe("[COMP:app-web/desktop-auth-source] classifyRefreshStatus", () => {
     expect(classifyRefreshStatus(502)).toBe("transient");
     expect(classifyRefreshStatus(429)).toBe("transient");
     expect(classifyRefreshStatus(0)).toBe("transient");
+  });
+});
+
+
+describe("[COMP:app-web/desktop-auth-source] native account dialog request", () => {
+  it("queues an early request across a StrictMode resubscription and announces readiness", async () => {
+    const { bridge, send, events } = loadPreload(null);
+    events.get("Use Brian:choose-deployment")!({}, "https://brain.example.com");
+    const stale = vi.fn(), current = vi.fn();
+    const stop = bridge.onChooseDeployment!(stale);
+    stop();
+    const unsubscribe = bridge.onChooseDeployment!(current);
+    await Promise.resolve();
+    expect(stale).not.toHaveBeenCalled();
+    expect(current).toHaveBeenCalledExactlyOnceWith("https://brain.example.com");
+    expect(send).toHaveBeenLastCalledWith("Use Brian:account-dialog-ready", true);
+    unsubscribe();
+    expect(send).toHaveBeenLastCalledWith("Use Brian:account-dialog-ready", false);
   });
 });

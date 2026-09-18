@@ -155,7 +155,7 @@ async function mockAppBridge(options: { status?: number; error?: string; pause?:
       void (async () => {
         await options.pause;
         const status = options.status ?? 200;
-        if (status === 200 && !options.omitCookies) {
+        if ((status === 200 || status === 307) && !options.omitCookies) {
           for (const [name, value] of Object.entries({ access_token: pair.accessToken, refresh_token: pair.refreshToken,
             user: encodeURIComponent(JSON.stringify({ id: "same-user", name: "You", email: "owner@local" })) })) {
             await requestOptions.session.cookies.set({ url: ownerTarget.appUrl, name, value });
@@ -287,4 +287,61 @@ describe("[COMP:app-desktop/main] thin owner session refresh", () => {
     expect(state.request.mock.calls[0][0].url).toBe(`${ownerTarget.appUrl}/api/auth/refresh`);
     expect(state.refresh).not.toHaveBeenCalled();
   });
+});
+
+
+describe("[COMP:app-desktop/main] add self-hosted account in place", () => {
+  it("opens the renderer dialog from the native action without loading the standalone page", async () => {
+    const win = state.windows.at(-1);
+    const before = win.webContents.getURL();
+    state.handlers.get("Use Brian:account-dialog-ready")!(sender(), true);
+    state.handlers.get("Use Brian:choose-deployment")!(sender());
+    expect(win.webContents.send).toHaveBeenCalledWith("Use Brian:choose-deployment", local.appUrl);
+    expect(win.webContents.getURL()).toBe(before);
+    expect(win.destroyed).toBe(false);
+  });
+  it("keeps the current app and target when owner authentication is rejected", async () => {
+    await mockAppBridge({ status: 403, error: "owner_denied" });
+    const win = state.windows.at(-1);
+    expect(await state.handlers.get("Use Brian:run-local")!(sender(), local.appUrl)).toMatchObject({ ok: false, error: "auth" });
+    expect(win.destroyed).toBe(false);
+    expect(JSON.parse(state.files.get("/tmp/desktop-switch-test/target.json")!.toString()).auth).toBe("pkce");
+    expect(store.current(local)?.refreshToken).toBe("local-refresh");
+  });
+  it("completes the owner session before replacing the app window", async () => {
+    const pair = await mockAppBridge({ status: 307, location: local.appUrl + "/" });
+    const win = state.windows.at(-1);
+    expect(await state.handlers.get("Use Brian:run-local")!(sender(), local.appUrl)).toMatchObject({ ok: true });
+    expect(state.request.mock.calls[0][0].url).toBe(local.appUrl + "/api/auth/local-session");
+    expect(win.destroyed).toBe(true);
+    expect(store.current(ownerTarget)?.accessToken).toBe(pair.accessToken);
+    expect(state.windows.at(-1).webContents.getURL()).not.toContain("signin.html");
+  });
+  it("honors an unsaved-work veto after owner auth without navigating away", async () => {
+    await mockAppBridge({ status: 307, location: local.appUrl + "/" });
+    const win = state.windows.at(-1);
+    win.preventClose = true;
+    expect(await state.handlers.get("Use Brian:run-local")!(sender(), local.appUrl)).toMatchObject({ ok: false, error: "switch" });
+    expect(win.destroyed).toBe(false);
+    expect(JSON.parse(state.files.get("/tmp/desktop-switch-test/target.json")!.toString()).auth).toBe("pkce");
+  });
+  it("keeps a fallback for older app views that have no dialog host", async () => {
+    const win = state.windows.at(-1);
+    state.handlers.get("Use Brian:choose-deployment")!(sender());
+    expect(win.webContents.getURL()).toContain("signin.html");
+    expect(win.webContents.send).not.toHaveBeenCalledWith("Use Brian:choose-deployment", local.appUrl);
+  });
+  it("does not activate a destination when the requesting page navigates away during owner auth", async () => {
+    let release!: () => void;
+    await mockAppBridge({ status: 307, location: local.appUrl + "/", pause: new Promise<void>(resolve => { release = resolve; }) });
+    const win = state.windows.at(-1);
+    const connecting = state.handlers.get("Use Brian:run-local")!(sender(), local.appUrl);
+    await vi.waitFor(() => expect(state.request).toHaveBeenCalledOnce());
+    await win.webContents.loadURL("https://untrusted.example.com/");
+    release();
+    expect(await connecting).toMatchObject({ ok: false, error: "switch" });
+    expect(win.destroyed).toBe(false);
+    expect(store.current(ownerTarget)).toBeNull();
+  });
+
 });

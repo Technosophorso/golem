@@ -107,10 +107,14 @@ export interface DesktopBridge {
    */
   addAccount?: () => void;
   /** Saved identities across deployments; credentials stay in the shell. */
-  listAccounts?: () => Promise<{ accounts: DesktopAccount[]; canSwitch: boolean }>;
+  listAccounts?: () => Promise<{ accounts: DesktopAccount[]; canSwitch: boolean; localAppUrl?: string }>;
   selectAccount?: (key: string) => Promise<{ ok: true } | { ok: false; error: "switch" | "reauth" }>;
   selectCloud?: () => Promise<{ ok: boolean }>;
   chooseDeployment?: () => void;
+  /** Open the shared self-hosted account dialog from a native menu request. */
+  onChooseDeployment?: (callback: (url: string) => void) => () => void;
+  runLocal?: (url: string) => Promise<{ ok: true; url?: string } | { ok: false; error: string; url?: string }>;
+  onAccessAuthState?: (callback: (state: "checking" | "browser" | "approved") => void) => () => void;
   /**
    * Switch the active account to a saved one (by id), in the shell's own cookie
    * jar. Resolves with the outcome so the switcher can show an inline message

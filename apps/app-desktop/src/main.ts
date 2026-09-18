@@ -264,6 +264,7 @@ const targetOperations = new TargetOperations();
 let changingTarget = false;
 let selectingAccount = false;
 let connectingDeployment = false;
+const accountDialogRenderers = new Set<number>();
 function accountTarget(): AccountTarget {
   return { kind: cfg.target, appUrl: cfg.appUrl, apiUrl: cfg.apiUrl, auth: cfg.targetAuth, publicConfig: cfg.publicConfig };
 }
@@ -708,6 +709,10 @@ function createWindow(initialLoad: { useBrian?: boolean } = {}): BrowserWindow {
     rememberWorkspace(win);
   });
 
+  win.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+    if (isMainFrame && !isInPlace) accountDialogRenderers.delete(win.webContents.id);
+  });
+  win.webContents.once("destroyed", () => accountDialogRenderers.delete(win.webContents.id));
   win.webContents.on("did-navigate", () => rememberWorkspace(win));
   win.webContents.on("did-navigate-in-page", () => rememberWorkspace(win));
 
@@ -1831,7 +1836,8 @@ function showLocalDown(
 
 /**
  * The menu/tray "Switch to ..." action. Cloud → local ALWAYS opens the
- * landing's chooser (`local-choose`, prefilled with the remembered address):
+ * in-app Add account dialog when its renderer is ready; first launch and
+ * older thin renderers use the `local-choose` fallback. In either view:
  * the user confirms or edits the URL, and Connect probes + switches. Never
  * silently adopt whatever answers on the default port — a dev running the
  * hosted-edition stack there gets the wrong brain with familiar data, which
@@ -1841,6 +1847,11 @@ function showLocalDown(
 function chooseOwnDeployment(): void {
   if (changingTarget || selectingAccount || connectingDeployment) return;
   const win = ensureWindow();
+  if (isAppPage(win) && accountDialogRenderers.has(win.webContents.id)) {
+    win.webContents.send("Use Brian:choose-deployment", rememberedLocalAppUrl());
+    focusWindow(win);
+    return;
+  }
   void win.webContents
     .loadFile(SIGNIN_PAGE, { query: { mode: "local-choose", url: rememberedLocalAppUrl() } })
     .then(() => focusWindow(win));
@@ -2095,7 +2106,7 @@ async function listDeploymentAccounts() {
         accessToken, refreshToken, accessTokenExpiresAt: 0, user,
       });
     }
-    return { accounts: deploymentAccounts.rows(accountTarget()), canSwitch: !cfg.envTargetOverride };
+    return { accounts: deploymentAccounts.rows(accountTarget()), canSwitch: !cfg.envTargetOverride, localAppUrl: rememberedLocalAppUrl() };
 
   });
 }
@@ -3917,8 +3928,12 @@ if (!gotLock) {
   // selected account window in this running app. `use-cloud` switches back,
   // keeping the local address remembered for the return trip.
   ipcMain.handle("Use Brian:run-local", async (event, rawUrl: unknown) => {
-    if (!isCurrentAccountSender(event.sender.id) || changingTarget || selectingAccount || connectingDeployment) return { ok: false, error: "switch" };
+    if (!isCurrentAccountSender(event.sender.id) || event.senderFrame !== event.sender.mainFrame || changingTarget || selectingAccount || connectingDeployment || recorderOverlay) return { ok: false, error: "switch" };
     connectingDeployment = true;
+    const originalConfig = cfg;
+    const originalUrl = event.sender.getURL();
+    const currentSender = () => cfg === originalConfig && !event.sender.isDestroyed() && event.sender.getURL() === originalUrl &&
+      event.senderFrame === event.sender.mainFrame && isCurrentAccountSender(event.sender.id);
     try {
       const input = typeof rawUrl === "string" && rawUrl.trim() ? rawUrl : DEFAULT_LOCAL_APP_URL;
       const notifyAccess = (state: "checking" | "browser" | "approved"): void => {
@@ -3997,12 +4012,43 @@ if (!gotLock) {
         validation.value.auth,
         validation.value.publicConfig,
       ) ?? target;
-      const ok = await activateTarget("local", resolvedTarget.appUrl, resolvedDeclaredApiUrl, resolvedTarget.auth, undefined, validation.value.publicConfig);
+      if (!currentSender() || !(await targetOperations.idle())) return { ok: false, error: "switch", url: resolvedTarget.appUrl };
+      let installSession: (() => Promise<void>) | undefined;
+      if (resolvedTarget.auth === "local-session") {
+        const destination: AccountTarget = { kind: "local", appUrl: resolvedTarget.appUrl,
+          apiUrl: resolvedTarget.apiUrl, auth: resolvedTarget.auth, publicConfig: resolvedTarget.publicConfig };
+        let ownerSession: DesktopSession | null;
+        try {
+          // Complete owner auth while the existing app/dialog is still visible.
+          // A cancelled switch must not change the destination cookie session.
+          ownerSession = await exchangeLocalSession(destination, undefined, true);
+        } catch {
+          return { ok: false, error: "auth", url: resolvedTarget.appUrl };
+        }
+        if (!currentSender()) return { ok: false, error: "switch", url: resolvedTarget.appUrl };
+        const tokens = ownerSession && parseStoredTokens(serializeTokens(ownerSession, Date.now()));
+        if (!tokens || !deploymentAccounts.put(destination, tokens, false)) {
+          return { ok: false, error: "secure-storage-unavailable", url: resolvedTarget.appUrl };
+        }
+        installSession = async () => {
+          if (!deploymentAccounts.put(destination, tokens)) throw new Error("Could not save the selected account");
+          if (!cfg.bundled) for (const spec of buildSessionCookies(destination.appUrl, ownerSession!)) {
+            await targetSession(destination).cookies.set(spec);
+          }
+        };
+      }
+      if (!currentSender()) return { ok: false, error: "switch", url: resolvedTarget.appUrl };
+      const ok = await activateTarget("local", resolvedTarget.appUrl, resolvedDeclaredApiUrl, resolvedTarget.auth, installSession, validation.value.publicConfig);
       return ok ? { ok: true, url: resolvedTarget.appUrl } : { ok: false, error: "switch", url: resolvedTarget.appUrl };
     } finally { connectingDeployment = false; }
   });
   ipcMain.on("Use Brian:use-cloud", (event) => {
     if (isCurrentAccountSender(event.sender.id)) void useCloud();
+  });
+  ipcMain.on("Use Brian:account-dialog-ready", (event, ready: unknown) => {
+    if (!isCurrentAccountSender(event.sender.id) || event.senderFrame !== event.sender.mainFrame) return;
+    if (ready === true) accountDialogRenderers.add(event.sender.id);
+    else accountDialogRenderers.delete(event.sender.id);
   });
   ipcMain.on("Use Brian:choose-deployment", (event) => {
     if (isCurrentAccountSender(event.sender.id)) chooseOwnDeployment();

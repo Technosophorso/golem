@@ -22,6 +22,16 @@
 //       docs/plans/canvas-desktop-bundled-offline.md → Phase 1 ("Remaining wiring").
 const { contextBridge, ipcRenderer, webFrame } = require("electron");
 
+const deploymentListeners = new Set();
+let pendingDeployment = null;
+ipcRenderer.on("Use Brian:choose-deployment", (_event, url) => {
+  if (typeof url !== "string") return;
+  pendingDeployment = url;
+  if (deploymentListeners.size) {
+    pendingDeployment = null;
+    for (const callback of deploymentListeners) callback(url);
+  }
+});
 const messageBrianListeners = new Set();
 let messageBrianPending = false;
 const useBrianListeners = new Set();
@@ -121,6 +131,23 @@ const bridge = {
   selectAccount: (key) => ipcRenderer.invoke("Use Brian:select-account", key),
   selectCloud: () => ipcRenderer.invoke("Use Brian:select-cloud"),
   chooseDeployment: () => ipcRenderer.send("Use Brian:choose-deployment"),
+  onChooseDeployment: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    deploymentListeners.add(callback);
+    ipcRenderer.send("Use Brian:account-dialog-ready", true);
+    // Defer consumption until after StrictMode's mount/unmount probe.
+    queueMicrotask(() => {
+      if (deploymentListeners.has(callback) && pendingDeployment !== null) {
+        const url = pendingDeployment;
+        pendingDeployment = null;
+        callback(url);
+      }
+    });
+    return () => {
+      deploymentListeners.delete(callback);
+      if (!deploymentListeners.size) ipcRenderer.send("Use Brian:account-dialog-ready", false);
+    };
+  },
   switchAccount: (id) => ipcRenderer.invoke("Use Brian:switch-account", id),
   // Dual target (docs/plans/consumer-local-experience.md §2.2). `runLocal`
   // probes a local/self-hosted brain's paired API (`null` = the launcher
