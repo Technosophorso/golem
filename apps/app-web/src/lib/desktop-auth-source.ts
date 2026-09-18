@@ -26,6 +26,12 @@ interface DesktopTokens {
   user?: { id: string; name: string; email: string; plan?: string };
 }
 
+/** Native refresh keeps deployment transport and durable session writes in the shell. */
+type DesktopRefreshResult =
+  | { kind: "ok"; tokens: DesktopTokens }
+  | { kind: "unauthenticated" }
+  | { kind: "transient" };
+
 /**
  * The bridge the Electron preload exposes on `window`. `signIn` / `signOut` are
  * present in every mode (thin shell + bundled); the token methods are added only
@@ -115,6 +121,8 @@ export interface DesktopBridge {
   ) => Promise<{ ok: true } | { ok: false; error: "switch" | "reauth" }>;
   getAccessToken?: () => string | null;
   getRefreshToken?: () => string | null;
+  /** Optional for compatibility with older bundled shells that refresh directly. */
+  refreshTokens?: () => Promise<DesktopRefreshResult>;
   setTokens?: (tokens: DesktopTokens) => void;
   clear?: () => void;
   /**
@@ -307,9 +315,10 @@ export interface AuthSource {
 }
 
 /**
- * The desktop source. Reads tokens from the bridge; refreshes by calling the
- * API's `/auth/refresh` directly (no same-origin Next route, no `.usebrian.ai`
- * cookie redirect); "login" opens the system-browser PKCE flow via the shell.
+ * The desktop source. Current shells own refresh transport and persistence;
+ * older bridges retain the direct API exchange. The preload updates its token
+ * cache before returning, so the renderer must not send a second write or clear
+ * that could race a deployment switch. "Login" delegates to the shell.
  */
 export const desktopAuthSource: AuthSource = {
   getAccessToken() {
@@ -318,6 +327,16 @@ export const desktopAuthSource: AuthSource = {
 
   async refresh(): Promise<RefreshOutcome> {
     const bridge = desktopBridge();
+    if (bridge?.refreshTokens) {
+      try {
+        const result = await bridge.refreshTokens();
+        return result.kind === "ok"
+          ? { kind: "ok", token: result.tokens.accessToken }
+          : result;
+      } catch {
+        return { kind: "transient" };
+      }
+    }
     const refreshToken = bridge?.getRefreshToken?.();
     if (!refreshToken) {
       bridge?.clear?.();

@@ -182,6 +182,14 @@ if (process.argv.includes("--usebrian-bundled")) {
 
   bridge.getAccessToken = () => (cache && cache.accessToken) || null;
   bridge.getRefreshToken = () => (cache && cache.refreshToken) || null;
+  bridge.refreshTokens = async () => {
+    // Main owns the selected deployment's transport and durable session. Update
+    // only this renderer's cache; a second set/clear IPC could race a switch.
+    const result = await ipcRenderer.invoke("Use Brian:refresh-tokens");
+    if (result.kind === "ok") cache = result.tokens;
+    else if (result.kind === "unauthenticated") cache = null;
+    return result;
+  };
   bridge.setTokens = (tokens) => {
     // Update the local cache first (so a subsequent sync getAccessToken sees the
     // rotated token immediately), then persist to safeStorage via main.

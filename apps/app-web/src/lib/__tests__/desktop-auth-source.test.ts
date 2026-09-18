@@ -6,8 +6,11 @@
  * [COMP:app-web/desktop-auth-source]
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { runInNewContext } from "node:vm";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  type DesktopBridge,
   isDesktopAuth,
   desktopAuthSource,
   desktopSignOut,
@@ -30,6 +33,36 @@ afterEach(() => {
 
 function setBridge(bridge: unknown) {
   (globalThis as { window?: unknown }).window = { sidanclawDesktop: bridge };
+}
+
+/** Exercise the shipped preload cache with only Electron's IPC boundary mocked. */
+function loadPreload(
+  tokens: { accessToken: string; refreshToken: string } | null,
+  bundled = true,
+) {
+  const invoke = vi.fn();
+  const send = vi.fn();
+  let bridge: DesktopBridge | undefined;
+  runInNewContext(
+    readFileSync(new URL("../../../../app-desktop/src/preload.cjs", import.meta.url), "utf8"),
+    {
+      require: () => ({
+        contextBridge: {
+          exposeInMainWorld: (_name: string, value: DesktopBridge) => { bridge = value; },
+        },
+        ipcRenderer: {
+          invoke,
+          send,
+          sendSync: (channel: string) => channel === "Use Brian:get-tokens" ? tokens : false,
+          on: vi.fn(),
+        },
+        webFrame: { getZoomFactor: () => 1 },
+      }),
+      process: { platform: "darwin", argv: bundled ? ["--usebrian-bundled"] : [] },
+    },
+  );
+  if (!bridge) throw new Error("Preload did not expose its bridge");
+  return { bridge, invoke, send };
 }
 
 describe("[COMP:app-web/desktop-auth-source] isDesktopAuth", () => {
@@ -248,6 +281,73 @@ describe("[COMP:app-web/desktop-auth-source] desktopAuthSource", () => {
       .mockRejectedValue(new TypeError("Failed to fetch")) as unknown as typeof fetch;
     expect(await desktopAuthSource.refresh()).toEqual({ kind: "transient" });
     expect(clear).not.toHaveBeenCalled();
+  });
+});
+
+describe("[COMP:app-web/desktop-auth-source] native refresh bridge", () => {
+  const storedTokens = { accessToken: "old-access", refreshToken: "old-refresh" };
+  const rotatedTokens = { accessToken: "new-access", refreshToken: "new-refresh" };
+
+  it.each([storedTokens, null])(
+    "refreshes through the shell and updates the preload cache before returning (cache: %j)",
+    async (initialTokens) => {
+      const { bridge, invoke, send } = loadPreload(initialTokens);
+      invoke.mockResolvedValue({ kind: "ok", tokens: rotatedTokens });
+      setBridge(bridge);
+      globalThis.fetch = vi.fn();
+
+      expect(await desktopAuthSource.refresh()).toEqual({ kind: "ok", token: "new-access" });
+      expect(bridge.getAccessToken?.()).toBe("new-access");
+      expect(bridge.getRefreshToken?.()).toBe("new-refresh");
+      expect(invoke).toHaveBeenCalledExactlyOnceWith("Use Brian:refresh-tokens");
+      expect(send).not.toHaveBeenCalled();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    },
+  );
+
+  it("clears the preload cache on rejection without a second clear IPC", async () => {
+    const { bridge, invoke, send } = loadPreload(storedTokens);
+    invoke.mockResolvedValue({ kind: "unauthenticated" });
+    setBridge(bridge);
+    globalThis.fetch = vi.fn();
+
+    expect(await desktopAuthSource.refresh()).toEqual({ kind: "unauthenticated" });
+    expect(bridge.getAccessToken?.()).toBeNull();
+    expect(bridge.getRefreshToken?.()).toBeNull();
+    expect(send).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("preserves the preload cache on a transient refresh", async () => {
+    const { bridge, invoke, send } = loadPreload(storedTokens);
+    invoke.mockResolvedValue({ kind: "transient" });
+    setBridge(bridge);
+    globalThis.fetch = vi.fn();
+
+    expect(await desktopAuthSource.refresh()).toEqual({ kind: "transient" });
+    expect(bridge.getAccessToken?.()).toBe("old-access");
+    expect(bridge.getRefreshToken?.()).toBe("old-refresh");
+    expect(send).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("treats bridge exceptions as transient without clearing or falling back to fetch", async () => {
+    const { bridge, invoke, send } = loadPreload(storedTokens);
+    invoke.mockRejectedValue(new Error("IPC unavailable"));
+    setBridge(bridge);
+    globalThis.fetch = vi.fn();
+
+    expect(await desktopAuthSource.refresh()).toEqual({ kind: "transient" });
+    expect(bridge.getAccessToken?.()).toBe("old-access");
+    expect(bridge.getRefreshToken?.()).toBe("old-refresh");
+    expect(send).not.toHaveBeenCalled();
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("keeps token methods absent from the thin-shell preload", () => {
+    const { bridge } = loadPreload(null, false);
+    expect(bridge.getAccessToken).toBeUndefined();
+    expect(bridge.refreshTokens).toBeUndefined();
   });
 });
 

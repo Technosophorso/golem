@@ -12,6 +12,7 @@ import {
   parseLoopbackCallback,
   exchangeCode,
   mintLocalDesktopSession,
+  refreshLocalDesktopSession,
   refreshSession,
   jwtExpSeconds,
   shouldRefreshSession,
@@ -226,39 +227,51 @@ describe("[COMP:app-desktop/desktop-auth] exchangeCode", () => {
   });
 });
 
-describe("[COMP:app-desktop/desktop-auth] bundled local-owner session", () => {
-  const session: DesktopSession = {
-    accessToken: "local-at",
-    refreshToken: "local-rt",
-    accessTokenExpiresIn: 3600,
-    refreshTokenExpiresIn: 2592000,
-    user: { id: "local-owner", name: "You", email: "owner@local" },
-  };
+describe("[COMP:app-desktop/desktop-auth] app-origin local-owner session", () => {
+  const appUrl = "https://brain.example.com";
+  const accessToken = jwtWithExp(Math.floor(Date.now() / 1000) + 3600);
+  const refreshToken = jwtWithExp(Math.floor(Date.now() / 1000) + 2592000);
+  const cookies = [
+    { name: "access_token", value: accessToken },
+    { name: "refresh_token", value: refreshToken },
+    { name: "user", value: encodeURIComponent(JSON.stringify({ id: "local-owner", name: "You", email: "owner@local" })) },
+  ];
+  const minted = { status: 307, location: `${appUrl}/`, contentType: null, body: "", cookies };
+  const refreshed = { status: 200, location: null, contentType: "application/json; charset=utf-8", body: JSON.stringify({ accessToken }), cookies };
 
-  it("mints tokens directly from the selected local API", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify(session),
-    });
-    await expect(
-      mintLocalDesktopSession("http://localhost:4000", fetchImpl),
-    ).resolves.toEqual(session);
-    expect(fetchImpl).toHaveBeenCalledWith(
-      "http://localhost:4000/auth/local-session",
-      expect.objectContaining({ method: "POST", body: "{}" }),
-    );
+  it("mints through the app owner gate without calling the publicly blocked API", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(minted);
+    expect(await mintLocalDesktopSession(appUrl, fetchImpl)).toMatchObject({ accessToken, refreshToken, user: { id: "local-owner" } });
+    expect(fetchImpl).toHaveBeenCalledWith(`${appUrl}/api/auth/local-session`, expect.objectContaining({ method: "GET", redirect: "manual", credentials: "include" }));
   });
-
-  it("rejects a target that cannot mint the local-owner session", async () => {
-    const fetchImpl = vi.fn().mockResolvedValue({
-      ok: false,
-      status: 403,
-      text: async () => JSON.stringify({ error: "local_session_disabled" }),
-    });
-    await expect(
-      mintLocalDesktopSession("https://brain.example.com", fetchImpl),
-    ).rejects.toThrow(/HTTP 403/);
+  it.each([
+    { ...minted, status: 403 },
+    { ...minted, status: 200 },
+    { ...minted, location: "https://gateway.example.com/login" },
+    { ...minted, location: `${appUrl}/login?error=local_session_failed` },
+    { ...minted, cookies: [] },
+    { ...minted, cookies: cookies.filter((cookie) => cookie.name !== "user") },
+    { ...minted, cookies: cookies.map((cookie) => cookie.name === "access_token" ? { ...cookie, value: jwtWithExp(1) } : cookie) },
+  ])("rejects owner denial, gateway navigation, and missing or stale cookies", async (response) => {
+    await expect(mintLocalDesktopSession(appUrl, vi.fn().mockResolvedValue(response))).rejects.toThrow();
+  });
+  it("refreshes using the existing app cookie bridge", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(refreshed);
+    expect(await refreshLocalDesktopSession(appUrl, fetchImpl)).toMatchObject({ accessToken, refreshToken });
+    expect(fetchImpl).toHaveBeenCalledWith(`${appUrl}/api/auth/refresh`, expect.objectContaining({ method: "POST", credentials: "include", redirect: "manual" }));
+  });
+  it.each(["refresh_rejected", "no_refresh_token"])("recognizes definitive app rejection %s", async (error) => {
+    expect(await refreshLocalDesktopSession(appUrl, vi.fn().mockResolvedValue({ ...refreshed, status: 401, body: JSON.stringify({ error }), cookies: [] }))).toBeNull();
+  });
+  it.each([
+    { ...refreshed, status: 403, body: "Access denied", contentType: "text/html" },
+    { ...refreshed, status: 401, body: "Access denied", contentType: "text/html" },
+    { ...refreshed, status: 503, body: JSON.stringify({ error: "refresh_rejected" }) },
+    { ...refreshed, cookies: [] },
+    { ...refreshed, body: JSON.stringify({ accessToken: "different-response" }) },
+    { ...refreshed, status: 307, location: "https://gateway.example.com/login" },
+  ])("preserves saved credentials on transient or malformed refresh responses", async (response) => {
+    await expect(refreshLocalDesktopSession(appUrl, vi.fn().mockResolvedValue(response))).rejects.toThrow();
   });
 });
 
