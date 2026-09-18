@@ -1,6 +1,6 @@
 "use client";
 
-/** Shared module state for Studio, the native surface and assistant settings. [COMP:app-web/association] */
+/** Module controls inside Association; read-only state in assistant settings. [COMP:app-web/association] */
 import Link from "next/link";
 import { useState } from "react";
 import type { WorkspaceModuleAction } from "@use-brian/shared";

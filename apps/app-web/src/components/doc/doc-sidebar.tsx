@@ -842,7 +842,7 @@ export function DocSidebar(props: Props) {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-4">
+      <div className="doc-sidebar-scroll flex-1 min-h-0 overflow-y-auto px-2 pb-4">
         {/* The shared quiet Suggested-for-you row always leads the scrollable
             body, including Office and Live, before the local navigation. */}
         {activeOperatorApp !== null || sidebarSurface === "live" ? (

@@ -21,7 +21,6 @@ import {
   type HomeAppEntry,
 } from "@use-brian/shared/home-apps";
 import { authFetch } from "@/lib/auth-fetch";
-import { getUserInfo } from "@/lib/user";
 import type { WorkspacePickerItem } from "@/lib/workspace-picker";
 
 const API_URL = publicRuntimeConfig().apiUrl ?? "http://localhost:4000";
@@ -287,23 +286,21 @@ export async function setWorkspaceHomeApps(
 export type WorkspaceRole = "owner" | "admin" | "member";
 
 /**
- * The caller's own role in a workspace, read off the detail response's member
- * list. Returns `null` when the fetch fails or the caller is not in the list —
- * callers should treat `null` as "not an admin", so a failed probe never
- * *grants* an affordance it cannot back up (the server enforces regardless).
+ * The caller's own role, resolved by the API from the authenticated session.
+ * Do not require a display cookie or match against the member list: bundled
+ * desktop pages authenticate with Bearer tokens and have no website cookies.
+ * Failed probes and unknown roles stay read-only (the server also enforces).
  */
 export async function getWorkspaceRole(
   workspaceId: string,
 ): Promise<WorkspaceRole | null> {
   try {
-    const me = getUserInfo();
-    if (!me?.id) return null;
     const res = await authFetch(`${API_URL}/api/workspaces/${workspaceId}`);
     if (!res.ok) return null;
-    const body = (await res.json()) as {
-      members?: Array<{ userId?: string; role?: WorkspaceRole }>;
-    };
-    return body.members?.find((m) => m.userId === me.id)?.role ?? null;
+    const body = (await res.json()) as { role?: unknown };
+    return body.role === "owner" || body.role === "admin" || body.role === "member"
+      ? body.role
+      : null;
   } catch {
     return null;
   }
