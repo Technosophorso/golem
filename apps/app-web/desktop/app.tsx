@@ -775,8 +775,8 @@ const shell: React.CSSProperties = {
   alignItems: "center",
   justifyContent: "center",
   fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
-  background: "#0b1020",
-  color: "#e9e9e7",
+  background: "var(--background)",
+  color: "var(--foreground)",
 };
 const dim: React.CSSProperties = { opacity: 0.6, fontSize: 13 };
 const button: React.CSSProperties = {
