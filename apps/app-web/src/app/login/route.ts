@@ -10,6 +10,7 @@ import {
   ossPublicAppOrigin,
   ossSignedOutRedirect,
 } from "@/lib/oss-entry";
+import { resolveAppLoginReturn } from "./login-return";
 
 /**
  * Redirect-only compatibility entry for app-origin `/login`.
@@ -29,25 +30,6 @@ import {
  */
 
 const ERROR_RE = /^[a-z0-9_]{1,64}$/;
-
-/**
- * Resolve a requested app-origin return without letting `/login` become an
- * open-redirect relay. The canonical primary re-validates the URL too.
- */
-export function resolveAppLoginReturn(
-  requestUrl: URL,
-  rawNext: string | null,
-): URL {
-  if (!rawNext || rawNext.startsWith("//")) return new URL(requestUrl.origin);
-  try {
-    const candidate = new URL(rawNext, requestUrl.origin);
-    return candidate.origin === requestUrl.origin
-      ? candidate
-      : new URL(requestUrl.origin);
-  } catch {
-    return new URL(requestUrl.origin);
-  }
-}
 
 export function GET(request: Request): NextResponse {
   const requestUrl = publicAppUrl(request.url);

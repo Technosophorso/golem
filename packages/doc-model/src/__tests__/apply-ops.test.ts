@@ -35,6 +35,33 @@ function blocksOf(doc: Y.Doc): Block[] {
 }
 
 describe('[COMP:doc-model/apply-ops] AI ops on a live Y.Doc', () => {
+  it.each([
+    ['bulletList', bullet],
+    ['orderedList', numbered],
+    ['taskList', todo],
+  ] as const)('appends omitted anchors in order across new %s runs', (wrapper, listItem) => {
+    const doc = docFrom([text('intro', 'Introduction')])
+    const additions = [
+      listItem('item-a', 'First item'),
+      listItem('item-b', 'Second item'),
+      heading('section', 'Next section'),
+      text('body', 'Section body'),
+      listItem('item-c', 'Separate list'),
+      text('tail', 'Closing paragraph'),
+    ]
+    // MCP editPage emits canonical additions without an explicit anchor.
+    const { skipped } = applyOpsToYDoc(doc, additions.map(block => ({ op: 'add', block })))
+    expect(skipped).toEqual([])
+    expect(blocksOf(doc).map(block => block.id)).toEqual([
+      'intro', ...additions.map(block => block.id),
+    ])
+    expect(topShape(doc).filter(node => node.name === wrapper)).toEqual([
+      { name: wrapper, items: 2 },
+      { name: wrapper, items: 1 },
+    ])
+    doc.destroy()
+  })
+
   it('adds a block at end and preserves the given id', () => {
     const doc = docFrom([text('a', 'first')])
     const { idMap, skipped } = applyOpsToYDoc(doc, [

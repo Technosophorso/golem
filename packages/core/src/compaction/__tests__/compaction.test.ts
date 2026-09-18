@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { compactConversation, estimateTokens, needsCompaction, getIdleCompactionLevel, createCompactionCircuitBreaker, parseMultiTopicOutput, modelToCompactionTier, CHANNEL_CLASS_MULTIPLIER } from '../compact.js'
+import { compactConversation, estimateTokens, needsCompaction, compactionThreshold, COMPACT_THRESHOLDS, getIdleCompactionLevel, createCompactionCircuitBreaker, parseMultiTopicOutput, modelToCompactionTier, CHANNEL_CLASS_MULTIPLIER } from '../compact.js'
 import type { LLMProvider, Message, StreamFn } from '../../providers/types.js'
 
 describe('[COMP:compaction/full] failed-attempt preservation prompt', () => {
@@ -236,5 +236,17 @@ MESSAGE_SPAN: from=1 to=2`
 MESSAGE_SPAN: from=1 to=2 turns=1`
     const sections = parseMultiTopicOutput(out)
     expect(sections[0].topicLabel).toBe('brian cheng research')
+  })
+})
+
+describe('[COMP:compaction/full] compactionThreshold', () => {
+  it('applies the channel multiplier to the tier ceiling and backs needsCompaction', () => {
+    expect(compactionThreshold('standard')).toBe(COMPACT_THRESHOLDS.standard)
+    expect(compactionThreshold('pro', 'web')).toBe(COMPACT_THRESHOLDS.pro)
+    expect(compactionThreshold('pro', 'messaging')).toBe(COMPACT_THRESHOLDS.pro * CHANNEL_CLASS_MULTIPLIER.messaging)
+    const justUnder: Message[] = [{ role: 'user', content: 'x'.repeat((compactionThreshold('standard', 'messaging') - 1) * 4) }]
+    const atThreshold: Message[] = [{ role: 'user', content: 'x'.repeat(compactionThreshold('standard', 'messaging') * 4) }]
+    expect(needsCompaction(justUnder, 'standard', 'messaging')).toBe(false)
+    expect(needsCompaction(atThreshold, 'standard', 'messaging')).toBe(true)
   })
 })

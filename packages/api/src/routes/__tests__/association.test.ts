@@ -41,28 +41,51 @@ function fakeStore(): AssociationStore {
     upsertPlan: vi.fn(),
     listPlans: vi.fn(),
     createMembership: vi.fn(),
+    importSourceMembership: vi.fn(),
     listMemberships: vi.fn(),
     updateMembership: vi.fn(),
+    listSponsorshipAllocations: vi.fn(),
+    createSponsorshipAllocation: vi.fn(),
+    cancelSponsorshipAllocation: vi.fn(),
+    listSponsorshipInvitations: vi.fn(),
+    issueSponsorshipInvitation: vi.fn(),
+    revokeSponsorshipInvitation: vi.fn(),
+    redeemSponsorshipInvitation: vi.fn(),
+    listMembershipRescues: vi.fn(),
+    createMembershipRescue: vi.fn(),
+    settleMembershipRescue: vi.fn(),
+    reverseMembershipRescue: vi.fn(),
+    cancelMembershipRescue: vi.fn(),
     upsertEvent: vi.fn(),
     listEvents: vi.fn(),
     upsertTicket: vi.fn(),
     listTickets: vi.fn(),
+    upsertPromotion: vi.fn(),
+    importPromotion: vi.fn(),
+    listPromotions: vi.fn(),
+    reserveMembershipCheckout: vi.fn(),
+    bindMembershipCheckoutProvider: vi.fn(),
     listWaitlist: vi.fn(),
     offerWaitlistPlace: vi.fn(),
     createOrder: vi.fn(),
+    importSourceOrder: vi.fn(),
     getOrder: vi.fn(),
     listOrders: vi.fn(),
     expireDueOrder: vi.fn(),
     cancelOrder: vi.fn(),
     confirmFreeOrder: vi.fn(),
     reconcileProviderEvent: vi.fn(),
+    reconcileProviderFinancialEvent: vi.fn(),
     bindOrderProvider: vi.fn(),
     reconcileProviderEntitlement: vi.fn(),
     retryProviderEventReceipt: vi.fn(),
+    resolveProviderReceipt: vi.fn(),
     listProviderReceipts: vi.fn(),
     listEventRegistrations: vi.fn(),
+    listOperationalRoster: vi.fn(),
     getRegistrationManagement: vi.fn().mockResolvedValue({ sourceKind: 'commerce' }),
     updateRegistration: vi.fn(),
+    correctRegistrationCheckIn: vi.fn(),
     listNotifications: vi.fn(),
   }
 }
@@ -108,6 +131,33 @@ describe('[COMP:api/association-route] credential and workspace authority', () =
     const rejected = await request(makeApp(store)).post(`/api/association/orders/${RECORD_ID}/provider-events`).send({ provider: 'fixture', eventId: 'fictional-event', targetStatus: 'paid', occurredAt: '2026-09-01T00:00:00Z' })
     expect(rejected.status).toBe(400)
     expect(store.reconcileProviderEvent).not.toHaveBeenCalled()
+  })
+  it('accepts only a closed normalized financial event at the backend route', async () => {
+    const store = fakeStore(), event = { provider: 'stripe', providerReference: 'cs_fixture', adjustmentReference: 're_fixture',
+      eventId: 'evt_fixture', kind: 'refund' as const, status: 'succeeded' as const, amountMinor: 400,
+      currency: 'USD', occurredAt: '2026-09-01T01:00:00Z', metadata: {} }
+    vi.mocked(store.reconcileProviderFinancialEvent).mockResolvedValue({ record: { id: RECORD_ID, refundState: 'partial' }, created: true,
+      receipt: { id: CONTACT_ID, state: 'applied' } })
+    const accepted = await request(makeApp(store)).post(`/api/association/orders/${RECORD_ID}/provider-financial-events`).send(event)
+    expect(accepted.status).toBe(201)
+    expect(accepted.body).toMatchObject({ order: { id: RECORD_ID, refundState: 'partial' }, reconciled: true,
+      receipt: { id: CONTACT_ID, state: 'applied' } })
+    expect(store.reconcileProviderFinancialEvent).toHaveBeenCalledWith(WID, RECORD_ID, event, expect.objectContaining({ credentialKind: 'brain_key' }))
+    const rejected = await request(makeApp(store)).post(`/api/association/orders/${RECORD_ID}/provider-financial-events`)
+      .send({ ...event, status: 'open' })
+    expect(rejected.status).toBe(400)
+    expect(store.reconcileProviderFinancialEvent).toHaveBeenCalledTimes(1)
+  })
+  it('returns canonical financial totals with the filtered order page', async () => {
+    const store = fakeStore()
+    vi.mocked(store.listOrders).mockResolvedValue({ items: [{ id: RECORD_ID, status: 'paid' }], nextCursor: null, total: 1,
+      financialSummary: [{ currency: 'USD', orderCount: 1, settledOrderCount: 1, subtotalMinor: '1200',
+        discountMinor: '200', grossMinor: '1000', refundedMinor: '400', netMinor: '600', pendingMinor: '0' }] })
+    const response = await request(makeApp(store, auth({ scope: 'read' }))).get('/api/association/orders')
+      .query({ eventId: RECORD_ID, status: 'paid', limit: '10' })
+    expect(response.status).toBe(200)
+    expect(response.body).toMatchObject({ orders: [{ id: RECORD_ID }], financialSummary: [{ currency: 'USD', netMinor: '600' }] })
+    expect(store.listOrders).toHaveBeenCalledWith(WID, expect.objectContaining({ eventId: RECORD_ID, status: 'paid', limit: 10 }))
   })
   it('adapts paginated waitlist reads and explicit offers through the shared command service', async () => {
     const store = fakeStore()

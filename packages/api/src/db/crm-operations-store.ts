@@ -15,6 +15,9 @@ import {
   mayTransitionCrmEntitlement,
   mayTransitionCrmParticipation,
   type CrmIntakeDefinitionVersionInput,
+  type CrmIntakeAttachmentPolicy,
+  type PreparedCrmSubmissionAttachment,
+  type ImportHistoricalCrmSubmission,
   type CrmOperationsActor,
   type CrmOperationsContext,
   type CrmSegmentCatalog,
@@ -47,6 +50,7 @@ export type StoredIntakeDefinition = {
   currentVersion: number
   versionId: string
   fields: CrmIntakeDefinitionVersionInput['fields']
+  attachments: CrmIntakeAttachmentPolicy[]
   identityPolicy: CrmIntakeDefinitionVersionInput['identityPolicy']
   allowedIdentityProvider: string | null
   consentMappings: CrmIntakeDefinitionVersionInput['consentMappings']
@@ -129,6 +133,13 @@ export type CrmOperationsTransaction = {
     submittedAt: string
     identityVerificationEvidence?: Record<string, unknown> | null
   }): Promise<CrmOperationsRecord>
+  createSubmissionAttachments(
+    submissionId: string,
+    attachments: readonly PreparedCrmSubmissionAttachment[],
+  ): Promise<void>
+  importHistoricalSubmission(params: ImportHistoricalCrmSubmission & {
+    requestFingerprint: string
+  }): Promise<{ record: CrmOperationsRecord; created: boolean }>
   createFollowUpTask(params: {
     contactId: string
     submissionId: string
@@ -232,6 +243,7 @@ export type CrmOperationsTransaction = {
   updateEntitlement(entitlementId: string, changes: CrmOperationsRecord): Promise<CrmOperationsRecord | null>
   recordParticipation(params: CrmOperationsRecord): Promise<{ record: CrmOperationsRecord; created: boolean }>
   updateParticipation(participationId: string, status: string): Promise<CrmOperationsRecord | null>
+  correctParticipationCheckIn(participationId: string, expectedStatus: 'attended'): Promise<CrmOperationsRecord | null>
   setDealPipelineStage(params: {
     dealId: string
     pipelineId: string
@@ -296,6 +308,7 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
         `SELECT d.id, d.workspace_id AS "workspaceId", d.definition_key AS "definitionKey",
                 d.label, d.active, d.current_version AS "currentVersion",
                 v.id AS "versionId", v.field_catalog AS fields,
+                COALESCE(v.schema_snapshot->'attachments','[]'::jsonb) AS attachments,
                 v.identity_policy AS "identityPolicy",
                 v.allowed_identity_provider AS "allowedIdentityProvider",
                 v.consent_mappings AS "consentMappings", v.queue_key AS "queueKey",
@@ -530,6 +543,66 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
           params.identityVerificationEvidence ? JSON.stringify(params.identityVerificationEvidence) : null],
       )
       return first(result)
+    },
+
+    async createSubmissionAttachments(submissionId, attachments) {
+      for (const attachment of attachments) {
+        await client.query(
+          `INSERT INTO association_submission_attachments(
+             workspace_id,submission_id,attachment_key,original_name,mime_type,
+             content_bytes,size_bytes,sha256
+           ) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [workspaceId, submissionId, attachment.key, attachment.originalName,
+            attachment.mimeType, attachment.contentBytes, attachment.sizeBytes, attachment.sha256],
+        )
+      }
+    },
+
+    async importHistoricalSubmission(params) {
+      const submittedData = {
+        historicalSource: {
+          source: params.source,
+          site: params.sourceSite,
+          form: params.sourceForm,
+          submissionId: params.sourceSubmissionId,
+        },
+        originalData: params.fields,
+      }
+      const inserted = await client.query<DbRecord>(
+        `INSERT INTO association_enquiries (
+           workspace_id,contact_id,source,source_site,source_form,source_submission_id,
+           request_fingerprint,subject,message,submitted_data,status,queue_key,
+           submitted_at,historical_import
+         ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,true)
+         ON CONFLICT DO NOTHING
+         RETURNING id,workspace_id AS "workspaceId",contact_id AS "contactId",
+           source,source_site AS "sourceSite",source_form AS "sourceForm",
+           source_submission_id AS "sourceSubmissionId",status,queue_key AS "queueKey",
+           submitted_at AS "submittedAt",historical_import AS "historicalImport",
+           created_at AS "createdAt",updated_at AS "updatedAt"`,
+        [workspaceId, params.contactId, params.source, params.sourceSite,
+          params.sourceForm, params.sourceSubmissionId, params.requestFingerprint,
+          params.subject, params.message, JSON.stringify(submittedData), params.status,
+          params.queueKey, params.submittedAt],
+      )
+      if (inserted.rows[0]) return { record: inserted.rows[0], created: true }
+      const existing = await client.query<DbRecord & { requestFingerprint: string }>(
+        `SELECT id,workspace_id AS "workspaceId",contact_id AS "contactId",
+           source,source_site AS "sourceSite",source_form AS "sourceForm",
+           source_submission_id AS "sourceSubmissionId",request_fingerprint AS "requestFingerprint",
+           status,queue_key AS "queueKey",submitted_at AS "submittedAt",
+           historical_import AS "historicalImport",created_at AS "createdAt",updated_at AS "updatedAt"
+         FROM association_enquiries
+         WHERE workspace_id=$1 AND source=$2 AND source_site=$3
+           AND source_form=$4 AND source_submission_id=$5 FOR UPDATE`,
+        [workspaceId, params.source, params.sourceSite, params.sourceForm, params.sourceSubmissionId],
+      )
+      if (!existing.rows[0]) throw new Error('Historical submission identity could not be claimed.')
+      if (existing.rows[0].requestFingerprint !== params.requestFingerprint) {
+        throw new CrmOperationsError('idempotency_conflict', 'Historical submission identity was already used with different evidence.')
+      }
+      const { requestFingerprint: _requestFingerprint, ...record } = existing.rows[0]
+      return { record, created: false }
     },
 
     async createFollowUpTask(params) {
@@ -1220,7 +1293,7 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
       )
       const participation = current.rows[0]
       if (!participation) return null
-      if (participation.sourceKind === 'commerce') {
+      if (['commerce', 'source_order'].includes(participation.sourceKind)) {
         throw new CrmOperationsError(
           'conflict',
           'Commerce participation must be changed through Association order or registration operations.',
@@ -1244,6 +1317,31 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
                    source_id AS "sourceId",historical_import AS "historicalImport",checked_in_at AS "checkedInAt",
                    created_at AS "createdAt",updated_at AS "updatedAt"`,
         [workspaceId, participationId, status],
+      )
+      await refreshAssociationInventory(client, workspaceId, eventIds, context.actor.kind)
+      return result.rows[0] ?? null
+    },
+
+    async correctParticipationCheckIn(participationId, expectedStatus) {
+      const eventIds = await lockAssociationInventory(client, workspaceId, { registrationId: participationId })
+      const current = await client.query<{ status: string; sourceKind: string }>(
+        `SELECT status,source_kind AS "sourceKind" FROM association_registrations
+          WHERE workspace_id=$1 AND id=$2 FOR UPDATE`, [workspaceId, participationId],
+      )
+      const participation = current.rows[0]
+      if (!participation) return null
+      if (['commerce', 'source_order'].includes(participation.sourceKind)) throw new CrmOperationsError('conflict',
+        'Commerce participation must be corrected through Association registration operations.', { commerceManaged: true })
+      if (participation.status !== expectedStatus) throw new CrmOperationsError('conflict',
+        'Participation status no longer matches the expected check-in state.', { expectedStatus, currentStatus: participation.status })
+      const result = await client.query<DbRecord>(
+        `UPDATE association_registrations SET status='registered',checked_in_at=NULL,updated_at=now()
+          WHERE workspace_id=$1 AND id=$2
+          RETURNING id,event_id AS "eventId",attendee_contact_id AS "contactId",
+            attendee_name AS "attendeeName",attendee_email AS "attendeeEmail",attendee_metadata AS metadata,
+            status,source_kind AS "sourceKind",source_id AS "sourceId",historical_import AS "historicalImport",
+            checked_in_at AS "checkedInAt",created_at AS "createdAt",updated_at AS "updatedAt"`,
+        [workspaceId, participationId],
       )
       await refreshAssociationInventory(client, workspaceId, eventIds, context.actor.kind)
       return result.rows[0] ?? null

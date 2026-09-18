@@ -151,7 +151,7 @@ export const ParticipationQuery = CrmPageQuerySchema.extend({
   contactId: CrmOperationsUuidSchema.optional(),
   eventId: CrmOperationsUuidSchema.optional(),
   status: ParticipationStatus.optional(),
-  sourceKind: z.enum(['commerce', 'manual', 'form', 'workflow', 'import']).optional(),
+  sourceKind: z.enum(['commerce', 'source_order', 'manual', 'form', 'workflow', 'import']).optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
 }).strict()
 const GrantEntitlementBody = z.object({
@@ -346,6 +346,37 @@ export function crmOperationsRoutes(options: Options): Router {
       const submission = await options.readStore.getSubmission(ctx.workspaceId, submissionId.data)
       if (!submission) res.status(404).json({ error: 'not_found' })
       else res.json({ submission })
+    } catch (error) { writeError(res, error) }
+  })
+
+  router.get('/:workspaceId/operations/submissions/:submissionId/attachments/:attachmentId', async (req, res) => {
+    const ctx = await context(req, res)
+    if (!ctx) return
+    const ids = z.object({
+      submissionId: CrmOperationsUuidSchema,
+      attachmentId: CrmOperationsUuidSchema,
+    }).safeParse(req.params)
+    if (!ids.success) {
+      res.status(400).json({ error: 'invalid_input', issues: ids.error.issues })
+      return
+    }
+    try {
+      const attachment = await options.readStore.getSubmissionAttachment(
+        ctx.workspaceId, ids.data.submissionId, ids.data.attachmentId,
+      )
+      if (!attachment) {
+        res.status(404).json({ error: 'not_found' })
+        return
+      }
+      const encodedName = encodeURIComponent(attachment.name)
+        .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
+      res.setHeader('Content-Type', attachment.mimeType)
+      res.setHeader('Content-Disposition', `attachment; filename="attachment"; filename*=UTF-8''${encodedName}`)
+      res.setHeader('Content-Length', String(attachment.contentBytes.length))
+      res.setHeader('Cache-Control', 'private, no-store')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'")
+      res.end(attachment.contentBytes)
     } catch (error) { writeError(res, error) }
   })
 
@@ -857,6 +888,28 @@ export function crmOperationsRoutes(options: Options): Router {
         return
       }
       res.type('text/csv').setHeader('Content-Disposition', `attachment; filename="crm-import-${jobId.data}-errors.csv"`)
+      res.send(csv)
+    } catch (error) { writeError(res, error) }
+  })
+  router.get('/:workspaceId/operations/imports/:jobId/results.csv', async (req, res) => {
+    const ctx = await context(req, res)
+    if (!ctx) return
+    if (!options.importService) {
+      res.status(503).json({ error: 'import_unavailable' })
+      return
+    }
+    const jobId = CrmOperationsUuidSchema.safeParse(req.params.jobId)
+    if (!jobId.success) {
+      res.status(400).json({ error: 'invalid_input', issues: jobId.error.issues })
+      return
+    }
+    try {
+      const csv = await options.importService.resultsCsv(ctx, jobId.data)
+      if (csv === null) {
+        res.status(404).json({ error: 'not_found' })
+        return
+      }
+      res.type('text/csv').setHeader('Content-Disposition', `attachment; filename="crm-import-${jobId.data}-results.csv"`)
       res.send(csv)
     } catch (error) { writeError(res, error) }
   })

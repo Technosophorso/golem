@@ -10,7 +10,7 @@ import { providerAliasMap, recordedAliasIds, providerModelIds } from '@use-brian
 import type { LLMProvider, ProviderRequest, ProviderSession, SendOptions, SessionOptions, StreamChunk, Message, ContentBlock, ThinkingLevel, ToolDefinition, StopReason, TokenUsage } from './types.js'
 import type { GoogleTransport } from './google-transport.js'
 import { aiStudioTransport } from './google-transport.js'
-import { systemContextParts } from './system-context.js'
+import { systemContextParts, extractHistorySystemContext } from './system-context.js'
 
 /** Alias → real Google model id, derived from the model registry (each
  * gemini row's alias/idAliases vs its `apiModelId`). */
@@ -610,7 +610,7 @@ export function resolveGeminiThinkingLevel(
 
 function buildRequest(
   contents: GeminiContent[],
-  options: { systemPrompt: string; runtimeSystemContext?: string; tools?: ToolDefinition[]; maxTokens?: number; temperature?: number; thinkingLevel?: ThinkingLevel; responseFormat?: 'json'; responseSchema?: Record<string, unknown> },
+  options: { systemPrompt: string; runtimeSystemContext?: string; historySystemContext?: string[]; tools?: ToolDefinition[]; maxTokens?: number; temperature?: number; thinkingLevel?: ThinkingLevel; responseFormat?: 'json'; responseSchema?: Record<string, unknown> },
   modelId: string,
 ): GeminiRequest {
   // Universal choke point: every request (stateless stream() AND stateful
@@ -835,7 +835,13 @@ export function createGeminiProvider(keyOrTransport: string | GoogleTransport | 
       const modelId = resolveModel(request.model)           // real Google model name (URL + thinking config)
       const recordId = recordedModelId(request.model, modelId) // billing/tier key recorded on the turn
       const contents = toGeminiContents(request.messages)
-      const geminiRequest = buildRequest(contents, request, modelId)
+      // System-role rows (compaction summary, budget breadcrumb) are skipped
+      // by toGeminiContents; deliver them through systemInstruction instead.
+      const geminiRequest = buildRequest(
+        contents,
+        { ...request, historySystemContext: extractHistorySystemContext(request.messages) },
+        modelId,
+      )
       const sseStream = streamGeminiSSE(transport, modelId, geminiRequest, request.signal)
 
       for await (const { chunk } of convertStreamChunks(sseStream, recordId, toolCallCounter)) {
@@ -849,6 +855,12 @@ export function createGeminiProvider(keyOrTransport: string | GoogleTransport | 
       const recordId = recordedModelId(options.model, modelId) // billing/tier key recorded on each turn
       // Raw history preserving thoughtSignature — NOT converted from our format
       const rawHistory: GeminiContent[] = []
+      // System-role rows from the first send (the full transcript: compaction
+      // summary, budget breadcrumb). toGeminiContents skips them, so they are
+      // hoisted into systemInstruction and re-sent on every send() of this
+      // session — later sends carry only tool results and would otherwise
+      // drop the summary mid-turn.
+      let historySystemContext: string[] = []
 
       return {
         async *send(messages: Message[], sendOpts?: SendOptions): AsyncIterable<StreamChunk> {
@@ -862,6 +874,12 @@ export function createGeminiProvider(keyOrTransport: string | GoogleTransport | 
           // user message (typically tool_results), which gets appended to
           // the in-memory rawHistory preserved from the previous response.
           let contentsToAppend: GeminiContent[]
+          const incomingSystem = extractHistorySystemContext(messages)
+          if (incomingSystem.length > 0) {
+            historySystemContext = rawHistory.length === 0
+              ? incomingSystem
+              : [...historySystemContext, ...incomingSystem]
+          }
           if (rawHistory.length === 0) {
             contentsToAppend = toGeminiContents(messages)
             // Nothing to send is a programmer error — surface it loudly.
@@ -878,6 +896,7 @@ export function createGeminiProvider(keyOrTransport: string | GoogleTransport | 
           const contents = [...rawHistory, ...contentsToAppend]
           const effectiveOptions = {
             ...options,
+            historySystemContext,
             thinkingLevel: sendOpts?.thinkingLevel ?? options.thinkingLevel,
           }
           const geminiRequest = buildRequest(contents, effectiveOptions, modelId)

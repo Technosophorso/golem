@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { trustedClientIp } from "./route";
+import { trustedClientIp } from "./request-link";
 
 describe("[COMP:app/outpost-auth] client IP forwarding", () => {
   it("prefers proxy-authenticated headers and otherwise takes the nearest forwarded hop", () => {

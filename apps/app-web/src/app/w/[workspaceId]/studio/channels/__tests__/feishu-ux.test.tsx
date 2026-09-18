@@ -13,7 +13,7 @@ import {
   AddChannelForm,
   ChannelConfigSection,
   FEISHU_PERMISSION_IMPORT,
-} from "../page";
+} from "../page-client";
 
 vi.mock("@/lib/api/channels", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/channels")>();

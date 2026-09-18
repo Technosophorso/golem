@@ -7,8 +7,14 @@ const workspaceId = '11111111-1111-4111-8111-111111111111'
 const userId = '22222222-2222-4222-8222-222222222222'
 const context: CrmOperationsContext = { workspaceId, actor: { kind: 'user', userId }, authority: { role: 'owner', canWrite: true, canConfigure: true, trustedIdentitySources: [] } }
 const now = new Date('2026-09-08T12:00:00Z')
-const request: RecordCrmSubmissionCommand = { kind: 'record_submission', definitionKey: 'fixture', idempotencyKey: 'fixture_submission', fields: { email: 'verified@example.com' } }
-const hash = (command: RecordCrmSubmissionCommand) => crmOperationsSha256({ definitionKey: command.definitionKey, fields: command.fields, externalIdentity: command.externalIdentity ?? null, submittedAt: command.submittedAt ?? null })
+const request: RecordCrmSubmissionCommand = {
+  kind: 'record_submission', definitionKey: 'fixture', idempotencyKey: 'fixture_submission',
+  fields: { email: 'verified@example.com' },
+  attachments: [{ key: 'business_card', name: 'card.png', mimeType: 'image/png', contentBase64: 'aGVsbG8=' }],
+}
+const hash = (command: RecordCrmSubmissionCommand) => crmOperationsSha256({ definitionKey: command.definitionKey, fields: command.fields,
+  ...(command.attachments?.length ? { attachments: command.attachments } : {}),
+  externalIdentity: command.externalIdentity ?? null, submittedAt: command.submittedAt ?? null })
 function setup() {
   const signer = intakeProofFixture()
   const definition: Parameters<typeof verifyIntakeIdentity>[1] = { identityPolicy: 'trusted_verified_email', currentVersion: 1, definitionKey: 'fixture',
@@ -22,7 +28,7 @@ describe('[COMP:crm/intake-verification] Trusted intake proof admission', () => 
     expect(verifyIntakeIdentity(context, definition, command, hash(command), now)).toEqual({ ...command.identityProof, requestHash: hash(command) })
     expect(JSON.stringify(command.identityProof)).not.toContain('verified@example.com')
   })
-  it.each(['missing', 'signature', 'expired', 'future', 'version', 'key', 'workspace', 'source', 'fields'] as const)('refuses %s proof before trusted matching', (kind) => {
+  it.each(['missing', 'signature', 'expired', 'future', 'version', 'key', 'workspace', 'source', 'fields', 'attachments'] as const)('refuses %s proof before trusted matching', (kind) => {
     const { definition, command, signer } = setup()
     let ctx = context
     if (kind === 'missing') delete (command as RecordCrmSubmissionCommand).identityProof
@@ -34,6 +40,7 @@ describe('[COMP:crm/intake-verification] Trusted intake proof admission', () => 
     if (kind === 'workspace') ctx = { ...context, workspaceId: userId }
     if (kind === 'source') command.idempotencyKey = 'other_submission'
     if (kind === 'fields') command.fields = { email: 'someoneelse@example.com' }
+    if (kind === 'attachments') command.attachments = [{ ...request.attachments![0], contentBase64: 'dGFtcGVyZWQ=' }]
     expect(() => verifyIntakeIdentity(ctx, definition, command, hash(command), now)).toThrow(expect.objectContaining({ code: 'not_authorized' }))
   })
   it('refuses legacy unconfigured identity policies instead of silently trusting their bearer', () => {
