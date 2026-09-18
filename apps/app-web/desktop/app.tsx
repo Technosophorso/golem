@@ -61,10 +61,7 @@ import { PrimaryAssistantProvider } from "@/contexts/primary-assistant";
 import { WorkspaceChrome } from "@/components/doc/workspace-chrome";
 import { DesktopChatWindow } from "@/components/chrome/desktop-chat-window";
 import { WorkspacePicker } from "@/components/workspace-picker";
-import {
-  usesScalableWorkspacePicker,
-  type WorkspacePickerItem,
-} from "@/lib/workspace-picker";
+import type { WorkspacePickerItem } from "@/lib/workspace-picker";
 import {
   OPERATOR_APP_KEYS,
   type OperatorAppKey,
@@ -77,7 +74,6 @@ import {
 } from "./offline-bootstrap";
 
 import { isFeedPlatform } from "@/lib/feed-nav";
-import { isOssEdition } from "@/lib/edition";
 import {
   useBrianSuffix,
   useBrianWorkspacePath,
@@ -444,30 +440,12 @@ function Boot() {
           </button>
         )}
         {state.k === "error" && <p style={dim}>Error: {state.detail}</p>}
-        {state.k === "ready" && usesScalableWorkspacePicker(state.workspaces.length) && (
+        {state.k === "ready" && (
           <WorkspacePicker
             initialWorkspaces={state.workspaces}
             next={`/p${useBrianRouteSuffix}`}
             apiUrl={apiBase()}
           />
-        )}
-        {state.k === "ready" && !usesScalableWorkspacePicker(state.workspaces.length) && (
-          <ul style={{ padding: 0, listStyle: "none", margin: 0 }}>
-            {state.workspaces.map((w) => (
-              <li key={w.id}>
-                <button
-                  type="button"
-                  onClick={() =>
-                    navigate(`/w/${w.id}/p${useBrianRouteSuffix}`)
-                  }
-                  style={{ ...listButton }}
-                >
-                  <span style={{ fontWeight: 600 }}>{w.name}</span>
-                  <span style={{ opacity: 0.5, marginLeft: 8, fontSize: 12 }}>open →</span>
-                </button>
-              </li>
-            ))}
-          </ul>
         )}
       </div>
     </div>
@@ -652,14 +630,12 @@ function StudioShell() {
 }
 
 /**
- * Feed surface — the SPA analogue of `feed/layout.tsx`: OSS builds bounce to
- * the doc surface (the Next layout 404s), hosted builds mount the
- * `FeedSurfaceShell` (profiles context + readiness gate + the feed tuning
- * dock) around the section `<Outlet/>`.
+ * Feed surface — the SPA analogue of `feed/layout.tsx`: both editions mount
+ * the shared shell around the section outlet. Create works without a hosted
+ * integration; provider actions retain their API-enforced capabilities.
  */
 function FeedShell() {
   const { workspaceId = "" } = useParams<{ workspaceId: string }>();
-  if (isOssEdition()) return <Navigate to={`/w/${workspaceId}/p`} replace />;
   return (
     <FeedSurfaceShell workspaceId={workspaceId}>
       <Outlet />
@@ -794,17 +770,4 @@ const button: React.CSSProperties = {
   cursor: "pointer",
   boxShadow:
     "inset 0 1px 0 rgba(255,255,255,0.45), 0 1px 2px rgba(4,19,28,0.18), 0 8px 20px -8px rgba(52,211,255,0.55), 0 16px 40px -16px rgba(52,211,255,0.45)",
-};
-const listButton: React.CSSProperties = {
-  display: "block",
-  width: "100%",
-  textAlign: "left",
-  padding: "10px 0",
-  borderTop: "1px solid rgba(127,127,127,0.18)",
-  background: "transparent",
-  color: "inherit",
-  border: 0,
-  borderTopStyle: "solid",
-  cursor: "pointer",
-  fontSize: 14,
 };
