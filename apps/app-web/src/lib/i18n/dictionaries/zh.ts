@@ -53,6 +53,23 @@ export const zh: Dictionary = {
     "retract": "撤回我的來源決策",
     "revoke": "撤銷確認"
 },
+  feedSlash: {
+    "title": "插入區塊",
+    "text": "文字佔位區塊",
+    "image": "圖片佔位區塊",
+    "paragraph": "段落",
+    "heading1": "標題 1",
+    "heading2": "標題 2",
+    "heading3": "標題 3",
+    "bulletList": "項目符號清單",
+    "orderedList": "編號清單",
+    "blockquote": "引用",
+    "textHint": "先儲存說明，稍後再生成文字。",
+    "imageHint": "先儲存說明，稍後再生成圖片。",
+    "empty": "沒有符合的區塊",
+    "close": "關閉區塊選單",
+    "keys": "↑↓ 選擇 · Enter 插入 · Esc 關閉"
+},
   feedGeneration: {
     quotaUsage: "訂閱額度",
     quotaUnknown: "無法預先確定額度用量。",
