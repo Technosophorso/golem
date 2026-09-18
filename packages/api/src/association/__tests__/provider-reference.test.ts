@@ -36,16 +36,44 @@ describe('[COMP:crm/provider-reference] Durable provider adapter contract', () =
     expect(forward).toHaveBeenCalledWith(expect.objectContaining({ target: 'entitlement' }))
   })
   it('drains more than a first page across bounded ticks and persists restart progress for both targets', async () => {
-    const f = fixture(), events = Array.from({ length: 1005 }, (_, i) => i % 2 ? membership() : order()), provider = f.provider(events)
+    // Exercise real durable commits across pages and a restart without turning
+    // this correctness check into a benchmark of the runner's fsync throughput.
+    const f = fixture(), events = Array.from({ length: 9 }, (_, i) => i % 2 ? membership() : order()), provider = f.provider(events)
+    const listEvents = vi.spyOn(provider, 'listEvents'), bounds = { pageSize: 2, maxPages: 3 }
     const checkpoint = f.open(), forward = vi.fn().mockImplementation(async () => ({ id: randomUUID(), state: 'applied' }))
-    const worker = createProviderReconciler({ provider, client: { forward }, checkpoint })
-    expect(await worker.reconcile()).toEqual({ state: 'more_due', processed: 1000, cursor: '1000' })
+    const worker = createProviderReconciler({ provider, client: { forward }, checkpoint, ...bounds })
+    expect(await worker.reconcile()).toEqual({ state: 'more_due', processed: 6, cursor: '6' })
+    expect(forward).toHaveBeenCalledTimes(6)
     f.close(checkpoint)
     const next = f.open()
-    expect(await createProviderReconciler({ provider, client: { forward }, checkpoint: next }).reconcile()).toEqual({ state: 'caught_up', processed: 5, cursor: '1005' })
-    expect(forward).toHaveBeenCalledTimes(1005)
+    expect(next.state().cursor).toBe('6')
+    expect(await createProviderReconciler({ provider, client: { forward }, checkpoint: next, ...bounds }).reconcile()).toEqual({ state: 'caught_up', processed: 3, cursor: '9' })
+    expect(listEvents.mock.calls.map(([request]) => request)).toEqual(
+      ['0', '2', '4', '6', '8'].map(cursor => ({ cursor, limit: 2 })),
+    )
+    expect(forward.mock.calls.map(([envelope]) => envelope)).toEqual(events)
     expect(next.issues()).toEqual({ items: [], nextCursor: null })
     expect(statSync(f.options.databasePath).mode & 0o077).toBe(0)
+  })
+  it('bounds the default tick to ten pages of one hundred events', async () => {
+    const f = fixture(), events = Array.from({ length: 1005 }, (_, i) => i % 2 ? membership() : order()), provider = f.provider(events)
+    const listEvents = vi.spyOn(provider, 'listEvents'), receipt = { id: randomUUID(), state: 'applied' }
+    const forward = vi.fn().mockResolvedValue(receipt)
+    // The real checkpoint/restart contract is covered above; this checks the
+    // default work budget independently of disk speed.
+    const checkpoint = {
+      claim: () => ({ lease: 'fixture-lease', cursor: '0' }),
+      renew: vi.fn(), advance: vi.fn(), release: vi.fn(),
+    }
+    const worker = createProviderReconciler({ provider, client: { forward }, checkpoint })
+    expect(await worker.reconcile()).toEqual({ state: 'more_due', processed: 1000, cursor: '1000' })
+    expect(listEvents.mock.calls.map(([request]) => request)).toEqual(
+      Array.from({ length: 10 }, (_, page) => ({ cursor: String(page * 100), limit: 100 })),
+    )
+    expect(forward.mock.calls.map(([envelope]) => envelope)).toEqual(events.slice(0, 1000))
+    expect(checkpoint.advance).toHaveBeenCalledTimes(1000)
+    expect(checkpoint.advance).toHaveBeenLastCalledWith('fixture-lease', '999', '1000', receipt)
+    expect(checkpoint.release).toHaveBeenCalledWith('fixture-lease', 0)
   })
   it('replays after uncertain Brian acceptance and after a cursor commit failure without changing event identity', async () => {
     const f = fixture(), provider = f.provider([order(), membership()]), checkpoint = f.open(), effects = new Map<string, string>()
