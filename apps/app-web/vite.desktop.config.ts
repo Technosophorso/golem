@@ -67,5 +67,11 @@ export default defineConfig({
   build: {
     outDir: resolve(here, "..", "app-desktop", "renderer"),
     emptyOutDir: true,
+    rollupOptions: {
+      input: {
+        main: resolve(here, "desktop/index.html"),
+        "link-recovery": resolve(here, "desktop/link-recovery.html"),
+      },
+    },
   },
 });

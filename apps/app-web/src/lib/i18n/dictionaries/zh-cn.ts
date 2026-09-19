@@ -12,6 +12,24 @@
 import type { Dictionary } from "./en";
 
 export const zhCN: Dictionary = {
+  internalLinks: {
+    recoveryTitle: "打开共享页面",
+    received: "正在准备链接...",
+    chooseDeployment: "请选择匹配的服务器连接。",
+    chooseAccount: "请选择此服务器的帐户。",
+    connect: "连接此服务器以继续。",
+    authorizing: "正在检查访问权限...",
+    reauthenticate: "请重新登录此服务器，然后重试。",
+    denied: "此帐户无法打开共享目标。",
+    unreachable: "无法连接到此服务器。",
+    blocked: "当前工作阻止了切换。完成后再重试。",
+    delivering: "正在打开共享目标...",
+    expired: "已保存的请求已过期。请重新打开链接。",
+    connectAction: "连接",
+    retry: "重试",
+    openBrowser: "在浏览器中打开",
+    cancel: "取消",
+  },
   feedLearning: {
     onlyThisPost: "仅用于此帖子",
     futureReference: "用作未来参考",

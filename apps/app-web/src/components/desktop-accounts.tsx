@@ -7,7 +7,10 @@ import { format } from "@/lib/i18n/format";
 import { UserAvatar } from "@/components/ui/user-avatar";
 
 /** One identity list across desktop deployments. [COMP:app-web/desktop-accounts] */
-export function DesktopAccounts() {
+export function DesktopAccounts(props: {
+  allowedKeys?: readonly string[];
+  onSelect?: (account: DesktopAccount) => Promise<void> | void;
+} = {}) {
   const t = useT().workspaceSwitcher;
   const [accounts, setAccounts] = useState<DesktopAccount[]>([]);
   const [canSwitch, setCanSwitch] = useState(false);
@@ -29,6 +32,10 @@ export function DesktopAccounts() {
     setPending(account?.key ?? "cloud");
     setError(null);
     try {
+      if (account && props.onSelect) {
+        await props.onSelect(account);
+        return;
+      }
       const bridge = desktopBridge();
       const result = account ? await bridge?.selectAccount?.(account.key) : await bridge?.selectCloud?.();
       if (!result?.ok) {
@@ -42,7 +49,7 @@ export function DesktopAccounts() {
 
   return (
     <div className="flex flex-col gap-0.5" aria-busy={pending !== null}>
-      {accounts.map((account) => {
+      {accounts.filter((account) => !props.allowedKeys || props.allowedKeys.includes(account.key)).map((account) => {
         const label = account.deployment === "cloud" ? t.deploymentCloud
           : account.deployment === "local" ? t.deploymentLocal : t.deploymentSelfHosted;
         const source = format(t.deploymentSource, { url: account.appUrl });
@@ -68,7 +75,7 @@ export function DesktopAccounts() {
           </button>
         );
       })}
-      {!accounts.some((account) => account.deployment === "cloud") && canSwitch && (
+      {!props.allowedKeys && !accounts.some((account) => account.deployment === "cloud") && canSwitch && (
         <button type="button" role="menuitem" disabled={pending !== null} onClick={() => void select()}
           className="min-h-11 rounded px-2 py-1.5 text-left text-sm hover:bg-muted">
           {t.openCloudAccount}

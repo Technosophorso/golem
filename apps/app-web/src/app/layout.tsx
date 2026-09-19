@@ -6,7 +6,7 @@ import { getServerDictionary } from "@/lib/i18n/server";
 import { ConfirmDialogProvider } from "@/components/ui/confirm-dialog";
 import { PromptDialogProvider } from "@/components/ui/prompt-dialog";
 import { KindPickerDialogProvider } from "@/components/ui/kind-picker-dialog";
-import { DesktopAddAccountProvider } from "@/components/desktop-add-account";
+import { DesktopLinkRecovery } from "@/components/desktop-link-recovery";
 import { RouteProgress } from "@/components/route-progress";
 import { MACOS_TRAFFIC_LIGHT_CLEARANCE_PX } from "@/lib/desktop-titlebar";
 import {
@@ -148,7 +148,7 @@ export default async function RootLayout({
           <ConfirmDialogProvider />
           <PromptDialogProvider />
           <KindPickerDialogProvider />
-          <DesktopAddAccountProvider />
+          <DesktopLinkRecovery />
         </I18nProvider>
       </body>
     </html>

@@ -9,11 +9,17 @@ import { useT } from "@/lib/i18n/client";
 import { requestSidebarClose } from "@/lib/sidebar-close";
 
 const OPEN_EVENT = "brian:desktop-add-account";
+const CONNECTED_EVENT = "brian:desktop-account-connected";
 const DEFAULT_URL = "http://localhost:3003";
 
 /** Shared in-app account entry. [COMP:app-web/desktop-add-account] */
-export function openDesktopAddAccount(): void {
-  window.dispatchEvent(new Event(OPEN_EVENT));
+export function openDesktopAddAccount(url?: string): void {
+  window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: url }));
+}
+
+export function onDesktopAccountConnected(callback: () => void): () => void {
+  window.addEventListener(CONNECTED_EVENT, callback);
+  return () => window.removeEventListener(CONNECTED_EVENT, callback);
 }
 
 /** Mounted at both app roots so native menu actions also work on /teams. */
@@ -46,7 +52,9 @@ export function DesktopAddAccountProvider() {
         if (generation.current === attempt && !edited.current) setUrl(result.localAppUrl ?? "");
       }).catch(() => { /* An optional remembered address must not block entry. */ });
     };
-    const onOpen = () => show();
+    const onOpen = (event: Event) => show(
+      event instanceof CustomEvent && typeof event.detail === "string" ? event.detail : undefined,
+    );
     window.addEventListener(OPEN_EVENT, onOpen);
     const unsubscribe = bridge.onChooseDeployment?.((address) => show(address));
     const stopProgress = bridge.onAccessAuthState?.((state) => {
@@ -87,7 +95,11 @@ export function DesktopAddAccountProvider() {
     try {
       const result = await runLocal(address);
       if (generation.current !== attempt) return;
-      if (result.ok) { setOpen(false); return; }
+      if (result.ok) {
+        setOpen(false);
+        window.dispatchEvent(new Event(CONNECTED_EVENT));
+        return;
+      }
       const errors: Record<string, string> = {
         "invalid-url": t.invalidUrl,
         "env-override": t.envOverride,

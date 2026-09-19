@@ -1,6 +1,24 @@
 import type { Dictionary } from "./en";
 
 export const ja: Dictionary = {
+  internalLinks: {
+    recoveryTitle: "共有ページを開く",
+    received: "リンクを準備しています...",
+    chooseDeployment: "一致するサーバー接続を選択してください。",
+    chooseAccount: "このサーバーのアカウントを選択してください。",
+    connect: "続行するには、このサーバーに接続してください。",
+    authorizing: "アクセス権を確認しています...",
+    reauthenticate: "このサーバーに再度サインインしてから再試行してください。",
+    denied: "このアカウントでは共有先を開けません。",
+    unreachable: "このサーバーに接続できませんでした。",
+    blocked: "現在の作業により切り替えられませんでした。作業を終えてから再試行してください。",
+    delivering: "共有先を開いています...",
+    expired: "保存されたリクエストの有効期限が切れました。リンクを再試行してください。",
+    connectAction: "接続",
+    retry: "再試行",
+    openBrowser: "ブラウザで開く",
+    cancel: "キャンセル",
+  },
   feedLearning: {
     onlyThisPost: "この投稿にのみ使用",
     futureReference: "今後の参考として使用",

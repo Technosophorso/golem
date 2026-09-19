@@ -111,7 +111,15 @@ import {
   probeExpectedJson,
   type GatewayProbeFetch,
 } from "./gateway-auth.js";
-import { parseUseBrianDeepLink, resolveDeepLink } from "./deep-link.js";
+import { parseNavigationDeepLink, parseUseBrianDeepLink } from "./deep-link.js";
+import { authorizeDeploymentDestination } from "./deployment-link-transport.js";
+import {
+  LinkNavigationCoordinator,
+  parsePendingLinkNavigation,
+  serializePendingLinkNavigation,
+  type LinkNavigationDisplayState,
+  type PendingLinkNavigation,
+} from "./link-navigation.js";
 import {
   bridgeBundledCorsHeaders,
   shouldBridgeBundledCors,
@@ -292,6 +300,7 @@ const OFFLINE_PAGE = join(__dirname, "offline.html");
  * Combined with `cfg.bundled`, this gates loadFile vs loadURL.
  */
 const BUNDLE_INDEX = join(__dirname, "..", "renderer", "index.html");
+const LINK_RECOVERY_PAGE = join(__dirname, "..", "renderer", "link-recovery.html");
 
 const AUTH_COOKIE_NAMES = ["access_token", "refresh_token", "user"] as const;
 /**
@@ -650,7 +659,7 @@ const DESKTOP_CHROME_SAFETY_CSS = `
   }
 `;
 
-function createWindow(initialLoad: { useBrian?: boolean; route?: string } = {}): BrowserWindow {
+function createWindow(initialLoad: { useBrian?: boolean; route?: string; linkRequestId?: string } = {}): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -1624,6 +1633,7 @@ async function activateTarget(
   installSession?: () => Promise<void>,
   publicConfig?: DesktopPublicConfig | null,
   initialRoute?: string,
+  linkRequestId?: string,
 ): Promise<boolean> {
   if (cfg.envTargetOverride || changingTarget || recorderOverlay) return false;
   changingTarget = true;
@@ -1672,7 +1682,7 @@ async function activateTarget(
     if (installSession) await installSession();
     installAccessRequestHook();
     await prepareAccessForStartup();
-    mainWindow = createWindow(initialRoute ? { route: initialRoute } : {});
+    mainWindow = createWindow(initialRoute ? { route: initialRoute, linkRequestId } : {});
     if (bounds) mainWindow.setBounds(bounds);
     refreshAppMenu();
     refreshTrayMenu();
@@ -1870,8 +1880,19 @@ function isCurrentAccountSender(id: number): boolean {
       ["", "about:blank"].includes(win.webContents.getURL())));
 }
 
+function isTrustedLinkSender(event: IpcMainInvokeEvent): boolean {
+  const win = mainWindow;
+  return Boolean(
+    win &&
+    !win.isDestroyed() &&
+    event.sender.id === win.webContents.id &&
+    event.senderFrame === event.sender.mainFrame &&
+    (isAppPage(win) || isLinkRecoveryPage(win)),
+  );
+}
+
 /** Return the live window, recreating it if it was closed (tray app model). */
-function ensureWindow(initialLoad: { useBrian?: boolean; route?: string } = {}): BrowserWindow {
+function ensureWindow(initialLoad: { useBrian?: boolean; route?: string; linkRequestId?: string } = {}): BrowserWindow {
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createWindow(initialLoad);
   }
@@ -1915,6 +1936,7 @@ async function loadApp(
     record?: boolean;
     route?: string;
     useBrian?: boolean;
+    linkRequestId?: string;
   } = {},
 ): Promise<void> {
   return targetOperations.run(async () => {
@@ -1937,6 +1959,9 @@ async function loadApp(
         query,
         ...(opts.route ? { hash: opts.route } : {}),
       });
+      if (opts.linkRequestId && !win.webContents.isDestroyed()) {
+        win.webContents.send("Use Brian:link-navigation-delivery", opts.linkRequestId);
+      }
       return;
     }
     if (cfg.target === "local") {
@@ -1952,6 +1977,9 @@ async function loadApp(
     else if (!opts.route && hasUseBrianPrompt)
       targetUrl.searchParams.set("useBrian", "1");
     await win.webContents.loadURL(targetUrl.toString());
+    if (opts.linkRequestId && !win.webContents.isDestroyed()) {
+      win.webContents.send("Use Brian:link-navigation-delivery", opts.linkRequestId);
+    }
 
   });
 }
@@ -2038,6 +2066,120 @@ const deploymentAccounts = new DeploymentAccounts(
   },
 );
 
+function pendingLinkFile(): string {
+  return join(app.getPath("userData"), "pending-link-navigation.bin");
+}
+
+function persistPendingLink(record: PendingLinkNavigation | null): void {
+  try {
+    if (!record) {
+      rmSync(pendingLinkFile(), { force: true });
+      return;
+    }
+    const blob = encryptBlob(tokenCipher, serializePendingLinkNavigation(record));
+    if (!blob) return;
+    const file = pendingLinkFile();
+    writeFileSync(`${file}.tmp`, blob, { mode: 0o600 });
+    renameSync(`${file}.tmp`, file);
+  } catch (error) {
+    console.warn("Failed to persist pending link navigation:", error);
+  }
+}
+
+function readPendingLink(): PendingLinkNavigation | null {
+  if (!tokenCipher.isAvailable()) return null;
+  try {
+    return parsePendingLinkNavigation(
+      tokenCipher.decryptString(readFileSync(pendingLinkFile())),
+      Date.now(),
+    );
+  } catch {
+    return null;
+  }
+}
+
+function isLinkRecoveryPage(win: BrowserWindow): boolean {
+  try {
+    return new URL(win.webContents.getURL()).pathname === pathToFileURL(LINK_RECOVERY_PAGE).pathname;
+  } catch {
+    return false;
+  }
+}
+
+function publishLinkNavigation(state: LinkNavigationDisplayState | null): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (isAppPage(mainWindow) || isLinkRecoveryPage(mainWindow)) {
+    mainWindow.webContents.send("Use Brian:link-navigation-state", state);
+    focusWindow(mainWindow);
+    return;
+  }
+  if (state && existsSync(LINK_RECOVERY_PAGE)) {
+    void mainWindow.webContents.loadFile(LINK_RECOVERY_PAGE).then(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("Use Brian:link-navigation-state", state);
+        focusWindow(mainWindow);
+      }
+    });
+  }
+}
+
+const linkNavigation = new LinkNavigationCoordinator({
+  accounts: () => deploymentAccounts.snapshot(),
+  async refreshAccount(accountKey) {
+    const saved = deploymentAccounts.find(accountKey);
+    if (!saved) return { kind: "reauthenticate" };
+    let refreshed: DesktopSession | null;
+    try {
+      refreshed = await refreshSessionForTarget(saved.target, saved.tokens.refreshToken, true);
+    } catch {
+      return { kind: "unreachable" };
+    }
+    if (!refreshed) {
+      deploymentAccounts.remove(accountKey);
+      return { kind: "reauthenticate" };
+    }
+    const tokens = parseStoredTokens(serializeTokens(refreshed, Date.now()));
+    if (!tokens) return { kind: "unreachable" };
+    tokens.user ??= saved.tokens.user;
+    // Persist rotation independently from eventual navigation activation.
+    if (!deploymentAccounts.put(saved.target, tokens, false)) return { kind: "unreachable" };
+    return { kind: "ok", accessToken: tokens.accessToken };
+  },
+  async authorize(accountKey, accessToken, destination) {
+    const saved = deploymentAccounts.find(accountKey);
+    if (!saved) return { kind: "reauthenticate" };
+    return authorizeDeploymentDestination({
+      destination,
+      target: saved.target,
+      accessToken,
+      fetch: (input, init) => targetSession(saved.target).fetch(input, init),
+    });
+  },
+  async deliver(accountKey, route, requestId) {
+    const saved = deploymentAccounts.find(accountKey);
+    if (!saved) return "unreachable";
+    const currentTokens = deploymentAccounts.current(accountTarget());
+    const currentKey = currentTokens
+      ? deploymentAccountKey({ target: accountTarget(), tokens: currentTokens })
+      : null;
+    if (deploymentKey(saved.target) === deploymentKey(accountTarget()) && currentKey === accountKey) {
+      const win = ensureWindow();
+      focusWindow(win);
+      try {
+        await loadApp(win, { route, linkRequestId: requestId });
+        return "delivered";
+      } catch {
+        return "unreachable";
+      }
+    }
+    const selected = await selectDeploymentAccount(accountKey, route, requestId);
+    return selected.ok ? "delivered" : "blocked";
+  },
+  persist: persistPendingLink,
+  publish: publishLinkNavigation,
+  openBrowser: (url) => { void shell.openExternal(url); },
+});
+
 /** Copy the legacy shared jar once into its known startup/cloud deployments. */
 async function migrateLegacyCookies(target: AccountTarget): Promise<void> {
   const key = createHash("sha256").update(deploymentKey(target)).digest("hex");
@@ -2117,7 +2259,7 @@ async function listDeploymentAccounts() {
 }
 
 /** Refresh at the saved destination before committing a switch. */
-async function selectDeploymentAccount(key: string, initialRoute?: string): Promise<SwitchResult> {
+async function selectDeploymentAccount(key: string, initialRoute?: string, linkRequestId?: string): Promise<SwitchResult> {
   if (changingTarget || selectingAccount || connectingDeployment || recorderOverlay) return { ok: false, error: "switch" };
   selectingAccount = true;
   try {
@@ -2148,8 +2290,8 @@ async function selectDeploymentAccount(key: string, initialRoute?: string): Prom
       }
     };
     const ok = saved.target.kind === "cloud"
-      ? await activateTarget("cloud", rememberedLocalAppUrl(), rememberedLocalApiUrl(), rememberedLocalAuth(), installSession, rememberedLocalPublicConfig(), initialRoute)
-      : await activateTarget("local", saved.target.appUrl, saved.target.apiUrl, saved.target.auth, installSession, saved.target.publicConfig, initialRoute);
+      ? await activateTarget("cloud", rememberedLocalAppUrl(), rememberedLocalApiUrl(), rememberedLocalAuth(), installSession, rememberedLocalPublicConfig(), initialRoute, linkRequestId)
+      : await activateTarget("local", saved.target.appUrl, saved.target.apiUrl, saved.target.auth, installSession, saved.target.publicConfig, initialRoute, linkRequestId);
     return ok ? { ok: true } : { ok: false, error: "switch" };
   } finally { selectingAccount = false; }
 }
@@ -2741,6 +2883,8 @@ async function completeSignIn(code: string): Promise<void> {
       const win = ensureWindow();
       await loadApp(win);
       focusWindow(win); // focus AFTER the reload so the fresh contents take input
+      const pendingLink = linkNavigation.state();
+      if (pendingLink) linkNavigation.retry(pendingLink.requestId);
     } catch (err) {
       dialog.showErrorBox("Sign-in failed", err instanceof Error ? err.message : String(err));
     }
@@ -2964,6 +3108,8 @@ async function switchAccount(accountId: string): Promise<SwitchResult> {
 
 async function signOut(): Promise<void> {
   return targetOperations.run(async () => {
+    const pendingLink = linkNavigation.state();
+    if (pendingLink) linkNavigation.cancel(pendingLink.requestId);
     if (!cfg.bundled) {
       const active = parseUserCookieValue(await readJarCookie("user"));
       const row = deploymentAccounts.rows(accountTarget()).find((entry) => entry.active && entry.id === active?.id);
@@ -3474,7 +3620,13 @@ function handleIncomingUrl(rawUrl: string): void {
     else dialog.showErrorBox("Sign-in failed", `The sign-in could not complete (${auth.error}).`);
     return;
   }
-  const target = resolveDeepLink(rawUrl, cfg);
+  const navigation = parseNavigationDeepLink(rawUrl, cfg);
+  if (navigation?.kind === "deployment-destination") {
+    linkNavigation.open(navigation.destination);
+    focusWindow(ensureWindow());
+    return;
+  }
+  const target = navigation?.kind === "active-target-url" ? navigation.url : null;
   if (target) {
     // The record deep link needs the macOS mic consent BEFORE the page's
     // getUserMedia — same as summonAndRecord.
@@ -4044,6 +4196,8 @@ if (!gotLock) {
       }
       if (!currentSender()) return { ok: false, error: "switch", url: resolvedTarget.appUrl };
       const ok = await activateTarget("local", resolvedTarget.appUrl, resolvedDeclaredApiUrl, resolvedTarget.auth, installSession, validation.value.publicConfig);
+      const pendingLink = linkNavigation.state();
+      if (ok && pendingLink) linkNavigation.retry(pendingLink.requestId);
       return ok ? { ok: true, url: resolvedTarget.appUrl } : { ok: false, error: "switch", url: resolvedTarget.appUrl };
     } finally { connectingDeployment = false; }
   });
@@ -4061,7 +4215,40 @@ if (!gotLock) {
   ipcMain.handle("Use Brian:list-accounts", (event) => isCurrentAccountSender(event.sender.id) ? listDeploymentAccounts() : { accounts: [], canSwitch: false });
   ipcMain.handle("Use Brian:select-account", (event, key: unknown) =>
     isCurrentAccountSender(event.sender.id) && typeof key === "string" ? selectDeploymentAccount(key) : { ok: false, error: "switch" });
-  ipcMain.handle("Use Brian:select-cloud", async (event) => ({ ok: isCurrentAccountSender(event.sender.id) && await useCloud() }));
+  ipcMain.handle("Use Brian:select-cloud", async (event) => {
+    const ok = isCurrentAccountSender(event.sender.id) && await useCloud();
+    const pendingLink = linkNavigation.state();
+    if (ok && pendingLink) linkNavigation.retry(pendingLink.requestId);
+    return { ok };
+  });
+
+  ipcMain.handle("Use Brian:get-link-navigation", (event) =>
+    isTrustedLinkSender(event) ? linkNavigation.state() : null);
+  ipcMain.handle("Use Brian:link-navigation-action", async (event, input: unknown) => {
+    if (!isTrustedLinkSender(event) || !input || typeof input !== "object") return false;
+    const value = input as { requestId?: unknown; action?: unknown; key?: unknown };
+    if (typeof value.requestId !== "string" || typeof value.action !== "string") return false;
+    switch (value.action) {
+      case "choose":
+        if (typeof value.key !== "string") return false;
+        await linkNavigation.choose(value.requestId, value.key);
+        return true;
+      case "retry":
+        linkNavigation.retry(value.requestId);
+        return true;
+      case "browser":
+        linkNavigation.openInBrowser(value.requestId);
+        return true;
+      case "cancel":
+        linkNavigation.cancel(value.requestId);
+        return true;
+      case "acknowledge":
+        linkNavigation.acknowledge(value.requestId);
+        return true;
+      default:
+        return false;
+    }
+  });
 
   // Bundled-mode token bridge: the preload reads/writes the Bearer token here.
   // Registered only in bundled mode so the thin shell exposes no token surface.
@@ -4120,6 +4307,8 @@ if (!gotLock) {
     // Before the first menu/tray build so their update item reflects the gate.
     startAutoUpdate();
     mainWindow = createWindow();
+    const recoveredLink = readPendingLink();
+    if (recoveredLink) linkNavigation.restore(recoveredLink);
     refreshAppMenu();
     tray = createTray();
     syncAwakeBrianMode();

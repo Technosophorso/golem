@@ -14,6 +14,24 @@
 import type { BuiltinToolGroupId } from "@use-brian/shared/builtin-connectors";
 
 export const en = {
+  internalLinks: {
+    recoveryTitle: "Open shared page",
+    received: "Preparing this link...",
+    chooseDeployment: "Choose the matching server connection.",
+    chooseAccount: "Choose an account for this server.",
+    connect: "Connect this server to continue.",
+    authorizing: "Checking access...",
+    reauthenticate: "Sign in to this server again, then retry.",
+    denied: "This account cannot open the shared destination.",
+    unreachable: "This server could not be reached.",
+    blocked: "The current work prevented the switch. Finish it, then retry.",
+    delivering: "Opening the shared destination...",
+    expired: "This saved request expired. Retry the link to continue.",
+    connectAction: "Connect",
+    retry: "Retry",
+    openBrowser: "Open in browser",
+    cancel: "Cancel",
+  },
   feedLearning: {
     onlyThisPost: "Use only for this post",
     futureReference: "Use as future reference",

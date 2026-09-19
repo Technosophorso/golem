@@ -47,6 +47,28 @@ export interface DesktopAccount {
   active: boolean;
 }
 
+export interface DesktopLinkNavigationState {
+  requestId: string;
+  phase:
+    | "received"
+    | "choose-deployment"
+    | "choose-account"
+    | "connect"
+    | "authorizing"
+    | "reauthenticate"
+    | "denied"
+    | "unreachable"
+    | "blocked"
+    | "delivering"
+    | "expired";
+  appOrigin: string;
+  sourceUrl: string;
+  choices: Array<{ key: string; label: string; detail: string }>;
+  canRetry: boolean;
+  canOpenBrowser: boolean;
+  canCancel: boolean;
+}
+
 export interface DesktopBridge {
   /** Host OS reported by Electron (`darwin`, `win32`, or `linux`). */
   platform?: string;
@@ -114,6 +136,15 @@ export interface DesktopBridge {
   /** Open the shared self-hosted account dialog from a native menu request. */
   onChooseDeployment?: (callback: (url: string) => void) => () => void;
   runLocal?: (url: string) => Promise<{ ok: true; url?: string } | { ok: false; error: string; url?: string }>;
+  /** Bounded display state and fixed actions for an inbound shared link. */
+  getLinkNavigation?: () => Promise<DesktopLinkNavigationState | null>;
+  onLinkNavigation?: (callback: (state: DesktopLinkNavigationState | null) => void) => () => void;
+  linkNavigationAction?: (
+    requestId: string,
+    action: "choose" | "retry" | "browser" | "cancel" | "acknowledge",
+    key?: string,
+  ) => Promise<boolean>;
+  onLinkNavigationDelivery?: (callback: (requestId: string) => void) => () => void;
   onAccessAuthState?: (callback: (state: "checking" | "browser" | "approved") => void) => () => void;
   /**
    * Switch the active account to a saved one (by id), in the shell's own cookie

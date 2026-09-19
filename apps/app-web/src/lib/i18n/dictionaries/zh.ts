@@ -1,6 +1,24 @@
 import type { Dictionary } from "./en";
 
 export const zh: Dictionary = {
+  internalLinks: {
+    recoveryTitle: "開啟共享頁面",
+    received: "正在準備連結...",
+    chooseDeployment: "請選擇相符的伺服器連線。",
+    chooseAccount: "請選擇此伺服器的帳戶。",
+    connect: "連接此伺服器以繼續。",
+    authorizing: "正在檢查存取權限...",
+    reauthenticate: "請重新登入此伺服器，然後重試。",
+    denied: "此帳戶無法開啟共享目的地。",
+    unreachable: "無法連線至此伺服器。",
+    blocked: "目前工作阻止了切換。完成後再重試。",
+    delivering: "正在開啟共享目的地...",
+    expired: "已儲存的請求已過期。請重新開啟連結。",
+    connectAction: "連接",
+    retry: "重試",
+    openBrowser: "在瀏覽器中開啟",
+    cancel: "取消",
+  },
   feedLearning: {
     onlyThisPost: "僅用於此貼文",
     futureReference: "用作未來參考",
