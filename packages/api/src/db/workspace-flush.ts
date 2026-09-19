@@ -233,6 +233,8 @@ export const WORKSPACE_FLUSH_PRESERVED_TABLES = [
   'oss_usage_tracking',
   'workspace_goal_defaults',
   'workspace_modules',
+  'workspace_link_aliases',
+  'page_link_aliases',
   'usage_sessions',
   'bulk_ingest_surcharges',
   'recording_surcharges',
