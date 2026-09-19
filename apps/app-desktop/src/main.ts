@@ -1923,8 +1923,12 @@ async function loadApp(
       if (!(await ensureBundledLocalSession(win))) return;
       // The bundled renderer loads from file://, so it has no env: hand it the API
       // base (and the capture/record intent) via the query string. The client reads
-      // `?api=` to know which backend to call with its Bearer token.
-      const query: Record<string, string> = { api: cfg.apiUrl, publicConfig: JSON.stringify(cfg.publicConfig) };
+      // `?api=` for Bearer requests and `?app=` for shareable web page links.
+      const query: Record<string, string> = {
+        app: cfg.appUrl,
+        api: cfg.apiUrl,
+        publicConfig: JSON.stringify(cfg.publicConfig),
+      };
       if (opts.capture) query.capture = "1";
       if (opts.record) query.record = "1";
       if (hasUseBrianPrompt) query.useBrian = "1";

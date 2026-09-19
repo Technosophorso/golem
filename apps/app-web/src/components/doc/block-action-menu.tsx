@@ -62,6 +62,7 @@ import {
 } from "lucide-react";
 import { useT } from "@/lib/i18n/client";
 import { useCoarsePointer } from "@/lib/viewport";
+import { docPublicUrl } from "@/lib/doc-public-url";
 import { BLOCK_HASH_PREFIX, docBlockHash } from "@/lib/doc-page-url";
 import { TURN_INTO_ITEMS, type TurnIntoKind } from "./turn-into-menu";
 import {
@@ -288,7 +289,7 @@ export function BlockActionMenu({
   const schemaKinds = editorTurnIntoKinds(editor);
   const turnIntoItems = TURN_INTO_ITEMS.filter((it) => schemaKinds.has(it.id));
   const colorable = (caretBlock || isEmbed) && blockDeclaresColor(node);
-  const canCopyLink = Boolean(workspaceId && pageId);
+  const canCopyLink = Boolean(workspaceId && pageId && docPublicUrl("/"));
 
   /** Run a mutating action on the LIVE target, then close. */
   const act = (fn: (target: BlockTarget) => void) => () => {
@@ -310,7 +311,8 @@ export function BlockActionMenu({
       window.location.hash = hashHref;
       return;
     }
-    const url = `${window.location.origin}${docBlockHash(workspaceId, pageId, id)}`;
+    const url = docPublicUrl(docBlockHash(workspaceId, pageId, id));
+    if (!url) return;
     void navigator.clipboard
       .writeText(url)
       .then(() => {

@@ -31,6 +31,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Switch } from "@/components/ui/switch";
 import { useT, format } from "@/lib/i18n/client";
 import { useWorkspaceContext } from "@/lib/workspace-context";
+import { docPublicUrl } from "@/lib/doc-public-url";
 import { docPagePath } from "@/lib/doc-page-url";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { openWorkspaceSettings } from "@/components/settings-modal/settings-modal";
@@ -424,8 +425,8 @@ export function ShareDialog({
     setSite(await getSiteState(pageId).catch(() => null));
   };
 
-  const publishUrl =
-    typeof window !== "undefined" ? `${window.location.origin}/share/p/${pageId}` : `/share/p/${pageId}`;
+  const pageUrl = docPublicUrl(docPagePath(workspaceId, pageId));
+  const publishUrl = docPublicUrl(`/share/p/${pageId}`);
 
   async function reload() {
     try {
@@ -533,7 +534,8 @@ export function ShareDialog({
 
   async function copyPageLink() {
     if (typeof window === "undefined") return;
-    const url = `${window.location.origin}${docPagePath(workspaceId, pageId)}`;
+    const url = pageUrl;
+    if (!url) return;
     try {
       await navigator.clipboard.writeText(url);
       setCopiedPage(true);
@@ -598,7 +600,7 @@ export function ShareDialog({
   }
 
   async function copyPublishUrl() {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !publishUrl) return;
     try {
       await navigator.clipboard.writeText(publishUrl);
       setCopiedPublish(true);
@@ -796,6 +798,7 @@ export function ShareDialog({
               <button
                 type="button"
                 onClick={() => void copyPageLink()}
+                disabled={!pageUrl}
                 className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm font-medium transition-colors hover:bg-muted"
               >
                 {copiedPage ? <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden /> : <Link2 className="size-3.5" aria-hidden />}
@@ -829,6 +832,7 @@ export function ShareDialog({
                   <button
                     type="button"
                     onClick={() => void copyPublishUrl()}
+                    disabled={!publishUrl}
                     aria-label={t.copyLink}
                     className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   >
@@ -892,7 +896,7 @@ export function ShareDialog({
                     {t.unpublish}
                   </button>
                   <a
-                    href={publishUrl}
+                    href={publishUrl ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex-1 rounded-md bg-action px-3 py-2 text-center text-sm font-medium text-action-foreground transition-opacity hover:opacity-90"

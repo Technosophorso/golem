@@ -74,6 +74,8 @@ import {
   type PageActionFeedback,
 } from "./page-action-buttons";
 import { CommentHistory } from "./comment-history";
+import { docPublicUrl } from "@/lib/doc-public-url";
+import { docPagePath } from "@/lib/doc-page-url";
 import { ShareDialog } from "./share-dialog";
 import { ContextScopeChips } from "@/components/context/context-scope-chips";
 import {
@@ -315,7 +317,8 @@ export function PageHeader({
   async function handleCopyLink() {
     setError(null);
     try {
-      const url = `${window.location.origin}/w/${view.workspaceId}/p/${view.id}`;
+      const url = docPublicUrl(docPagePath(view.workspaceId, view.id));
+      if (!url) return;
       await navigator.clipboard.writeText(url);
       setNotice(t.headerLinkCopied);
       window.setTimeout(() => setNotice(null), 1600);
@@ -381,7 +384,7 @@ export function PageHeader({
               to the public view so an editor can see what others see. */}
           {published ? (
             <a
-              href={`/share/p/${view.id}`}
+              href={docPublicUrl(`/share/p/${view.id}`) ?? undefined}
               target="_blank"
               rel="noopener noreferrer"
               aria-label={t.publishedBadge}
@@ -518,7 +521,7 @@ export function PageHeader({
                   {t.saveAsTemplate}
                 </DropdownMenuItem>
               ) : null}
-              <DropdownMenuItem onClick={() => void handleCopyLink()}>
+              <DropdownMenuItem disabled={!docPublicUrl(docPagePath(view.workspaceId, view.id))} onClick={() => void handleCopyLink()}>
                 {t.headerCopyLink}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
