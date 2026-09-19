@@ -1544,6 +1544,8 @@ export const zh: Dictionary = {
       allClearTitle: "你已全部處理完畢",
       allClearBody: "目前沒有需要你處理的事項。在上方描述需求，助理就會為你建立。",
       // 「將檔案加入大腦」拖放區塊。[COMP:app-web/home-file-drop]
+      ingestOpen: "新增檔案",
+      ingestDropHint: "將檔案拖放到這裡",
       ingestTitle: "將檔案加入大腦",
       ingestCaption: "拖放檔案即可儲存並匯入。音訊和影片可選擇藍圖。",
       ingestCta: "選擇檔案",

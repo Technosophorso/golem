@@ -1529,6 +1529,8 @@ export const zhCN: Dictionary = {
       assistant: "你的助理",
       allClearTitle: "你已全部处理完毕",
       allClearBody: "目前没有需要你处理的事项。在上方描述需求，助理就会为你创建。",
+      ingestOpen: "添加文件",
+      ingestDropHint: "将文件拖放到这里",
       ingestTitle: "将文件加入大脑",
       ingestCaption: "拖放文件即可保存并导入。音频和视频可选择蓝图。",
       ingestCta: "选择文件",

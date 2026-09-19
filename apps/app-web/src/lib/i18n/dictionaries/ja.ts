@@ -1557,6 +1557,8 @@ export const ja: Dictionary = {
       allClearBody:
         "今は対応が必要なものはありません。上で入力すれば、アシスタントが作成します。",
       // "ブレインにファイルを追加" ドロップブロック。[COMP:app-web/home-file-drop]
+      ingestOpen: "ファイルを追加",
+      ingestDropHint: "ここにファイルをドロップ",
       ingestTitle: "ブレインにファイルを追加",
       ingestCaption: "ファイルをドロップして保存・取り込みます。音声や動画ではブループリントを選べます",
       ingestCta: "ファイルを選択",

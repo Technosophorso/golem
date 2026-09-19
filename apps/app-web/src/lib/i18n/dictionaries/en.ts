@@ -1652,6 +1652,8 @@ export const en = {
       allClearBody:
         "Nothing needs you right now. Describe anything above and your assistant will build it.",
       // Shared brain file intake. [COMP:app-web/workspace-file-drop]
+      ingestOpen: "Add files",
+      ingestDropHint: "Drop files here",
       ingestTitle: "Add files to your brain",
       ingestCaption:
         "Drop files to store and ingest them. Audio and video let you choose a blueprint.",

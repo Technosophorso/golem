@@ -10,7 +10,7 @@
  * renders inline.
  *
  * Reuses `useFileDrop` for drag state; the ingest SDK is `lib/api/ingest.ts`.
- * It lives under the Home build bar and at the top of Brain Entries.
+ * It lives under the Home build bar and in the workspace intake dialog.
  *
  * Spec: docs/architecture/features/files.md -> "Direct ingest".
  * [COMP:app-web/home-file-drop]
@@ -361,26 +361,26 @@ export function SuggestedFileDrop({
       {...drop.dropProps}
       className={cn(
         "relative rounded-2xl transition-colors",
-        appearance === "card" ? "mt-4 border bg-card p-4" : "bg-transparent pr-9",
+        appearance === "card" ? "mt-4 border bg-card p-4" : "bg-transparent",
         drop.isDragging ? "border-primary/60 bg-primary/[0.04]" : "border-border",
       )}
     >
-      <div className="flex items-start gap-3">
+      <div className={cn("flex flex-wrap items-start gap-3", appearance === "dialog" && "pr-10")}>
         <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">
           <FileUp className="size-[18px]" aria-hidden />
         </span>
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 basis-40">
           <h3 className="text-[14px] font-semibold text-foreground">{t.ingestTitle}</h3>
           <p className="mt-0.5 text-[12.5px] text-muted-foreground">{t.ingestCaption}</p>
         </div>
-        <button
+        {appearance === "card" && <button
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy || offline}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-60"
+          className="inline-flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[12.5px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-60 md:min-h-0"
         >
           {t.ingestCta}
-        </button>
+        </button>}
         <input
           ref={inputRef}
           type="file"
@@ -391,6 +391,23 @@ export function SuggestedFileDrop({
           aria-hidden
         />
       </div>
+
+      {appearance === "dialog" && (
+        <button
+          type="button"
+          aria-label={t.ingestCta}
+          onClick={() => inputRef.current?.click()}
+          disabled={busy || offline}
+          className={cn(
+            "mt-5 flex w-full flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-border bg-muted/20 px-4 text-sm transition-colors hover:border-primary/50 hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50",
+            items.length > 0 ? "min-h-11 py-3" : "min-h-40 py-6",
+          )}
+        >
+          {items.length === 0 && <FileUp className="size-6 text-muted-foreground" aria-hidden />}
+          {items.length === 0 && <span className="font-medium text-foreground">{t.ingestDropHint}</span>}
+          <span className="text-primary underline underline-offset-4">{t.ingestCta}</span>
+        </button>
+      )}
 
       {offline && (
         <p
@@ -409,24 +426,26 @@ export function SuggestedFileDrop({
               className="flex items-center gap-2.5 rounded-lg border border-border/70 bg-background px-2.5 py-1.5"
             >
               <StatusIcon status={i.status} />
-              <span className="min-w-0 flex-1 truncate text-[12.5px] text-foreground">
-                {i.file.name}
-              </span>
-              <span className="shrink-0 text-[11.5px] text-muted-foreground">
-                <StatusLabel
-                  item={i}
-                  t={t}
-                  recordings={copy.recordings}
-                  recordingStatus={activeMediaId === i.localId ? recordingStatus : undefined}
-                  recordingProgress={recordingProgress}
-                />
-              </span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate text-[12.5px] text-foreground" title={i.file.name}>
+                  {i.file.name}
+                </div>
+                <div className="break-words text-[11.5px] text-muted-foreground" role="status">
+                  <StatusLabel
+                    item={i}
+                    t={t}
+                    recordings={copy.recordings}
+                    recordingStatus={activeMediaId === i.localId ? recordingStatus : undefined}
+                    recordingProgress={recordingProgress}
+                  />
+                </div>
+              </div>
               {i.status === "pending" && (
                 <button
                   type="button"
                   aria-label={t.ingestRemove}
                   onClick={() => remove(i.localId)}
-                  className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground"
+                  className="grid size-11 shrink-0 place-items-center rounded text-muted-foreground/50 transition-colors hover:bg-accent hover:text-foreground md:size-7"
                 >
                   <X className="size-3.5" aria-hidden />
                 </button>
@@ -442,7 +461,7 @@ export function SuggestedFileDrop({
             <button
               type="button"
               onClick={clearResolved}
-              className="rounded-lg px-2.5 py-1.5 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground"
+              className="min-h-11 rounded-lg px-2.5 py-1.5 text-[12.5px] text-muted-foreground transition-colors hover:text-foreground md:min-h-0"
             >
               {t.ingestClear}
             </button>
@@ -451,7 +470,7 @@ export function SuggestedFileDrop({
             type="button"
             onClick={addToBrain}
             disabled={pendingCount === 0 || busy || offline}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-action px-3 py-1.5 text-[12.5px] font-medium text-action-foreground transition-colors hover:bg-action/90 disabled:bg-foreground/10 disabled:text-muted-foreground"
+            className="inline-flex min-h-11 items-center gap-1.5 rounded-lg bg-action px-3 py-1.5 text-[12.5px] font-medium text-action-foreground transition-colors hover:bg-action/90 disabled:bg-foreground/10 disabled:text-muted-foreground md:min-h-0"
           >
             {busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
             {busy ? t.ingestAdding : t.ingestAdd}
