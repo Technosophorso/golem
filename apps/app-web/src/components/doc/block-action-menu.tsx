@@ -62,8 +62,8 @@ import {
 } from "lucide-react";
 import { useT } from "@/lib/i18n/client";
 import { useCoarsePointer } from "@/lib/viewport";
-import { docPublicUrl } from "@/lib/doc-public-url";
-import { BLOCK_HASH_PREFIX, docBlockHash } from "@/lib/doc-page-url";
+import { BLOCK_HASH_PREFIX } from "@/lib/doc-page-url";
+import { bestInternalShareLink } from "@/lib/api/internal-links";
 import { TURN_INTO_ITEMS, type TurnIntoKind } from "./turn-into-menu";
 import {
   applyTurnIntoAt,
@@ -289,7 +289,7 @@ export function BlockActionMenu({
   const schemaKinds = editorTurnIntoKinds(editor);
   const turnIntoItems = TURN_INTO_ITEMS.filter((it) => schemaKinds.has(it.id));
   const colorable = (caretBlock || isEmbed) && blockDeclaresColor(node);
-  const canCopyLink = Boolean(workspaceId && pageId && docPublicUrl("/"));
+  const canCopyLink = Boolean(workspaceId && pageId);
 
   /** Run a mutating action on the LIVE target, then close. */
   const act = (fn: (target: BlockTarget) => void) => () => {
@@ -311,10 +311,8 @@ export function BlockActionMenu({
       window.location.hash = hashHref;
       return;
     }
-    const url = docPublicUrl(docBlockHash(workspaceId, pageId, id));
-    if (!url) return;
-    void navigator.clipboard
-      .writeText(url)
+    void bestInternalShareLink({ workspaceId, pageId, blockId: id })
+      .then(({ url }) => navigator.clipboard.writeText(url))
       .then(() => {
         setCopied(true);
         window.clearTimeout(copyTimer.current);

@@ -228,6 +228,20 @@ export function buildIdHandoffUrl(destinationUrl: string): string {
   return result.href
 }
 
+/** Validate `/open?path=` without allowing it to become an external redirect. */
+export function parseIdHandoffPath(
+  path: string,
+  appOrigin: string,
+): StableInternalLinkDestination | null {
+  if (!path.startsWith('/') || path.startsWith('//') || path.length > MAX_NATIVE_OPEN_URL_LENGTH) {
+    return null
+  }
+  const origin = normalizedOrigin(appOrigin)
+  if (!origin) return null
+  const parsed = parseInternalLinkDestination(`${origin}${path}`)
+  return parsed?.kind === 'ids' ? parsed : null
+}
+
 export function buildNativeOpenUrl(destinationUrl: string, scheme = 'usebrian'): string {
   const destination = parseInternalLinkDestination(destinationUrl)
   if (!destination || !/^[a-z][a-z0-9+.-]*$/i.test(scheme)) {

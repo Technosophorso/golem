@@ -17,6 +17,8 @@ export type RuntimePublicConfig = {
   notionClientId: string;
   fathomClientId: string;
   fathomAuthorizeUrl: string;
+  pageLinkHandoffVersion?: 1;
+  internalLinkAliasesVersion?: 1;
 };
 
 declare global {
@@ -102,6 +104,8 @@ export function resolveRuntimePublicConfig(
       env.PUBLIC_FATHOM_AUTHORIZE_URL ??
       env.NEXT_PUBLIC_FATHOM_AUTHORIZE_URL ??
       DEFAULT_FATHOM_AUTHORIZE_URL,
+    ...(env.PAGE_LINK_HANDOFF_VERSION === "1" ? { pageLinkHandoffVersion: 1 as const } : {}),
+    ...(env.INTERNAL_LINK_ALIASES_VERSION === "1" ? { internalLinkAliasesVersion: 1 as const } : {}),
   };
 }
 

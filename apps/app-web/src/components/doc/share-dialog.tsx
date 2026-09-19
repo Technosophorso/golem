@@ -32,7 +32,8 @@ import { Switch } from "@/components/ui/switch";
 import { useT, format } from "@/lib/i18n/client";
 import { useWorkspaceContext } from "@/lib/workspace-context";
 import { docPublicUrl } from "@/lib/doc-public-url";
-import { docPagePath } from "@/lib/doc-page-url";
+import { bestInternalShareLink } from "@/lib/api/internal-links";
+import { InternalLinkControl } from "@/components/internal-link-control";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { openWorkspaceSettings } from "@/components/settings-modal/settings-modal";
 import {
@@ -388,17 +389,20 @@ export function ShareDialog({
   pageId,
   workspaceId,
   currentUser,
+  canManageLinkAlias,
   onPublishChanged,
 }: {
   pageId: string;
   workspaceId: string;
   currentUser: { id: string; name: string; avatarUrl?: string | null };
+  canManageLinkAlias: boolean;
   /** Raised after a successful publish/unpublish so the page header can
    *  re-resolve its Published badge (the resolved state is cascade-aware,
    *  so the header re-fetches rather than trusting the direct flag). */
   onPublishChanged?: () => void;
 }) {
-  const t = useT().docPage.share;
+  const dict = useT();
+  const t = dict.docPage.share;
   const workspace = useWorkspaceContext();
 
   const [open, setOpen] = useState(false);
@@ -425,7 +429,6 @@ export function ShareDialog({
     setSite(await getSiteState(pageId).catch(() => null));
   };
 
-  const pageUrl = docPublicUrl(docPagePath(workspaceId, pageId));
   const publishUrl = docPublicUrl(`/share/p/${pageId}`);
 
   async function reload() {
@@ -534,14 +537,15 @@ export function ShareDialog({
 
   async function copyPageLink() {
     if (typeof window === "undefined") return;
-    const url = pageUrl;
-    if (!url) return;
+    let linkUrl: string | null = null;
     try {
+      const { url } = await bestInternalShareLink({ workspaceId, pageId });
+      linkUrl = url;
       await navigator.clipboard.writeText(url);
       setCopiedPage(true);
       window.setTimeout(() => setCopiedPage(false), 1600);
     } catch {
-      setError(url);
+      setError(linkUrl ?? dict.internalLinks.aliasError);
     }
   }
 
@@ -789,6 +793,14 @@ export function ShareDialog({
 
             {error ? <p role="alert" className="mt-2 break-all text-xs text-destructive">{error}</p> : null}
 
+            <div className="mt-3">
+              <InternalLinkControl
+                workspaceId={workspaceId}
+                pageId={pageId}
+                canManage={canManageLinkAlias}
+              />
+            </div>
+
             {/* Footer */}
             <div className="mt-3 flex items-center justify-between border-t border-border pt-3">
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -798,7 +810,6 @@ export function ShareDialog({
               <button
                 type="button"
                 onClick={() => void copyPageLink()}
-                disabled={!pageUrl}
                 className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-sm font-medium transition-colors hover:bg-muted"
               >
                 {copiedPage ? <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" aria-hidden /> : <Link2 className="size-3.5" aria-hidden />}

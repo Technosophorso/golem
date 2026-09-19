@@ -153,6 +153,8 @@ export type DesktopPublicConfig = {
   notionClientId: string
   fathomClientId: string
   fathomAuthorizeUrl: string
+  pageLinkHandoffVersion?: 1
+  internalLinkAliasesVersion?: 1
 }
 
 function parsePublicConfig(record: Record<string, unknown>): DesktopPublicConfig | null {
@@ -176,7 +178,15 @@ function parsePublicConfig(record: Record<string, unknown>): DesktopPublicConfig
     notionClientId: text("notionClientId"),
     fathomClientId: text("fathomClientId"),
     fathomAuthorizeUrl: text("fathomAuthorizeUrl"),
+    ...(record.pageLinkHandoffVersion === 1 ? { pageLinkHandoffVersion: 1 as const } : {}),
+    ...(record.internalLinkAliasesVersion === 1 ? { internalLinkAliasesVersion: 1 as const } : {}),
   }
+}
+
+/** Parse only the browser-safe deployment metadata from desktop-config. */
+export function parseDesktopPublicConfig(body: unknown): DesktopPublicConfig | null {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null
+  return parsePublicConfig(body as Record<string, unknown>)
 }
 
 export function parseDesktopConfig(body: unknown): DeclaredDesktopConfig | null {
@@ -186,7 +196,7 @@ export function parseDesktopConfig(body: unknown): DeclaredDesktopConfig | null 
   if (typeof apiUrl !== "string" || !apiUrl.trim()) return null;
   const accepted = acceptDeclaredApiUrl(apiUrl);
   if (!accepted) return null;
-  const publicConfig = parsePublicConfig(record)
+  const publicConfig = parseDesktopPublicConfig(record)
   if (!publicConfig) return null
   return {
     apiUrl: accepted,

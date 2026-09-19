@@ -25,6 +25,7 @@ import { createFeedReviewContextLoader } from './content-planning/review-context
  */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { detectInternalLinkAliasReadiness } from './internal-link-capabilities.js'
 import { seedBuiltinPrimitiveCapabilities } from './db/capability-seed.js'
 import type http from 'node:http'
 
@@ -583,7 +584,7 @@ import { createDbDocEntityStore } from './db/doc-entity-store.js'
 import { docEntitiesRoutes } from './routes/doc-entities.js'
 import { createDbCommentThreadStore } from './db/comment-thread-store.js'
 import { createDbDocNotificationsStore } from './db/doc-notifications-store.js'
-import { notifyRoomMentionRecorded } from './brain-stream/notify.js'
+import { notifyRoomMentionRecorded, notifyWorkspaceChange } from './brain-stream/notify.js'
 import { commentRoutes } from './routes/comments.js'
 import { inboxRoutes } from './routes/inbox.js'
 import { createDbEpisodicStore } from './db/episodic-store.js'
@@ -1463,6 +1464,13 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     res.json({ status: 'ok', timestamp: new Date().toISOString() })
   })
 
+  // Public rollout signal consumed by app-web's own `/api/desktop-config`.
+  // It reports only schema readiness and never resolves an alias or target.
+  app.get('/capabilities/internal-links', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(await detectInternalLinkAliasReadiness())
+  })
+
   // ════════════════════════════════════════════════════════════════
   // Shared infrastructure + stores
   // ════════════════════════════════════════════════════════════════
@@ -2226,6 +2234,9 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     savedViewStore,
     auditStore: workspaceAuditStore,
     appOrigin: env.AUTHED_APP_URL ?? env.APP_URL,
+    onAliasChanged: ({ workspaceId }) => {
+      notifyWorkspaceChange(workspaceId, 'workspace_config', 'update')
+    },
   })
   const rawGoalDefaultBudgetStore = createGoalDefaultBudgetStore()
   const goalDefaultBudgetStore = {

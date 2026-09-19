@@ -74,6 +74,7 @@ import {
   localMintUrl,
   localTarget,
   parseDesktopConfig,
+  parseDesktopPublicConfig,
   parsePersistedTarget,
   serializePersistedTarget,
   targetWindowTitle,
@@ -1496,6 +1497,42 @@ async function probeDesktopConfig(
   return { kind: "unreachable" };
 }
 
+/**
+ * Refresh rollout capabilities for the fixed cloud target before a bundled
+ * renderer copies links. The cloud API URL is intentionally rejected by the
+ * self-host declaration parser, so this reads only browser-safe public
+ * metadata and keeps the compiled target pairing authoritative.
+ */
+async function refreshCloudPublicConfig(): Promise<void> {
+  if (cfg.target !== "cloud") return
+  try {
+    const response = await net.fetch(desktopConfigUrl(cfg.appUrl), {
+      signal: AbortSignal.timeout(3500),
+      cache: "no-store",
+      redirect: "manual",
+      headers: { Accept: "application/json" },
+    })
+    if (!response.ok) return
+    const declared = parseDesktopPublicConfig(await response.json())
+    if (!declared) return
+    const {
+      pageLinkHandoffVersion: _oldHandoff,
+      internalLinkAliasesVersion: _oldAliases,
+      ...current
+    } = cfg.publicConfig
+    cfg = Object.freeze({
+      ...cfg,
+      publicConfig: {
+        ...current,
+        ...(declared.pageLinkHandoffVersion === 1 ? { pageLinkHandoffVersion: 1 as const } : {}),
+        ...(declared.internalLinkAliasesVersion === 1 ? { internalLinkAliasesVersion: 1 as const } : {}),
+      },
+    })
+  } catch {
+    // Missing/old/unreachable web means no handoff capability is advertised.
+  }
+}
+
 type DesktopConfigResult =
   | { readonly kind: "configured"; readonly config: DeclaredDesktopConfig | null }
   | { readonly kind: "managed-oauth"; readonly resourceMetadataUrl: string }
@@ -1682,6 +1719,7 @@ async function activateTarget(
     if (installSession) await installSession();
     installAccessRequestHook();
     await prepareAccessForStartup();
+    await refreshCloudPublicConfig();
     mainWindow = createWindow(initialRoute ? { route: initialRoute, linkRequestId } : {});
     if (bounds) mainWindow.setBounds(bounds);
     refreshAppMenu();
@@ -4298,6 +4336,7 @@ if (!gotLock) {
     if (cfg.target !== "cloud") await migrateLegacyCookies(cloudTarget());
     migrateLegacyTokens();
     await prepareAccessForStartup();
+    await refreshCloudPublicConfig();
     installAccessRequestHook();
     startAccessGrantKeepalive();
     await startSessionKeepalive();

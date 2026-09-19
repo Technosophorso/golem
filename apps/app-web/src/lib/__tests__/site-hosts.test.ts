@@ -105,6 +105,8 @@ describe("[COMP:app-web/site-route] Custom-domain host classification", () => {
       expect(isGuardedPath("/")).toBe(false);
       expect(isGuardedPath("/share/tok123")).toBe(false);
       expect(isGuardedPath("/share/p/page-1")).toBe(false);
+      expect(isGuardedPath("/s/product/roadmap")).toBe(false);
+      expect(isGuardedPath("/open")).toBe(false);
       expect(isGuardedPath("/login")).toBe(false);
       expect(isGuardedPath("/site/docs.acme.com")).toBe(false);
       // prefix must be a whole segment: /workflows is not /workflow

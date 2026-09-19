@@ -14,6 +14,7 @@ import {
   localTarget,
   normalizeTargetUrl,
   parseDesktopConfig,
+  parseDesktopPublicConfig,
   parsePersistedTarget,
   resolveTargetFromPersisted,
   serializePersistedTarget,
@@ -84,6 +85,24 @@ describe("[COMP:app-desktop/target-store] targets", () => {
       label: "Use Brian Cloud",
     });
     expect(Object.isFrozen(t)).toBe(true);
+    expect(t.publicConfig.pageLinkHandoffVersion).toBeUndefined();
+    expect(t.publicConfig.internalLinkAliasesVersion).toBeUndefined();
+  });
+
+  it("parses rollout capabilities without accepting a cloud API declaration as a self-host pairing", () => {
+    const body = {
+      apiUrl: CLOUD_API_URL,
+      edition: "hosted",
+      pageLinkHandoffVersion: 1,
+      internalLinkAliasesVersion: 1,
+    };
+    expect(parseDesktopConfig(body)).toBeNull();
+    expect(parseDesktopPublicConfig(body)).toMatchObject({
+      apiUrl: CLOUD_API_URL,
+      edition: "hosted",
+      pageLinkHandoffVersion: 1,
+      internalLinkAliasesVersion: 1,
+    });
   });
 
   it("localTarget defaults to the launcher address and derives the paired API + label", () => {

@@ -9,6 +9,7 @@ import {
   isValidInternalAlias,
   MAX_NATIVE_OPEN_URL_LENGTH,
   parseInternalLinkDestination,
+  parseIdHandoffPath,
   parseNativeOpenUrl,
   suggestInternalAlias,
 } from '../desktop-links.js'
@@ -53,6 +54,15 @@ describe('[COMP:shared/desktop-links] deployment-aware internal links', () => {
     expect(parseNativeOpenUrl(buildNativeOpenUrl(alias))).toEqual(
       parseInternalLinkDestination(alias),
     )
+  })
+
+  it('validates the ID fallback as a same-origin member route', () => {
+    expect(parseIdHandoffPath('/w/workspace-1/p/page-1#b-block-1', 'https://brain.example')).toMatchObject({
+      kind: 'ids', workspaceId: 'workspace-1', pageId: 'page-1', blockId: 'block-1',
+    })
+    expect(parseIdHandoffPath('//evil.example/w/workspace-1/p', 'https://brain.example')).toBeNull()
+    expect(parseIdHandoffPath('/s/product/roadmap', 'https://brain.example')).toBeNull()
+    expect(parseIdHandoffPath('/w/workspace-1/p?page=1', 'https://brain.example')).toBeNull()
   })
 
   it('rejects redirects, traversal, encoded separators, queries, and unsupported hashes', () => {
