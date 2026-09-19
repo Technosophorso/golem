@@ -272,7 +272,6 @@ export const zhCN: Dictionary = {
     "bulletList": "项目列表",
     "orderedList": "编号列表",
     "suggestions": "建议",
-    "upgrade": "启用草稿协作",
     "history": "编辑决策记录"
 },
   associationPage: {

@@ -261,7 +261,6 @@ export const zh: Dictionary = {
     "bulletList": "項目清單",
     "orderedList": "編號清單",
     "suggestions": "建議",
-    "upgrade": "啟用草稿協作",
     "history": "編輯決策記錄"
 },
   associationPage: {

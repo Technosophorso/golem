@@ -261,7 +261,6 @@ export const ja: Dictionary = {
     "bulletList": "箇条書き",
     "orderedList": "番号付きリスト",
     "suggestions": "提案",
-    "upgrade": "下書きの共同編集を有効にする",
     "history": "編集判断の履歴"
 },
   associationPage: {

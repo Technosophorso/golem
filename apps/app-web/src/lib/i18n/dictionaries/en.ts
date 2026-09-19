@@ -274,7 +274,6 @@ export const en = {
     "bulletList": "Bulleted list",
     "orderedList": "Numbered list",
     "suggestions": "Suggestions",
-    "upgrade": "Enable draft collaboration",
     "history": "Decision history"
 },
   associationPage: {
