@@ -650,7 +650,7 @@ const DESKTOP_CHROME_SAFETY_CSS = `
   }
 `;
 
-function createWindow(initialLoad: { useBrian?: boolean } = {}): BrowserWindow {
+function createWindow(initialLoad: { useBrian?: boolean; route?: string } = {}): BrowserWindow {
   const win = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -1623,6 +1623,7 @@ async function activateTarget(
   auth?: TargetAuth,
   installSession?: () => Promise<void>,
   publicConfig?: DesktopPublicConfig | null,
+  initialRoute?: string,
 ): Promise<boolean> {
   if (cfg.envTargetOverride || changingTarget || recorderOverlay) return false;
   changingTarget = true;
@@ -1671,7 +1672,7 @@ async function activateTarget(
     if (installSession) await installSession();
     installAccessRequestHook();
     await prepareAccessForStartup();
-    mainWindow = createWindow();
+    mainWindow = createWindow(initialRoute ? { route: initialRoute } : {});
     if (bounds) mainWindow.setBounds(bounds);
     refreshAppMenu();
     refreshTrayMenu();
@@ -1870,7 +1871,7 @@ function isCurrentAccountSender(id: number): boolean {
 }
 
 /** Return the live window, recreating it if it was closed (tray app model). */
-function ensureWindow(initialLoad: { useBrian?: boolean } = {}): BrowserWindow {
+function ensureWindow(initialLoad: { useBrian?: boolean; route?: string } = {}): BrowserWindow {
   if (!mainWindow || mainWindow.isDestroyed()) {
     mainWindow = createWindow(initialLoad);
   }
@@ -2116,7 +2117,7 @@ async function listDeploymentAccounts() {
 }
 
 /** Refresh at the saved destination before committing a switch. */
-async function selectDeploymentAccount(key: string): Promise<SwitchResult> {
+async function selectDeploymentAccount(key: string, initialRoute?: string): Promise<SwitchResult> {
   if (changingTarget || selectingAccount || connectingDeployment || recorderOverlay) return { ok: false, error: "switch" };
   selectingAccount = true;
   try {
@@ -2147,8 +2148,8 @@ async function selectDeploymentAccount(key: string): Promise<SwitchResult> {
       }
     };
     const ok = saved.target.kind === "cloud"
-      ? await activateTarget("cloud", rememberedLocalAppUrl(), rememberedLocalApiUrl(), rememberedLocalAuth(), installSession, rememberedLocalPublicConfig())
-      : await activateTarget("local", saved.target.appUrl, saved.target.apiUrl, saved.target.auth, installSession, saved.target.publicConfig);
+      ? await activateTarget("cloud", rememberedLocalAppUrl(), rememberedLocalApiUrl(), rememberedLocalAuth(), installSession, rememberedLocalPublicConfig(), initialRoute)
+      : await activateTarget("local", saved.target.appUrl, saved.target.apiUrl, saved.target.auth, installSession, saved.target.publicConfig, initialRoute);
     return ok ? { ok: true } : { ok: false, error: "switch" };
   } finally { selectingAccount = false; }
 }
