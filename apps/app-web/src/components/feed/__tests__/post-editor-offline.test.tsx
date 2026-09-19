@@ -4,12 +4,12 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { en } from "@/lib/i18n/dictionaries/en";
 
-const state = vi.hoisted(() => ({ data: new Map<string, unknown>(), push: vi.fn(), canDraft: true }));
+const state = vi.hoisted(() => ({ data: new Map<string, unknown>(), push: vi.fn(), canDraft: true, offline: true }));
 vi.mock("@/lib/user", () => ({ getUserInfo: () => ({ id: "viewer-a" }) }));
 vi.mock("@/lib/auth-fetch", () => ({ authFetch: vi.fn(async () => { throw new Error("offline"); }) }));
 vi.mock("@/lib/i18n/client", async () => { const { en } = await import("@/lib/i18n/dictionaries/en"); return { useT: () => en, useLocale: () => "en" }; });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: state.push }) }));
-vi.mock("@/lib/offline/use-offline-sync", () => ({ useIsOffline: () => true }));
+vi.mock("@/lib/offline/use-offline-sync", () => ({ useIsOffline: () => state.offline }));
 vi.mock("@/lib/recorder/dock-recorder-bridge", () => ({ useGlobalDockRecorder: () => null }));
 vi.mock("@/components/feed/tuning-chat-panel", () => ({ TuningChatPanel: () => null }));
 vi.mock("@/components/feed/post-media-tray", () => ({ PostMediaTray: () => null }));
@@ -29,6 +29,7 @@ vi.mock("@/lib/offline/idb", () => ({
 import { PostEditor } from "../post-editor";
 import { blankFeedContent, createLocalFeedPost, readLocalFeedPost, readFeedNewPostForm } from "@/lib/offline/feed-offline";
 import { authFetch } from "@/lib/auth-fetch";
+import { resetSurfaceCache } from '@/lib/surface-cache';
 
 let root: Root;
 let container: HTMLDivElement;
@@ -53,11 +54,87 @@ async function remount() {
 }
 beforeEach(() => {
   (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-  state.data.clear(); state.push.mockReset(); state.canDraft = true;
-  vi.mocked(authFetch).mockClear();
+  state.data.clear(); state.push.mockReset(); state.canDraft = true; state.offline = true;
+  resetSurfaceCache();
+  vi.mocked(authFetch).mockReset().mockRejectedValue(new Error('offline'));
   Object.defineProperty(navigator, "onLine", { value: false, configurable: true });
   window.matchMedia = vi.fn().mockReturnValue({ matches: false, addEventListener() {}, removeEventListener() {} });
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
+});
+
+describe('[COMP:app-web/feed-post-editor] automatic legacy upgrade', () => {
+  async function legacyPost() {
+    const post = await createLocalFeedPost('assistant-1', 'threads', { ...blankFeedContent(), text: 'Keep the existing copy.' });
+    const records = state.data.get('feed:working:viewer-a') as Record<string, typeof post>;
+    const stored = records[`assistant-1:${post.session.id}`]!;
+    Object.assign(stored, { dirty: false, newSession: false, revision: 3 });
+    return stored;
+  }
+  function goOnline(post: Awaited<ReturnType<typeof legacyPost>>, denied = false) {
+    state.offline = false;
+    Object.defineProperty(navigator, 'onLine', { value: true, configurable: true });
+    vi.mocked(authFetch).mockImplementation(async (url, init) => {
+      const path = String(url); let body: unknown = {};
+      if (path.includes('/commands')) {
+        if (denied) return new Response('{}', { status: 403 });
+        const request = JSON.parse(init!.body as string);
+        body = { receipt: { mutationId: request.mutationId, revision: request.expectedRevision + 1, sequence: 0, threadIds: [], suggestionIds: [] } };
+      } else if (init?.method === 'PUT') {
+        const request = JSON.parse(init.body as string);
+        body = { copy: { ...request, revision: request.revision + 1 } };
+      } else if (path.includes('/post-working-copies/')) body = { copy: structuredClone(post) };
+      else if (path.endsWith('/messages')) body = [];
+      else if (path.endsWith('/saved-drafts')) body = { drafts: [] };
+      else if (path.endsWith('/collaboration')) body = { copy: null, threads: [], suggestions: [] };
+      else if (path.endsWith('/learning')) body = { confirmations: [], summaries: [], lessons: [] };
+      else if (path.includes('/draft-sessions?')) body = { sessions: [post.session] };
+      return new Response(JSON.stringify(body), { status: 200 });
+    });
+  }
+  const commands = () => vi.mocked(authFetch).mock.calls.filter(([url, init]) => String(url).endsWith('/commands') && init?.method === 'POST');
+  it('opens an existing writable post in the composition editor without an enable action', async () => {
+    const post = await legacyPost(); goOnline(post);
+    await render(post.session.id);
+    expect(commands()).toHaveLength(1);
+    expect(container.querySelector('[data-feed-composition]')?.textContent).toContain('Keep the existing copy.');
+    expect(container.textContent).not.toContain('Enable draft collaboration');
+    expect(await readLocalFeedPost('assistant-1', post.session.id)).toMatchObject({ dirty: false, revision: 4, content: { schemaVersion: 2 } });
+    await render(post.session.id);
+    expect(commands()).toHaveLength(1);
+  });
+  it('syncs a new post and upgrades automatically, with no extra action after creation', async () => {
+    const post = await createLocalFeedPost('assistant-1', 'threads', blankFeedContent());
+    goOnline(post); await render(post.session.id);
+    expect(container.querySelector('[data-feed-composition]')).not.toBeNull();
+    expect(commands()).toHaveLength(1);
+    expect(await readLocalFeedPost('assistant-1', post.session.id)).toMatchObject({ newSession: false, dirty: false, content: { schemaVersion: 2 } });
+  });
+  it('retains offline typing and enters the new editor on reconnect', async () => {
+    const post = await createLocalFeedPost('assistant-1', 'threads', blankFeedContent());
+    await render(post.session.id);
+    await type(container.querySelector('textarea')!, 'Written offline');
+    expect(authFetch).not.toHaveBeenCalled();
+    goOnline(post); await render(post.session.id);
+    expect(container.querySelector('[data-feed-composition]')?.textContent).toContain('Written offline');
+    expect(commands()).toHaveLength(1);
+  });
+  it.each(['ready', 'posted', 'viewer'] as const)('does not mutate %s content when the editor opens', async status => {
+    const post = await legacyPost();
+    if (status === 'viewer') state.canDraft = false;
+    else post.session.selectedDraft = { text: post.content.text, status };
+    goOnline(post); await render(post.session.id);
+    expect(commands()).toHaveLength(0);
+    expect(vi.mocked(authFetch).mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
+    expect((await readLocalFeedPost('assistant-1', post.session.id))?.content.schemaVersion).toBeUndefined();
+  });
+  it('retains denied work and exposes recovery without repeatedly retrying the upgrade', async () => {
+    const post = await legacyPost(); goOnline(post, true); await render(post.session.id);
+    expect(commands()).toHaveLength(1);
+    expect(await readLocalFeedPost('assistant-1', post.session.id)).toMatchObject({ dirty: true, error: 'blocked', content: { text: 'Keep the existing copy.' } });
+    expect(container.textContent).toContain(en.feedPage.postEditor.syncBlocked);
+    expect(container.textContent).toContain(en.feedPage.postEditor.saveAsNewPost);
+    await render(post.session.id); expect(commands()).toHaveLength(1);
+  });
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 

@@ -53,6 +53,23 @@ export const ja: Dictionary = {
     "retract": "自分の判断を撤回",
     "revoke": "確定を取り消す"
 },
+  feedSlash: {
+    "title": "ブロックを挿入",
+    "text": "テキストのプレースホルダー",
+    "image": "画像のプレースホルダー",
+    "paragraph": "段落",
+    "heading1": "見出し1",
+    "heading2": "見出し2",
+    "heading3": "見出し3",
+    "bulletList": "箇条書き",
+    "orderedList": "番号付きリスト",
+    "blockquote": "引用",
+    "textHint": "指示を保存して、後でテキストを生成します。",
+    "imageHint": "指示を保存して、後で画像を生成します。",
+    "empty": "一致するブロックはありません",
+    "close": "ブロックメニューを閉じる",
+    "keys": "↑↓ 移動 · Enter 挿入 · Esc 閉じる"
+},
   feedGeneration: {
     quotaUsage: "サブスクリプション利用枠",
     quotaUnknown: "正確な消費量は不明です。",
@@ -244,7 +261,6 @@ export const ja: Dictionary = {
     "bulletList": "箇条書き",
     "orderedList": "番号付きリスト",
     "suggestions": "提案",
-    "upgrade": "下書きの共同編集を有効にする",
     "history": "編集判断の履歴"
 },
   associationPage: {

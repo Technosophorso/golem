@@ -18,7 +18,7 @@ import { feedCachedJson } from "../feed-cache";
 import { fetchFeedDraftSessions } from "@/lib/api/feed";
 import { blankFeedContent, createLocalFeedPost, patchFeedWorkingCopy, readLocalFeedPost,
   readLocalFeedPosts, flushFeedWorkingCopies, forkLocalFeedPost, loadFeedWorkingCopy,
-  readFeedNewPostForm, writeFeedNewPostForm } from "../feed-offline";
+  readFeedNewPostForm, writeFeedNewPostForm, ensureFeedComposition } from "../feed-offline";
 
 const assistant = "assistant-1";
 const content = () => ({ ...blankFeedContent(), title: "Launch notes", text: "First paragraph" });
@@ -155,6 +155,74 @@ function commandReply(_url: unknown, init?: RequestInit) {
   const request = JSON.parse(init!.body as string);
   return Promise.resolve(reply({ receipt: { mutationId: request.mutationId, revision: request.expectedRevision + request.commands.filter((c: {kind: string}) => ['upgrade', 'edit', 'context'].includes(c.kind)).length, sequence: 0, threadIds: [], suggestionIds: [] } }));
 }
+describe('[COMP:app-web/feed-offline] automatic composition preparation', () => {
+  function transport(url: unknown, init?: RequestInit) {
+    return String(url).endsWith('/commands') ? commandReply(url, init) : syncReply(url, init);
+  }
+  const displayed = (post: Awaited<ReturnType<typeof createLocalFeedPost>>) => ({ mutationId: post.mutationId, text: post.content.text });
+  it.each(['post', 'thread', 'article'] as const)('syncs and imports an existing %s without losing its content or context', async postFormat => {
+    const source = { ...content(), postFormat, text: '# Notes\n\n**Keep** the detail.', threadSegments: ['First', 'Second'], article: { sourceUrl: 'https://example.com/story', title: 'A story', description: 'Context' } };
+    const post = await createLocalFeedPost(assistant, 'linkedin', source);
+    vi.stubGlobal('navigator', { onLine: true });
+    vi.mocked(authFetch).mockImplementation(transport);
+    await flushFeedWorkingCopies();
+    await ensureFeedComposition(assistant, post.session.id, displayed(post));
+    const upgraded = (await readLocalFeedPost(assistant, post.session.id))!;
+    expect(upgraded).toMatchObject({ revision: 2, dirty: false, content: { schemaVersion: 2, title: source.title, article: source.article, postFormat } });
+    expect(upgraded.content.text).toBe(postFormat === 'thread' ? 'First\n\nSecond' : source.text);
+    const bodies = vi.mocked(authFetch).mock.calls.map(([, init]) => JSON.parse(init!.body as string));
+    expect(bodies[1].commands).toEqual([{ kind: 'upgrade', seed: expect.any(String) }]);
+    expect(bodies[1].expectedRevision).toBe(1);
+  });
+  it('creates a missing working-copy row from the visible proposal before upgrading', async () => {
+    const post = await createLocalFeedPost(assistant, 'threads', blankFeedContent());
+    const records = state.data.get('feed:working:viewer-a') as Record<string, typeof post>;
+    Object.assign(records[`${assistant}:${post.session.id}`], { dirty: false, newSession: false });
+    vi.stubGlobal('navigator', { onLine: true }); vi.mocked(authFetch).mockImplementation(transport);
+    await ensureFeedComposition(assistant, post.session.id, { mutationId: post.mutationId, text: 'The displayed proposal' });
+    expect((await readLocalFeedPost(assistant, post.session.id))?.content.text).toBe('The displayed proposal');
+    expect(vi.mocked(authFetch).mock.calls.map(([, init]) => init?.method)).toEqual(['PUT', 'POST']);
+  });
+  it('preserves intentional empty text and newer typing instead of importing stale display state', async () => {
+    const post = await createLocalFeedPost(assistant, 'threads', content());
+    await patchFeedWorkingCopy(assistant, post.session.id, { text: '' });
+    vi.stubGlobal('navigator', { onLine: true }); vi.mocked(authFetch).mockImplementation(transport);
+    await ensureFeedComposition(assistant, post.session.id, { mutationId: post.mutationId, text: 'Stale proposal' });
+    expect((await readLocalFeedPost(assistant, post.session.id))?.content.text).toBe('');
+  });
+  it('waits for edits made during a legacy flush instead of upgrading an older acknowledged snapshot', async () => {
+    const post = await createLocalFeedPost(assistant, 'threads', content());
+    vi.stubGlobal('navigator', { onLine: true });
+    vi.mocked(authFetch).mockImplementationOnce(async (url, init) => {
+      await patchFeedWorkingCopy(assistant, post.session.id, { text: 'Typed during sync' });
+      return syncReply(url, init);
+    }).mockImplementation(transport);
+    await ensureFeedComposition(assistant, post.session.id, displayed(post));
+    const pending = (await readLocalFeedPost(assistant, post.session.id))!;
+    expect(pending).toMatchObject({ dirty: true, content: { text: 'Typed during sync' } });
+    expect(pending.content.schemaVersion).toBeUndefined();
+    await ensureFeedComposition(assistant, post.session.id, displayed(pending));
+    expect(await readLocalFeedPost(assistant, post.session.id)).toMatchObject({ dirty: false, content: { schemaVersion: 2, text: 'Typed during sync' } });
+  });
+  it('converges simultaneous opens on one upgrade and keeps existing structured IDs on later opens', async () => {
+    const post = await createLocalFeedPost(assistant, 'threads', content());
+    vi.stubGlobal('navigator', { onLine: true }); vi.mocked(authFetch).mockImplementation(transport);
+    await Promise.all([ensureFeedComposition(assistant, post.session.id, displayed(post)), ensureFeedComposition(assistant, post.session.id, displayed(post))]);
+    const first = await readLocalFeedPost(assistant, post.session.id);
+    await ensureFeedComposition(assistant, post.session.id, displayed(post));
+    expect((await readLocalFeedPost(assistant, post.session.id))?.content.composition).toEqual(first?.content.composition);
+    expect(vi.mocked(authFetch).mock.calls.filter(([url]) => String(url).endsWith('/commands'))).toHaveLength(1);
+  });
+  it('keeps offline and permission-denied work intact without an upgrade request', async () => {
+    const post = await createLocalFeedPost(assistant, 'threads', content());
+    await ensureFeedComposition(assistant, post.session.id, displayed(post));
+    expect(authFetch).not.toHaveBeenCalled();
+    vi.stubGlobal('navigator', { onLine: true }); vi.mocked(authFetch).mockResolvedValue(reply({}, 403));
+    await ensureFeedComposition(assistant, post.session.id, displayed(post));
+    expect(await readLocalFeedPost(assistant, post.session.id)).toMatchObject({ dirty: true, error: 'blocked', content: { text: post.content.text } });
+    expect(vi.mocked(authFetch).mock.calls.every(([, init]) => init?.method === 'PUT')).toBe(true);
+  });
+});
 describe('[COMP:app-web/feed-offline] structured collaboration replay', () => {
   it('scenario 6: persists exact commands across a lost response while retaining newer edits', async () => {
     const post = await structuredPost();

@@ -1750,7 +1750,12 @@
      draggable surface, so the grab cursor lives there. */
   .doc-drag-handle {
     cursor: grab;
-    z-index: 20;
+  }
+  /* A modal can open while the pointer rests on the floating grip, without
+     an editor mouseleave. Override its inline hover visibility only in the
+     disabled background; editors inside the active dialog remain usable. */
+  :is([inert], [data-base-ui-inert]) .doc-drag-handle {
+    visibility: hidden !important;
   }
   .doc-drag-handle:active {
     cursor: grabbing;

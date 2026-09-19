@@ -320,6 +320,90 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
   });
 });
 
+describe('[COMP:app-web/feed-slash-menu] discoverable block insertion', () => {
+  async function slashEditor(value = '/', readOnly = false) {
+    const doc = importLegacyFeed({ text: value, postFormat: 'post', threadSegments: [], media: [] });
+    let saved = doc;
+    const onEdit = vi.fn((edits: FeedEdit[]) => { saved = applyFeedEdits(saved, edits).composition; });
+    await act(async () => root.render(<CompositionEditor composition={doc} readOnly={readOnly} generation={generationControls()} threads={[]} onEdit={onEdit} onSelection={vi.fn()} onAction={vi.fn()} onOpenThread={vi.fn()} />));
+    const view = editorView(host.querySelector<HTMLElement>('[contenteditable]')!)!;
+    view.setProps({ handleScrollToSelection: () => true }); // jsdom has no text-range geometry.
+    await act(async () => { view.focus(); view.dispatch(view.state.tr.setSelection(TextSelection.atEnd(view.state.doc))); });
+    return { view, doc, onEdit, saved: () => saved };
+  }
+  async function key(view: EditorView, key: string, isComposing = false) {
+    await act(async () => view.dom.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, isComposing })));
+  }
+  const options = () => [...document.querySelectorAll<HTMLElement>('[role=option]')];
+  it('shows supported blocks on slash without starting generation, and ArrowDown/Enter inserts an image marker with a following caret', async () => {
+    const { view, doc, onEdit, saved } = await slashEditor();
+    expect(options()).toHaveLength(9);
+    expect(options()[0]?.textContent).toContain(en.feedSlash.text);
+    expect(options()[1]?.textContent).toContain(en.feedSlash.image);
+    expect(document.activeElement).toBe(view.dom);
+    expect(view.dom.getAttribute('aria-expanded')).toBe('true');
+    expect(onEdit).not.toHaveBeenCalled(); expect(state.http).not.toHaveBeenCalled();
+    await key(view, 'ArrowDown');
+    expect(document.getElementById(view.dom.getAttribute('aria-activedescendant')!)?.textContent).toContain(en.feedSlash.image);
+    await key(view, 'Enter');
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(saved().segments[0]!.content[0]).toMatchObject({ type: 'generationPlaceholder', attrs: { id: doc.segments[0]!.content[0]!.attrs.id, kind: 'image', brief: '' } });
+    expect(saved().segments[0]!.content[1]?.type).toBe('paragraph');
+    expect(view.state.selection.$from.parent.type.name).toBe('paragraph');
+    expect(options()).toHaveLength(0); expect(state.http).not.toHaveBeenCalled();
+    expect(view.dom.hasAttribute('aria-activedescendant')).toBe(false);
+    await key(view, 'z'); // Plain keys are left to the editor.
+    const { undo } = await import('@tiptap/pm/history');
+    await act(async () => { undo(view.state, view.dispatch); });
+    expect(view.state.doc.textContent).toBe('/');
+  });
+  it('filters typed commands and pointer selection inserts a text marker with no dialog or request', async () => {
+    const { view, saved } = await slashEditor('/tex');
+    expect(options()).toHaveLength(1);
+    await act(async () => options()[0]!.click());
+    expect(saved().segments[0]!.content[0]).toMatchObject({ type: 'generationPlaceholder', attrs: { kind: 'text' } });
+    expect(document.querySelector('[role=dialog]')).toBeNull();
+    expect(document.activeElement).toBe(view.dom); expect(state.http).not.toHaveBeenCalled();
+  });
+  it.each([['/h2', 'heading'], ['/bullet', 'bulletList'], ['/number', 'orderedList'], ['/quote', 'blockquote']] as const)('converts %s through one canonical edit and consumes its query', async (query, type) => {
+    const { view, onEdit, saved } = await slashEditor(query);
+    await key(view, 'Enter');
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(saved().segments[0]!.content[0]?.type).toBe(type);
+    expect(view.state.doc.textContent).toBe('');
+    expect(view.state.selection.$from.parent.isTextblock).toBe(true);
+  });
+  it('Escape keeps the literal query and stays dismissed while typing; a new token reopens it', async () => {
+    const { view, onEdit } = await slashEditor('/im');
+    await key(view, 'Escape'); expect(options()).toHaveLength(0); expect(onEdit).not.toHaveBeenCalled();
+    expect(view.state.doc.textContent).toBe('/im');
+    await act(async () => view.dispatch(view.state.tr.insertText('a')));
+    expect(options()).toHaveLength(0);
+    await act(async () => view.dispatch(view.state.tr.delete(1, view.state.doc.content.size - 1)));
+    await act(async () => view.dispatch(view.state.tr.insertText('/')));
+    expect(options()).toHaveLength(9);
+  });
+  it('keeps unknown commands literal and never hijacks composition Enter', async () => {
+    const { view, onEdit } = await slashEditor('/unknown');
+    expect(document.body.textContent).toContain(en.feedSlash.empty);
+    expect(options()).toHaveLength(0);
+    await key(view, 'Escape');
+    await act(async () => view.dispatch(view.state.tr.insertText('/image', 1, view.state.doc.content.size - 1)));
+    onEdit.mockClear();
+    await key(view, 'Enter', true);
+    expect(onEdit).not.toHaveBeenCalled();
+    expect(view.state.doc.textContent).toBe('/image');
+  });
+  it.each(['A / in prose', 'https://example.com/image', '/image a simple diagram'])('leaves %s outside autocomplete', async value => {
+    const { view, onEdit } = await slashEditor(value);
+    expect(options()).toHaveLength(0); expect(view.state.doc.textContent).toBe(value); expect(onEdit).not.toHaveBeenCalled();
+  });
+  it('does not offer insertions in a read-only draft', async () => {
+    const { onEdit } = await slashEditor('/', true);
+    expect(options()).toHaveLength(0); expect(onEdit).not.toHaveBeenCalled();
+  });
+});
+
 
 function generationControls(): FeedGenerationControls { return { workspaceId: crypto.randomUUID(), assistantId: crypto.randomUUID(), sessionId: crypto.randomUUID(), revision: 2, offline: false, pending: false, readOnly: false, article: false, snapshot: { copy: null, threads: [], suggestions: [] }, onCommand: vi.fn(async () => true), onRefresh: vi.fn() }; }
 const generationSlot = (): FeedPlaceholderAttrs => ({ id: crypto.randomUUID(), kind: 'text', brief: 'Explain irrigation.', briefRevision: 0, references: [] });

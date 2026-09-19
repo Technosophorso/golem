@@ -106,7 +106,7 @@ import { useIsOffline } from "@/lib/offline/use-offline-sync";
 import { feedCachedJson } from "@/lib/offline/feed-cache";
 import {
   FEED_LOCAL_CHANGED, blankFeedContent, createLocalFeedPost, loadFeedWorkingCopy,
-  patchFeedWorkingCopy, readLocalFeedPost, forkLocalFeedPost,
+  patchFeedWorkingCopy, readLocalFeedPost, forkLocalFeedPost, ensureFeedComposition,
   readFeedNewPostForm, writeFeedNewPostForm,
   type FeedWorkingContent, type LocalFeedPost,
 } from "@/lib/offline/feed-offline";
@@ -638,18 +638,18 @@ function PostPane({
     } catch { setLocalSaveError(true); return false; }
     finally { setLocalSaving(n => n - 1); }
   }, [assistantId, sessionId, collaboration.refresh, te.syncConflict]);
-  async function upgradeComposition() {
-    if (readOnly || offline || !localPost) return;
-    setBusy(true);
-    try {
-      // A restored legacy draft can have no working-copy row yet.
-      if (!localPost.revision && !localPost.dirty) await patchFeedWorkingCopy(assistantId, sessionId, { text: selected?.text ?? localPost.content.text, textEdited: true });
-      await flushFeedWorkingCopies();
-      const current = await readLocalFeedPost(assistantId, sessionId);
-      if (!current || current.dirty || !current.revision) { setError(tc.syncFirst); return; }
-      await runCommands([{ kind: 'upgrade', seed: crypto.randomUUID() }]);
-    } finally { setBusy(false); }
-  }
+  const upgradeAttempt = useRef<string | null>(null);
+  useEffect(() => {
+    if (offline) { upgradeAttempt.current = null; return; }
+    if (loading || readOnly || structured || !localPost || localPost.error || localSaveError || localSaving > 0) return;
+    const attempt = `${localPost.revision}:${localPost.mutationId}`;
+    if (upgradeAttempt.current === attempt) return;
+    upgradeAttempt.current = attempt;
+    setLocalSaving(n => n + 1);
+    void ensureFeedComposition(assistantId, sessionId, { mutationId: localPost.mutationId, text: selected?.text ?? localPost.content.text })
+      .catch(() => setLocalSaveError(true))
+      .finally(() => setLocalSaving(n => n - 1));
+  }, [assistantId, sessionId, loading, readOnly, structured, offline, localPost, localSaveError, localSaving, selected?.text]);
   function showPanel(kind: Exclude<typeof editorPanel, null>, anchor?: HTMLElement | null) {
     setPanelAnchor(anchor ?? actionsButtonRef.current);
     lastPanel.current = kind;
@@ -1160,7 +1160,6 @@ function PostPane({
                   </div>
                 ) : null}
 
-                {!structured && !readOnly ? <Button type="button" variant="outline" disabled={busy || offline || Boolean(localPost?.error)} onClick={() => void upgradeComposition()}>{tc.upgrade}</Button> : null}
                 {structured && localPost?.content.composition ? (
                   <CompositionEditor generation={{ workspaceId, assistantId, sessionId, revision: localPost.revision, offline, pending: Boolean(remoteBlocked), readOnly, article: postFormat === "article", snapshot: collaboration.data, onCommand: runCommands, onRefresh: () => void collaboration.refresh() }} composition={localPost.content.composition} pendingLocalSave={localSaving > 0 || localSaveError} readOnly={readOnly} threads={collaboration.data?.threads ?? []} draftAnchor={composer?.anchor}
                     onEdit={edits => { void runCommands([{ kind: 'edit', edits }]); }} onSelection={next => setSelection(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next)}

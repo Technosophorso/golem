@@ -64,6 +64,23 @@ export const zhCN: Dictionary = {
     "retract": "撤回我的来源决策",
     "revoke": "撤销确认"
 },
+  feedSlash: {
+    "title": "插入区块",
+    "text": "文字占位区块",
+    "image": "图片占位区块",
+    "paragraph": "段落",
+    "heading1": "标题 1",
+    "heading2": "标题 2",
+    "heading3": "标题 3",
+    "bulletList": "项目符号列表",
+    "orderedList": "编号列表",
+    "blockquote": "引用",
+    "textHint": "先保存说明，稍后再生成文字。",
+    "imageHint": "先保存说明，稍后再生成图片。",
+    "empty": "没有匹配的区块",
+    "close": "关闭区块菜单",
+    "keys": "↑↓ 选择 · Enter 插入 · Esc 关闭"
+},
   feedGeneration: {
     quotaUsage: "订阅额度",
     quotaUnknown: "无法预先确定额度用量。",
@@ -255,7 +272,6 @@ export const zhCN: Dictionary = {
     "bulletList": "项目列表",
     "orderedList": "编号列表",
     "suggestions": "建议",
-    "upgrade": "启用草稿协作",
     "history": "编辑决策记录"
 },
   associationPage: {

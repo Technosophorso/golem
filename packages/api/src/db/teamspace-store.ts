@@ -368,7 +368,7 @@ export function createTeamspaceStore() {
              JOIN teamspace_members tm ON tm.teamspace_id = t.id
             WHERE t.workspace_group_id IS NULL
            UNION ALL
-           SELECT wm.user_id, wm.created_at AS added_at
+           SELECT wm.user_id, wm.joined_at AS added_at
              FROM target t
              JOIN workspace_groups g ON g.id = t.workspace_group_id
              JOIN workspace_members wm ON wm.workspace_id = t.workspace_id

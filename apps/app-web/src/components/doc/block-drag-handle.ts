@@ -659,6 +659,9 @@ const TIPPY_PROPS = {
   getReferenceClientRect: null,
   interactive: true,
   trigger: "manual" as const,
+  // Layer the popup itself: the inner grip's z-index cannot override tippy's
+  // default 9999, which otherwise paints over settings dialogs at layer 50.
+  zIndex: 20,
   // `left-start` (top-aligned), NOT `left` (centre-aligned): centred placement
   // positions by the popup's measured height, which `interactive: true` inflates
   // with an invisible mouse-bridge region, flinging the grip far above the block.

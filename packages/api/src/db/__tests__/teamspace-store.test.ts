@@ -144,6 +144,7 @@ describe('[COMP:api/teamspace-context] Team-derived roster', () => {
     expect(sql).toContain('t.workspace_group_id IS NULL')
     expect(sql).toContain('t.workspace_group_id IS NOT NULL')
     expect(sql).toContain('effective_member_team_compartments')
+    expect(sql).toContain('wm.joined_at AS added_at')
   })
 })
 

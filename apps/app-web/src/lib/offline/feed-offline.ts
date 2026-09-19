@@ -111,6 +111,38 @@ export async function patchFeedWorkingCopy(assistantId: string, sessionId: strin
   changed(); return records[id];
 }
 
+/** Open writable legacy drafts in the current editor without a migration prompt. */
+export async function ensureFeedComposition(assistantId: string, sessionId: string, displayed: { mutationId: string; text: string }): Promise<void> {
+  if (!navigator.onLine) return;
+  const owner = ownerRequired(); const id = recordKey(assistantId, sessionId);
+  let prepared = false;
+  await idbUpdate<Records>(key(owner), old => {
+    if (feedOwner() !== owner) throw new Error('Local identity changed');
+    const current = old?.[id];
+    if (!current || current.content.schemaVersion === 2 || current.error || current.revision || current.inFlight) return old ?? {};
+    // A restored session may not have a server working-copy row. Seed its
+    // visible proposal only if no newer local edit has taken ownership.
+    const content = !current.content.textEdited && current.mutationId === displayed.mutationId
+      ? { ...current.content, text: displayed.text, textEdited: true } : current.content;
+    if (current.dirty && content === current.content) return old!;
+    prepared = true;
+    return { ...old, [id]: { ...current, content, dirty: true, mutationId: crypto.randomUUID() } };
+  });
+  if (prepared) changed();
+  await flushFeedWorkingCopies();
+  let upgraded = false;
+  await idbUpdate<Records>(key(owner), old => {
+    if (feedOwner() !== owner) throw new Error('Local identity changed');
+    const current = old?.[id];
+    // Check inside the transaction, not against the render that started us.
+    // This also makes two local opens converge on the same IDs and queue entry.
+    if (!navigator.onLine || !current || current.content.schemaVersion === 2 || current.error || current.dirty || current.newSession || !current.revision || current.inFlight || current.commandFlight) return old ?? {};
+    upgraded = true;
+    return { ...old, [id]: applyQueuedFeedCommands(current, [{ kind: 'upgrade', seed: crypto.randomUUID() }]) };
+  });
+  if (upgraded) { changed(); await flushFeedWorkingCopies(); }
+}
+
 export async function mergeLocalFeedSessions(assistantId: string, sessions: FeedDraftSessionSummary[], platform?: FeedPlatform) {
   const merged = new Map(sessions.map(s => [s.id, s]));
   for (const post of await readLocalFeedPosts()) {

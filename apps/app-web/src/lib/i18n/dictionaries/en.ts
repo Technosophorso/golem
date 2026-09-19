@@ -66,6 +66,23 @@ export const en = {
     "retract": "Retract my source decision",
     "revoke": "Revoke confirmation"
 },
+  feedSlash: {
+    "title": "Insert a block",
+    "text": "Text placeholder",
+    "image": "Image placeholder",
+    "paragraph": "Paragraph",
+    "heading1": "Heading 1",
+    "heading2": "Heading 2",
+    "heading3": "Heading 3",
+    "bulletList": "Bulleted list",
+    "orderedList": "Numbered list",
+    "blockquote": "Quote",
+    "textHint": "Save a brief and generate text later.",
+    "imageHint": "Save a brief and generate an image later.",
+    "empty": "No matching blocks",
+    "close": "Close block menu",
+    "keys": "↑↓ Navigate · Enter Insert · Esc Close"
+},
   feedGeneration: {
     quotaUsage: "Subscription usage",
     quotaUnknown: "Exact quota usage is unavailable.",
@@ -257,7 +274,6 @@ export const en = {
     "bulletList": "Bulleted list",
     "orderedList": "Numbered list",
     "suggestions": "Suggestions",
-    "upgrade": "Enable draft collaboration",
     "history": "Decision history"
 },
   associationPage: {

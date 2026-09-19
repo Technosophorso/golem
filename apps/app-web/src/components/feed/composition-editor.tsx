@@ -2,6 +2,7 @@
 /** Feed ProseMirror authoring with stable target decorations. [COMP:app-web/feed-composition-editor] */
 import { useEffect, useRef, useState } from 'react';
 import { FeedEditorToolbar, FeedSelectionActions, type FeedFormatAction, type FeedPlaceholderAction, type FeedBlockAction } from './editor-toolbar';
+import { FeedSlashMenu, readFeedSlashQuery, type FeedSlashQuery, type FeedSlashCommand, type FeedSlashMenuHandle } from './editor-slash-menu';
 import { createPortal } from 'react-dom';
 import { GenerationPlaceholder, FeedGenerationImage, type FeedGenerationControls } from './generation-placeholder';
 import { EditorState, NodeSelection, TextSelection, Plugin, PluginKey, type Transaction } from '@tiptap/pm/state';
@@ -10,7 +11,7 @@ import { baseKeymap, toggleMark, setBlockType, wrapIn } from '@tiptap/pm/command
 import { wrapInList, splitListItem, liftListItem, sinkListItem } from '@tiptap/pm/schema-list';
 import { promptDialog } from '@/components/ui/prompt-dialog';
 import { keymap } from '@tiptap/pm/keymap';
-import { history, undo, redo } from '@tiptap/pm/history';
+import { history, undo, redo, closeHistory } from '@tiptap/pm/history';
 import { undoInputRule } from '@tiptap/pm/inputrules';
 import { feedMarkdownInputRules, feedMarkdownPaste } from './editor-markdown';
 import type { Node as PMNode } from '@tiptap/pm/model';
@@ -64,6 +65,16 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   const [formatting, setFormatting] = useState<Partial<Record<FeedFormatAction, boolean>>>({});
   const local = useRef(props.composition); const lastEmitted = useRef('');
   const hasLocalTyping = useRef(false);
+  const [slash, setSlash] = useState<FeedSlashQuery | null>(null);
+  const slashMenu = useRef<FeedSlashMenuHandle>(null);
+  const dismissedSlash = useRef<string | null>(null);
+  function syncSlash(view: EditorView) {
+    const query = readFeedSlashQuery(view.state);
+    if (!query) dismissedSlash.current = null;
+    const next = !latest.current.readOnly && view.hasFocus() && !view.composing && query?.blockId !== dismissedSlash.current ? query : null;
+    setSlash(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next);
+  }
+  function dismissSlash() { dismissedSlash.current = slash?.blockId ?? null; setSlash(null); }
   const decorations = (doc: PMNode) => {
     const output: Decoration[] = [];
     const anchors = [...latest.current.threads.filter(thread => !thread.resolved).map(thread => ({ id: thread.id, anchor: thread.anchor })), ...(latest.current.draftAnchor ? [{ id: 'draft', anchor: latest.current.draftAnchor }] : [])];
@@ -118,7 +129,19 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
       editable: () => !latest.current.readOnly,
       attributes: { role: 'textbox', 'aria-label': t.editor, 'aria-multiline': 'true', class: 'min-h-[max(20rem,calc(100dvh-16rem))] p-5 pr-14 md:pr-5 text-base leading-relaxed outline-none [&_p]:my-3 [&_h1]:text-2xl [&_h2]:text-xl [&_h3]:text-lg [&_h4]:font-semibold [&_h5]:font-semibold [&_h6]:font-semibold [&_ul]:list-disc [&_ol]:list-decimal [&_li]:ml-5 [&_blockquote]:border-l-2 [&_blockquote]:pl-4' },
       handleClick(_view, _pos, event) { const hit = (event.target as HTMLElement).closest<HTMLElement>('[data-feed-thread]'); if (hit?.dataset.feedThread && hit.dataset.feedThread !== 'draft') latest.current.onOpenThread(hit.dataset.feedThread); return false; },
-      handleDOMEvents: { blur() { setSelectionTop(null); return false; } },
+      handleKeyDown(_view, event) { return slashMenu.current?.onKeyDown(event) ?? false; },
+      handleDOMEvents: {
+        // Leave IME confirmation to the browser, without running slash/Enter commands.
+        keydown(_view, event) { return event.isComposing; },
+        focus(view) { syncSlash(view); return false; },
+        blur(_view, event) {
+          setSelectionTop(null);
+          if (!(event.relatedTarget instanceof Element && event.relatedTarget.closest('[data-feed-slash-menu]'))) setSlash(null);
+          return false;
+        },
+        compositionstart() { setSlash(null); return false; },
+        compositionend(view) { requestAnimationFrame(() => { if (viewRef.current === view) syncSlash(view); }); return false; },
+      },
       dispatchTransaction(transaction: Transaction) {
         if (transaction.docChanged && latest.current.readOnly) return;
         if (transaction.docChanged) {
@@ -129,6 +152,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
         }
         const next = view.state.apply(transaction);
         view.updateState(next);
+        syncSlash(view);
         if (next.selection.empty || latest.current.readOnly || !view.hasFocus()) setSelectionTop(null);
         else {
           const below = next.selection.head < next.selection.anchor;
@@ -193,7 +217,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   }
   // Insert and continue in one editor transaction, including when there is no
   // trailing paragraph. The ordinary diff still emits canonical typed edits.
-  function insertSlot(edits: FeedEdit[], slotId: string) {
+  function insertSlot(edits: FeedEdit[], slotId: string, ownHistory = false) {
     const view = viewRef.current; if (!view || latest.current.readOnly) return;
     let composition = applyFeedEdits(local.current, edits).composition;
     const found = locateFeedNode(composition, props.segmentId, slotId);
@@ -205,7 +229,31 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
     let after = 0;
     tr.doc.descendants((node, pos) => { if (node.attrs.id === slotId) after = pos + node.nodeSize; });
     tr.setSelection(TextSelection.create(tr.doc, after + 1));
-    view.dispatch(tr); view.focus();
+    view.dispatch(ownHistory ? closeHistory(tr) : tr); view.focus();
+  }
+  function insertSlashBlock(command: FeedSlashCommand, query: FeedSlashQuery) {
+    const view = viewRef.current;
+    if (!view || latest.current.readOnly || view.composing || JSON.stringify(readFeedSlashQuery(view.state)) !== JSON.stringify(query)) return;
+    const block = view.state.selection.$from.parent;
+    if (command === 'text' || command === 'image') {
+      const node: FeedNode = { type: 'generationPlaceholder', attrs: { id: query.blockId, kind: command, brief: '', briefRevision: 0, references: [] } };
+      insertSlot([{ kind: 'replaceBlock', segmentId: props.segmentId, blockId: query.blockId, preimage: cleanNode(block), replacement: [node] }], query.blockId, true);
+    } else {
+      const paragraph: FeedNode = { type: 'paragraph', attrs: { id: query.blockId }, content: [] };
+      let node: FeedNode = paragraph;
+      if (command.startsWith('heading')) node = { type: 'heading', attrs: { id: query.blockId, level: Number(command.slice(-1)) }, content: [] };
+      else if (command === 'blockquote') node = { type: 'blockquote', attrs: { id: crypto.randomUUID() }, content: [paragraph] };
+      else if (command === 'bulletList' || command === 'orderedList') {
+        const content: FeedNode[] = [{ type: 'listItem', attrs: { id: crypto.randomUUID() }, content: [paragraph] }];
+        node = command === 'orderedList' ? { type: 'orderedList', attrs: { id: crypto.randomUUID(), start: 1 }, content }
+          : { type: 'bulletList', attrs: { id: crypto.randomUUID() }, content };
+      }
+      const from = view.state.selection.$from.before();
+      const tr = view.state.tr.replaceWith(from, view.state.selection.$from.after(), feedSchema.nodeFromJSON(node));
+      tr.setSelection(TextSelection.near(tr.doc.resolve(from + 1)));
+      view.dispatch(closeHistory(tr)); view.focus();
+    }
+    setSlash(null);
   }
   function continueAfterSlot(slotId: string) {
     const view = viewRef.current; if (!view || latest.current.readOnly) return;
@@ -227,6 +275,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
   }
   return <div ref={frameRef} className={`${styles.canvas} relative`} data-feed-segment-editor>
     <FeedEditorToolbar disabled={props.readOnly} active={formatting} onFormat={format} onPlaceholder={placeholder} onBlock={blockAction} focusEditor={() => viewRef.current?.focus()} onAction={props.onAction} />
+    {slash && viewRef.current && !props.readOnly ? <FeedSlashMenu ref={slashMenu} view={viewRef.current} query={slash} onSelect={insertSlashBlock} onDismiss={dismissSlash} /> : null}
     <div ref={host} className={styles.surface} />
     {selectionTop !== null && !props.readOnly ? <div className={`absolute left-2 right-2 z-20 ${selectionBelow ? '' : '-translate-y-full'}`} style={{ top: selectionTop }}><FeedSelectionActions onAction={props.onAction} /></div> : null}
     {props.generation ? slotMounts.map(mount => {
