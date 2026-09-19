@@ -28,7 +28,7 @@ export function isDesktopHandoffPlatform(navigatorValue: Pick<Navigator, "userAg
   return /mac|win|linux|x11/.test(`${navigatorValue.platform} ${ua}`.toLowerCase());
 }
 
-export function attemptNativeHandoff(url: string): void {
+function attemptNativeHandoff(url: string): void {
   const link = document.createElement("a");
   link.href = url;
   link.rel = "noreferrer";
