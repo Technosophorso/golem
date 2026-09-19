@@ -209,6 +209,8 @@ if (process.argv.includes("--usebrian-bundled")) {
 
   bridge.getAccessToken = () => (cache && cache.accessToken) || null;
   bridge.getRefreshToken = () => (cache && cache.refreshToken) || null;
+  // Local authored caches use the active native identity, not file:// cookies.
+  bridge.getUserId = () => (cache && cache.user && cache.user.id) || null;
   bridge.refreshTokens = async () => {
     // Main owns the selected deployment's transport and durable session. Update
     // only this renderer's cache; a second set/clear IPC could race a switch.

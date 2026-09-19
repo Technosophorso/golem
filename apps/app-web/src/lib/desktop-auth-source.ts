@@ -125,6 +125,8 @@ export interface DesktopBridge {
   ) => Promise<{ ok: true } | { ok: false; error: "switch" | "reauth" }>;
   getAccessToken?: () => string | null;
   getRefreshToken?: () => string | null;
+  /** Active stored identity for local cache namespaces; absent in older shells. */
+  getUserId?: () => string | null;
   /** Optional for compatibility with older bundled shells that refresh directly. */
   refreshTokens?: () => Promise<DesktopRefreshResult>;
   setTokens?: (tokens: DesktopTokens) => void;
