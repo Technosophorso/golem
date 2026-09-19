@@ -46,6 +46,10 @@
       "types": "./dist/deployment-capabilities.d.ts",
       "default": "./dist/deployment-capabilities.js"
     },
+    "./desktop-links": {
+      "types": "./dist/desktop-links.d.ts",
+      "default": "./dist/desktop-links.js"
+    },
     "./assistant-charter": {
       "types": "./dist/assistant-charter.d.ts",
       "default": "./dist/assistant-charter.js"

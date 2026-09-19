@@ -60,6 +60,9 @@ importers:
       '@use-brian/firefox-companion':
         specifier: workspace:*
         version: link:../firefox-companion
+      '@use-brian/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       electron-updater:
         specifier: ^6.8.9
         version: 6.8.9
