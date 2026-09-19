@@ -21,7 +21,10 @@ vi.mock("@/contexts/primary-assistant", () => ({ PrimaryAssistantProvider: ({ ch
 vi.mock("@/components/ui/confirm-dialog", () => ({ ConfirmDialogProvider: () => null }));
 vi.mock("@/components/ui/prompt-dialog", () => ({ PromptDialogProvider: () => null }));
 vi.mock("@/components/ui/kind-picker-dialog", () => ({ KindPickerDialogProvider: () => null }));
-vi.mock("@/components/desktop-add-account", () => ({ DesktopAddAccountProvider: () => null }));
+vi.mock("@/components/desktop-add-account", () => ({
+  DesktopAddAccountProvider: () => null,
+  onDesktopAccountConnected: () => () => {},
+}));
 vi.mock("@/components/chrome/desktop-chat-window", () => ({ DesktopChatWindow: () => null }));
 vi.mock("@/components/workspace-picker", () => ({ WorkspacePicker: () => null }));
 vi.mock("@/components/doc/workspace-chrome", async () => {
