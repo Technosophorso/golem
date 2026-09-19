@@ -1,9 +1,8 @@
 /**
  * Auto-update — the pure decision core for shell binary self-update.
  *
- * Two-layer update story: PRODUCT updates ship through the remote web app on
- * every load (thin shell — nothing to do here); this module is about updating
- * the SHELL BINARY itself (window policy, tray, hotkey, auth wiring). The
+ * The bundled renderer and native shell update together through a signed
+ * desktop release; compatible backend changes deploy independently. The
  * Electron binding in `main.ts` feeds electron-updater lifecycle events through
  * `reduceUpdateState` and renders the result via `describeUpdateState` into the
  * single update item in the app menu + tray, so every decision here unit-tests

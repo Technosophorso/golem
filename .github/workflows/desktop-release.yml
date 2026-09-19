@@ -1,0 +1,152 @@
+name: Desktop release
+
+on:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+
+# Never interrupt notarization or expose a partially uploaded release.
+concurrency:
+  group: desktop-release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  plan:
+    if: >-
+      github.repository == 'use-brian/use-brian' &&
+      vars.DESKTOP_RELEASE_ENABLED == 'true' &&
+      ((github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.head_repository.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Plan from tested production inputs
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: node apps/app-desktop/scripts/release.mjs plan "$SOURCE_SHA"
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    # Pin the same Apple Silicon distribution as the existing signed installer.
+    runs-on: macos-15
+    timeout-minutes: 90
+    environment: desktop-release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - name: Check signing configuration before building
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          for name in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing desktop-release environment secret: $name. Run scripts/configure-desktop-release.sh once on the signing Mac."
+              exit 1
+            fi
+          done
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Test desktop release and updater contracts
+        run: pnpm --filter @use-brian/app-desktop test
+      - name: Build, sign and notarize the complete desktop app
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          OSS_GIT_COMMIT_SHA: ${{ needs.plan.outputs.sha }}
+          NODE_OPTIONS: --max-old-space-size=6144
+        run: bash scripts/package-desktop.sh --version "$RELEASE_VERSION" --arm64
+      - name: Verify packaged version and architecture
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          app="apps/app-desktop/release/mac-arm64/Use Brian.app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$RELEASE_VERSION"
+          test "$(lipo -archs "$app/Contents/MacOS/Use Brian")" = arm64
+          codesign --verify --deep --strict "$app"
+          spctl -a -vv "$app"
+      - name: Verify updater feed and record provenance
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+        run: node apps/app-desktop/scripts/release.mjs prepare "$RELEASE_VERSION" "$SOURCE_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-${{ needs.plan.outputs.sha }}
+          path: |
+            apps/app-desktop/release/usebrian.dmg
+            apps/app-desktop/release/usebrian.zip
+            apps/app-desktop/release/usebrian.zip.blockmap
+            apps/app-desktop/release/latest-mac.yml
+            apps/app-desktop/release/desktop-release.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Only this workflow's signed artifacts; never artifacts from upstream CI/PRs.
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-${{ needs.plan.outputs.sha }}
+          path: apps/app-desktop/release
+      - name: Publish verified draft atomically to the update feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+        run: node apps/app-desktop/scripts/release.mjs publish "$RELEASE_VERSION" "$SOURCE_SHA"
