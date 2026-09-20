@@ -1906,6 +1906,7 @@ export const ja: Dictionary = {
     offline: "オフライン",
     offlinePending: "オフライン（保留中 {count} 件）",
     offlineUnavailable: "オフラインでは利用できません",
+    offlineStatusOnline: "オンライン",
     offlineSyncPausedTitle: "同期の確認が必要です",
     offlineSyncPausedBody: "{count} 件の Feed 下書きはこの端末に保存されていますが、同期は一時停止中です。下書きを開き、同期を再試行するか、新しい投稿として保存してください。",
     offlineSyncPendingTitle: "同期待ちの変更",

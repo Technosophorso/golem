@@ -1878,6 +1878,7 @@ export const zhCN: Dictionary = {
     offline: "离线",
     offlinePending: "离线（{count} 项待同步）",
     offlineUnavailable: "离线时无法使用",
+    offlineStatusOnline: "在线",
     offlineSyncPausedTitle: "同步需要处理",
     offlineSyncPausedBody: "{count} 篇 Feed 草稿已保存在此设备，但同步已暂停。请打开草稿重试同步或另存为新帖子。",
     offlineSyncPendingTitle: "变更等待同步",

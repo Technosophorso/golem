@@ -2037,6 +2037,7 @@ export const en = {
     offline: "Offline",
     offlinePending: "Offline ({count} pending)",
     offlineUnavailable: "Not available offline",
+    offlineStatusOnline: "Online",
     offlineSyncPausedTitle: "Sync needs attention",
     offlineSyncPausedBody: "{count} Feed drafts are saved on this device but sync is paused. Open the draft to retry sync or save as a new post.",
     offlineSyncPendingTitle: "Changes waiting to sync",

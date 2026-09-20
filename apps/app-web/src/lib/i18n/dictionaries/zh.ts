@@ -1893,6 +1893,7 @@ export const zh: Dictionary = {
     offline: "離線",
     offlinePending: "離線（{count} 項待同步）",
     offlineUnavailable: "離線時無法使用",
+    offlineStatusOnline: "線上",
     offlineSyncPausedTitle: "同步需要處理",
     offlineSyncPausedBody: "{count} 篇 Feed 草稿已儲存在此裝置，但同步已暫停。請開啟草稿重試同步或另存為新貼文。",
     offlineSyncPendingTitle: "變更等待同步",
