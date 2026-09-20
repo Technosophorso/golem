@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import pg from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { CampaignError, type CrmOperationsContext } from '@use-brian/core'
+import { CampaignError, type AccessContext, type CrmOperationsContext } from '@use-brian/core'
 import { createCampaignTrackingStore } from '../campaign-tracking-store.js'
+import { getCrmR2Record, listCrmRecordRelationships } from '../crm-r2.js'
 import { createDbCrmOperationsStore } from '../crm-operations-store.js'
 import { createCrmOperationsService } from '../../crm-operations/service.js'
 import { createCampaignConversionOutboxWorker } from '../../campaigns/conversion-outbox.js'
@@ -15,7 +16,7 @@ const tracking = createCampaignTrackingStore()
 const conversions = createCampaignConversionOutboxWorker()
 
 type Fixture = {
-  userId: string; workspaceId: string; siteId: string; sitePublicId: string
+  userId: string; workspaceId: string; assistantId: string; siteId: string; sitePublicId: string
   campaignId: string; linkId: string; linkPublicId: string
 }
 let fixture: Fixture
@@ -39,7 +40,7 @@ async function seed(): Promise<Fixture> {
   const site = await pool.query<{ id: string }>(`INSERT INTO campaign_sites(workspace_id,public_id,name,allowed_origins,conversion_definitions,storage_mode,cookie_domain,site_group_key,created_by)
     VALUES($1,$2,'Example sites','["https://example.com","https://studio.example.com"]','[{"key":"enquiry_submitted","label":"Enquiry","enabled":true}]','first_party','.example.com','example_sites',$3) RETURNING id`,
   [workspaceId, sitePublicId, userId])
-  return { userId, workspaceId, siteId: site.rows[0]!.id, sitePublicId, campaignId: campaign.rows[0]!.id,
+  return { userId, workspaceId, assistantId, siteId: site.rows[0]!.id, sitePublicId, campaignId: campaign.rows[0]!.id,
     linkId: link.rows[0]!.id, linkPublicId }
 }
 
@@ -97,6 +98,12 @@ describe('[COMP:campaigns/tracking] actual event, conversion, and CRM projection
       attribution_snapshot: { state: 'attributed', firstTouch: { linkId: fixture.linkId }, lastTouch: { linkId: fixture.linkId } } })
     expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_subject_links WHERE workspace_id=$1 AND contact_id=$2`,
       [fixture.workspaceId, created.record.contactId])).rows[0].count).toBe(1)
+    if (typeof created.record.contactId !== 'string') throw new Error('Expected committed intake contact id')
+    const access: AccessContext = { workspaceId: fixture.workspaceId, userId: fixture.userId,
+      assistantId: fixture.assistantId, assistantKind: 'primary' }
+    const crmRecord = await getCrmR2Record(access, created.record.contactId)
+    expect(crmRecord).not.toBeNull()
+    await expect(listCrmRecordRelationships(access, crmRecord!)).resolves.toEqual({ contacts: [], companies: [], deals: [] })
   })
 
   it('reports raw and filtered traffic, verified outcomes, and test exclusion honestly', async () => {

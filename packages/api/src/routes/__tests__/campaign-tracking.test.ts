@@ -48,7 +48,7 @@ function app(options: Parameters<typeof campaignTrackingRoutes>[0]) {
   return server
 }
 
-describe('[COMP:api/campaign-tracking] public native campaign boundaries', () => {
+describe('[COMP:api/campaign-tracking] [COMP:campaigns/browser-acceptance] public native campaign boundaries', () => {
   it('redirects only through an enabled stored destination without caching', async () => {
     const findLink = vi.fn(async () => LINK)
     const response = await request(app({ findLink }))
@@ -75,6 +75,7 @@ describe('[COMP:api/campaign-tracking] public native campaign boundaries', () =>
     const server = app({ findLink: async () => LINK, trackingStore })
     const tracker = await request(server).get('/api/campaign-tracking/tracker.js').expect(200)
     expect(tracker.text).toContain('BrianCampaign')
+    expect(tracker.text).toContain('dataset.brianAutoInit')
     expect(tracker.text).not.toMatch(/posthog|google-analytics|segment\.com/i)
     const event = {
       version: 1, eventId: 'event_0123456789abcdef012345', siteId: SITE.publicId, type: 'page_view',

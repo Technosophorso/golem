@@ -21,7 +21,7 @@ import {
 import { createCampaignService } from '../campaigns/service.js'
 import { createDbCampaignStore } from '../db/campaign-store.js'
 import { createCampaignTrackingStore, type CampaignTrackingStore } from '../db/campaign-tracking-store.js'
-import { getWorkspaceMembershipSystem } from '../db/workspace-store.js'
+import { canMemberDraftRole, getWorkspaceMembershipSystem } from '../db/workspace-store.js'
 import { resolveWorkspaceViewpoint } from '../db/workspace-viewpoint.js'
 import { getEntityById } from '../db/entities-store.js'
 import { createCampaignEmailService, type CampaignEmailService } from '../content-planning/email.js'
@@ -121,7 +121,7 @@ export function campaignRoutes(options: {
       userId,
       workspaceId,
       role: membership.role,
-      canWrite: membership.canDraft,
+      canWrite: canMemberDraftRole(membership.role, membership.canDraft),
     } : null
   })
   const canReadCrmRecord = options.canReadCrmRecord ?? (async (userId: string, workspaceId: string, recordId: string) => {

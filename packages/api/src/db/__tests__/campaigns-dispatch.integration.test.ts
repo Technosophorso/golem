@@ -1,8 +1,11 @@
 import { createHash, generateKeyPairSync, randomUUID } from 'node:crypto'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { createServer, type Server, type Socket } from 'node:net'
+import express from 'express'
 import pg from 'pg'
 import { simpleParser } from 'mailparser'
-import { afterAll, describe, expect, it } from 'vitest'
+import request from 'supertest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { CrmOperationsCommandSchema, type CampaignContext, type CrmOperationsContext } from '@use-brian/core'
 import { feedParagraph } from '@use-brian/doc-model'
 import type { CampaignEmailMetadata } from '@use-brian/shared'
@@ -13,8 +16,9 @@ import { createCrmDeliveryProvider } from '../../crm-operations/delivery-provide
 import { createCrmDeliveryService } from '../../crm-operations/delivery-service.js'
 import { createCampaignEmailService } from '../../content-planning/email.js'
 import { createCampaignDispatchService } from '../../campaigns/dispatch.js'
-import { createCampaignPublicEmailService } from '../../campaigns/public-email.js'
+import { campaignPublicEmailRoutes, createCampaignPublicEmailService } from '../../campaigns/public-email.js'
 import { createCampaignService } from '../../campaigns/service.js'
+import { createCampaignTrackingStore } from '../campaign-tracking-store.js'
 
 const { assertLocalFixture } = await import(new URL('../../../../../scripts/crm/local-fixture.mjs', import.meta.url).href)
 await assertLocalFixture()
@@ -82,6 +86,16 @@ async function smtpSink(closeAfterData = false): Promise<SmtpSink> {
   }
 }
 
+function sanitizedMimeEvidence(source: string, recipients: Array<{ email: string }>): string {
+  let result = source
+  for (const recipient of recipients) result = result.replaceAll(recipient.email, 'recipient@example.com')
+  return result
+    .replace(/^Date:.*$/gim, 'Date: [sanitized fixture time]')
+    .replace(/^Message-ID:.*$/gim, 'Message-ID: <sanitized-fixture@example.com>')
+    .replace(/\/e\/(?:[A-Za-z0-9_-]|=\r?\n){20,}/g, '/e/[opaque-click-token]')
+    .replace(/\/c\/unsubscribe\/(?:[A-Za-z0-9_-]|=\r?\n){20,}/g, '/c/unsubscribe/[opaque-unsubscribe-token]')
+}
+
 type Fixture = Awaited<ReturnType<typeof fixture>>
 async function fixture(sink: SmtpSink, count = 1) {
   const userId = randomUUID(), workspaceId = randomUUID(), assistantId = randomUUID(), sessionId = randomUUID()
@@ -115,6 +129,7 @@ async function fixture(sink: SmtpSink, count = 1) {
     VALUES($1,$2,'campaign_fixture','Campaign recipients','person',$3::jsonb)`, [segmentId, workspaceId,
     JSON.stringify({ type: 'group', combinator: 'and', items: [{ type: 'rule', family: 'base', field: 'email', operator: 'is_not_empty' }] })])
   const publicOrigin = 'http://127.0.0.1:4400', linkPublicId = randomUUID().replaceAll('-', '')
+  const linkDestination = `https://destination.example/offer?utm_source=newsletter&utm_medium=email&utm_campaign=fixture&utm_content=email_body&brian_link=${linkPublicId}`
   const metadata: CampaignEmailMetadata = { subject: 'Hello {{first_name}}', preheader: 'A fixture update', senderId: connectorInstanceId,
     audience: { segmentId, segmentVersion: 1 }, purposeKey: 'updates', personalization: [{ field: 'first_name', required: true }],
     tracking: { links: true, website: true } }
@@ -127,8 +142,12 @@ async function fixture(sink: SmtpSink, count = 1) {
   await pool.query(`INSERT INTO campaign_placements(id,workspace_id,campaign_id,session_id,channel,placement_kind,placement_key,created_by)
     VALUES($1,$2,$3,$4,'email','email_body','email_body',$5)`, [placementId, workspaceId, campaignId, sessionId, userId])
   await pool.query(`INSERT INTO campaign_links(workspace_id,campaign_id,placement_id,public_id,destination_url,destination_hash,utm_snapshot,created_by)
-    VALUES($1,$2,$3,$4,'https://destination.example/offer',repeat('a',64),$5::jsonb,$6)`, [workspaceId, campaignId, placementId, linkPublicId,
+    VALUES($1,$2,$3,$4,$5,repeat('a',64),$6::jsonb,$7)`, [workspaceId, campaignId, placementId, linkPublicId, linkDestination,
     JSON.stringify({ source: 'newsletter', medium: 'email', campaign: 'fixture', content: 'email_body' }), userId])
+  const sitePublicId = randomUUID().replaceAll('-', '')
+  await pool.query(`INSERT INTO campaign_sites(workspace_id,public_id,name,allowed_origins,conversion_definitions,storage_mode,cookie_domain,site_group_key,created_by)
+    VALUES($1,$2,'SMTP destination','["https://destination.example"]','[{"key":"enquiry_submitted","label":"Enquiry","enabled":true}]','first_party','.destination.example','smtp_fixture',$3)`,
+  [workspaceId, sitePublicId, userId])
   const provider = createCrmDeliveryProvider({ encryptionKey, emailProvider: () => null,
     campaignMail: { dkim: { domainName: 'example.com', keySelector: 'fixture', privateKey } } })
   const deliveries = createCrmDeliveryService(provider)
@@ -146,7 +165,7 @@ async function fixture(sink: SmtpSink, count = 1) {
   const dispatchId = (prepared.result.dispatch as { dispatchId: string }).dispatchId
   await campaigns.execute(context, { idempotencyKey: `schedule-${randomUUID()}`, command: { kind: 'schedule_dispatch', dispatchId, scheduledAt } })
   return { userId, workspaceId, assistantId, sessionId, connectorInstanceId, contacts, campaignId, placementId, metadata,
-    content, dispatchId, context, crmContext, run, email, dispatch, campaigns, publicOrigin }
+    content, dispatchId, context, crmContext, run, email, dispatch, campaigns, publicOrigin, linkPublicId, linkDestination, sitePublicId }
 }
 
 afterAll(async () => { await pool.end() })
@@ -179,6 +198,36 @@ describe('[COMP:campaigns/dispatch] approved SMTP dispatch and recovery', () => 
         expect(source).toContain('/e/')
         expect(source).not.toContain(`/r/`)
         expect(parsed[index]!.html).toContain('Unsubscribe')
+      }
+      const firstSource = sink.messages[0]!.toString('utf8')
+      const clickToken = firstSource.match(/\/e\/([A-Za-z0-9_-]{20,})/)?.[1]
+      expect(clickToken).toBeTruthy()
+      const tracking = createCampaignTrackingStore()
+      const publicApp = express().use(campaignPublicEmailRoutes({ tracking }))
+      const clicked = await request(publicApp).get(`/e/${clickToken}?brian_test=1`)
+        .set('user-agent', 'Mozilla/5.0 fixture browser').redirects(0).expect(307)
+      expect(clicked.headers.location).toBe(f.linkDestination)
+      await vi.waitFor(async () => {
+        const count = (await pool.query(`SELECT count(*)::int AS count FROM campaign_events e JOIN campaign_links l ON l.id=e.link_id
+          WHERE l.public_id=$1 AND e.event_type='redirect_request'`, [f.linkPublicId])).rows[0].count
+        expect(count).toBe(1)
+      })
+      const issued = await tracking.issueCredential(f.workspaceId, (await tracking.listSites(f.workspaceId))[0]!.id, f.userId)
+      const principal = await tracking.authenticateCredential(issued.secret)
+      const conversion = await tracking.recordTrustedConversion(principal!, {
+        version: 1, siteId: f.sitePublicId, conversionKind: 'enquiry_submitted', externalOutcomeId: 'smtp-click-fixture',
+        occurredAt: new Date().toISOString(), attribution: { version: 1, linkId: f.linkPublicId }, test: true, metadata: {},
+      })
+      expect(conversion.attribution).toMatchObject({ state: 'attributed', firstTouch: { linkId: expect.any(String) } })
+      const evidenceDir = process.env.CAMPAIGN_EVIDENCE_DIR
+      if (evidenceDir) {
+        await mkdir(evidenceDir, { recursive: true })
+        await writeFile(`${evidenceDir}/smtp-capture.eml`, sanitizedMimeEvidence(firstSource, f.contacts))
+        await writeFile(`${evidenceDir}/smtp-acceptance.json`, `${JSON.stringify({
+          status: 'passed', messages: sink.messages.length, separateRecipientEnvelopes: true, dkimSigned: true,
+          oneClickHeaders: true, clickRedirect: f.linkDestination.replace(f.linkPublicId, '[link-id]'),
+          clickToConversion: conversion.attribution.state === 'attributed', unsupportedProviderMetricsRemainUnavailable: true,
+        }, null, 2)}\n`)
       }
       expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_email_recipients WHERE dispatch_id=$1`, [f.dispatchId])).rows[0].count).toBe(2)
       expect((await f.dispatch.read(f.workspaceId, f.dispatchId)).counts).toMatchObject({ total: 2, accepted: 2, pending: 0, uncertain: 0 })

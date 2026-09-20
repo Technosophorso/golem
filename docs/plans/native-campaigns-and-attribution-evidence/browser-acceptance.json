@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "hosts": {
+    "api": "http://api.campaign.test:4100",
+    "marketing": "http://marketing.campaign.test:3100",
+    "studio": "http://studio.campaign.test:3102",
+    "feed": "http://feed.campaign.test:3103"
+  },
+  "hostnameSetup": "Chromium --host-resolver-rules=MAP *.campaign.test 127.0.0.1,EXCLUDE localhost",
+  "assertions": {
+    "actualMarketingPage": true,
+    "actualStudioPage": true,
+    "actualFeedPage": true,
+    "actualCrmPage": true,
+    "spaPageView": true,
+    "siblingCookieContinuity": true,
+    "acquisitionPreserved": true,
+    "exactConversionReplayDeduplicated": true,
+    "crmProjectionLinked": true,
+    "testTrafficExcludedFromDefaultReport": true,
+    "smtpClickToConversion": true,
+    "analyticsSaasRequests": 0,
+    "desktopAndPhone": true
+  },
+  "counts": {
+    "testEvents": 6,
+    "productionEvents": 0,
+    "defaultVerifiedConversions": 1,
+    "withTestVerifiedConversions": 3
+  },
+  "screenshots": [
+    "marketing-desktop.png",
+    "studio-phone.png",
+    "feed-desktop.png",
+    "feed-phone.png",
+    "crm-desktop.png",
+    "crm-phone.png",
+    "email-click-desktop.png",
+    "email-click-phone.png"
+  ]
+}

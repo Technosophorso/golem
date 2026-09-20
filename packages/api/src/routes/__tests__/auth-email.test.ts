@@ -644,7 +644,7 @@ describe('[COMP:api/auth-email-verify-code] POST /auth/email/verify-code', () =>
     })
     findUserByEmailMock.mockResolvedValueOnce(null)
     findOrCreateUserMock.mockResolvedValueOnce({
-      user: { id: 'u_code', email: 'new@example.com', name: null, avatarUrl: null },
+      user: { id: 'u_code', email: 'new@example.com', name: null, avatarUrl: null, createdAt: new Date('2026-09-20T08:00:00.000Z') },
       isNew: true,
     })
 
@@ -686,6 +686,7 @@ describe('[COMP:api/auth-email-verify-code] POST /auth/email/verify-code', () =>
       authProvider: 'email',
       authProviderId: 'tg@example.com',
       timezone: 'Asia/Hong_Kong',
+      createdAt: new Date('2026-09-20T08:00:00.000Z'),
     })
     // tryLinkTelegram resolves the bind target via getDefaultAssistant (the
     // user's Personal-workspace primary), not a raw owner_user_id lookup —
@@ -750,6 +751,7 @@ describe('[COMP:api/auth-email-verify-code] POST /auth/email/verify-code', () =>
       authProvider: 'email',
       authProviderId: 'tg2@example.com',
       timezone: 'Asia/Hong_Kong',
+      createdAt: new Date('2026-09-20T08:00:00.000Z'),
     })
 
     const upsert = vi.fn()
