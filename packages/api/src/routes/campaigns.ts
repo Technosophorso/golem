@@ -10,6 +10,7 @@ import {
 import {
   campaignAttachContentSchema,
   campaignCreateLinkSchema,
+  campaignEmailMetadataSchema,
   campaignManualPublicationSchema,
   campaignSaveObjectSchema,
   campaignSetLinkEnabledSchema,
@@ -22,6 +23,7 @@ import { createCampaignTrackingStore, type CampaignTrackingStore } from '../db/c
 import { getWorkspaceMembershipSystem } from '../db/workspace-store.js'
 import { resolveWorkspaceViewpoint } from '../db/workspace-viewpoint.js'
 import { getEntityById } from '../db/entities-store.js'
+import { createCampaignEmailService, type CampaignEmailService } from '../content-planning/email.js'
 
 const WorkspaceQuery = z.object({ workspaceId: campaignUuidSchema }).strict()
 const ListQuery = WorkspaceQuery.extend({
@@ -87,6 +89,7 @@ export function campaignRoutes(options: {
   service?: CampaignServicePort
   reads?: CampaignReadPort
   trackingStore?: CampaignTrackingStore
+  emailService?: CampaignEmailService
   resolveAccess?: (userId: string, workspaceId: string) => Promise<CampaignRouteAccess | null>
   canReadCrmRecord?: (userId: string, workspaceId: string, recordId: string) => Promise<boolean>
 } = {}): Router {
@@ -94,6 +97,7 @@ export function campaignRoutes(options: {
   const store = createDbCampaignStore()
   const trackingStore = options.trackingStore ?? createCampaignTrackingStore()
   const service = options.service ?? createCampaignService(store, trackingStore)
+  const emailService = options.emailService ?? createCampaignEmailService()
   const reads: CampaignReadPort = options.reads ?? {
     listCampaigns: (workspaceId, filters) => store.listCampaigns(workspaceId, filters),
     getCampaign: (workspaceId, campaignId) => store.getCampaign(workspaceId, campaignId),
@@ -161,6 +165,85 @@ export function campaignRoutes(options: {
       const auth = await access(req, res, input.workspaceId)
       if (!auth) return
       res.json(await reads.getTrackingSetup(input.workspaceId))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.get('/email/catalog', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.parse(req.query)
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      res.json(await emailService.catalog(auth))
+    } catch (error) { respondError(res, error) }
+  })
+
+  const EmailPlacement = WorkspaceQuery.extend({
+    campaignId: campaignUuidSchema,
+    placementId: campaignUuidSchema,
+  }).strict()
+
+  router.get('/:campaignId/placements/:placementId/email', async (req, res) => {
+    try {
+      const input = EmailPlacement.parse({ ...req.query, campaignId: req.params.campaignId, placementId: req.params.placementId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      const draft = await emailService.read(input.workspaceId, input.placementId)
+      if (draft.campaignId !== input.campaignId) throw new CampaignError('not_found', 'Email campaign placement was not found.')
+      res.json({ draft: { ...draft, content: undefined } })
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.post('/:campaignId/placements/:placementId/email/commands', async (req, res) => {
+    try {
+      const input = EmailPlacement.extend({
+        mutationId: campaignUuidSchema,
+        expectedRevision: z.number().int().nonnegative(),
+        metadata: campaignEmailMetadataSchema,
+      }).parse({ ...req.body, campaignId: req.params.campaignId, placementId: req.params.placementId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      if (!auth.canWrite) throw new CampaignError('forbidden', 'Campaign draft permission is required.')
+      const current = await emailService.read(input.workspaceId, input.placementId)
+      if (current.campaignId !== input.campaignId) throw new CampaignError('not_found', 'Email campaign placement was not found.')
+      res.json(await emailService.update(auth, input.placementId, input))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.post('/:campaignId/placements/:placementId/email/preview', async (req, res) => {
+    try {
+      const input = EmailPlacement.extend({
+        revision: z.number().int().nonnegative().optional(),
+        values: z.record(z.string(), z.string().max(2_000)).default({}),
+      }).parse({ ...req.body, campaignId: req.params.campaignId, placementId: req.params.placementId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      const current = await emailService.read(input.workspaceId, input.placementId)
+      if (current.campaignId !== input.campaignId) throw new CampaignError('not_found', 'Email campaign placement was not found.')
+      res.json(await emailService.preview(input.workspaceId, input.placementId, input.values, input.revision))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.post('/:campaignId/placements/:placementId/email/audience-preview', async (req, res) => {
+    try {
+      const input = EmailPlacement.parse({ ...req.body, campaignId: req.params.campaignId, placementId: req.params.placementId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      const current = await emailService.read(input.workspaceId, input.placementId)
+      if (current.campaignId !== input.campaignId) throw new CampaignError('not_found', 'Email campaign placement was not found.')
+      res.json(await emailService.audience(input.workspaceId, input.placementId))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.post('/:campaignId/placements/:placementId/email/test', async (req, res) => {
+    try {
+      const input = EmailPlacement.extend({ contactId: campaignUuidSchema, deliveryId: campaignUuidSchema })
+        .parse({ ...req.body, campaignId: req.params.campaignId, placementId: req.params.placementId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      if (!auth.canWrite) throw new CampaignError('forbidden', 'Campaign draft permission is required.')
+      const current = await emailService.read(input.workspaceId, input.placementId)
+      if (current.campaignId !== input.campaignId) throw new CampaignError('not_found', 'Email campaign placement was not found.')
+      res.status(201).json(await emailService.sendTest(auth, input.placementId, input.contactId, undefined, input.deliveryId))
     } catch (error) { respondError(res, error) }
   })
 

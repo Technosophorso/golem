@@ -135,15 +135,15 @@ export function createCampaignTools(options: {
   const getCampaignAttribution = read('getCampaignAttribution', 'Read bounded attributed conversions with first/last touch, numerator, evidence, date window, and limitations.',
     z.object({ campaign_id: campaignUuidSchema, from: z.string().date().optional(), to: z.string().date().optional(), model: z.enum(['first_touch', 'last_touch']).default('last_touch'), limit: z.number().int().min(1).max(100).default(50) }).strict(),
     (workspaceId, input) => options.reads.getAttribution(workspaceId, input.campaign_id, input))
-  const previewCampaignAudience = read('previewCampaignAudience', 'Preview an authorized CRM segment for campaign Email and explain eligible, excluded, unresolved, and duplicate counts.',
-    z.object({ campaign_id: campaignUuidSchema, segment_id: campaignUuidSchema, purpose_key: z.string().min(2).max(80), sender_id: campaignUuidSchema }).strict(),
+  const previewCampaignAudience = read('previewCampaignAudience', 'Preview the saved authorized CRM audience for campaign Email and explain eligible, excluded, unresolved, and duplicate counts.',
+    z.object({ campaign_id: campaignUuidSchema, placement_id: campaignUuidSchema }).strict(),
     (workspaceId, input) => options.reads.previewAudience(workspaceId, input))
   const previewCampaignEmail = read('previewCampaignEmail', 'Render HTML and plain-text Email previews for one Feed revision and explicitly selected sample contacts.',
-    z.object({ campaign_id: campaignUuidSchema, placement_id: campaignUuidSchema, revision: z.number().int().nonnegative(), contact_ids: z.array(campaignUuidSchema).max(10).default([]) }).strict(),
+    z.object({ campaign_id: campaignUuidSchema, placement_id: campaignUuidSchema, revision: z.number().int().nonnegative(), values: z.record(z.string(), z.string().max(2_000)).default({}) }).strict(),
     (workspaceId, input) => options.reads.previewEmail(workspaceId, input))
   const sendCampaignTest = mutate('sendCampaignTest', 'Send the reviewed Email revision only to explicitly selected test addresses. This never authorizes a live audience dispatch.',
-    z.object({ ...Idempotency, campaign_id: campaignUuidSchema, placement_id: campaignUuidSchema, approved_revision: z.number().int().nonnegative(), metadata: campaignEmailMetadataSchema, recipients: z.array(z.string().email().max(320)).min(1).max(10) }).strict(),
-    input => ({ kind: 'send_test', campaignId: input.campaign_id, placementId: input.placement_id, approvedRevision: input.approved_revision, metadata: input.metadata, recipients: input.recipients }), true)
+    z.object({ ...Idempotency, campaign_id: campaignUuidSchema, placement_id: campaignUuidSchema, approved_revision: z.number().int().nonnegative(), contact_id: campaignUuidSchema, delivery_id: campaignUuidSchema }).strict(),
+    input => ({ kind: 'send_test', campaignId: input.campaign_id, placementId: input.placement_id, approvedRevision: input.approved_revision, contactId: input.contact_id, deliveryId: input.delivery_id }), true)
   const prepareCampaignDispatch = mutate('prepareCampaignDispatch', 'Freeze the exact reviewed revision, sender, purpose, CRM audience, personalization, tracking, authority, and recipient snapshot for approval. This does not hand mail to SMTP.',
     z.object({ ...Idempotency, campaign_id: campaignUuidSchema, placement_id: campaignUuidSchema, approved_revision: z.number().int().nonnegative(), metadata: campaignEmailMetadataSchema, scheduled_at: z.string().datetime({ offset: true }).nullable().optional(), recipients: z.array(z.object({ contactId: campaignUuidSchema, address: z.string().email().max(320), personalization: z.record(z.string(), z.string()), eligibility: z.record(z.string(), z.unknown()) }).strict()).min(1).max(500) }).strict(),
     input => ({ kind: 'prepare_dispatch', campaignId: input.campaign_id, placementId: input.placement_id, approvedRevision: input.approved_revision, metadata: input.metadata, scheduledAt: input.scheduled_at, recipients: input.recipients }), true)

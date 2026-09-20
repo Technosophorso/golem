@@ -21,9 +21,43 @@ export type CampaignPlacement = {
   channel: "instagram" | "threads" | "twitter" | "xhs" | "linkedin" | "email";
   placementKind: "body" | "first_comment" | "profile" | "email_body";
   placementKey: string;
+  approvedRevision: number | null;
   publicationReference: string | null;
   publishedAt: string | null;
 };
+
+export type CampaignEmailMetadata = {
+  subject: string;
+  preheader?: string;
+  senderId: string;
+  replyTo?: string;
+  audience: { segmentId: string; segmentVersion: number };
+  purposeKey: string;
+  personalization: Array<{ field: "first_name" | "last_name" | "display_name" | "company_name"; required: boolean; fallback?: string }>;
+  tracking: { links: boolean; website: boolean };
+};
+
+export type CampaignEmailDraft = {
+  campaignId: string; placementId: string; sessionId: string; assistantId: string;
+  revision: number; metadata: CampaignEmailMetadata | null;
+  approval: { dispatchId: string; revision: number; state: string; current: boolean } | null;
+};
+
+export type CampaignEmailCatalog = {
+  senders: Array<{ id: string; label: string; address: string | null; provider: string; health: string }>;
+  segments: Array<{ id: string; name: string; version: number }>;
+  purposes: Array<{ purposeKey: string; label: string; requiresConsent: boolean }>;
+};
+
+export type CampaignAudiencePreview = {
+  state: "available"; revision: number;
+  segment: { id: string; version: number; name: string };
+  eligible: Array<{ contactId: string; address: string; personalization: Record<string, string>; eligibility: Record<string, unknown> }>;
+  excluded: Array<{ contactId: string; address?: string | null; verdict?: string; reasons: string[]; missing?: string[] }>;
+  counts: { matched: number; eligible: number; excluded: number };
+};
+
+export type CampaignEmailProjection = { subject: string; preheader: string | null; text: string; html: string };
 
 export type CampaignResults = {
   state: "not_installed" | "disabled" | "unsupported" | "delayed" | "failed" | "empty" | "available";
@@ -99,4 +133,42 @@ export async function getCampaignResults(workspaceId: string, campaignId: string
 export async function getCampaignSubjectAttribution(workspaceId: string, contactId: string): Promise<CampaignSubjectAttribution> {
   const query = new URLSearchParams({ workspaceId });
   return campaignJson<CampaignSubjectAttribution>(`/api/campaigns/contacts/${encodeURIComponent(contactId)}/attribution?${query}`);
+}
+
+function emailPath(campaignId: string, placementId: string, suffix = ""): string {
+  return `/api/campaigns/${encodeURIComponent(campaignId)}/placements/${encodeURIComponent(placementId)}/email${suffix}`;
+}
+
+export async function getCampaignEmailDraft(workspaceId: string, campaignId: string, placementId: string): Promise<CampaignEmailDraft> {
+  const query = new URLSearchParams({ workspaceId });
+  return (await campaignJson<{ draft: CampaignEmailDraft }>(`${emailPath(campaignId, placementId)}?${query}`)).draft;
+}
+
+export async function getCampaignEmailCatalog(workspaceId: string): Promise<CampaignEmailCatalog> {
+  const query = new URLSearchParams({ workspaceId });
+  return campaignJson<CampaignEmailCatalog>(`/api/campaigns/email/catalog?${query}`);
+}
+
+export async function updateCampaignEmail(input: { workspaceId: string; campaignId: string; placementId: string; mutationId: string; expectedRevision: number; metadata: CampaignEmailMetadata }): Promise<{ draft: CampaignEmailDraft }> {
+  return campaignJson(emailPath(input.campaignId, input.placementId, "/commands"), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+  });
+}
+
+export async function previewCampaignEmail(input: { workspaceId: string; campaignId: string; placementId: string; revision?: number; values?: Record<string, string> }): Promise<{ revision: number; projection: CampaignEmailProjection }> {
+  return campaignJson(emailPath(input.campaignId, input.placementId, "/preview"), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input),
+  });
+}
+
+export async function previewCampaignAudience(workspaceId: string, campaignId: string, placementId: string): Promise<CampaignAudiencePreview> {
+  return campaignJson(emailPath(campaignId, placementId, "/audience-preview"), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId }),
+  });
+}
+
+export async function sendCampaignTest(workspaceId: string, campaignId: string, placementId: string, contactId: string): Promise<{ test: true; revision: number }> {
+  return campaignJson(emailPath(campaignId, placementId, "/test"), {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId, contactId, deliveryId: crypto.randomUUID() }),
+  });
 }

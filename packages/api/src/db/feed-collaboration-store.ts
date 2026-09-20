@@ -217,11 +217,16 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
         // Context changes are revisioned so a review's frozen goal/month cannot
         // silently describe a different current context. Undo of copy is separate.
         await recordRevision([], [], false)
+      } else if (command.kind === 'email') {
+        content = { ...structured, email: command.metadata }
+        // Email envelope metadata and body share one monotonically increasing
+        // history. There is no separately editable HTML or campaign copy.
+        await recordRevision([], [], false)
       }
     }
     receipt.revision = currentRevision; receipt.sequence = sequence
     await client.query('UPDATE feed_post_working_copies SET revision=$2,mutation_id=$3,content=$4,discussion_sequence=$5,updated_at=now() WHERE session_id=$1', [actor.sessionId, currentRevision, input.mutationId, JSON.stringify(content), sequence])
-    if (content.title !== copy.content.title) await client.query("UPDATE sessions SET title=(CASE WHEN split_part(title,' ',1) IN ('[instagram]','[threads]','[twitter]','[xhs]','[linkedin]') THEN split_part(title,' ',1) ELSE '[threads]' END)||' '||$2,title_manually_set=true WHERE id=$1", [actor.sessionId, content.title])
+    if (content.title !== copy.content.title) await client.query("UPDATE sessions SET title=(CASE WHEN split_part(title,' ',1) IN ('[instagram]','[threads]','[twitter]','[xhs]','[linkedin]','[email]') THEN split_part(title,' ',1) ELSE '[threads]' END)||' '||$2,title_manually_set=true WHERE id=$1", [actor.sessionId, content.title])
     await client.query(`INSERT INTO feed_collaboration_mutations(session_id,mutation_id,workspace_id,assistant_id,actor_user_id,actor_kind,fingerprint,command_kind,receipt) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [actor.sessionId, input.mutationId, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, fingerprint, input.commands.map(c => c.kind).join(','), JSON.stringify(receipt)])
     return receipt
   }

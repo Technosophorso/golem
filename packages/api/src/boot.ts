@@ -240,6 +240,7 @@ import { crmIntakeRoutes } from './routes/crm-intake.js'
 import { crmOperationsRoutes } from './routes/crm-operations.js'
 import { createCrmDeliveryService } from './crm-operations/delivery-service.js'
 import { createCrmDeliveryProvider } from './crm-operations/delivery-providers.js'
+import { createCampaignEmailService } from './content-planning/email.js'
 import { getGlobalEmailInboxProvider } from './agentmail/provider.js'
 import { createCrmOperationsService } from './crm-operations/service.js'
 import { createCrmProductionImportService } from './crm-operations/import-service.js'
@@ -1639,6 +1640,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     encryptionKey: env.CHANNEL_CREDENTIAL_KEY ? loadChannelCredentialKey(env.CHANNEL_CREDENTIAL_KEY) : null,
     emailProvider: getGlobalEmailInboxProvider,
   }))
+  const campaignEmailService = createCampaignEmailService({ deliveries: crmDeliveries })
   const crmOperationsService = createCrmOperationsService(createDbCrmOperationsStore(), { deliveries: crmDeliveries })
   const associationStore = createAssociationStore(undefined, undefined, {
     promotionHmacKey: env.ASSOCIATION_PROMOTION_HMAC_KEY,
@@ -2554,7 +2556,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const allTools = buildAllTools()
   const campaignStore = createDbCampaignStore()
   const campaignTrackingStore = createCampaignTrackingStore()
-  const campaignService = createCampaignService(campaignStore, campaignTrackingStore)
+  const campaignService = createCampaignService(campaignStore, campaignTrackingStore, campaignEmailService)
   const campaignTools = createCampaignTools({
     service: campaignService,
     reads: {
@@ -2564,8 +2566,9 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       getTrackingSetup: (workspaceId, siteId) => campaignTrackingStore.trackingSetup(workspaceId, siteId),
       getResults: (workspaceId, campaignId, filters) => campaignTrackingStore.results(workspaceId, campaignId, filters),
       getAttribution: (workspaceId, campaignId, filters) => campaignTrackingStore.attribution(workspaceId, campaignId, filters),
-      previewAudience: async () => ({ state: 'unavailable', reason: 'Email audience review is not enabled.' }),
-      previewEmail: async () => ({ state: 'unavailable', reason: 'Email preview is not enabled.' }),
+      previewAudience: (workspaceId, input) => campaignEmailService.audience(workspaceId, String(input.placement_id)),
+      previewEmail: (workspaceId, input) => campaignEmailService.preview(workspaceId, String(input.placement_id),
+        (input.values ?? {}) as Record<string, string>, Number(input.revision)),
     },
     resolveContext: async (toolContext) => {
       if (!toolContext.workspaceId || !toolContext.userId) return null
@@ -5134,7 +5137,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration, reviewContext: feedReviewContext, files: filesApi ?? undefined }))
-  app.use('/api/campaigns', requireAuth(env.JWT_SECRET), campaignRoutes())
+  app.use('/api/campaigns', requireAuth(env.JWT_SECRET), campaignRoutes({ emailService: campaignEmailService }))
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its

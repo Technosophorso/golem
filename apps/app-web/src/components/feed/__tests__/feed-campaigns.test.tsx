@@ -66,4 +66,22 @@ describe("[COMP:app-web/feed-campaigns] native campaigns in Feed", () => {
     expect(html).toContain(en.feedPage.campaigns.createAction);
     expect(html).toContain(en.feedPage.campaigns.empty);
   });
+
+  it("offers Email beside social channels and opens the revisioned email review panel", () => {
+    const html = renderToString(
+      <I18nProvider locale="en" dict={dict}>
+        <FeedCampaigns workspaceId="00000000-0000-4000-8000-000000000001" initialCampaigns={[{
+          id: "00000000-0000-4000-8000-000000000010", name: "Email campaign", objective: "Send an update",
+          state: "draft", timezone: "UTC", primaryConversion: "enquiry_submitted", version: 1,
+          placements: [{ id: "00000000-0000-4000-8000-000000000011", sessionId: "00000000-0000-4000-8000-000000000012",
+            channel: "email", placementKind: "email_body", placementKey: "email_body", approvedRevision: null,
+            publicationReference: null, publishedAt: null }], links: [],
+        }]} initialResults={{ state: "empty" }} />
+      </I18nProvider>,
+    );
+    expect(html).toContain(en.feedPage.platformLabels.email);
+    expect(html).toContain(en.feedPage.campaigns.email.title);
+    expect(html).toContain(en.feedPage.campaigns.email.loading);
+    expect(html).not.toContain(en.feedPage.campaigns.recordPublicationAction);
+  });
 });

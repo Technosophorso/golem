@@ -1,5 +1,5 @@
 /** Durable unfinished Feed compositions. [COMP:feed/post-working-copies] */
-import type { FeedComposition } from '@use-brian/shared'
+import type { CampaignEmailMetadata, FeedComposition } from '@use-brian/shared'
 import { getPool, query } from './client.js'
 import { seedFirstContentDraftMessage, withPlatformTitlePrefix, type ContentPlanningPlatform, type PostMedia } from './content-planning-store.js'
 
@@ -15,6 +15,8 @@ export type PostWorkingContent = {
   postFormat: 'post' | 'thread' | 'article'
   threadSegments: string[]
   article: { sourceUrl: string; title: string; description: string }
+  /** Present only for the Email channel; revisioned with the composition. */
+  email?: CampaignEmailMetadata
   media: PostMedia[]
 }
 export type PostWorkingCopy = { revision: number; mutationId: string; content: PostWorkingContent }
@@ -73,7 +75,7 @@ export const postWorkingCopiesStore = {
       if (!created && !previous && input.baseTitle !== undefined && session.title !== input.baseTitle) {
         throw new WorkingCopyError(409)
       }
-      const platformPrefix = session.title.match(/^\[(instagram|threads|twitter|xhs|linkedin)\]/)?.[0] ?? '[threads]'
+      const platformPrefix = session.title.match(/^\[(instagram|threads|twitter|xhs|linkedin|email)\]/)?.[0] ?? '[threads]'
       const oldTitle = session.title.replace(/^\[[^\]]+\]\s*/, '')
       if (previous && input.content.title !== previous.content.title &&
           oldTitle !== previous.content.title && input.content.title !== oldTitle) throw new WorkingCopyError(409)

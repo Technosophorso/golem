@@ -266,6 +266,8 @@ export function FeedSidebarPanel({ workspaceId }: { workspaceId: string }) {
               const connected = profiles.some((x) => x.platform === p);
               const status = connected
                 ? tf.platformStatusConnected
+                : p === "email"
+                  ? tf.platformStatusNative
                 : isConnectableFeedPlatform(p)
                   ? tf.platformStatusNotConnected
                   : tf.platformStatusComingSoon;
@@ -287,7 +289,7 @@ export function FeedSidebarPanel({ workspaceId }: { workspaceId: string }) {
           </DropdownMenuContent>
         </DropdownMenu>
         <ul className="flex flex-col gap-0.5">
-          {platformGroup.sections.map((s) => {
+          {(platform === "email" ? [] : platformGroup.sections).map((s) => {
             const href = feedPath(workspaceId, {
               platform,
               segment: s.segment,

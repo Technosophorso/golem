@@ -26,6 +26,7 @@ function actorUserId(context: CampaignContext): string | null {
 export function createCampaignService(
   store: CampaignStore = createDbCampaignStore(),
   trackingStore: CampaignTrackingStore = createCampaignTrackingStore(),
+  email?: { sendTest(actor: { userId: string; workspaceId: string; role: 'owner' | 'admin' | 'member'; canWrite: boolean }, placementId: string, contactId: string, expectedRevision?: number, deliveryId?: string): Promise<Record<string, unknown>> },
 ): CampaignServicePort {
   return {
     async execute(context, request) {
@@ -107,7 +108,16 @@ export function createCampaignService(
           }
           case 'record_conversion':
             throw new CampaignError('forbidden', 'Trusted conversions require a scoped site credential or committed CRM outcome.')
-          case 'send_test':
+          case 'send_test': {
+            requireCampaignAuthority(context, 'write', { campaignId: command.campaignId })
+            if (!email || !context.actor.userId) throw new CampaignError('unavailable', 'Campaign test delivery is not configured.')
+            return email.sendTest({
+              userId: context.actor.userId,
+              workspaceId: context.workspaceId,
+              role: context.authority.role,
+              canWrite: context.authority.canWrite,
+            }, command.placementId, command.contactId, command.approvedRevision, command.deliveryId)
+          }
           case 'prepare_dispatch':
           case 'schedule_dispatch':
           case 'pause_dispatch':

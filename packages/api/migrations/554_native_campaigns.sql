@@ -2,6 +2,17 @@
 -- [COMP:campaigns/store]
 BEGIN;
 
+-- Email is authored through the same open Feed draft and calendar contracts.
+-- It is a channel capability, not a social-provider connection.
+ALTER TABLE content_planning_drafts
+  DROP CONSTRAINT IF EXISTS content_planning_drafts_platform_check,
+  ADD CONSTRAINT content_planning_drafts_platform_check
+  CHECK (platform IN ('instagram','threads','twitter','xhs','linkedin','email'));
+ALTER TABLE content_plan_slots
+  DROP CONSTRAINT IF EXISTS content_plan_slots_platform_check,
+  ADD CONSTRAINT content_plan_slots_platform_check
+  CHECK (platform IN ('instagram','threads','twitter','xhs','linkedin','email'));
+
 CREATE TABLE campaigns (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
@@ -424,6 +435,22 @@ BEGIN
 END;
 $$;
 CREATE TRIGGER campaign_email_recipients_immutable BEFORE UPDATE ON campaign_email_recipients FOR EACH ROW EXECUTE FUNCTION protect_campaign_recipient_snapshot();
+
+CREATE FUNCTION invalidate_campaign_email_dispatch_on_revision() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW.revision IS DISTINCT FROM OLD.revision THEN
+    UPDATE campaign_email_dispatches d
+       SET state='cancelled',state_changed_at=clock_timestamp(),updated_at=clock_timestamp()
+      FROM campaign_placements p
+     WHERE p.session_id=NEW.session_id AND p.channel='email' AND p.dispatch_id=d.id
+       AND d.approved_revision<>NEW.revision AND d.state IN('ready','scheduled','paused');
+  END IF;
+  RETURN NEW;
+END
+$$;
+CREATE TRIGGER campaign_email_revision_invalidation
+  AFTER UPDATE OF revision ON feed_post_working_copies
+  FOR EACH ROW EXECUTE FUNCTION invalidate_campaign_email_dispatch_on_revision();
 
 CREATE TRIGGER campaigns_updated_at BEFORE UPDATE ON campaigns FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();
 CREATE TRIGGER campaign_placements_updated_at BEFORE UPDATE ON campaign_placements FOR EACH ROW EXECUTE FUNCTION trigger_set_updated_at();

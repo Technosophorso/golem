@@ -194,8 +194,8 @@ export const campaignPersonalizationSpecSchema = z.object({
 }).strict().refine((value) => !value.required || value.fallback === undefined, 'Required fields cannot have a fallback')
 
 export const campaignEmailMetadataSchema = z.object({
-  subject: z.string().trim().min(1).max(998),
-  preheader: z.string().max(500).optional(),
+  subject: z.string().trim().min(1).max(998).refine(value => !/[\r\n\0]/.test(value), 'Email subject cannot contain control lines'),
+  preheader: z.string().max(500).refine(value => !/[\r\n\0]/.test(value), 'Email preheader cannot contain control lines').optional(),
   senderId: campaignUuidSchema,
   replyTo: z.string().email().max(320).optional(),
   audience: z.object({ segmentId: campaignUuidSchema, segmentVersion: z.number().int().positive() }).strict(),

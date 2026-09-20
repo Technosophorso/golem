@@ -52,7 +52,7 @@ export function parseContentDraftSessionTitle(value: unknown): string | 'invalid
   if (typeof value !== 'string') return 'invalid'
   const title = value
     .trim()
-    .replace(/^\[(?:instagram|threads|twitter|xhs|linkedin)\]\s*/i, '')
+    .replace(/^\[(?:instagram|threads|twitter|xhs|linkedin|email)\]\s*/i, '')
     .trim()
   return title.length > 0 && title.length <= MAX_DRAFT_SESSION_TITLE_CHARS
     ? title
@@ -149,7 +149,7 @@ export function contentPlanningRoutes(
       const body = (req.body ?? {}) as Record<string, unknown>
       if (!isContentPlanningPlatform(body.platform)) {
         res.status(400).json({
-          error: 'platform must be one of "instagram", "threads", "twitter", "xhs", "linkedin"',
+          error: 'platform must be one of "instagram", "threads", "twitter", "xhs", "linkedin", "email"',
         })
         return
       }

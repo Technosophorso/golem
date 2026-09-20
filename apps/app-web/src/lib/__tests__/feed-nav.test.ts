@@ -25,6 +25,7 @@ describe("[COMP:app-web/feed-nav] feed navigation config", () => {
       "twitter",
       "xhs",
       "linkedin",
+      "email",
     ]);
     expect(FEED_CONNECTABLE_PLATFORMS).toEqual(["threads", "twitter"]);
     expect(isFeedPlatform("threads")).toBe(true);

@@ -14,6 +14,7 @@ import {
 } from "@/lib/api/campaigns";
 import { useT } from "@/lib/i18n/client";
 import { Button } from "@/components/ui/button";
+import { CampaignEmailPanel } from "./campaign-email-panel";
 import {
   Select,
   SelectContent,
@@ -22,8 +23,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 
-type CampaignChannel = "instagram" | "threads" | "twitter" | "xhs" | "linkedin";
-const SOCIAL_CHANNELS: CampaignChannel[] = ["instagram", "threads", "twitter", "xhs", "linkedin"];
+type CampaignChannel = "instagram" | "threads" | "twitter" | "xhs" | "linkedin" | "email";
+const CAMPAIGN_CHANNELS: CampaignChannel[] = ["instagram", "threads", "twitter", "xhs", "linkedin", "email"];
 
 function key(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;
@@ -154,7 +155,7 @@ export function FeedCampaigns(props: {
           campaignId: selected.id,
           sessionId: sessionId.trim(),
           channel,
-          placementKind: "body",
+          placementKind: channel === "email" ? "email_body" : "body",
           placementKey: `${channel}_body`,
         },
       });
@@ -176,8 +177,8 @@ export function FeedCampaigns(props: {
           placementId: activePlacement.id,
           destination: destination.trim(),
           utm: {
-            source: activePlacement.channel,
-            medium: "organic_social",
+            source: activePlacement.channel === "email" ? "newsletter" : activePlacement.channel,
+            medium: activePlacement.channel === "email" ? "email" : "organic_social",
             campaign: slug(selected.name),
             content: activePlacement.placementKey,
           },
@@ -283,7 +284,7 @@ export function FeedCampaigns(props: {
                     <span className="mb-1 block text-muted-foreground">{tc.channelLabel}</span>
                     <Select value={channel} onValueChange={(value) => { if (value) setChannel(value as CampaignChannel); }}>
                       <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                      <SelectContent>{SOCIAL_CHANNELS.map((item) => <SelectItem key={item} value={item}>{t.platformLabels[item]}</SelectItem>)}</SelectContent>
+                      <SelectContent>{CAMPAIGN_CHANNELS.map((item) => <SelectItem key={item} value={item}>{t.platformLabels[item]}</SelectItem>)}</SelectContent>
                     </Select>
                   </label>
                 </div>
@@ -301,6 +302,8 @@ export function FeedCampaigns(props: {
                 )}
               </div>
 
+              {activePlacement?.channel === "email" ? <CampaignEmailPanel workspaceId={props.workspaceId} campaignId={selected.id} placementId={activePlacement.id} /> : null}
+
               <form onSubmit={createLink} className="space-y-2">
                 <label className="block text-sm">
                   <span className="mb-1 block text-muted-foreground">{tc.destinationLabel}</span>
@@ -309,13 +312,13 @@ export function FeedCampaigns(props: {
                 <Button type="submit" variant="outline" disabled={busy || !activePlacement || !destination.trim()}><Link2 className="size-4" aria-hidden /> {tc.trackLinkAction}</Button>
               </form>
 
-              <form onSubmit={recordPublication} className="space-y-2">
+              {activePlacement?.channel !== "email" ? <form onSubmit={recordPublication} className="space-y-2">
                 <label className="block text-sm">
                   <span className="mb-1 block text-muted-foreground">{tc.permalinkLabel}</span>
                   <input type="url" value={permalink} onChange={(event) => setPermalink(event.target.value)} placeholder="https://social.example/post/123" className="h-9 w-full rounded-lg border border-input bg-background px-3" />
                 </label>
                 <Button type="submit" variant="outline" disabled={busy || !activePlacement || !permalink.trim()}><ExternalLink className="size-4" aria-hidden /> {tc.recordPublicationAction}</Button>
-              </form>
+              </form> : null}
 
               {(selected.links ?? []).length > 0 ? (
                 <div className="space-y-2 border-t border-border pt-4">
