@@ -21,8 +21,24 @@
 import { withCrmMailAdmission, type CrmMailContext, type CrmMailIntent } from '../crm-operations/delivery-policy.js'
 import { createTransport } from 'nodemailer'
 import MailComposer from 'nodemailer/lib/mail-composer/index.js'
+import { createRequire } from 'node:module'
 import { renderEmailBody } from '@use-brian/channels'
 import type { MailboxAccountSettings } from './types.js'
+
+type DkimSigner = { sign(input: Buffer): NodeJS.ReadableStream }
+const Dkim = createRequire(import.meta.url)('nodemailer/lib/dkim') as new (options: {
+  domainName: string; keySelector: string; privateKey: string; headerFieldNames: string
+}) => DkimSigner
+
+async function signCampaignMessage(raw: Buffer, dkim: NonNullable<Parameters<typeof composeMailboxMessage>[0]['dkim']>): Promise<Buffer> {
+  const stream = new Dkim({
+    ...dkim,
+    headerFieldNames: 'from:to:subject:date:message-id:list-unsubscribe:list-unsubscribe-post',
+  }).sign(raw)
+  const chunks: Buffer[] = []
+  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  return Buffer.concat(chunks)
+}
 
 /** Strip CR/LF so a crafted value can never inject an extra header line. */
 export function sanitizeHeaderValue(value: string): string {
@@ -50,6 +66,12 @@ export async function composeMailboxMessage(params: {
   subject: string
   /** Markdown source. */
   body: string
+  /** Server-derived campaign projections; callers cannot supply these through mailbox tools. */
+  rendered?: { text: string; html: string }
+  replyTo?: string
+  listUnsubscribeUrl?: string
+  oneClick?: boolean
+  dkim?: { domainName: string; keySelector: string; privateKey: string }
   /** Resolved workspace-file bytes, composed as real MIME parts. */
   attachments?: Array<{ filename: string; mime: string; data: Uint8Array }>
   inReplyTo?: string
@@ -59,7 +81,10 @@ export async function composeMailboxMessage(params: {
   const cc = (params.cc ?? []).map(sanitizeHeaderValue).filter(Boolean)
   const bcc = (params.bcc ?? []).map(sanitizeHeaderValue).filter(Boolean)
   const subject = sanitizeHeaderValue(params.subject)
-  const rendered = renderEmailBody(params.body)
+  const rendered = params.rendered ?? renderEmailBody(params.body)
+  const listUnsubscribeUrl = params.listUnsubscribeUrl
+    ? sanitizeHeaderValue(params.listUnsubscribeUrl)
+    : undefined
   const composer = new MailComposer({
     from: params.from,
     to,
@@ -72,6 +97,13 @@ export async function composeMailboxMessage(params: {
     subject,
     text: rendered.text,
     html: rendered.html,
+    ...(params.replyTo ? { replyTo: sanitizeHeaderValue(params.replyTo) } : {}),
+    ...(listUnsubscribeUrl ? {
+      headers: {
+        'List-Unsubscribe': `<${listUnsubscribeUrl}>`,
+        ...(params.oneClick ? { 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } : {}),
+      },
+    } : {}),
     ...(params.attachments?.length
       ? {
           attachments: params.attachments.map((attachment) => ({
@@ -87,7 +119,12 @@ export async function composeMailboxMessage(params: {
       : {}),
   })
   const compiled = composer.compile()
-  const raw = await compiled.build()
+  const unsigned = await compiled.build()
+  const raw = params.dkim ? await signCampaignMessage(unsigned, {
+    domainName: sanitizeHeaderValue(params.dkim.domainName),
+    keySelector: sanitizeHeaderValue(params.dkim.keySelector),
+    privateKey: params.dkim.privateKey,
+  }) : unsigned
   const messageId = compiled.messageId() ?? null
   // Envelope RCPT TO must list every delivery recipient — to + cc + bcc — or
   // the copied/blind addresses would never actually receive the message.

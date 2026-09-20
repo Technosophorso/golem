@@ -252,8 +252,7 @@ CREATE TABLE campaign_email_recipients (
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   UNIQUE(workspace_id,id),
   UNIQUE(workspace_id,delivery_id),
-  FOREIGN KEY(workspace_id,dispatch_id) REFERENCES campaign_email_dispatches(workspace_id,id) ON DELETE CASCADE,
-  FOREIGN KEY(workspace_id,delivery_id) REFERENCES crm_delivery_receipts(workspace_id,delivery_id) DEFERRABLE INITIALLY DEFERRED
+  FOREIGN KEY(workspace_id,dispatch_id) REFERENCES campaign_email_dispatches(workspace_id,id) ON DELETE CASCADE
 );
 CREATE UNIQUE INDEX campaign_email_recipients_one_address
   ON campaign_email_recipients(dispatch_id,lower(email_address));
@@ -439,11 +438,25 @@ CREATE TRIGGER campaign_email_recipients_immutable BEFORE UPDATE ON campaign_ema
 CREATE FUNCTION invalidate_campaign_email_dispatch_on_revision() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
   IF NEW.revision IS DISTINCT FROM OLD.revision THEN
+    UPDATE campaign_email_jobs j
+       SET state='cancelled',lease_token=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+      FROM campaign_email_dispatches d,campaign_placements p
+     WHERE p.session_id=NEW.session_id AND p.channel='email' AND p.dispatch_id=d.id
+       AND j.dispatch_id=d.id AND j.workspace_id=d.workspace_id
+       AND d.approved_revision<>NEW.revision AND d.state IN('ready','scheduled','paused','sending')
+       AND j.state IN('pending','leased');
+    UPDATE campaign_email_recipients r
+       SET state='cancelled',completed_at=clock_timestamp(),updated_at=clock_timestamp()
+      FROM campaign_email_dispatches d,campaign_placements p
+     WHERE p.session_id=NEW.session_id AND p.channel='email' AND p.dispatch_id=d.id
+       AND r.dispatch_id=d.id AND r.workspace_id=d.workspace_id
+       AND d.approved_revision<>NEW.revision AND d.state IN('ready','scheduled','paused','sending')
+       AND r.state IN('pending','admitted');
     UPDATE campaign_email_dispatches d
        SET state='cancelled',state_changed_at=clock_timestamp(),updated_at=clock_timestamp()
       FROM campaign_placements p
      WHERE p.session_id=NEW.session_id AND p.channel='email' AND p.dispatch_id=d.id
-       AND d.approved_revision<>NEW.revision AND d.state IN('ready','scheduled','paused');
+       AND d.approved_revision<>NEW.revision AND d.state IN('ready','scheduled','paused','sending');
   END IF;
   RETURN NEW;
 END

@@ -12,6 +12,7 @@ import {
   campaignCreateLinkSchema,
   campaignEmailMetadataSchema,
   campaignManualPublicationSchema,
+  campaignPrepareDispatchSchema,
   campaignSaveObjectSchema,
   campaignSetLinkEnabledSchema,
   campaignSiteSaveObjectSchema,
@@ -24,6 +25,7 @@ import { getWorkspaceMembershipSystem } from '../db/workspace-store.js'
 import { resolveWorkspaceViewpoint } from '../db/workspace-viewpoint.js'
 import { getEntityById } from '../db/entities-store.js'
 import { createCampaignEmailService, type CampaignEmailService } from '../content-planning/email.js'
+import type { CampaignDispatchService } from '../campaigns/dispatch.js'
 
 const WorkspaceQuery = z.object({ workspaceId: campaignUuidSchema }).strict()
 const ListQuery = WorkspaceQuery.extend({
@@ -41,6 +43,10 @@ const CommandBody = z.object({
     campaignCreateLinkSchema.extend({ kind: z.literal('create_link') }),
     campaignSetLinkEnabledSchema.extend({ kind: z.literal('set_link_enabled') }),
     campaignSiteSaveObjectSchema.extend({ kind: z.literal('save_site') }),
+    campaignPrepareDispatchSchema.extend({ kind: z.literal('prepare_dispatch') }),
+    z.object({ kind: z.literal('schedule_dispatch'), dispatchId: campaignUuidSchema, scheduledAt: z.string().datetime({ offset: true }) }).strict(),
+    z.object({ kind: z.literal('pause_dispatch'), dispatchId: campaignUuidSchema }).strict(),
+    z.object({ kind: z.literal('cancel_dispatch'), dispatchId: campaignUuidSchema }).strict(),
   ]),
 }).strict()
 
@@ -60,9 +66,9 @@ function campaignContext(access: CampaignRouteAccess): CampaignContext {
       canRead: true,
       canWrite: access.canWrite,
       canConfigure: access.role === 'owner' || access.role === 'admin',
-      // Phase 4 installs sender-specific authority; ordinary membership alone
-      // is intentionally insufficient.
-      canSend: false,
+      // Final transport admission still rechecks the exact mailbox and CRM
+      // policy. Only workspace operators may create or control a broadcast.
+      canSend: access.canWrite && (access.role === 'owner' || access.role === 'admin'),
     },
   }
 }
@@ -90,14 +96,15 @@ export function campaignRoutes(options: {
   reads?: CampaignReadPort
   trackingStore?: CampaignTrackingStore
   emailService?: CampaignEmailService
+  dispatchService?: CampaignDispatchService
   resolveAccess?: (userId: string, workspaceId: string) => Promise<CampaignRouteAccess | null>
   canReadCrmRecord?: (userId: string, workspaceId: string, recordId: string) => Promise<boolean>
 } = {}): Router {
   const router = Router()
   const store = createDbCampaignStore()
   const trackingStore = options.trackingStore ?? createCampaignTrackingStore()
-  const service = options.service ?? createCampaignService(store, trackingStore)
   const emailService = options.emailService ?? createCampaignEmailService()
+  const service = options.service ?? createCampaignService(store, trackingStore, emailService, options.dispatchService)
   const reads: CampaignReadPort = options.reads ?? {
     listCampaigns: (workspaceId, filters) => store.listCampaigns(workspaceId, filters),
     getCampaign: (workspaceId, campaignId) => store.getCampaign(workspaceId, campaignId),
@@ -244,6 +251,19 @@ export function campaignRoutes(options: {
       const current = await emailService.read(input.workspaceId, input.placementId)
       if (current.campaignId !== input.campaignId) throw new CampaignError('not_found', 'Email campaign placement was not found.')
       res.status(201).json(await emailService.sendTest(auth, input.placementId, input.contactId, undefined, input.deliveryId))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.get('/:campaignId/dispatches/:dispatchId', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.extend({ campaignId: campaignUuidSchema, dispatchId: campaignUuidSchema })
+        .parse({ ...req.query, campaignId: req.params.campaignId, dispatchId: req.params.dispatchId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      if (!options.dispatchService) throw new CampaignError('unavailable', 'Campaign dispatch is not configured.')
+      const result = await options.dispatchService.read(input.workspaceId, input.dispatchId)
+      if ((result.dispatch as { campaignId?: string }).campaignId !== input.campaignId) throw new CampaignError('not_found', 'Campaign dispatch was not found.')
+      res.json(result)
     } catch (error) { respondError(res, error) }
   })
 

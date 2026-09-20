@@ -431,9 +431,12 @@ export function createCampaignTrackingStore() {
 
     async results(workspaceId: string, campaignId: string, filters: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
       const sites = await this.listSites(workspaceId)
-      if (sites.length === 0) return { state: 'not_installed', reason: 'Tracking not connected' }
-      if (!sites.some(site => site.enabled)) return { state: 'disabled', reason: 'Campaign collection is disabled' }
       const includeTest = filters.include_test === true
+      const emailAccepted = Number((await getPool().query<{ count: string }>(`SELECT coalesce(sum(email_accepted),0)::text AS count
+        FROM campaign_daily_metrics WHERE workspace_id=$1 AND campaign_id=$2 AND ($3 OR NOT is_test)`,
+      [workspaceId, campaignId, includeTest])).rows[0]?.count ?? 0)
+      if (sites.length === 0 && emailAccepted === 0) return { state: 'not_installed', reason: 'Tracking not connected' }
+      if (sites.length > 0 && !sites.some(site => site.enabled) && emailAccepted === 0) return { state: 'disabled', reason: 'Campaign collection is disabled' }
       const model = filters.model === 'first_touch' ? 'firstTouch' : 'lastTouch'
       const [events, conversions] = await Promise.all([
         getPool().query<{ rawRedirectRequests: string; filteredRedirectRequests: string; pageViews: string; sessions: string; visitors: string }>(
@@ -464,10 +467,12 @@ export function createCampaignTrackingStore() {
         sessions: continuityAvailable ? Number(row.sessions) : null,
         visitors: continuityAvailable ? Number(row.visitors) : null,
         verifiedConversions: Number(conversions.rows[0]?.count ?? 0),
+        emailAccepted,
         denominator: continuityAvailable ? 'sessions' : 'unavailable',
         limitations: [
           'Observed acquisition association is not proof of causal credit.',
           'Social impressions are unavailable without provider evidence.',
+          'SMTP acceptance is available; inbox delivery, opens, replies, bounces, and complaints are unavailable without provider evidence.',
           ...(!continuityAvailable ? ['Session and visitor continuity are unavailable without permitted first-party storage.'] : []),
         ],
       }

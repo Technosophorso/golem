@@ -44,7 +44,7 @@ export type CampaignEmailDraft = {
 };
 
 export type CampaignEmailCatalog = {
-  senders: Array<{ id: string; label: string; address: string | null; provider: string; health: string }>;
+  senders: Array<{ id: string; label: string; address: string | null; provider: string; health: string; broadcastCapable: boolean }>;
   segments: Array<{ id: string; name: string; version: number }>;
   purposes: Array<{ purposeKey: string; label: string; requiresConsent: boolean }>;
 };
@@ -59,6 +59,12 @@ export type CampaignAudiencePreview = {
 
 export type CampaignEmailProjection = { subject: string; preheader: string | null; text: string; html: string };
 
+export type CampaignDispatch = {
+  dispatch: { id: string; campaignId: string; placementId: string; approvedRevision: number; state: string; scheduledAt: string; approvedAt: string; startedAt: string | null; completedAt: string | null };
+  counts: { total: number; accepted: number; rejected: number; suppressed: number; pending: number; uncertain: number; cancelled: number };
+  metrics: { smtpAccepted: "available"; delivered: "unavailable"; opened: "unsupported"; replies: "unavailable"; bounces: "unavailable"; complaints: "unavailable" };
+};
+
 export type CampaignResults = {
   state: "not_installed" | "disabled" | "unsupported" | "delayed" | "failed" | "empty" | "available";
   reason?: string;
@@ -68,6 +74,7 @@ export type CampaignResults = {
   sessions?: number | null;
   visitors?: number | null;
   verifiedConversions?: number;
+  emailAccepted?: number;
   denominator?: "sessions" | "unavailable";
   limitations?: string[];
 };
@@ -171,4 +178,29 @@ export async function sendCampaignTest(workspaceId: string, campaignId: string, 
   return campaignJson(emailPath(campaignId, placementId, "/test"), {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId, contactId, deliveryId: crypto.randomUUID() }),
   });
+}
+
+export async function prepareCampaignDispatch(input: { workspaceId: string; campaignId: string; placementId: string; approvedRevision: number; metadata: CampaignEmailMetadata; scheduledAt: string; recipients: CampaignAudiencePreview["eligible"] }): Promise<{ dispatch: { dispatchId: string; state: string; scheduledAt: string; recipients: number } }> {
+  return runCampaignCommand({ workspaceId: input.workspaceId, idempotencyKey: crypto.randomUUID(), command: {
+    kind: "prepare_dispatch", campaignId: input.campaignId, placementId: input.placementId,
+    approvedRevision: input.approvedRevision, metadata: input.metadata, scheduledAt: input.scheduledAt,
+    recipients: input.recipients,
+  } });
+}
+
+export async function scheduleCampaignDispatch(workspaceId: string, dispatchId: string, scheduledAt: string): Promise<void> {
+  await runCampaignCommand({ workspaceId, idempotencyKey: crypto.randomUUID(), command: { kind: "schedule_dispatch", dispatchId, scheduledAt } });
+}
+
+export async function pauseCampaignDispatch(workspaceId: string, dispatchId: string): Promise<void> {
+  await runCampaignCommand({ workspaceId, idempotencyKey: crypto.randomUUID(), command: { kind: "pause_dispatch", dispatchId } });
+}
+
+export async function cancelCampaignDispatch(workspaceId: string, dispatchId: string): Promise<void> {
+  await runCampaignCommand({ workspaceId, idempotencyKey: crypto.randomUUID(), command: { kind: "cancel_dispatch", dispatchId } });
+}
+
+export async function getCampaignDispatch(workspaceId: string, campaignId: string, dispatchId: string): Promise<CampaignDispatch> {
+  const query = new URLSearchParams({ workspaceId });
+  return campaignJson(`/api/campaigns/${encodeURIComponent(campaignId)}/dispatches/${encodeURIComponent(dispatchId)}?${query}`);
 }

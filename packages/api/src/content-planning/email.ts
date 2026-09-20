@@ -194,13 +194,15 @@ async function verdictFor(workspaceId: string, contact: AudienceContact, purpose
        FROM crm_consent_purposes WHERE workspace_id=$1 AND purpose_key=$2`, [workspaceId, purposeKey],
   )).rows[0]
   if (!purpose) return { verdict: 'unknown' as const, reasons: ['purpose_unavailable'] }
+  const instant = `to_char(occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAt",
+    to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt"`
   const consent = await query<{ id: string; action: 'granted' | 'withdrawn'; occurredAt: string; createdAt: string }>(
-    `SELECT id,action,occurred_at::text AS "occurredAt",created_at::text AS "createdAt"
+    `SELECT id,action,${instant}
        FROM association_consent_events WHERE workspace_id=$1 AND contact_id=$2 AND purpose=$3
       ORDER BY occurred_at DESC,created_at DESC,id DESC LIMIT 1`, [workspaceId, contact.id, purposeKey],
   )
   const suppressions = await query<{ id: string; channel: 'all' | 'email'; action: 'suppressed' | 'released'; occurredAt: string; createdAt: string }>(
-    `SELECT DISTINCT ON(channel) id,channel,action,occurred_at::text AS "occurredAt",created_at::text AS "createdAt"
+    `SELECT DISTINCT ON(channel) id,channel,action,${instant}
        FROM crm_suppression_events WHERE workspace_id=$1 AND contact_id=$2 AND channel IN('all','email')
       ORDER BY channel,occurred_at DESC,created_at DESC,id DESC`, [workspaceId, contact.id],
   )
@@ -303,7 +305,10 @@ export function createCampaignEmailService(options: { deliveries?: CrmDeliverySe
             AND ((ci.scope='workspace' AND ci.workspace_id=$1) OR (ci.scope='user' AND ci.user_id=$2) OR g.id IS NOT NULL)
           ORDER BY ci.label,ci.id`, [actor.workspaceId, actor.userId]),
       ])
-      return { segments: segments.rows, purposes: purposes.rows, senders: senders.rows }
+      return { segments: segments.rows, purposes: purposes.rows, senders: senders.rows.map(sender => ({
+        ...sender as Record<string, unknown>,
+        broadcastCapable: (sender as { provider: string }).provider === 'imap',
+      })) }
     },
 
     async sendTest(actor: { userId: string; workspaceId: string; role: 'owner' | 'admin' | 'member'; canWrite: boolean }, placementId: string, contactId: string, expectedRevision?: number, deliveryId: string = randomUUID()) {

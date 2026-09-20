@@ -165,6 +165,12 @@ async function runCrmMailAdmission<T>(rawScope: CrmMailContext | undefined, prov
         if (matches.length!==1) throw denied(matches.length ? 'delivery_identity_ambiguous' : 'delivery_identity_unresolved',{ recipientIndex: index })
         const contactId = matches[0]!.id
         contactIds.add(contactId)
+        // Public unsubscribe takes the matching exclusive lock. Whichever
+        // operation wins decides whether this handoff is admitted; a scanner
+        // GET takes no lock because it never mutates consent.
+        await client.query('SELECT pg_advisory_xact_lock_shared(hashtextextended($1,0))',[
+          `crm-consent:${workspaceId}:${contactId}:${crmPurposeKey}`,
+        ])
         const stamp = `to_char(occurred_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurredAt",to_char(created_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "createdAt"`
         const consent = await client.query<{ id: string; action:'granted'|'withdrawn'; occurredAt:string; createdAt:string }>(`SELECT id,action,${stamp} FROM association_consent_events
           WHERE workspace_id=$1 AND contact_id=$2 AND purpose=$3 ORDER BY occurred_at DESC,created_at DESC,id DESC LIMIT 1`,[workspaceId,contactId,crmPurposeKey])

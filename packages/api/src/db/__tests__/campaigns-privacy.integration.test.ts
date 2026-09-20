@@ -13,7 +13,7 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
 const tracking = createCampaignTrackingStore()
 const projector = createCampaignConversionOutboxWorker()
 
-type Fixture = { workspaceId: string; userId: string; contactId: string; siteId: string; sitePublicId: string; campaignId: string; linkId: string }
+type Fixture = { workspaceId: string; userId: string; contactId: string; siteId: string; sitePublicId: string; campaignId: string; linkId: string; dispatchId: string; recipientId: string; deliveryId: string }
 let fixture: Fixture
 
 async function seed(): Promise<Fixture> {
@@ -50,7 +50,31 @@ async function seed(): Promise<Fixture> {
     VALUES($1,$2,'enquiry_submitted','queued-after-erasure',$3,$4)`, [workspaceId, site.rows[0]!.id,
     JSON.stringify({ version: 1, siteId: sitePublicId, conversionKind: 'enquiry_submitted', externalOutcomeId: 'queued-after-erasure',
       occurredAt: new Date().toISOString(), contactId, test: false }), 'e'.repeat(64)])
-  return { workspaceId, userId, contactId, siteId: site.rows[0]!.id, sitePublicId, campaignId: campaign.rows[0]!.id, linkId: link.rows[0]!.id }
+  const senderId = randomUUID(), segmentId = randomUUID(), deliveryId = randomUUID()
+  const dispatch = await pool.query<{ id: string }>(`INSERT INTO campaign_email_dispatches
+    (workspace_id,campaign_id,placement_id,approved_revision,sender_ref,purpose_key,segment_id,segment_version,
+     audience_snapshot,content_snapshot,tracking_options,authority_snapshot,request_fingerprint,state,scheduled_at,approved_by)
+    VALUES($1,$2,$3,1,$4,'updates',$5,1,'{"matched":1,"eligible":1}','{"body":"private"}','{}',$6::jsonb,$7,'scheduled',clock_timestamp(),$8) RETURNING id`,
+  [workspaceId, campaign.rows[0]!.id, placement.rows[0]!.id, senderId, segmentId, JSON.stringify({ approvedBy: userId }), '1'.repeat(64), userId])
+  const recipient = await pool.query<{ id: string }>(`INSERT INTO campaign_email_recipients
+    (workspace_id,dispatch_id,contact_id,email_address,address_hash,personalization_snapshot,eligibility_snapshot,delivery_id)
+    VALUES($1,$2,$3,'privacy@example.com',$4,'{"first_name":"Privacy"}','{"sendable":true}',$5) RETURNING id`,
+  [workspaceId, dispatch.rows[0]!.id, contactId, '2'.repeat(64), deliveryId])
+  await pool.query(`INSERT INTO campaign_email_jobs(workspace_id,dispatch_id,recipient_id) VALUES($1,$2,$3)`,
+    [workspaceId, dispatch.rows[0]!.id, recipient.rows[0]!.id])
+  await pool.query(`INSERT INTO campaign_unsubscribe_tokens(workspace_id,recipient_id,purpose_key,token_hash,all_marketing,expires_at)
+    VALUES($1,$2,'updates',$3,true,clock_timestamp()+interval '1 day')`, [workspaceId, recipient.rows[0]!.id, '3'.repeat(64)])
+  await pool.query(`INSERT INTO campaign_email_link_tokens(workspace_id,recipient_id,link_id,token_hash,expires_at)
+    VALUES($1,$2,$3,$4,clock_timestamp()+interval '1 day')`, [workspaceId, recipient.rows[0]!.id, link.rows[0]!.id, '4'.repeat(64)])
+  await pool.query(`INSERT INTO crm_delivery_receipts
+    (workspace_id,delivery_id,request_hash,connector_instance_id,provider_key,purpose_key,actor_kind,actor_credential_id,
+     acting_user_id,envelope,status,claim_token,claim_deadline,provider_receipt)
+    VALUES($1,$2,$3,$4,'outreach','updates','user',$5,$6,'{"to":["privacy@example.com"]}','needs_reconciliation',$7,clock_timestamp(),'{"smtp":"unknown"}')`,
+  [workspaceId, deliveryId, '5'.repeat(64), senderId, userId, userId, randomUUID()])
+  await pool.query(`INSERT INTO crm_delivery_receipt_contacts(workspace_id,delivery_id,contact_id) VALUES($1,$2,$3)`,
+    [workspaceId, deliveryId, contactId])
+  return { workspaceId, userId, contactId, siteId: site.rows[0]!.id, sitePublicId, campaignId: campaign.rows[0]!.id,
+    linkId: link.rows[0]!.id, dispatchId: dispatch.rows[0]!.id, recipientId: recipient.rows[0]!.id, deliveryId }
 }
 
 beforeAll(async () => { fixture = await seed() })
@@ -72,6 +96,10 @@ describe('[COMP:campaigns/privacy] campaign export, erasure, retention, and cred
       expect.objectContaining({ type: 'record', domain: 'campaign_conversions' }),
       expect.objectContaining({ type: 'record', domain: 'campaign_events' }),
       expect.objectContaining({ type: 'record', domain: 'campaign_conversion_outbox' }),
+      expect.objectContaining({ type: 'record', domain: 'campaign_email_recipients' }),
+      expect.objectContaining({ type: 'record', domain: 'campaign_email_jobs' }),
+      expect.objectContaining({ type: 'record', domain: 'campaign_unsubscribe_tokens' }),
+      expect.objectContaining({ type: 'record', domain: 'campaign_email_link_tokens' }),
     ]))
     const campaignPayloads = records.filter(record => record.type === 'record' && String(record.domain).startsWith('campaign_'))
       .map(record => record.record)
@@ -99,6 +127,14 @@ describe('[COMP:campaigns/privacy] campaign export, erasure, retention, and cred
     expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_subject_links WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0].count).toBe(0)
     expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_conversions WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0].count).toBe(0)
     expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_events WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0].count).toBe(0)
+    expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_email_recipients WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0].count).toBe(0)
+    expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_email_jobs WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0].count).toBe(0)
+    expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_unsubscribe_tokens WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0].count).toBe(0)
+    expect((await pool.query(`SELECT count(*)::int AS count FROM campaign_email_link_tokens WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0].count).toBe(0)
+    const receipt = (await pool.query(`SELECT envelope,provider_receipt,redacted_at FROM crm_delivery_receipts
+      WHERE workspace_id=$1 AND delivery_id=$2`, [fixture.workspaceId, fixture.deliveryId])).rows[0]
+    expect(receipt).toMatchObject({ envelope: null, provider_receipt: null })
+    expect(receipt.redacted_at).toBeInstanceOf(Date)
     const queued = (await pool.query(`SELECT state,payload,lease_token FROM campaign_conversion_outbox WHERE workspace_id=$1`, [fixture.workspaceId])).rows[0]
     expect(queued).toMatchObject({ state: 'cancelled', payload: { erased: true }, lease_token: null })
     expect(await projector.tick()).toBe(0)

@@ -53,6 +53,7 @@ describe("[COMP:app-web/feed-campaigns] native campaigns in Feed", () => {
     );
     expect(html).toContain("12");
     expect(html).toContain(en.feedPage.campaigns.verifiedConversions);
+    expect(html).toContain(en.feedPage.campaigns.smtpAccepted);
     expect(html).toContain(en.feedPage.campaigns.unavailable);
     expect(html).toContain(en.feedPage.campaigns.observedLimitation);
   });

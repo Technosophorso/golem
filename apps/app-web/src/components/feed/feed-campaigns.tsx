@@ -267,6 +267,7 @@ export function FeedCampaigns(props: {
                         <Result label={tc.sessions} value={results.sessions ?? tc.unavailable} />
                         <Result label={tc.visitors} value={results.visitors ?? tc.unavailable} />
                         <Result label={tc.verifiedConversions} value={results.verifiedConversions ?? 0} />
+                        <Result label={tc.smtpAccepted} value={results.emailAccepted ?? 0} />
                         <p className="col-span-full mt-1 text-xs text-muted-foreground">{tc.observedLimitation}</p>
                       </div>
                     ) : <p className="mt-1 text-muted-foreground">{results.reason ?? (results.state === "not_installed" ? tc.trackingNotConnected : tc.resultsUnavailable)}</p>}

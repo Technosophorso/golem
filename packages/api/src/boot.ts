@@ -258,6 +258,8 @@ import {
 import { createDbCrmOperationsStore } from './db/crm-operations-store.js'
 import { createDbCrmIntakeReadStore } from './db/crm-intake-store.js'
 import { createCampaignConversionOutboxWorker } from './campaigns/conversion-outbox.js'
+import { createCampaignDispatchService } from './campaigns/dispatch.js'
+import { campaignPublicEmailRoutes } from './campaigns/public-email.js'
 import { getCrmEmailReviewContext } from './db/crm-r2.js'
 import { bootstrapHistoricalCrmIdentityState } from './db/crm-identity-store.js'
 import { resolveWorkspaceViewpoint } from './db/workspace-viewpoint.js'
@@ -720,6 +722,11 @@ export interface OpenApiEnv {
   NODE_ENV: string
   API_URL: string
   APP_URL: string
+  /** Public origin serving native campaign unsubscribe and click routes. */
+  CAMPAIGN_PUBLIC_ORIGIN?: string
+  CAMPAIGN_DKIM_DOMAIN?: string
+  CAMPAIGN_DKIM_SELECTOR?: string
+  CAMPAIGN_DKIM_PRIVATE_KEY?: string
   /** Dedicated Outpost auth portal; falls back to APP_URL in other profiles. */
   AUTH_PORTAL_URL?: string
   OUTPOST_AUTH_EMAIL_ENABLED?: boolean
@@ -1636,11 +1643,25 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   })
   const crmStore = createDbCrmStore()
   const crmEmailDraftStore = createDbCrmEmailDraftStore()
+  const campaignDkim = env.CAMPAIGN_DKIM_DOMAIN && env.CAMPAIGN_DKIM_SELECTOR && env.CAMPAIGN_DKIM_PRIVATE_KEY
+    ? {
+        domainName: env.CAMPAIGN_DKIM_DOMAIN,
+        keySelector: env.CAMPAIGN_DKIM_SELECTOR,
+        privateKey: env.CAMPAIGN_DKIM_PRIVATE_KEY.replaceAll('\\n', '\n'),
+      }
+    : undefined
   const crmDeliveries = createCrmDeliveryService(createCrmDeliveryProvider({
     encryptionKey: env.CHANNEL_CREDENTIAL_KEY ? loadChannelCredentialKey(env.CHANNEL_CREDENTIAL_KEY) : null,
     emailProvider: getGlobalEmailInboxProvider,
+    ...(campaignDkim ? { campaignMail: { dkim: campaignDkim } } : {}),
   }))
   const campaignEmailService = createCampaignEmailService({ deliveries: crmDeliveries })
+  const campaignDispatchService = createCampaignDispatchService({
+    deliveries: crmDeliveries,
+    email: campaignEmailService,
+    publicOrigin: env.CAMPAIGN_PUBLIC_ORIGIN ?? env.API_URL,
+    oneClickEnabled: Boolean(campaignDkim),
+  })
   const crmOperationsService = createCrmOperationsService(createDbCrmOperationsStore(), { deliveries: crmDeliveries })
   const associationStore = createAssociationStore(undefined, undefined, {
     promotionHmacKey: env.ASSOCIATION_PROMOTION_HMAC_KEY,
@@ -2556,7 +2577,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const allTools = buildAllTools()
   const campaignStore = createDbCampaignStore()
   const campaignTrackingStore = createCampaignTrackingStore()
-  const campaignService = createCampaignService(campaignStore, campaignTrackingStore, campaignEmailService)
+  const campaignService = createCampaignService(campaignStore, campaignTrackingStore, campaignEmailService, campaignDispatchService)
   const campaignTools = createCampaignTools({
     service: campaignService,
     reads: {
@@ -2587,7 +2608,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
           canRead: true,
           canWrite: membership.canDraft,
           canConfigure: membership.role !== 'member',
-          canSend: false,
+          canSend: membership.canDraft && membership.role !== 'member',
         },
       }
     },
@@ -5137,7 +5158,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration, reviewContext: feedReviewContext, files: filesApi ?? undefined }))
-  app.use('/api/campaigns', requireAuth(env.JWT_SECRET), campaignRoutes({ emailService: campaignEmailService }))
+  app.use('/api/campaigns', requireAuth(env.JWT_SECRET), campaignRoutes({
+    emailService: campaignEmailService,
+    dispatchService: campaignDispatchService,
+    service: campaignService,
+  }))
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its
@@ -5647,6 +5672,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // authentication guard so OSS and hosted editions share the same route
   // ordering. The router never accepts an arbitrary redirect destination.
   app.use(campaignTrackingRoutes())
+  app.use(campaignPublicEmailRoutes())
 
   // Public chat link — anonymous browser chat behind a chat-link token
   // (`/c/<token>` in app-web). PUBLIC, same containment + mount slot as
@@ -6940,6 +6966,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     onError: (_error, lease) => console.warn(`[campaign-conversions] ${lease?.id ?? '(tick)'} projection failed; retry is scheduled.`),
   })
   if (runWorkers) campaignConversionWorker.start()
+  if (runWorkers) campaignDispatchService.start()
   const crmRetentionWorker = createCrmRetentionWorker({ onError: () => console.warn('[crm-retention] Retention run failed; inspect the workspace run report.') })
   if (runWorkers) crmRetentionWorker.start()
   const crmEntitlementWorker=createCrmEntitlementWorker({onError:()=>console.warn('[crm-entitlement-expiry] A due grant could not be processed; a later scan will retry.')})
@@ -8585,6 +8612,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     runQueueWorker.stop()
     crmDomainEventWorker.stop()
     campaignConversionWorker.stop()
+    campaignDispatchService.stop()
     crmRetentionWorker.stop()
     crmEntitlementWorker.stop()
     associationLifecycleWorker.stop()

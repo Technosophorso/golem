@@ -568,7 +568,18 @@ export const SendCrmMessageInputSchema = z.object({
   body: z.string().max(200_000),
   attachments: z.array(DeliveryAttachment).max(20).default([]),
 }).strict()
-export const SendCrmMessageCommandSchema = SendCrmMessageInputSchema.extend({kind:z.literal('send_message')}).superRefine((value,ctx) => {
+const CampaignMailProjectionSchema = z.object({
+  text: z.string().max(200_000),
+  html: z.string().max(400_000),
+  unsubscribeUrl: z.string().url().max(2_048),
+  oneClick: z.boolean(),
+  replyTo: DeliveryAddress.optional(),
+}).strict()
+/** Server-authored transport detail. It is deliberately absent from the public tool input schema. */
+export const SendCrmMessageCommandSchema = SendCrmMessageInputSchema.extend({
+  kind:z.literal('send_message'),
+  campaignMail: CampaignMailProjectionSchema.optional(),
+}).superRefine((value,ctx) => {
   if(value.to.length+value.cc.length+value.bcc.length>1000) ctx.addIssue({code:z.ZodIssueCode.custom,message:'A delivery may contain at most 1000 recipients.'})
   if(new TextEncoder().encode(JSON.stringify(value)).byteLength>8*1024*1024) ctx.addIssue({code:z.ZodIssueCode.custom,message:'A delivery envelope may contain at most 8 MiB.'})
 })

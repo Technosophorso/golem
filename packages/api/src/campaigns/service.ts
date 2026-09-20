@@ -12,12 +12,14 @@ import {
   campaignCreateLinkSchema,
   campaignHttpUrlSchema,
   campaignManualPublicationSchema,
+  campaignPrepareDispatchSchema,
   campaignSaveSchema,
   campaignSiteSaveSchema,
 } from '@use-brian/shared/campaigns'
 import { campaignOpaqueToken, createDbCampaignStore, type CampaignStore } from '../db/campaign-store.js'
 import { createCampaignTrackingStore, type CampaignTrackingStore } from '../db/campaign-tracking-store.js'
 import { buildCampaignDestination } from './links.js'
+import type { CampaignDispatchService } from './dispatch.js'
 
 function actorUserId(context: CampaignContext): string | null {
   return context.actor.userId ?? null
@@ -27,6 +29,7 @@ export function createCampaignService(
   store: CampaignStore = createDbCampaignStore(),
   trackingStore: CampaignTrackingStore = createCampaignTrackingStore(),
   email?: { sendTest(actor: { userId: string; workspaceId: string; role: 'owner' | 'admin' | 'member'; canWrite: boolean }, placementId: string, contactId: string, expectedRevision?: number, deliveryId?: string): Promise<Record<string, unknown>> },
+  dispatch?: CampaignDispatchService,
 ): CampaignServicePort {
   return {
     async execute(context, request) {
@@ -118,12 +121,27 @@ export function createCampaignService(
               canWrite: context.authority.canWrite,
             }, command.placementId, command.contactId, command.approvedRevision, command.deliveryId)
           }
-          case 'prepare_dispatch':
-          case 'schedule_dispatch':
-          case 'pause_dispatch':
-          case 'cancel_dispatch':
+          case 'prepare_dispatch': {
             requireCampaignAuthority(context, 'send', { campaignId: 'campaignId' in command ? command.campaignId : undefined })
-            throw new CampaignError('unavailable', 'Audience sending is disabled until Phase 4 admission and recovery acceptance passes.')
+            if (!dispatch) throw new CampaignError('unavailable', 'Campaign dispatch is not configured.')
+            const { kind: _kind, ...input } = command
+            return { dispatch: await dispatch.prepare(client, context, campaignPrepareDispatchSchema.parse(input)) }
+          }
+          case 'schedule_dispatch': {
+            requireCampaignAuthority(context, 'send')
+            if (!dispatch) throw new CampaignError('unavailable', 'Campaign dispatch is not configured.')
+            return { dispatch: await dispatch.schedule(client, context, command.dispatchId, command.scheduledAt) }
+          }
+          case 'pause_dispatch': {
+            requireCampaignAuthority(context, 'send')
+            if (!dispatch) throw new CampaignError('unavailable', 'Campaign dispatch is not configured.')
+            return { dispatch: await dispatch.pause(client, context, command.dispatchId) }
+          }
+          case 'cancel_dispatch': {
+            requireCampaignAuthority(context, 'send')
+            if (!dispatch) throw new CampaignError('unavailable', 'Campaign dispatch is not configured.')
+            return { dispatch: await dispatch.cancel(client, context, command.dispatchId) }
+          }
         }
       })
     },

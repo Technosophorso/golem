@@ -5,13 +5,19 @@ import Link from "next/link";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Mail, Send } from "lucide-react";
 import {
+  cancelCampaignDispatch,
+  getCampaignDispatch,
   getCampaignEmailCatalog,
   getCampaignEmailDraft,
+  pauseCampaignDispatch,
+  prepareCampaignDispatch,
   previewCampaignAudience,
   previewCampaignEmail,
+  scheduleCampaignDispatch,
   sendCampaignTest,
   updateCampaignEmail,
   type CampaignAudiencePreview,
+  type CampaignDispatch,
   type CampaignEmailCatalog,
   type CampaignEmailDraft,
   type CampaignEmailProjection,
@@ -19,6 +25,7 @@ import {
 import { useT } from "@/lib/i18n/client";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { confirmDialog } from "@/components/ui/confirm-dialog";
 
 export function CampaignEmailPanel(props: { workspaceId: string; campaignId: string; placementId: string }) {
   const t = useT().feedPage.campaigns.email;
@@ -34,6 +41,7 @@ export function CampaignEmailPanel(props: { workspaceId: string; campaignId: str
   const [preview, setPreview] = useState<CampaignEmailProjection | null>(null);
   const [audience, setAudience] = useState<CampaignAudiencePreview | null>(null);
   const [testContactId, setTestContactId] = useState("");
+  const [dispatch, setDispatch] = useState<CampaignDispatch | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,12 +60,18 @@ export function CampaignEmailPanel(props: { workspaceId: string; campaignId: str
         setSegmentId(metadata.audience.segmentId); setPurposeKey(metadata.purposeKey); setReplyTo(metadata.replyTo ?? "");
         setFallback(metadata.personalization.find((item) => item.field === "first_name")?.fallback ?? "there");
       }
+      if (nextDraft.approval?.dispatchId) {
+        void getCampaignDispatch(props.workspaceId, props.campaignId, nextDraft.approval.dispatchId).then((result) => {
+          if (!cancelled) setDispatch(result);
+        }).catch(() => {});
+      }
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : t.loadFailed));
     return () => { cancelled = true; };
   }, [props.campaignId, props.placementId, props.workspaceId, t.loadFailed]);
 
   const segment = useMemo(() => catalog?.segments.find((item) => item.id === segmentId), [catalog, segmentId]);
   const complete = Boolean(subject.trim() && senderId && segment && purposeKey);
+  const sender = catalog?.senders.find((item) => item.id === senderId);
 
   async function run(action: () => Promise<void>) {
     setBusy(true); setError(null); setNotice(null);
@@ -101,6 +115,31 @@ export function CampaignEmailPanel(props: { workspaceId: string; campaignId: str
     });
   }
 
+  async function refreshDispatch(dispatchId: string) {
+    setDispatch(await getCampaignDispatch(props.workspaceId, props.campaignId, dispatchId));
+  }
+
+  function approveAndSend() {
+    if (!draft?.metadata || !audience?.eligible.length || !sender?.broadcastCapable) return;
+    const metadata = draft.metadata;
+    void run(async () => {
+      const ok = await confirmDialog({
+        title: t.sendConfirmTitle,
+        description: t.sendConfirmDescription.replace("{count}", String(audience.eligible.length)),
+        confirmLabel: t.sendNow,
+      });
+      if (!ok) return;
+      const scheduledAt = new Date().toISOString();
+      const prepared = await prepareCampaignDispatch({
+        workspaceId: props.workspaceId, campaignId: props.campaignId, placementId: props.placementId,
+        approvedRevision: draft.revision, metadata, scheduledAt, recipients: audience.eligible,
+      });
+      await scheduleCampaignDispatch(props.workspaceId, prepared.dispatch.dispatchId, scheduledAt);
+      await refreshDispatch(prepared.dispatch.dispatchId);
+      setNotice(t.sendQueued);
+    });
+  }
+
   return (
     <section className="space-y-4 rounded-xl border border-border p-4" data-campaign-email>
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -122,6 +161,7 @@ export function CampaignEmailPanel(props: { workspaceId: string; campaignId: str
             <Field label={t.firstNameFallback}><input value={fallback} onChange={(e) => setFallback(e.target.value)} maxLength={500} className="h-9 w-full rounded-lg border border-input bg-background px-3 text-base sm:text-sm" /></Field>
           </div>
           {(!catalog.senders.length || !catalog.segments.length || !catalog.purposes.length) ? <p className="text-xs text-muted-foreground">{t.unconfigured}</p> : null}
+          {sender && !sender.broadcastCapable ? <p className="text-xs text-amber-700 dark:text-amber-300">{t.broadcastUnsupported}</p> : null}
           <div className="flex flex-wrap gap-2">
             <Button type="button" onClick={save} disabled={busy || !complete}>{t.save}</Button>
             <Button type="button" variant="outline" onClick={renderPreview} disabled={busy || !draft.metadata}>{t.preview}</Button>
@@ -134,7 +174,23 @@ export function CampaignEmailPanel(props: { workspaceId: string; campaignId: str
             {audience.eligible.length ? <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
               <Picker label={t.testRecipient} value={testContactId} onChange={setTestContactId} placeholder={t.selectOption} items={audience.eligible.map((item) => ({ value: item.contactId, label: item.address }))} />
               <Button type="button" variant="outline" disabled={busy || !testContactId} onClick={() => void run(async () => { await sendCampaignTest(props.workspaceId, props.campaignId, props.placementId, testContactId); setNotice(t.testSent); })}><Send className="size-4" aria-hidden />{t.sendTest}</Button>
+              <Button type="button" disabled={busy || !sender?.broadcastCapable} onClick={approveAndSend}><Send className="size-4" aria-hidden />{t.approveAndSend}</Button>
             </div> : <p className="text-xs text-muted-foreground">{t.noEligible}</p>}
+          </div> : null}
+          {dispatch ? <div className="space-y-3 rounded-lg border border-border p-3" data-campaign-dispatch>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div><strong className="text-sm">{t.deliveryResults}</strong><p className="text-xs text-muted-foreground">{t.dispatchState}: {dispatch.dispatch.state}</p></div>
+              <div className="flex gap-2">
+                {(["scheduled", "sending"] as string[]).includes(dispatch.dispatch.state) ? <Button type="button" size="sm" variant="outline" disabled={busy} onClick={() => void run(async () => { await pauseCampaignDispatch(props.workspaceId, dispatch.dispatch.id); await refreshDispatch(dispatch.dispatch.id); })}>{t.pause}</Button> : null}
+                {!(["completed", "cancelled"] as string[]).includes(dispatch.dispatch.state) ? <Button type="button" size="sm" variant="destructive" disabled={busy} onClick={() => void run(async () => {
+                  const ok = await confirmDialog({ title: t.cancelConfirmTitle, description: t.cancelConfirmDescription, confirmLabel: t.cancel, variant: "destructive" });
+                  if (!ok) return; await cancelCampaignDispatch(props.workspaceId, dispatch.dispatch.id); await refreshDispatch(dispatch.dispatch.id);
+                })}>{t.cancel}</Button> : null}
+              </div>
+            </div>
+            <p className="text-sm">{t.accepted}: {dispatch.counts.accepted} · {t.rejected}: {dispatch.counts.rejected} · {t.suppressed}: {dispatch.counts.suppressed} · {t.pending}: {dispatch.counts.pending} · {t.uncertain}: {dispatch.counts.uncertain}</p>
+            <p className="text-xs text-muted-foreground">{t.providerLimitations}</p>
+            {dispatch.counts.uncertain > 0 ? <p className="text-xs text-amber-700 dark:text-amber-300">{t.uncertainRecovery}</p> : null}
           </div> : null}
         </>
       )}

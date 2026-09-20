@@ -71,6 +71,10 @@ const env: OpenApiEnv = {
   NODE_ENV: process.env.NODE_ENV || 'development',
   API_URL: process.env.API_URL || 'http://localhost:4000',
   APP_URL: process.env.APP_URL || 'http://localhost:3003',
+  CAMPAIGN_PUBLIC_ORIGIN: process.env.CAMPAIGN_PUBLIC_ORIGIN,
+  CAMPAIGN_DKIM_DOMAIN: process.env.CAMPAIGN_DKIM_DOMAIN,
+  CAMPAIGN_DKIM_SELECTOR: process.env.CAMPAIGN_DKIM_SELECTOR,
+  CAMPAIGN_DKIM_PRIVATE_KEY: process.env.CAMPAIGN_DKIM_PRIVATE_KEY,
   AUTHED_APP_URL: process.env.AUTHED_APP_URL,
   AUTH_PORTAL_URL: process.env.AUTH_PORTAL_URL,
   OUTPOST_AUTH_EMAIL_ENABLED: !['false', '0'].includes(
