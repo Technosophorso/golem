@@ -11,6 +11,7 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
 import { APP_LOCALES } from '@use-brian/shared'
+import { campaignAttributionContextSchema } from '@use-brian/shared/campaigns'
 import { CrmIntegrationAuthoritySchema, requireCrmIntegrationOperation, type CrmIntegrationOperation } from './integration-authority.js'
 import { AssociationPlanInputSchema, AssociationEventInputSchema } from '../association/domain.js'
 import { CrmConfigCommandSchema, isCrmConfigCommand } from './config-commands.js'
@@ -304,6 +305,7 @@ export const RecordCrmSubmissionCommandSchema = z.object({
   externalIdentity: CrmExternalIdentityClaimSchema.optional(),
   identityProof: CrmIntakeIdentityProofSchema.optional(),
   submittedAt: CrmOperationsInstantSchema.optional(),
+  campaignAttribution: campaignAttributionContextSchema.optional(),
 }).strict()
 export type RecordCrmSubmissionCommand = z.infer<typeof RecordCrmSubmissionCommandSchema>
 

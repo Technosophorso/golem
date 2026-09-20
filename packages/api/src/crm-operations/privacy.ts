@@ -21,6 +21,22 @@ import { CRM_PRIVACY_COVERAGE } from './privacy-coverage.js'
 import { prepareCrmPrivacyCopies, assertCrmPrivacyCopiesResolvable, deleteCrmPrivacyCopies, retireCrmNotificationCopies } from './privacy-copy-resolver.js'
 
 export const CRM_OPERATIONS_PRIVACY_TABLES = [
+  'campaigns',
+  'campaign_placements',
+  'campaign_links',
+  'campaign_sites',
+  'campaign_site_credentials',
+  'campaign_events',
+  'campaign_subject_links',
+  'campaign_conversions',
+  'campaign_conversion_outbox',
+  'campaign_email_dispatches',
+  'campaign_email_recipients',
+  'campaign_email_jobs',
+  'campaign_unsubscribe_tokens',
+  'campaign_email_link_tokens',
+  'campaign_daily_metrics',
+  'campaign_command_receipts',
   'crm_intake_definitions',
   'crm_intake_definition_versions',
   'crm_intake_credentials',
@@ -86,6 +102,12 @@ EXPORT_PROJECTIONS.crm_integration_credentials = [
   'id', 'workspace_id', 'label', 'secret_prefix', 'created_by_user_id',
   'expires_at', 'revoked_at', 'last_used_at', 'created_at',
 ].join(',')
+EXPORT_PROJECTIONS.campaign_site_credentials = 'id,workspace_id,site_id,key_prefix,grants,created_by,created_at,revoked_at'
+EXPORT_PROJECTIONS.campaign_events = 'id,workspace_id,site_id,event_type,evidence_level,link_id,occurred_at,received_at,page_path,referrer_origin,utm_snapshot,metadata,is_test,bot_class,classification_version,expires_at'
+EXPORT_PROJECTIONS.campaign_conversion_outbox = 'id,workspace_id,site_id,outcome_kind,external_outcome_id,state,attempts,available_at,last_error,created_at,updated_at'
+EXPORT_PROJECTIONS.campaign_unsubscribe_tokens = 'id,workspace_id,recipient_id,purpose_key,all_marketing,expires_at,used_at,revoked_at,created_at'
+EXPORT_PROJECTIONS.campaign_email_link_tokens = 'id,workspace_id,recipient_id,link_id,expires_at,revoked_at,created_at'
+EXPORT_PROJECTIONS.campaign_command_receipts = 'workspace_id,actor_kind,actor_reference,result,created_at'
 // Original CSV bytes are a separate multi-subject processing artifact. The
 // legacy operations export includes its inventory, never an implicit blob dump.
 EXPORT_PROJECTIONS.crm_import_sources = [
@@ -179,6 +201,26 @@ export async function redactCrmOperationsForContact(
   await client.query(`SELECT id FROM association_enquiries WHERE workspace_id=$1 AND contact_id=$2 ORDER BY id FOR UPDATE`,
     [workspaceId, contactId])
   await retireCrmIntakeReceipts(client, workspaceId, { contactId })
+
+  // Campaign projections are downstream copies of CRM identity. Cancel queued
+  // copies before deleting linked snapshots so no later worker can recreate
+  // the association from stale payload.
+  await client.query(
+    `UPDATE campaign_conversion_outbox
+        SET state='cancelled',payload='{"erased":true}'::jsonb,payload_hash=repeat('0',64),
+            lease_token=NULL,lease_expires_at=NULL,last_error='subject_erased',updated_at=clock_timestamp()
+      WHERE workspace_id=$1 AND payload->>'contactId'=$2 AND state<>'completed'`,
+    [workspaceId, contactId],
+  )
+  await client.query(
+    `DELETE FROM campaign_events e WHERE e.workspace_id=$1 AND e.session_key IN(
+       SELECT l.session_key FROM campaign_subject_links l
+        WHERE l.workspace_id=$1 AND l.contact_id=$2 AND l.session_key IS NOT NULL
+     )`, [workspaceId, contactId],
+  )
+  await client.query('DELETE FROM campaign_conversions WHERE workspace_id=$1 AND contact_id=$2', [workspaceId, contactId])
+  await client.query('DELETE FROM campaign_subject_links WHERE workspace_id=$1 AND contact_id=$2', [workspaceId, contactId])
+  await client.query('DELETE FROM campaign_email_recipients WHERE workspace_id=$1 AND contact_id=$2', [workspaceId, contactId])
 
   await retireCrmImportCopies(client,workspaceId)
 

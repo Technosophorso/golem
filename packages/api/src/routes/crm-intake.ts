@@ -10,6 +10,7 @@
 
 import express, { Router, type NextFunction, type Request, type Response } from 'express'
 import { z } from 'zod'
+import { campaignAttributionContextSchema } from '@use-brian/shared/campaigns'
 import {
   CrmOperationsError,
   CrmIntakeIdentityProofSchema,
@@ -32,6 +33,7 @@ const BodySchema = z.object({
     subject: z.string().trim().min(1).max(500),
   }).strict().optional(),
   submittedAt: z.string().datetime({ offset: true }).optional(),
+  campaignAttribution: campaignAttributionContextSchema.optional(),
 }).strict()
 
 type RateLimiter = ReturnType<typeof createRateLimiter>

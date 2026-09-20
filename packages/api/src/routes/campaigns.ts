@@ -13,11 +13,15 @@ import {
   campaignManualPublicationSchema,
   campaignSaveObjectSchema,
   campaignSetLinkEnabledSchema,
+  campaignSiteSaveObjectSchema,
   campaignUuidSchema,
 } from '@use-brian/shared/campaigns'
 import { createCampaignService } from '../campaigns/service.js'
 import { createDbCampaignStore } from '../db/campaign-store.js'
+import { createCampaignTrackingStore, type CampaignTrackingStore } from '../db/campaign-tracking-store.js'
 import { getWorkspaceMembershipSystem } from '../db/workspace-store.js'
+import { resolveWorkspaceViewpoint } from '../db/workspace-viewpoint.js'
+import { getEntityById } from '../db/entities-store.js'
 
 const WorkspaceQuery = z.object({ workspaceId: campaignUuidSchema }).strict()
 const ListQuery = WorkspaceQuery.extend({
@@ -34,6 +38,7 @@ const CommandBody = z.object({
     campaignManualPublicationSchema.extend({ kind: z.literal('record_manual_publication') }),
     campaignCreateLinkSchema.extend({ kind: z.literal('create_link') }),
     campaignSetLinkEnabledSchema.extend({ kind: z.literal('set_link_enabled') }),
+    campaignSiteSaveObjectSchema.extend({ kind: z.literal('save_site') }),
   ]),
 }).strict()
 
@@ -81,18 +86,21 @@ function respondError(res: Response, error: unknown): void {
 export function campaignRoutes(options: {
   service?: CampaignServicePort
   reads?: CampaignReadPort
+  trackingStore?: CampaignTrackingStore
   resolveAccess?: (userId: string, workspaceId: string) => Promise<CampaignRouteAccess | null>
+  canReadCrmRecord?: (userId: string, workspaceId: string, recordId: string) => Promise<boolean>
 } = {}): Router {
   const router = Router()
   const store = createDbCampaignStore()
-  const service = options.service ?? createCampaignService(store)
+  const trackingStore = options.trackingStore ?? createCampaignTrackingStore()
+  const service = options.service ?? createCampaignService(store, trackingStore)
   const reads: CampaignReadPort = options.reads ?? {
     listCampaigns: (workspaceId, filters) => store.listCampaigns(workspaceId, filters),
     getCampaign: (workspaceId, campaignId) => store.getCampaign(workspaceId, campaignId),
     listLinks: (workspaceId, campaignId) => store.listLinks(workspaceId, campaignId),
-    getTrackingSetup: async () => ({ state: 'not_installed' }),
-    getResults: async () => ({ state: 'not_installed', reason: 'Tracking not connected' }),
-    getAttribution: async () => ({ state: 'not_installed', conversions: [] }),
+    getTrackingSetup: (workspaceId, siteId) => trackingStore.trackingSetup(workspaceId, siteId),
+    getResults: (workspaceId, campaignId, filters) => trackingStore.results(workspaceId, campaignId, filters),
+    getAttribution: (workspaceId, campaignId, filters) => trackingStore.attribution(workspaceId, campaignId, filters),
     previewAudience: async () => ({ state: 'unavailable', reason: 'Email audience review is not enabled.' }),
     previewEmail: async () => ({ state: 'unavailable', reason: 'Email preview is not enabled.' }),
   }
@@ -104,6 +112,12 @@ export function campaignRoutes(options: {
       role: membership.role,
       canWrite: membership.canDraft,
     } : null
+  })
+  const canReadCrmRecord = options.canReadCrmRecord ?? (async (userId: string, workspaceId: string, recordId: string) => {
+    const viewpoint = await resolveWorkspaceViewpoint(userId, workspaceId)
+    if (!viewpoint) return false
+    const entity = await getEntityById(viewpoint, recordId)
+    return entity?.kind === 'person' || entity?.kind === 'deal'
   })
 
   async function access(req: { userId?: string }, res: Response, workspaceId: string): Promise<CampaignRouteAccess | null> {
@@ -141,12 +155,87 @@ export function campaignRoutes(options: {
     } catch (error) { respondError(res, error) }
   })
 
+  router.get('/sites', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.parse(req.query)
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      res.json(await reads.getTrackingSetup(input.workspaceId))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.get('/contacts/:contactId/attribution', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.extend({ contactId: campaignUuidSchema }).parse({ ...req.query, contactId: req.params.contactId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      if (!await canReadCrmRecord(auth.userId, input.workspaceId, input.contactId)) {
+        return void res.status(404).json({ error: 'not_found' })
+      }
+      res.json(await trackingStore.subjectAttribution(input.workspaceId, input.contactId))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.post('/sites/:siteId/credentials', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.extend({ siteId: campaignUuidSchema }).parse({ ...req.body, siteId: req.params.siteId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      if (auth.role === 'member') throw new CampaignError('forbidden', 'Campaign configuration authority is required.')
+      const { secret, ...credential } = await trackingStore.issueCredential(input.workspaceId, input.siteId, auth.userId)
+      res.status(201).json({ credential: { ...credential, oneTimeSecret: secret } })
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.delete('/sites/:siteId/credentials/:credentialId', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.extend({ siteId: campaignUuidSchema, credentialId: campaignUuidSchema })
+        .parse({ ...req.query, siteId: req.params.siteId, credentialId: req.params.credentialId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      if (auth.role === 'member') throw new CampaignError('forbidden', 'Campaign configuration authority is required.')
+      if (!await trackingStore.revokeCredential(input.workspaceId, input.siteId, input.credentialId)) {
+        throw new CampaignError('not_found', 'Campaign credential not found.')
+      }
+      res.status(204).end()
+    } catch (error) { respondError(res, error) }
+  })
+
   router.get('/:campaignId/links', async (req, res) => {
     try {
       const input = WorkspaceQuery.extend({ campaignId: campaignUuidSchema }).parse({ ...req.query, campaignId: req.params.campaignId })
       const auth = await access(req, res, input.workspaceId)
       if (!auth) return
       res.json({ links: await reads.listLinks(input.workspaceId, input.campaignId) })
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.get('/:campaignId/results', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.extend({
+        campaignId: campaignUuidSchema,
+        model: z.enum(['first_touch', 'last_touch']).default('last_touch'),
+        include_test: z.enum(['true', 'false']).default('false'),
+      }).parse({ ...req.query, campaignId: req.params.campaignId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      res.json(await reads.getResults(input.workspaceId, input.campaignId, {
+        model: input.model,
+        include_test: input.include_test === 'true',
+      }))
+    } catch (error) { respondError(res, error) }
+  })
+
+  router.get('/:campaignId/attribution', async (req, res) => {
+    try {
+      const input = WorkspaceQuery.extend({
+        campaignId: campaignUuidSchema,
+        model: z.enum(['first_touch', 'last_touch']).default('last_touch'),
+        limit: z.coerce.number().int().min(1).max(100).default(50),
+      }).parse({ ...req.query, campaignId: req.params.campaignId })
+      const auth = await access(req, res, input.workspaceId)
+      if (!auth) return
+      res.json(await reads.getAttribution(input.workspaceId, input.campaignId, input))
     } catch (error) { respondError(res, error) }
   })
 

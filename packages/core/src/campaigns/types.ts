@@ -38,7 +38,7 @@ export type CampaignCommand =
   | { kind: 'record_manual_publication'; placementId: string; permalink: string; publishedAt: string; approvedRevision: number }
   | { kind: 'create_link'; campaignId: string; placementId: string; destination: string; utm: CampaignUtm; existingAttribution: 'reject' | 'replace' | 'retain' }
   | { kind: 'set_link_enabled'; linkId: string; enabled: boolean }
-  | { kind: 'save_site'; siteId?: string; name: string; allowedOrigins: string[]; conversionDefinitions: Array<{ key: string; label: string; enabled: boolean }>; storageMode: 'none' | 'first_party'; cookieDomain?: string | null; siteGroupKey?: string | null; rawRetentionDays: number; aggregateRetentionMonths: number }
+  | { kind: 'save_site'; siteId?: string; expectedVersion?: number; name: string; allowedOrigins: string[]; conversionDefinitions: Array<{ key: 'signup_completed' | 'enquiry_submitted' | 'activation_completed'; label: string; enabled: boolean }>; storageMode: 'none' | 'first_party'; cookieDomain?: string | null; siteGroupKey?: string | null; rawRetentionDays: number; aggregateRetentionMonths: number }
   | { kind: 'record_conversion'; conversion: CampaignTrustedConversion }
   | { kind: 'send_test'; campaignId: string; placementId: string; approvedRevision: number; metadata: CampaignEmailMetadata; recipients: string[] }
   | { kind: 'prepare_dispatch'; campaignId: string; placementId: string; approvedRevision: number; metadata: CampaignEmailMetadata; scheduledAt?: string | null; recipients: Array<{ contactId: string; address: string; personalization: Record<string, string>; eligibility: Record<string, unknown> }> }

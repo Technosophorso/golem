@@ -149,6 +149,42 @@ export const campaignTrustedConversionSchema = z.object({
 })
 export type CampaignTrustedConversion = z.infer<typeof campaignTrustedConversionSchema>
 
+export const campaignAllowedOriginSchema = z.string().url().max(500).refine((value) => {
+  const url = new URL(value)
+  return ['http:', 'https:'].includes(url.protocol)
+    && !url.username && !url.password
+    && url.pathname === '/' && !url.search && !url.hash
+}, 'An HTTP(S) origin without a path, query, credentials, or fragment is required')
+
+export const campaignSiteSaveObjectSchema = z.object({
+  siteId: campaignUuidSchema.optional(),
+  expectedVersion: z.number().int().positive().optional(),
+  name: z.string().trim().min(1).max(200),
+  allowedOrigins: z.array(campaignAllowedOriginSchema).min(1).max(CAMPAIGN_LIMITS.originsPerSite),
+  conversionDefinitions: z.array(z.object({
+    key: campaignConversionKindSchema,
+    label: z.string().trim().min(1).max(200),
+    enabled: z.boolean(),
+  }).strict()).max(CAMPAIGN_LIMITS.conversionDefinitionsPerSite),
+  storageMode: campaignStorageModeSchema,
+  cookieDomain: z.string().trim().min(1).max(253).regex(/^[A-Za-z0-9.-]+$/).nullable().optional(),
+  siteGroupKey: campaignStableKeySchema.nullable().optional(),
+  rawRetentionDays: z.number().int().min(1).max(CAMPAIGN_LIMITS.rawRetentionDays).default(CAMPAIGN_LIMITS.rawRetentionDays),
+  aggregateRetentionMonths: z.number().int().min(1).max(CAMPAIGN_LIMITS.aggregateRetentionMonths).default(CAMPAIGN_LIMITS.aggregateRetentionMonths),
+}).strict()
+export const campaignSiteSaveSchema = campaignSiteSaveObjectSchema.superRefine((value, ctx) => {
+  if (value.storageMode === 'first_party' && value.cookieDomain && !value.siteGroupKey) {
+    ctx.addIssue({ code: 'custom', path: ['siteGroupKey'], message: 'A shared cookie domain requires a site group key' })
+  }
+  if (new Set(value.allowedOrigins).size !== value.allowedOrigins.length) {
+    ctx.addIssue({ code: 'custom', path: ['allowedOrigins'], message: 'Allowed origins must be unique' })
+  }
+  if (new Set(value.conversionDefinitions.map(item => item.key)).size !== value.conversionDefinitions.length) {
+    ctx.addIssue({ code: 'custom', path: ['conversionDefinitions'], message: 'Conversion definitions must be unique' })
+  }
+})
+export type CampaignSiteSave = z.infer<typeof campaignSiteSaveSchema>
+
 export const CAMPAIGN_PERSONALIZATION_FIELDS = ['first_name', 'last_name', 'display_name', 'company_name'] as const
 export const campaignPersonalizationFieldSchema = z.enum(CAMPAIGN_PERSONALIZATION_FIELDS)
 export const campaignPersonalizationSpecSchema = z.object({

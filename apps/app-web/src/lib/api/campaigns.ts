@@ -25,6 +25,29 @@ export type CampaignPlacement = {
   publishedAt: string | null;
 };
 
+export type CampaignResults = {
+  state: "not_installed" | "disabled" | "unsupported" | "delayed" | "failed" | "empty" | "available";
+  reason?: string;
+  rawRedirectRequests?: number;
+  filteredRedirectRequests?: number;
+  pageViews?: number;
+  sessions?: number | null;
+  visitors?: number | null;
+  verifiedConversions?: number;
+  denominator?: "sessions" | "unavailable";
+  limitations?: string[];
+};
+
+export type CampaignSubjectAttribution = {
+  state: "empty" | "available";
+  limitation: string;
+  conversions: Array<{
+    id: string; conversionKind: string; occurredAt: string; conversionEvidence: string;
+    campaignId: string | null; campaignName: string | null; channel: string | null;
+    placementKey: string | null; destination: string | null; attribution: Record<string, unknown>;
+  }>;
+};
+
 type CampaignLink = {
   id: string;
   placementId: string;
@@ -66,4 +89,14 @@ export async function runCampaignCommand<T>(input: {
     body: JSON.stringify(input),
   });
   return body.result;
+}
+
+export async function getCampaignResults(workspaceId: string, campaignId: string): Promise<CampaignResults> {
+  const query = new URLSearchParams({ workspaceId });
+  return campaignJson<CampaignResults>(`/api/campaigns/${encodeURIComponent(campaignId)}/results?${query}`);
+}
+
+export async function getCampaignSubjectAttribution(workspaceId: string, contactId: string): Promise<CampaignSubjectAttribution> {
+  const query = new URLSearchParams({ workspaceId });
+  return campaignJson<CampaignSubjectAttribution>(`/api/campaigns/contacts/${encodeURIComponent(contactId)}/attribution?${query}`);
 }

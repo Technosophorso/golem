@@ -5,9 +5,11 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { ExternalLink, Link2, Megaphone, Plus } from "lucide-react";
 import {
   getCampaign,
+  getCampaignResults,
   listCampaigns,
   runCampaignCommand,
   type CampaignPlacement,
+  type CampaignResults,
   type CampaignSummary,
 } from "@/lib/api/campaigns";
 import { useT } from "@/lib/i18n/client";
@@ -34,6 +36,7 @@ function slug(value: string): string {
 export function FeedCampaigns(props: {
   workspaceId: string;
   initialCampaigns?: CampaignSummary[];
+  initialResults?: CampaignResults;
 }) {
   const t = useT().feedPage;
   const tc = t.campaigns;
@@ -41,6 +44,7 @@ export function FeedCampaigns(props: {
   const [selectedId, setSelectedId] = useState<string | null>(props.initialCampaigns?.[0]?.id ?? null);
   const [selected, setSelected] = useState<CampaignSummary | null>(props.initialCampaigns?.[0] ?? null);
   const [loading, setLoading] = useState(props.initialCampaigns === undefined);
+  const [results, setResults] = useState<CampaignResults | null>(props.initialResults ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState("");
@@ -91,6 +95,16 @@ export function FeedCampaigns(props: {
     // The selected object is intentionally not a dependency: it is the result.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [props.initialCampaigns, props.workspaceId, selectedId, tc.loadFailed]);
+
+  useEffect(() => {
+    if (!selectedId || props.initialResults) return;
+    let cancelled = false;
+    setResults(null);
+    getCampaignResults(props.workspaceId, selectedId)
+      .then((value) => { if (!cancelled) setResults(value); })
+      .catch(() => { if (!cancelled) setResults({ state: "failed", reason: tc.resultsFailed }); });
+    return () => { cancelled = true; };
+  }, [props.initialResults, props.workspaceId, selectedId, tc.resultsFailed]);
 
   const placements = selected?.placements ?? [];
   const activePlacementId = placementId || placements[0]?.id || "";
@@ -245,7 +259,16 @@ export function FeedCampaigns(props: {
                 <p className="text-sm text-muted-foreground">{selected.objective}</p>
                 <div className="mt-3 rounded-lg bg-muted/60 p-3 text-sm">
                   <strong>{tc.resultsTitle}</strong>
-                  <p className="mt-1 text-muted-foreground">{tc.trackingNotConnected}</p>
+                  {!results ? <p className="mt-1 text-muted-foreground">{tc.resultsLoading}</p>
+                    : results.state === "available" ? (
+                      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                        <Result label={tc.pageViews} value={results.pageViews ?? 0} />
+                        <Result label={tc.sessions} value={results.sessions ?? tc.unavailable} />
+                        <Result label={tc.visitors} value={results.visitors ?? tc.unavailable} />
+                        <Result label={tc.verifiedConversions} value={results.verifiedConversions ?? 0} />
+                        <p className="col-span-full mt-1 text-xs text-muted-foreground">{tc.observedLimitation}</p>
+                      </div>
+                    ) : <p className="mt-1 text-muted-foreground">{results.reason ?? (results.state === "not_installed" ? tc.trackingNotConnected : tc.resultsUnavailable)}</p>}
                 </div>
               </div>
 
@@ -306,4 +329,8 @@ export function FeedCampaigns(props: {
       </div>
     </main>
   );
+}
+
+function Result({ label, value }: { label: string; value: number | string }) {
+  return <div><span className="block text-xs text-muted-foreground">{label}</span><strong className="text-base tabular-nums">{value}</strong></div>;
 }

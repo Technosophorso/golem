@@ -27,6 +27,7 @@ describe("[COMP:app-web/feed-campaigns] native campaigns in Feed", () => {
             placements: [],
             links: [],
           }]}
+          initialResults={{ state: "not_installed", reason: en.feedPage.campaigns.trackingNotConnected }}
         />
       </I18nProvider>,
     );
@@ -38,6 +39,22 @@ describe("[COMP:app-web/feed-campaigns] native campaigns in Feed", () => {
     expect(html).toContain(en.feedPage.campaigns.manualHint);
     expect(html).not.toContain("OAuth");
     expect(html).toContain("lg:grid-cols");
+  });
+
+  it("shows native counts and names unavailable continuity instead of inventing a rate", () => {
+    const html = renderToString(
+      <I18nProvider locale="en" dict={dict}>
+        <FeedCampaigns workspaceId="00000000-0000-4000-8000-000000000001" initialCampaigns={[{
+          id: "00000000-0000-4000-8000-000000000010", name: "Measured campaign", objective: "Measure",
+          state: "active", timezone: "UTC", primaryConversion: "enquiry_submitted", version: 1,
+        }]} initialResults={{ state: "available", pageViews: 12, sessions: null, visitors: null,
+          verifiedConversions: 2, denominator: "unavailable", limitations: [] }} />
+      </I18nProvider>,
+    );
+    expect(html).toContain("12");
+    expect(html).toContain(en.feedPage.campaigns.verifiedConversions);
+    expect(html).toContain(en.feedPage.campaigns.unavailable);
+    expect(html).toContain(en.feedPage.campaigns.observedLimitation);
   });
 
   it("renders the create path and an honest empty state", () => {

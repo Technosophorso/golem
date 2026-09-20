@@ -256,6 +256,7 @@ import {
 } from './crm-operations/domain-event-worker.js'
 import { createDbCrmOperationsStore } from './db/crm-operations-store.js'
 import { createDbCrmIntakeReadStore } from './db/crm-intake-store.js'
+import { createCampaignConversionOutboxWorker } from './campaigns/conversion-outbox.js'
 import { getCrmEmailReviewContext } from './db/crm-r2.js'
 import { bootstrapHistoricalCrmIdentityState } from './db/crm-identity-store.js'
 import { resolveWorkspaceViewpoint } from './db/workspace-viewpoint.js'
@@ -304,6 +305,7 @@ import { invitationRoutes } from './routes/invitations.js'
 import { createWorkspaceInvitationStore } from './db/workspace-invitation-store.js'
 import { createWorkspaceStore, getWorkspaceInboxRetentionDays, getWorkspaceMembershipSystem, getWorkspaceMembershipWithClearanceSystem, getWorkspacePlan, getWorkspaceTranscriptionPrefs, setWorkspaceTranscriptionPrefs } from './db/workspace-store.js'
 import { createDbCampaignStore } from './db/campaign-store.js'
+import { createCampaignTrackingStore } from './db/campaign-tracking-store.js'
 import { createCampaignService } from './campaigns/service.js'
 import { createWorkspaceAuditStore } from './db/workspace-audit-store.js'
 import { createWorkspaceDirectoryStore } from './db/workspace-directory-store.js'
@@ -2551,16 +2553,17 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
 
   const allTools = buildAllTools()
   const campaignStore = createDbCampaignStore()
-  const campaignService = createCampaignService(campaignStore)
+  const campaignTrackingStore = createCampaignTrackingStore()
+  const campaignService = createCampaignService(campaignStore, campaignTrackingStore)
   const campaignTools = createCampaignTools({
     service: campaignService,
     reads: {
       listCampaigns: (workspaceId, filters) => campaignStore.listCampaigns(workspaceId, filters),
       getCampaign: (workspaceId, campaignId) => campaignStore.getCampaign(workspaceId, campaignId),
       listLinks: (workspaceId, campaignId) => campaignStore.listLinks(workspaceId, campaignId),
-      getTrackingSetup: async () => ({ state: 'not_installed' }),
-      getResults: async () => ({ state: 'not_installed', reason: 'Tracking not connected' }),
-      getAttribution: async () => ({ state: 'not_installed', conversions: [] }),
+      getTrackingSetup: (workspaceId, siteId) => campaignTrackingStore.trackingSetup(workspaceId, siteId),
+      getResults: (workspaceId, campaignId, filters) => campaignTrackingStore.results(workspaceId, campaignId, filters),
+      getAttribution: (workspaceId, campaignId, filters) => campaignTrackingStore.attribution(workspaceId, campaignId, filters),
       previewAudience: async () => ({ state: 'unavailable', reason: 'Email audience review is not enabled.' }),
       previewEmail: async () => ({ state: 'unavailable', reason: 'Email preview is not enabled.' }),
     },
@@ -6930,6 +6933,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     ),
   })
   if (runWorkers) crmDomainEventWorker.start()
+  const campaignConversionWorker = createCampaignConversionOutboxWorker({
+    onError: (_error, lease) => console.warn(`[campaign-conversions] ${lease?.id ?? '(tick)'} projection failed; retry is scheduled.`),
+  })
+  if (runWorkers) campaignConversionWorker.start()
   const crmRetentionWorker = createCrmRetentionWorker({ onError: () => console.warn('[crm-retention] Retention run failed; inspect the workspace run report.') })
   if (runWorkers) crmRetentionWorker.start()
   const crmEntitlementWorker=createCrmEntitlementWorker({onError:()=>console.warn('[crm-entitlement-expiry] A due grant could not be processed; a later scan will retry.')})
@@ -8574,6 +8581,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     programmaticBatchWorker?.stop()
     runQueueWorker.stop()
     crmDomainEventWorker.stop()
+    campaignConversionWorker.stop()
     crmRetentionWorker.stop()
     crmEntitlementWorker.stop()
     associationLifecycleWorker.stop()

@@ -13,15 +13,20 @@ import {
   campaignHttpUrlSchema,
   campaignManualPublicationSchema,
   campaignSaveSchema,
+  campaignSiteSaveSchema,
 } from '@use-brian/shared/campaigns'
 import { campaignOpaqueToken, createDbCampaignStore, type CampaignStore } from '../db/campaign-store.js'
+import { createCampaignTrackingStore, type CampaignTrackingStore } from '../db/campaign-tracking-store.js'
 import { buildCampaignDestination } from './links.js'
 
 function actorUserId(context: CampaignContext): string | null {
   return context.actor.userId ?? null
 }
 
-export function createCampaignService(store: CampaignStore = createDbCampaignStore()): CampaignServicePort {
+export function createCampaignService(
+  store: CampaignStore = createDbCampaignStore(),
+  trackingStore: CampaignTrackingStore = createCampaignTrackingStore(),
+): CampaignServicePort {
   return {
     async execute(context, request) {
       if (!request.idempotencyKey || request.idempotencyKey.length < 8 || request.idempotencyKey.length > 200) {
@@ -95,9 +100,11 @@ export function createCampaignService(store: CampaignStore = createDbCampaignSto
             await store.setLinkEnabled(client, context.workspaceId, command.linkId, command.enabled)
             return { linkId: command.linkId, enabled: command.enabled }
           }
-          case 'save_site':
+          case 'save_site': {
             requireCampaignAuthority(context, 'configure', { siteId: command.siteId })
-            throw new CampaignError('unavailable', 'Campaign tracking configuration is disabled until Phase 2 acceptance passes.')
+            const { kind: _kind, ...input } = command
+            return { site: await trackingStore.saveSite(client, context.workspaceId, actorUserId(context), campaignSiteSaveSchema.parse(input)) }
+          }
           case 'record_conversion':
             throw new CampaignError('forbidden', 'Trusted conversions require a scoped site credential or committed CRM outcome.')
           case 'send_test':

@@ -371,8 +371,8 @@ BEGIN
   IF NEW.contact_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM entities WHERE id=NEW.contact_id AND workspace_id=NEW.workspace_id AND kind='person') THEN
     RAISE EXCEPTION 'campaign contact workspace mismatch' USING ERRCODE='23514';
   END IF;
-  IF TG_TABLE_NAME='campaign_conversions' AND NEW.deal_id IS NOT NULL
-    AND NOT EXISTS(SELECT 1 FROM entities WHERE id=NEW.deal_id AND workspace_id=NEW.workspace_id AND kind='deal') THEN
+  IF TG_TABLE_NAME='campaign_conversions' AND (to_jsonb(NEW)->>'deal_id') IS NOT NULL
+    AND NOT EXISTS(SELECT 1 FROM entities WHERE id=(to_jsonb(NEW)->>'deal_id')::uuid AND workspace_id=NEW.workspace_id AND kind='deal') THEN
     RAISE EXCEPTION 'campaign deal workspace mismatch' USING ERRCODE='23514';
   END IF;
   RETURN NEW;
@@ -491,5 +491,41 @@ CREATE POLICY campaign_daily_metrics_member_read ON campaign_daily_metrics FOR S
   USING(workspace_id IN(SELECT workspace_id FROM workspace_members WHERE user_id=current_setting('app.current_user_id',true)::uuid));
 CREATE POLICY campaign_command_receipts_member_read ON campaign_command_receipts FOR SELECT
   USING(workspace_id IN(SELECT workspace_id FROM workspace_members WHERE user_id=current_setting('app.current_user_id',true)::uuid));
+
+-- Campaign writes participate in the same workspace privacy admission lock as
+-- CRM. This fences collectors and workers while export/erasure holds the
+-- exclusive lock and prevents a leased projection from resurrecting a subject.
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaigns
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_placements
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_links
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_sites
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_site_credentials
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_events
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_subject_links
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_conversions
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_conversion_outbox
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_email_dispatches
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_email_recipients
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_email_jobs
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_unsubscribe_tokens
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_email_link_tokens
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_daily_metrics
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
+CREATE TRIGGER crm_privacy_write_admission BEFORE INSERT OR UPDATE OR DELETE ON campaign_command_receipts
+  FOR EACH ROW EXECUTE FUNCTION crm_privacy_guard_write();
 
 COMMIT;
