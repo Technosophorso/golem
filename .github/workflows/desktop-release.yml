@@ -84,6 +84,8 @@ jobs:
           node-version: 22
       - name: Install pinned dependencies
         run: pnpm install --frozen-lockfile
+      - name: Build desktop workspace dependencies
+        run: pnpm --filter "@use-brian/app-desktop^..." run build
       - name: Test desktop release and updater contracts
         run: pnpm --filter @use-brian/app-desktop test
       - name: Build, sign and notarize the complete desktop app
