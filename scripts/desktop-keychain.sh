@@ -5,8 +5,13 @@ set +x
 
 DESKTOP_SIGNING_DIR=""
 DESKTOP_SIGNING_KEYCHAIN=""
+DESKTOP_SIGNING_RESTORE_SEARCH_LIST=0
+DESKTOP_SIGNING_SEARCH_LIST_ARGS=(list-keychains -d user -s)
 
 desktop_keychain_cleanup() {
+  if [[ "$DESKTOP_SIGNING_RESTORE_SEARCH_LIST" == "1" ]]; then
+    desktop_keychain_security "${DESKTOP_SIGNING_SEARCH_LIST_ARGS[@]}" || true
+  fi
   if [[ -n "$DESKTOP_SIGNING_KEYCHAIN" ]]; then
     security delete-keychain "$DESKTOP_SIGNING_KEYCHAIN" >/dev/null 2>&1 || true
   fi
@@ -15,6 +20,8 @@ desktop_keychain_cleanup() {
   fi
   DESKTOP_SIGNING_KEYCHAIN=""
   DESKTOP_SIGNING_DIR=""
+  DESKTOP_SIGNING_RESTORE_SEARCH_LIST=0
+  DESKTOP_SIGNING_SEARCH_LIST_ARGS=(list-keychains -d user -s)
 }
 
 # security errors can contain command arguments. Never echo their secret values.
@@ -29,7 +36,7 @@ desktop_keychain_prepare() {
   DESKTOP_SIGNING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/usebrian-signing.XXXXXX")" || return 1
   DESKTOP_SIGNING_KEYCHAIN="$DESKTOP_SIGNING_DIR/signing.keychain-db"
   local certificate="$DESKTOP_SIGNING_DIR/certificate.p12"
-  local keychain_password identities
+  local keychain_password identities keychains keychain
   keychain_password="$(node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))')" || return 1
 
   # Node reads the secret from the environment, never from command arguments.
@@ -57,6 +64,22 @@ NODE
     return 1
   fi
   chmod 600 "$certificate" || return 1
+  # codesign also needs the private key's keychain in the user search list.
+  # Capture before create-keychain, which can itself change that list on macOS.
+  if ! keychains="$(security list-keychains -d user 2>/dev/null)"; then
+    echo "error: could not read the signing keychain search list." >&2
+    return 1
+  fi
+  while IFS= read -r keychain; do
+    [[ -z "$keychain" ]] && continue
+    if [[ "$keychain" =~ ^[[:space:]]*\"(.*)\"[[:space:]]*$ ]]; then
+      DESKTOP_SIGNING_SEARCH_LIST_ARGS+=("${BASH_REMATCH[1]}")
+    else
+      echo "error: could not parse the signing keychain search list." >&2
+      return 1
+    fi
+  done <<< "$keychains"
+  DESKTOP_SIGNING_RESTORE_SEARCH_LIST=1
   desktop_keychain_security create-keychain -p "$keychain_password" "$DESKTOP_SIGNING_KEYCHAIN" || return 1
   desktop_keychain_security unlock-keychain -p "$keychain_password" "$DESKTOP_SIGNING_KEYCHAIN" || return 1
   desktop_keychain_security set-keychain-settings -lut 21600 "$DESKTOP_SIGNING_KEYCHAIN" || return 1
@@ -64,6 +87,7 @@ NODE
     -T /usr/bin/codesign -T /usr/bin/productbuild -P "$CSC_KEY_PASSWORD" || return 1
   desktop_keychain_security set-key-partition-list -S apple-tool:,apple: -s \
     -k "$keychain_password" "$DESKTOP_SIGNING_KEYCHAIN" || return 1
+  desktop_keychain_security "${DESKTOP_SIGNING_SEARCH_LIST_ARGS[@]}" "$DESKTOP_SIGNING_KEYCHAIN" || return 1
   identities="$(security find-identity -v -p codesigning "$DESKTOP_SIGNING_KEYCHAIN" 2>/dev/null)" || return 1
   CSC_NAME="$(printf '%s\n' "$identities" | awk '/Developer ID Application/ {print $2; exit}')"
   if [[ -z "$CSC_NAME" ]]; then
