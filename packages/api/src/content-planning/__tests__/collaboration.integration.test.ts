@@ -490,6 +490,37 @@ describe('[COMP:feed/draft-generation] real database generation lifecycle', () =
 
 
 describe('[COMP:feed/draft-generation] scoped tools and decision provenance', () => {
+  it('saves coalesced placeholder keystrokes atomically, replays once, and undoes the whole batch', async () => {
+    const f = await generationFixture()
+    const original = { type: 'generationPlaceholder' as const, attrs: f.slot }
+    const first = { ...original, attrs: { ...f.slot, brief: 'A', briefRevision: 1 } }
+    const second = { ...original, attrs: { ...f.slot, brief: 'AI', briefRevision: 2 } }
+    const edit = (preimage: typeof original, replacement: typeof original): FeedEdit => ({ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage, replacement: [replacement] })
+    const commands: FeedCommand[] = [{ kind: 'edit', edits: [edit(original, first), edit(first, second)] }]
+    const mutationId = randomUUID()
+    const receipt = await f.command(commands, 3, f.actor, mutationId)
+    expect(receipt.revision).toBe(4)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual(second)
+    expect(await f.command(commands, 3, f.actor, mutationId)).toEqual(receipt)
+    await f.command([{ kind: 'undo', revision: 4 }], 4)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual(original)
+    expect(f.call).not.toHaveBeenCalled()
+  })
+  it('rejects a skipped placeholder counter inside a batch even when the final counter looks valid', async () => {
+    const f = await generationFixture()
+    const original = { type: 'generationPlaceholder' as const, attrs: f.slot }
+    const skipped = { ...original, attrs: { ...f.slot, brief: 'Skipped increment', briefRevision: 0 } }
+    const final = { ...original, attrs: { ...f.slot, brief: 'Final value', briefRevision: 1 } }
+    const edit = (preimage: typeof original, replacement: typeof original): FeedEdit => ({ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage, replacement: [replacement] })
+    await expect(f.command([{ kind: 'edit', edits: [edit(original, skipped), edit(skipped, final)] }], 3)).rejects.toMatchObject({ code: 'placeholder_brief_revision_conflict' })
+    expect((await getFeedCollaboration(f.actor)).copy!.revision).toBe(3)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual(original)
+    await expect(f.command([{ kind: 'edit', edits: [
+      { kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: original, replacement: [] },
+      { kind: 'insertBlock', segmentId: f.segmentId, afterId: null, node: skipped },
+    ] }], 3)).rejects.toMatchObject({ code: 'placeholder_brief_revision_conflict' })
+  })
+
   it('scenarios 6 and 7: Brian edits the selected slot through shared commands and duplicates never inherit a run', async () => {
     const f = await generationFixture()
     const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 3, target: { kind: 'block', segmentId: f.segmentId, blockId: f.slotId } })

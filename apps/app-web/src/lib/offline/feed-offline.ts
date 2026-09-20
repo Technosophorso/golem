@@ -167,7 +167,7 @@ async function replay() {
   const owner = feedOwner();
   if (!owner || !navigator.onLine) return;
   for (const post of await readLocalFeedPosts()) {
-    if (!post.dirty || post.error === "conflict") continue;
+    if (!post.dirty || post.error) continue;
     if (!navigator.onLine || feedOwner() !== owner) return;
     try {
       if (!post.newSession && post.collaborationQueue?.length) { await replayFeedCommands(post, owner); continue; }
@@ -220,6 +220,21 @@ async function replay() {
   }
 }
 
+/** Retry the exact saved request; never change its revision, identity or preimages. */
+export async function retryFeedWorkingCopy(assistantId: string, sessionId: string): Promise<void> {
+  const owner = ownerRequired(); const id = recordKey(assistantId, sessionId);
+  if (!navigator.onLine) return;
+  if (flushing) await flushing;
+  await idbUpdate<Records>(key(owner), old => {
+    if (feedOwner() !== owner) throw new Error('Local identity changed');
+    const current = old?.[id];
+    if (!current?.dirty || !current.error) return old ?? {};
+    return { ...old, [id]: { ...current, error: undefined } };
+  });
+  changed();
+  await flushFeedWorkingCopies();
+}
+
 /** Resolve a conflict without overwriting the shared copy. */
 export async function forkLocalFeedPost(post: LocalFeedPost) {
   const owner = ownerRequired();
@@ -265,10 +280,10 @@ async function replayFeedCommands(post: LocalFeedPost, owner: string) {
     const records = await idbUpdate<Records>(key(owner), old => {
       if (feedOwner() !== owner) throw new Error('Local identity changed');
       const current = old?.[id]; const next = current?.collaborationQueue?.[0];
-      if (!current || !next || current.error === 'conflict') return old ?? {};
+      if (!current || !next || current.error) return old ?? {};
       return { ...old, [id]: { ...current, commandFlight: current.commandFlight ?? { ...next, expectedRevision: current.revision } } };
     });
-    const flight = records[id]?.commandFlight; if (!flight) return;
+    const flight = records[id]?.commandFlight; if (!flight || records[id]?.error) return;
     const response = await authFetch(`${FEED_API_URL}/api/distribution/${post.assistantId}/draft-sessions/${post.session.id}/commands`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(10_000), body: JSON.stringify(flight),
     });

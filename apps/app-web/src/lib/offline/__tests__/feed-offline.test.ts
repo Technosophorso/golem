@@ -18,7 +18,7 @@ import { feedCachedJson } from "../feed-cache";
 import { fetchFeedDraftSessions } from "@/lib/api/feed";
 import { blankFeedContent, createLocalFeedPost, patchFeedWorkingCopy, readLocalFeedPost,
   readLocalFeedPosts, flushFeedWorkingCopies, forkLocalFeedPost, loadFeedWorkingCopy,
-  readFeedNewPostForm, writeFeedNewPostForm, ensureFeedComposition } from "../feed-offline";
+  readFeedNewPostForm, writeFeedNewPostForm, ensureFeedComposition, retryFeedWorkingCopy } from "../feed-offline";
 
 const assistant = "assistant-1";
 const content = () => ({ ...blankFeedContent(), title: "Launch notes", text: "First paragraph" });
@@ -156,6 +156,36 @@ function commandReply(_url: unknown, init?: RequestInit) {
   return Promise.resolve(reply({ receipt: { mutationId: request.mutationId, revision: request.expectedRevision + request.commands.filter((c: {kind: string}) => ['upgrade', 'edit', 'context'].includes(c.kind)).length, sequence: 0, threadIds: [], suggestionIds: [] } }));
 }
 describe('[COMP:app-web/feed-offline] automatic composition preparation', () => {
+  it.each([400, 403, 404, 409])('explicitly retries a rejected command (%s) without changing its payload or losing later local edits', async status => {
+    const post = await structuredPost();
+    await queueFeedCommands(assistant, post.session.id, [{ kind: 'context', title: 'First title' }]);
+    vi.mocked(authFetch).mockReset().mockResolvedValue(reply({ error: 'rejected_edit' }, status));
+    await flushFeedWorkingCopies();
+    const rejected = vi.mocked(authFetch).mock.calls[0][1]!.body;
+    await queueFeedCommands(assistant, post.session.id, [{ kind: 'context', title: 'Later title' }]);
+    await flushFeedWorkingCopies(); expect(authFetch).toHaveBeenCalledOnce();
+    vi.mocked(authFetch).mockImplementation(commandReply);
+    await retryFeedWorkingCopy(assistant, post.session.id);
+    expect(vi.mocked(authFetch).mock.calls[1][1]!.body).toBe(rejected);
+    expect(authFetch).toHaveBeenCalledTimes(3);
+    expect(await readLocalFeedPost(assistant, post.session.id)).toMatchObject({ dirty: false, revision: post.revision + 2, content: { title: 'Later title' }, collaborationQueue: [] });
+  });
+  it('keeps a true conflict paused after explicit retry and does not rebase or overwrite it', async () => {
+    const post = await structuredPost();
+    await queueFeedCommands(assistant, post.session.id, [{ kind: 'context', title: 'Local title' }]);
+    vi.mocked(authFetch).mockReset().mockResolvedValue(reply({ error: 'revision_conflict' }, 409));
+    await flushFeedWorkingCopies();
+    const rejected = vi.mocked(authFetch).mock.calls[0][1]!.body;
+    await retryFeedWorkingCopy(assistant, post.session.id);
+    await flushFeedWorkingCopies();
+    expect(authFetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(authFetch).mock.calls[1][1]!.body).toBe(rejected);
+    expect(await readLocalFeedPost(assistant, post.session.id)).toMatchObject({ dirty: true, error: 'conflict', revision: post.revision, content: { title: 'Local title' } });
+    vi.stubGlobal('navigator', { onLine: false });
+    await retryFeedWorkingCopy(assistant, post.session.id);
+    expect(authFetch).toHaveBeenCalledTimes(2);
+  });
+
   function transport(url: unknown, init?: RequestInit) {
     return String(url).endsWith('/commands') ? commandReply(url, init) : syncReply(url, init);
   }

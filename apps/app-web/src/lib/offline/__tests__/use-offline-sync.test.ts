@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Unit tests for the collab-socket signal store in `use-offline-sync` — the
  * seam doc-shell publishes through so the WorkspaceChrome-mounted driver can
@@ -15,7 +16,14 @@ vi.mock("@/lib/api/views", () => ({
   setViewClearance: vi.fn(),
 }));
 
+import { act, createElement } from 'react';
+import { createRoot } from 'react-dom/client';
+const state = vi.hoisted(() => ({ posts: [] as Array<{ dirty: boolean; error?: 'conflict' | 'blocked' }> }));
+vi.mock('../feed-offline', () => ({ FEED_LOCAL_CHANGED: 'feed:local-changed', flushFeedWorkingCopies: vi.fn(async () => {}), readLocalFeedPosts: async () => state.posts }));
+vi.mock('../offline-pages', () => ({ LOCAL_PAGES_CHANGED: 'pages:local-changed', flushLocalPages: vi.fn(async () => {}), readLocalPages: async () => [] }));
+vi.mock('../offline-writes', () => ({ setOnline: vi.fn(), getOnline: () => true, subscribeOnline: () => () => {}, flushWriteQueue: vi.fn(async () => {}), subscribePendingCount: () => () => {} }));
 import {
+  useOfflineSync,
   publishCollabConnected,
   getCollabConnected,
   initialNavigatorOnline,
@@ -45,5 +53,22 @@ describe("[COMP:app-web/use-offline-sync] collab-socket signal store", () => {
     publishCollabConnected(true);
     publishCollabConnected(true);
     expect(getCollabConnected()).toBe(true);
+  });
+});
+
+
+describe('[COMP:app-web/use-offline-sync] Feed save status', () => {
+  it('distinguishes paused Feed work from retryable edits and clears it after recovery', async () => {
+    (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    state.posts = [{ dirty: true, error: 'conflict' }, { dirty: true }, { dirty: false }];
+    const container = document.createElement('div'); const root = createRoot(container);
+    function Probe() { const state = useOfflineSync(); return createElement('span', null, `${state.pending}:${state.paused}`); }
+    try {
+      await act(async () => { root.render(createElement(Probe)); });
+      expect(container.textContent).toBe('2:1');
+      state.posts = [{ dirty: false }, { dirty: true }];
+      await act(async () => { window.dispatchEvent(new Event('feed:local-changed')); });
+      expect(container.textContent).toBe('1:0');
+    } finally { await act(async () => root.unmount()); }
   });
 });

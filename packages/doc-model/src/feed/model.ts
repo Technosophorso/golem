@@ -232,7 +232,7 @@ function targetSiblings(composition: FeedComposition, segmentId: string, parentI
   if (parentId) { const { node } = locateFeedNode(composition, segmentId, parentId); if ('content' in node && node.type !== 'paragraph' && node.type !== 'heading') return node.content; throw new FeedCompositionError('invalid_target') }
   const segment = composition.segments.find(s => s.id === segmentId); if (!segment) throw new FeedCompositionError('invalid_target'); return segment.content
 }
-export function applyFeedEdits(input: FeedComposition, edits: FeedEdit[], anchors: FeedAnchor[] = []): { composition: FeedComposition; inverse: FeedEdit[]; anchors: FeedAnchor[] } {
+export function applyFeedEdits(input: FeedComposition, edits: FeedEdit[], anchors: FeedAnchor[] = [], validateTransition?: (before: FeedComposition, after: FeedComposition) => void): { composition: FeedComposition; inverse: FeedEdit[]; anchors: FeedAnchor[] } {
   let composition = structuredClone(validateFeedComposition(input)); let mapped = structuredClone(anchors); let inverse: FeedEdit[] = []
   for (const edit of edits) {
     const before = structuredClone(composition); const undo: FeedEdit[] = []
@@ -297,6 +297,7 @@ export function applyFeedEdits(input: FeedComposition, edits: FeedEdit[], anchor
       const [segment] = composition.segments.splice(at, 1)
       undo.push({ kind: 'insertSegment', afterId: at ? composition.segments[at - 1]!.id : null, segment: segment! })
     }
+    validateTransition?.(before, composition)
     mapped = mapped.map(anchor => mapAnchor(anchor, edit, before, composition)); inverse = [...undo, ...inverse]
   }
   composition = validateFeedComposition(composition)

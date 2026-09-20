@@ -45,6 +45,19 @@ describe('[COMP:feed/composition-model] canonical conversion and transaction ope
     expect(projectFeed(applied.composition).text).toBe('Keep **bold**.\n\nFirst improvement.\n\nSecond improvement.\n\nKeep ending.')
     expect(applyFeedEdits(applied.composition, applied.inverse).composition).toEqual(composition)
   })
+  it('validates intermediate transitions and leaves the source unchanged when a batch is rejected', () => {
+    const source = imported('start');
+    const first = replace(source, 0, 0, 5, 'middle');
+    const mid = applyFeedEdits(source, [first]).composition;
+    const last = replace(mid, 0, 0, 6, 'end');
+    const seen: string[] = [];
+    expect(() => applyFeedEdits(source, [first, last], [], (before, after) => {
+      seen.push(`${projectFeed(before).text}:${projectFeed(after).text}`);
+      if (seen.length === 2) throw new Error('Rejected transition');
+    })).toThrow('Rejected transition');
+    expect(seen).toEqual(['start:middle', 'middle:end']);
+    expect(projectFeed(source).text).toBe('start');
+  })
   it('scenario 3: preimages reject a changed target and inverse cannot overwrite later edits', () => {
     const composition = imported('before'); const first = applyFeedEdits(composition, [replace(composition, 0, 0, 6, 'after')])
     expect(() => applyFeedEdits(first.composition, [replace(composition, 0, 0, 6, 'other')])).toThrow()

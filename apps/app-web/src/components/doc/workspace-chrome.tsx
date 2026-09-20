@@ -624,10 +624,12 @@ export function WorkspaceChrome({
           />
           <span className="min-w-0">
             <strong className="block text-xs font-semibold">
-              {offlineState.offline ? t.offlineBannerTitle : t.offlineSyncPendingTitle}
+              {offlineState.paused > 0 ? t.offlineSyncPausedTitle : offlineState.offline ? t.offlineBannerTitle : t.offlineSyncPendingTitle}
             </strong>
             <span className="block text-[11px] leading-relaxed opacity-80">
-              {offlineState.pending > 0
+              {offlineState.paused > 0
+                ? format(t.offlineSyncPausedBody, { count: offlineState.paused })
+                : offlineState.pending > 0
                 ? format(offlineState.offline ? t.offlineBannerPending : t.offlineSyncPendingBody, {
                     count: offlineState.pending,
                   })

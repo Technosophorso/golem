@@ -127,6 +127,19 @@ describe('[COMP:app-web/feed-post-editor] automatic legacy upgrade', () => {
     expect(vi.mocked(authFetch).mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
     expect((await readLocalFeedPost('assistant-1', post.session.id))?.content.schemaVersion).toBeUndefined();
   });
+  it('retries a paused save through the editor and removes the recovery controls after success', async () => {
+    const post = await legacyPost(); goOnline(post, true); await render(post.session.id);
+    const rejected = commands()[0][1]!.body;
+    const retry = [...container.querySelectorAll('button')].find(button => button.textContent === en.feedPage.postEditor.retrySync)!;
+    expect(retry.disabled).toBe(false);
+    goOnline(post);
+    await act(async () => retry.click());
+    expect(commands()).toHaveLength(2);
+    expect(commands()[1][1]!.body).toBe(rejected);
+    expect(await readLocalFeedPost('assistant-1', post.session.id)).toMatchObject({ dirty: false, revision: 4 });
+    expect(container.textContent).not.toContain(en.feedPage.postEditor.retrySync);
+    expect(container.textContent).not.toContain(en.feedPage.postEditor.saveAsNewPost);
+  });
   it('retains denied work and exposes recovery without repeatedly retrying the upgrade', async () => {
     const post = await legacyPost(); goOnline(post, true); await render(post.session.id);
     expect(commands()).toHaveLength(1);
