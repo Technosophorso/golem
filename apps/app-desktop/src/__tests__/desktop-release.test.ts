@@ -191,6 +191,17 @@ describe('[COMP:app-desktop/release] automated delivery', () => {
     expect(f.readState().releases).toEqual([]);
   });
 
+  it('builds workspace exports after installation and before desktop tests', () => {
+    const workflow = yaml.load(readFileSync(join(sourceRoot, '.github/workflows/desktop-release.yml'), 'utf8'));
+    const commands = workflow.jobs.build.steps.map((step: { run?: string }) => step.run);
+    const install = commands.indexOf('pnpm install --frozen-lockfile');
+    const dependencies = commands.indexOf('pnpm --filter "@use-brian/app-desktop^..." run build');
+    const tests = commands.indexOf('pnpm --filter @use-brian/app-desktop test');
+    expect(install).toBeGreaterThanOrEqual(0);
+    expect(dependencies).toBeGreaterThan(install);
+    expect(tests).toBeGreaterThan(dependencies);
+  });
+
   it('keeps workflow credentials and artifacts behind the production CI gate', () => {
     const workflow = yaml.load(readFileSync(join(sourceRoot, '.github/workflows/desktop-release.yml'), 'utf8'));
     expect(workflow.on.workflow_run).toEqual({ workflows: ['CI'], branches: ['main'], types: ['completed'] });
