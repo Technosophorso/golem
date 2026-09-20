@@ -200,6 +200,18 @@ export const campaignCreateLinkSchema = z.object({
   existingAttribution: z.enum(['reject', 'replace', 'retain']).default('reject'),
 }).strict()
 
+export const campaignManualPublicationSchema = z.object({
+  placementId: campaignUuidSchema,
+  permalink: campaignHttpUrlSchema,
+  publishedAt: z.string().datetime({ offset: true }),
+  approvedRevision: z.number().int().nonnegative(),
+}).strict()
+
+export const campaignSetLinkEnabledSchema = z.object({
+  linkId: campaignUuidSchema,
+  enabled: z.boolean(),
+}).strict()
+
 export const campaignCommandEnvelopeSchema = z.object({
   idempotencyKey: z.string().trim().min(8).max(200),
   expectedVersion: z.number().int().positive().optional(),

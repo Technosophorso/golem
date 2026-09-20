@@ -6,7 +6,21 @@ import type { CampaignUtm, CampaignChannel } from '@use-brian/shared/campaigns'
 import { CampaignError } from '@use-brian/core'
 import { getPool } from './client.js'
 
-type Queryable = Pick<PoolClient, 'query'>
+export type CampaignQueryable = Pick<PoolClient, 'query'>
+
+export async function requireCampaignPlacement(
+  client: CampaignQueryable,
+  input: { workspaceId: string; campaignId: string; placementId: string },
+): Promise<void> {
+  const placement = await client.query(
+    `SELECT 1 FROM campaign_placements
+      WHERE workspace_id=$1 AND campaign_id=$2 AND id=$3`,
+    [input.workspaceId, input.campaignId, input.placementId],
+  )
+  if (!placement.rowCount) {
+    throw new CampaignError('not_found', 'The campaign placement does not belong to this campaign.')
+  }
+}
 
 export type CampaignRow = {
   id: string
@@ -130,7 +144,7 @@ export function createDbCampaignStore() {
       })
     },
 
-    async saveCampaign(client: Queryable, input: {
+    async saveCampaign(client: CampaignQueryable, input: {
       workspaceId: string
       ownerUserId: string | null
       campaignId?: string
@@ -167,7 +181,7 @@ export function createDbCampaignStore() {
       return mapCampaign(updated.rows[0])
     },
 
-    async archiveCampaign(client: Queryable, workspaceId: string, campaignId: string): Promise<CampaignRow> {
+    async archiveCampaign(client: CampaignQueryable, workspaceId: string, campaignId: string): Promise<CampaignRow> {
       const archived = await client.query<Record<string, unknown>>(
         `UPDATE campaigns SET state='archived',archived_at=coalesce(archived_at,clock_timestamp()),version=version+1
           WHERE workspace_id=$1 AND id=$2
@@ -180,7 +194,7 @@ export function createDbCampaignStore() {
       return mapCampaign(archived.rows[0])
     },
 
-    async attachContent(client: Queryable, input: {
+    async attachContent(client: CampaignQueryable, input: {
       workspaceId: string
       campaignId: string
       sessionId: string
@@ -202,7 +216,7 @@ export function createDbCampaignStore() {
       return row.rows[0]!
     },
 
-    async recordManualPublication(client: Queryable, input: { workspaceId: string; placementId: string; permalink: string; publishedAt: string; approvedRevision: number }): Promise<CampaignPlacementRow> {
+    async recordManualPublication(client: CampaignQueryable, input: { workspaceId: string; placementId: string; permalink: string; publishedAt: string; approvedRevision: number }): Promise<CampaignPlacementRow> {
       const row = await client.query<CampaignPlacementRow>(
         `UPDATE campaign_placements
             SET publication_reference=$3,published_at=$4,approved_revision=$5
@@ -216,24 +230,36 @@ export function createDbCampaignStore() {
       return row.rows[0]
     },
 
-    async createLink(client: Queryable, input: {
+    async createLink(client: CampaignQueryable, input: {
       workspaceId: string
       campaignId: string
       placementId: string
+      publicId: string
       destination: string
       utm: CampaignUtm
       actorUserId: string | null
     }): Promise<CampaignLinkRow> {
+      await requireCampaignPlacement(client, input)
       const destinationHash = createHash('sha256').update(input.destination).digest('hex')
       const row = await client.query<CampaignLinkRow>(
         `INSERT INTO campaign_links
-           (workspace_id,campaign_id,placement_id,destination_url,destination_hash,utm_snapshot,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7)
+           (workspace_id,campaign_id,placement_id,public_id,destination_url,destination_hash,utm_snapshot,created_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8)
          RETURNING id,workspace_id AS "workspaceId",campaign_id AS "campaignId",placement_id AS "placementId",
            public_id AS "publicId",destination_url AS destination,utm_snapshot AS utm,enabled,created_at AS "createdAt"`,
-        [input.workspaceId, input.campaignId, input.placementId, input.destination, destinationHash, JSON.stringify(input.utm), input.actorUserId],
+        [input.workspaceId, input.campaignId, input.placementId, input.publicId, input.destination, destinationHash, JSON.stringify(input.utm), input.actorUserId],
       )
       return row.rows[0]!
+    },
+
+    async getLinkByPublicId(publicId: string): Promise<CampaignLinkRow | null> {
+      const result = await getPool().query<CampaignLinkRow>(
+        `SELECT id,workspace_id AS "workspaceId",campaign_id AS "campaignId",placement_id AS "placementId",
+           public_id AS "publicId",destination_url AS destination,utm_snapshot AS utm,enabled,created_at AS "createdAt"
+         FROM campaign_links WHERE public_id=$1 AND enabled=true`,
+        [publicId],
+      )
+      return result.rows[0] ?? null
     },
 
     async listCampaigns(workspaceId: string, filters: { state?: string; limit?: number } = {}): Promise<CampaignRow[]> {
@@ -272,7 +298,7 @@ export function createDbCampaignStore() {
       )).rows
     },
 
-    async setLinkEnabled(client: Queryable, workspaceId: string, linkId: string, enabled: boolean): Promise<void> {
+    async setLinkEnabled(client: CampaignQueryable, workspaceId: string, linkId: string, enabled: boolean): Promise<void> {
       const result = await client.query(
         `UPDATE campaign_links SET enabled=$3,disabled_at=CASE WHEN $3 THEN NULL ELSE clock_timestamp() END
           WHERE workspace_id=$1 AND id=$2`, [workspaceId, linkId, enabled],

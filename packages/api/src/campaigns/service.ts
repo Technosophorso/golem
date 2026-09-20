@@ -11,9 +11,11 @@ import {
   campaignAttachContentSchema,
   campaignCreateLinkSchema,
   campaignHttpUrlSchema,
+  campaignManualPublicationSchema,
   campaignSaveSchema,
 } from '@use-brian/shared/campaigns'
-import { createDbCampaignStore, type CampaignStore } from '../db/campaign-store.js'
+import { campaignOpaqueToken, createDbCampaignStore, type CampaignStore } from '../db/campaign-store.js'
+import { buildCampaignDestination } from './links.js'
 
 function actorUserId(context: CampaignContext): string | null {
   return context.actor.userId ?? null
@@ -56,28 +58,35 @@ export function createCampaignService(store: CampaignStore = createDbCampaignSto
           }
           case 'record_manual_publication': {
             requireCampaignAuthority(context, 'write')
-            const permalink = campaignHttpUrlSchema.parse(command.permalink)
-            if (!Number.isInteger(command.approvedRevision) || command.approvedRevision < 0) {
-              throw new CampaignError('invalid_input', 'approvedRevision must be a non-negative integer.')
-            }
+            const parsed = campaignManualPublicationSchema.parse({
+              placementId: command.placementId,
+              permalink: campaignHttpUrlSchema.parse(command.permalink),
+              publishedAt: command.publishedAt,
+              approvedRevision: command.approvedRevision,
+            })
             return { placement: await store.recordManualPublication(client, {
               workspaceId: context.workspaceId,
-              placementId: command.placementId,
-              permalink,
-              publishedAt: new Date(command.publishedAt).toISOString(),
-              approvedRevision: command.approvedRevision,
+              ...parsed,
             }) }
           }
           case 'create_link': {
             requireCampaignAuthority(context, 'write', { campaignId: command.campaignId })
             const { kind: _kind, ...input } = command
             const parsed = campaignCreateLinkSchema.parse(input)
+            const publicId = campaignOpaqueToken()
+            const destination = buildCampaignDestination({
+              destination: parsed.destination,
+              utm: parsed.utm,
+              publicLinkId: publicId,
+              existingAttribution: parsed.existingAttribution,
+            }).url
             return { link: await store.createLink(client, {
               workspaceId: context.workspaceId,
               actorUserId: actorUserId(context),
               campaignId: parsed.campaignId,
               placementId: parsed.placementId,
-              destination: parsed.destination,
+              publicId,
+              destination,
               utm: parsed.utm,
             }) }
           }

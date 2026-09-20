@@ -49,7 +49,7 @@ describe("[COMP:app-web/feed-nav] feed navigation config", () => {
       "platforms",
     ]);
     expect(FEED_GROUPS[0].perPlatform).toBe(false);
-    expect(FEED_GROUPS[0].sections.map((s) => s.key)).toEqual(["voice", "plan"]);
+    expect(FEED_GROUPS[0].sections.map((s) => s.key)).toEqual(["voice", "plan", "campaigns"]);
     expect(FEED_GROUPS[1].perPlatform).toBe(true);
     expect(FEED_GROUPS[1].sections.map((s) => s.key)).toEqual(["platformVoice"]);
     expect(FEED_GROUPS[2].sections.map((s) => s.key)).toEqual([

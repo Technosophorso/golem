@@ -97,6 +97,7 @@ import {
   createCrmOperationsTools,
   createAssociationTools,
   createCrmEmailDraftTools,
+  createCampaignTools,
   createMemoryTools,
   createRetrievalTools,
   createViewTools,
@@ -176,6 +177,8 @@ import {
 import { contentPlanRoutes } from './routes/content-plan.js'
 import { contentIdeasRoutes } from './routes/content-ideas.js'
 import { postWorkingCopiesRoutes } from './routes/post-working-copies.js'
+import { campaignRoutes } from './routes/campaigns.js'
+import { campaignTrackingRoutes } from './routes/campaign-tracking.js'
 import { createFeedLearningHandler, reconcileFeedLearning } from './content-planning/learning.js'
 import { createFeedEditorialModelResolver, createFeedLearningModelResolver } from './content-planning/editorial-model.js'
 import { createFeedGenerationPort } from './content-planning/generation-port.js'
@@ -299,7 +302,9 @@ import { workspaceRoutes } from './routes/workspaces.js'
 import { workspaceIconPublicRoutes, workspaceIconRoutes } from './routes/workspace-icon.js'
 import { invitationRoutes } from './routes/invitations.js'
 import { createWorkspaceInvitationStore } from './db/workspace-invitation-store.js'
-import { createWorkspaceStore, getWorkspaceInboxRetentionDays, getWorkspaceMembershipWithClearanceSystem, getWorkspacePlan, getWorkspaceTranscriptionPrefs, setWorkspaceTranscriptionPrefs } from './db/workspace-store.js'
+import { createWorkspaceStore, getWorkspaceInboxRetentionDays, getWorkspaceMembershipSystem, getWorkspaceMembershipWithClearanceSystem, getWorkspacePlan, getWorkspaceTranscriptionPrefs, setWorkspaceTranscriptionPrefs } from './db/workspace-store.js'
+import { createDbCampaignStore } from './db/campaign-store.js'
+import { createCampaignService } from './campaigns/service.js'
 import { createWorkspaceAuditStore } from './db/workspace-audit-store.js'
 import { createWorkspaceDirectoryStore } from './db/workspace-directory-store.js'
 import { createConnectionStore } from './db/connection-store.js'
@@ -2545,6 +2550,43 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   }
 
   const allTools = buildAllTools()
+  const campaignStore = createDbCampaignStore()
+  const campaignService = createCampaignService(campaignStore)
+  const campaignTools = createCampaignTools({
+    service: campaignService,
+    reads: {
+      listCampaigns: (workspaceId, filters) => campaignStore.listCampaigns(workspaceId, filters),
+      getCampaign: (workspaceId, campaignId) => campaignStore.getCampaign(workspaceId, campaignId),
+      listLinks: (workspaceId, campaignId) => campaignStore.listLinks(workspaceId, campaignId),
+      getTrackingSetup: async () => ({ state: 'not_installed' }),
+      getResults: async () => ({ state: 'not_installed', reason: 'Tracking not connected' }),
+      getAttribution: async () => ({ state: 'not_installed', conversions: [] }),
+      previewAudience: async () => ({ state: 'unavailable', reason: 'Email audience review is not enabled.' }),
+      previewEmail: async () => ({ state: 'unavailable', reason: 'Email preview is not enabled.' }),
+    },
+    resolveContext: async (toolContext) => {
+      if (!toolContext.workspaceId || !toolContext.userId) return null
+      const membership = await getWorkspaceMembershipSystem(toolContext.userId, toolContext.workspaceId)
+      if (!membership) return null
+      return {
+        workspaceId: toolContext.workspaceId,
+        actor: {
+          kind: 'assistant',
+          userId: toolContext.userId,
+          assistantId: toolContext.assistantId,
+          sessionId: toolContext.sessionId,
+        },
+        authority: {
+          role: membership.role,
+          canRead: true,
+          canWrite: membership.canDraft,
+          canConfigure: membership.role !== 'member',
+          canSend: false,
+        },
+      }
+    },
+  })
+  for (const tool of Object.values(campaignTools)) allTools.set(tool.name, tool)
   // Hidden during ordinary turns; the skill-editor route replaces it with an
   // RLS-scoped visible instance. Keeping the same implementation in the boot
   // registry lets an approved call replay safely after a process restart.
@@ -5089,6 +5131,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), contentIdeasRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), postWorkingCopiesRoutes())
   app.use('/api/distribution', requireAuth(env.JWT_SECRET), feedCollaborationRoutes({ generation: feedGeneration, reviewContext: feedReviewContext, files: filesApi ?? undefined }))
+  app.use('/api/campaigns', requireAuth(env.JWT_SECRET), campaignRoutes())
 
   // Standalone content planning reuses the app-web `/api/distribution/*` wire
   // contract but contains no provider integration. Hosted mounts its
@@ -5592,6 +5635,12 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       ? { resolveRecordingReadClient: ports.resolveRecordingReadClient }
       : {}),
   }))
+
+  // Native campaign redirects and collection are public, write-only
+  // boundaries. Keep this exact root mount ahead of every broad `/api`
+  // authentication guard so OSS and hosted editions share the same route
+  // ordering. The router never accepts an arbitrary redirect destination.
+  app.use(campaignTrackingRoutes())
 
   // Public chat link — anonymous browser chat behind a chat-link token
   // (`/c/<token>` in app-web). PUBLIC, same containment + mount slot as

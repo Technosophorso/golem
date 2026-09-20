@@ -102,6 +102,7 @@ export const FEED_GROUPS: readonly FeedGroup[] = [
     sections: [
       { key: "voice", segment: "voice" },
       { key: "plan", segment: "" },
+      { key: "campaigns", segment: "campaigns" },
     ],
   },
   {
