@@ -46,6 +46,10 @@
       "types": "./dist/deployment-capabilities.d.ts",
       "default": "./dist/deployment-capabilities.js"
     },
+    "./campaigns": {
+      "types": "./dist/campaigns.d.ts",
+      "default": "./dist/campaigns.js"
+    },
     "./desktop-links": {
       "types": "./dist/desktop-links.d.ts",
       "default": "./dist/desktop-links.js"

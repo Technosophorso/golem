@@ -41,6 +41,7 @@ export * from './control-plane/index.js'
 export * from './doc/index.js'
 export * from './home/index.js'
 export * from './sandbox/index.js'
+export * from './campaigns/index.js'
 
 // Ingest engine — Pipeline B + routing executor + adapters. The API
 // package wires concrete implementations of the engine ports (pipelineB,

@@ -1,0 +1,105 @@
+/** Canonical semantic mutation service for campaigns. [COMP:campaigns/store] */
+import {
+  CampaignError,
+  campaignRequestFingerprint,
+  requireCampaignAuthority,
+  type CampaignCommand,
+  type CampaignContext,
+  type CampaignServicePort,
+} from '@use-brian/core'
+import {
+  campaignAttachContentSchema,
+  campaignCreateLinkSchema,
+  campaignHttpUrlSchema,
+  campaignSaveSchema,
+} from '@use-brian/shared/campaigns'
+import { createDbCampaignStore, type CampaignStore } from '../db/campaign-store.js'
+
+function actorUserId(context: CampaignContext): string | null {
+  return context.actor.userId ?? null
+}
+
+export function createCampaignService(store: CampaignStore = createDbCampaignStore()): CampaignServicePort {
+  return {
+    async execute(context, request) {
+      if (!request.idempotencyKey || request.idempotencyKey.length < 8 || request.idempotencyKey.length > 200) {
+        throw new CampaignError('invalid_input', 'A stable idempotency key between 8 and 200 characters is required.')
+      }
+      const fingerprint = campaignRequestFingerprint(request.command)
+      return store.executeIdempotent(context, request.idempotencyKey, fingerprint, async (client) => {
+        const command: CampaignCommand = request.command
+        switch (command.kind) {
+          case 'save_campaign': {
+            requireCampaignAuthority(context, 'write', { campaignId: command.campaignId })
+            const { kind: _kind, ...input } = command
+            const parsed = campaignSaveSchema.parse(input)
+            const campaign = await store.saveCampaign(client, {
+              workspaceId: context.workspaceId,
+              ownerUserId: actorUserId(context),
+              ...parsed,
+            })
+            return { campaign }
+          }
+          case 'archive_campaign': {
+            requireCampaignAuthority(context, 'write', { campaignId: command.campaignId })
+            return { campaign: await store.archiveCampaign(client, context.workspaceId, command.campaignId) }
+          }
+          case 'attach_content': {
+            requireCampaignAuthority(context, 'write', { campaignId: command.campaignId })
+            const { kind: _kind, ...input } = command
+            const parsed = campaignAttachContentSchema.parse(input)
+            return { placement: await store.attachContent(client, {
+              workspaceId: context.workspaceId,
+              actorUserId: actorUserId(context),
+              ...parsed,
+            }) }
+          }
+          case 'record_manual_publication': {
+            requireCampaignAuthority(context, 'write')
+            const permalink = campaignHttpUrlSchema.parse(command.permalink)
+            if (!Number.isInteger(command.approvedRevision) || command.approvedRevision < 0) {
+              throw new CampaignError('invalid_input', 'approvedRevision must be a non-negative integer.')
+            }
+            return { placement: await store.recordManualPublication(client, {
+              workspaceId: context.workspaceId,
+              placementId: command.placementId,
+              permalink,
+              publishedAt: new Date(command.publishedAt).toISOString(),
+              approvedRevision: command.approvedRevision,
+            }) }
+          }
+          case 'create_link': {
+            requireCampaignAuthority(context, 'write', { campaignId: command.campaignId })
+            const { kind: _kind, ...input } = command
+            const parsed = campaignCreateLinkSchema.parse(input)
+            return { link: await store.createLink(client, {
+              workspaceId: context.workspaceId,
+              actorUserId: actorUserId(context),
+              campaignId: parsed.campaignId,
+              placementId: parsed.placementId,
+              destination: parsed.destination,
+              utm: parsed.utm,
+            }) }
+          }
+          case 'set_link_enabled': {
+            requireCampaignAuthority(context, 'write')
+            await store.setLinkEnabled(client, context.workspaceId, command.linkId, command.enabled)
+            return { linkId: command.linkId, enabled: command.enabled }
+          }
+          case 'save_site':
+            requireCampaignAuthority(context, 'configure', { siteId: command.siteId })
+            throw new CampaignError('unavailable', 'Campaign tracking configuration is disabled until Phase 2 acceptance passes.')
+          case 'record_conversion':
+            throw new CampaignError('forbidden', 'Trusted conversions require a scoped site credential or committed CRM outcome.')
+          case 'send_test':
+          case 'prepare_dispatch':
+          case 'schedule_dispatch':
+          case 'pause_dispatch':
+          case 'cancel_dispatch':
+            requireCampaignAuthority(context, 'send', { campaignId: 'campaignId' in command ? command.campaignId : undefined })
+            throw new CampaignError('unavailable', 'Audience sending is disabled until Phase 4 admission and recovery acceptance passes.')
+        }
+      })
+    },
+  }
+}
