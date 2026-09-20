@@ -154,6 +154,7 @@ describe('[COMP:app-desktop/release] automated delivery', () => {
     expect(f.run('verify', '0.0.13', sha).stderr).toContain('changed after verification');
   });
 
+  // Four CLI runs launch many real Node subprocesses; allow for shared CI CPU.
   it('keeps failed uploads hidden and publishes only after stored digests match', () => {
     const f = fixture({ failUpload: true });
     expect(f.prepare().status).toBe(0);
@@ -168,7 +169,7 @@ describe('[COMP:app-desktop/release] automated delivery', () => {
     const count = calls.filter((a: string[]) => a[0] === 'release' && a[1] === 'upload').length;
     expect(f.run('publish', '0.0.13', sha).status).toBe(0);
     expect(f.readState().calls.filter((a: string[]) => a[0] === 'release' && a[1] === 'upload')).toHaveLength(count);
-  });
+  }, 30_000);
 
   it.each([{ badDigest: true }, { moveDuringUpload: true }])('never promotes an invalid or superseded upload: %j', (state) => {
     const f = fixture(state);

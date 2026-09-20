@@ -49,6 +49,7 @@ describe("[COMP:app-desktop/packaging] desktop packaging", () => {
     );
   });
 
+  // The shell launches real Node command doubles; allow for shared CI CPU.
   it("packages from environment credentials without an env file and pins the requested architecture", () => {
     const result = packageFixture();
     expect(result.status, result.stderr).toBe(0);
@@ -58,11 +59,11 @@ describe("[COMP:app-desktop/packaging] desktop packaging", () => {
     expect(pnpm.at(-1)?.slice(-2)).toEqual(["--publish", "never"]);
     expect(JSON.parse(readFileSync(join(result.root, "apps/app-desktop/package.json"), "utf8")).version).toBe("0.0.13");
     expect(result.stdout + result.stderr).not.toContain("fixture-password");
-  });
+  }, 30_000);
 
   it("fails when Gatekeeper rejects the signed installer", () => {
     const result = packageFixture(7);
     expect(result.status).toBe(7);
     expect(result.stdout).not.toContain("==> Done.");
-  });
+  }, 30_000);
 });
