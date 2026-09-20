@@ -17,8 +17,8 @@
  *     page-switch reconnect never flashes it). Quiet when healthy.
  *   - **Presence face-pile** — live collaborators from the shared Yjs
  *     awareness (`usePresence` over the lifted `provider`).
- *   - **Share** — copies the page's canonical link (anyone in the workspace
- *     can open it); the label flips to "Link copied" briefly.
+ *   - **Share** — opens the internal sharing controls; Copy link chooses the
+ *     deployment's supported alias, ID handoff, or canonical URL.
  *   - **Favorite star** — toggles saved/draft (a saved page is a Favorite).
  *   - **⋯ menu** — Duplicate / Full width / Delete, via the on-brand
  *     `DropdownMenu` + `confirmDialog` for the destructive delete. Also the
@@ -74,6 +74,12 @@ import {
   type PageActionFeedback,
 } from "./page-action-buttons";
 import { CommentHistory } from "./comment-history";
+import { docPublicUrl } from "@/lib/doc-public-url";
+import { docPagePath } from "@/lib/doc-page-url";
+import { bestInternalShareLink } from "@/lib/api/internal-links";
+import { buildNativeOpenUrl } from "@use-brian/shared/desktop-links";
+import { desktopBridge } from "@/lib/desktop-auth-source";
+import { useWorkspaceContext } from "@/lib/workspace-context";
 import { ShareDialog } from "./share-dialog";
 import { ContextScopeChips } from "@/components/context/context-scope-chips";
 import {
@@ -158,6 +164,7 @@ export function PageHeader({
 }: PageHeaderProps) {
   const dict = useT();
   const t = dict.docPage;
+  const workspace = useWorkspaceContext();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -309,13 +316,13 @@ export function PageHeader({
     }
   }
 
-  // PAGE-5 — copy the canonical page URL to the clipboard (Notion's ⋯ "Copy
-  // link"). The Share button copies the same link, but Notion users expect it
-  // in the ⋯ menu too. Transient "Link copied" notice, like copy-as-Markdown.
+  // PAGE-5 — copy the deployment-supported internal page URL from Notion's ⋯
+  // menu. The Share dialog uses the same selector. Transient "Link copied"
+  // notice, like copy-as-Markdown.
   async function handleCopyLink() {
     setError(null);
     try {
-      const url = `${window.location.origin}/w/${view.workspaceId}/p/${view.id}`;
+      const { url } = await bestInternalShareLink({ workspaceId: view.workspaceId, pageId: view.id });
       await navigator.clipboard.writeText(url);
       setNotice(t.headerLinkCopied);
       window.setTimeout(() => setNotice(null), 1600);
@@ -323,6 +330,15 @@ export function PageHeader({
       const message = err instanceof Error ? err.message : String(err);
       setError(format(t.copyFailed, { message }));
     }
+  }
+
+  function handleOpenDesktop() {
+    const url = docPublicUrl(docPagePath(view.workspaceId, view.id));
+    if (!url) return;
+    const link = document.createElement("a");
+    link.href = buildNativeOpenUrl(url);
+    link.rel = "noreferrer";
+    link.click();
   }
 
   // Download the page as .md / .docx / .pdf (blob via authFetch — see the SDK note).
@@ -381,7 +397,7 @@ export function PageHeader({
               to the public view so an editor can see what others see. */}
           {published ? (
             <a
-              href={`/share/p/${view.id}`}
+              href={docPublicUrl(`/share/p/${view.id}`) ?? undefined}
               target="_blank"
               rel="noopener noreferrer"
               aria-label={t.publishedBadge}
@@ -454,6 +470,7 @@ export function PageHeader({
             pageId={view.id}
             workspaceId={view.workspaceId}
             currentUser={currentUser}
+            canManageLinkAlias={workspace.role === "owner" || workspace.role === "admin" || view.createdBy === currentUser.id}
             onPublishChanged={() => void refreshPublished()}
           />
 
@@ -518,9 +535,14 @@ export function PageHeader({
                   {t.saveAsTemplate}
                 </DropdownMenuItem>
               ) : null}
-              <DropdownMenuItem onClick={() => void handleCopyLink()}>
+              <DropdownMenuItem disabled={!docPublicUrl(docPagePath(view.workspaceId, view.id))} onClick={() => void handleCopyLink()}>
                 {t.headerCopyLink}
               </DropdownMenuItem>
+              {!desktopBridge() ? (
+                <DropdownMenuItem disabled={!docPublicUrl(docPagePath(view.workspaceId, view.id))} onClick={handleOpenDesktop}>
+                  {t.headerOpenDesktop}
+                </DropdownMenuItem>
+              ) : null}
               <DropdownMenuSeparator />
               <DropdownMenuItem onClick={handleCopyMarkdown}>
                 {t.copyAsMarkdown}

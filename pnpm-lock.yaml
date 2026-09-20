@@ -60,6 +60,9 @@ importers:
       '@use-brian/firefox-companion':
         specifier: workspace:*
         version: link:../firefox-companion
+      '@use-brian/shared':
+        specifier: workspace:*
+        version: link:../../packages/shared
       electron-updater:
         specifier: ^6.8.9
         version: 6.8.9
@@ -76,6 +79,9 @@ importers:
       electron-builder:
         specifier: ^25.0.0
         version: 25.1.8(electron-builder-squirrel-windows@25.1.8)
+      js-yaml:
+        specifier: ^4.2.0
+        version: 4.2.0
       typescript:
         specifier: ^5.7
         version: 5.9.3

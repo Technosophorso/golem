@@ -60,6 +60,7 @@ import { workspaceDetailCacheKey } from "@/lib/surface-prefetch";
 import { Skeleton } from "@/components/skeleton";
 import { canDeleteWorkspace } from "@/lib/workspace-permissions";
 import { TeamAvatar } from "@/components/team-avatar";
+import { InternalLinkControl } from "@/components/internal-link-control";
 import {
   Select,
   SelectContent,
@@ -806,6 +807,14 @@ export function WorkspaceGeneralSection({ onWorkspaceDeleted }: { onWorkspaceDel
             )}
           </div>
         </div>
+      </div>
+
+      <div className="border-t border-border pt-6">
+        <InternalLinkControl
+          workspaceId={data.id}
+          canManage={isAdmin}
+          showCopy
+        />
       </div>
 
       {/* Purpose — drives team-vs-personal memory scoping for this workspace. */}

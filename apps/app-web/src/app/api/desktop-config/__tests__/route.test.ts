@@ -32,10 +32,12 @@ let saved: Record<string, string | undefined> = {};
 beforeEach(() => {
   saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
   for (const k of ENV_KEYS) delete process.env[k];
+  vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 404 })));
   vi.resetModules();
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k];
     else process.env[k] = v;
@@ -106,5 +108,29 @@ describe("[COMP:app-web/desktop-config-route] GET /api/desktop-config", () => {
     expect(body).toMatchObject({ apiUrl: "https://api.example.com" });
     expect(body).not.toHaveProperty("internalApiUrl");
     expect(body).not.toHaveProperty("databaseUrl");
+  });
+
+  it("advertises handoff locally and aliases only when the paired API schema is ready", async () => {
+    process.env.NEXT_PUBLIC_API_URL = "https://api.example.com";
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ internalLinkAliasesVersion: 1 }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+
+    expect((await getConfig()).body).toMatchObject({
+      pageLinkHandoffVersion: 1,
+      internalLinkAliasesVersion: 1,
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://api.example.com/capabilities/internal-links",
+      expect.objectContaining({ cache: "no-store" }),
+    );
+
+    vi.resetModules();
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    const oldApi = (await getConfig()).body;
+    expect(oldApi.pageLinkHandoffVersion).toBe(1);
+    expect(oldApi).not.toHaveProperty("internalLinkAliasesVersion");
   });
 });

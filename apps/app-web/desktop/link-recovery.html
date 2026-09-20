@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Use Brian</title>
+    <script>
+      window.process = window.process || { env: { NODE_ENV: "production" } };
+      document.documentElement.classList.add("is-canvas-desktop");
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./link-recovery-main.tsx"></script>
+  </body>
+</html>

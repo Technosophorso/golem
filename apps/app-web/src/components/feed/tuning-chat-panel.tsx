@@ -78,7 +78,6 @@ import {
   SelectContent,
   SelectItem,
   SelectTrigger,
-  SelectValue,
 } from "@/components/ui/select";
 import { ChevronDownIcon } from "lucide-react";
 import { useT } from "@/lib/i18n/client";
@@ -1095,7 +1094,7 @@ export const TuningChatPanel = forwardRef<
               style={{ fieldSizing: "content" } as React.CSSProperties}
             />
           </div>
-          <div className="flex items-center gap-1.5 px-2.5 pb-2 pt-1">
+          <div className="flex flex-wrap items-center gap-1.5 px-2.5 pb-2 pt-1">
             {dockRecorder ? <DockRecorderButton rec={dockRecorder} /> : null}
             <ResearchModeToggle
               active={researchMode}
@@ -1111,69 +1110,73 @@ export const TuningChatPanel = forwardRef<
                 setResearchMode((v) => !v);
               }}
             />
-            <div className="flex-1" />
-            <Select value={model} onValueChange={(v) => { if (v) setModel(v as ModelTier); }}>
-              <SelectTrigger
-                size="sm"
-                className="text-[16px] md:text-xs gap-1.5 bg-muted/50 hover:bg-muted border-transparent"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent side="top" align="end" alignItemWithTrigger={false} className="w-auto min-w-56">
-                <SelectItem value="standard">
-                  <div className="flex flex-col gap-0.5 py-0.5">
-                    <span className="text-sm font-medium">{t.modelStandard}</span>
-                    <span className="text-[11px] text-muted-foreground">{t.modelStandardDesc}</span>
-                  </div>
-                </SelectItem>
-                <SelectItem value="pro" disabled={workspacePlan === "free"}>
-                  <div className="flex flex-col gap-0.5 py-0.5">
-                    <span className="text-sm font-medium">{t.modelPro}</span>
-                    <span className="text-[11px] text-muted-foreground">{t.modelProDesc}</span>
-                  </div>
-                </SelectItem>
-                <SelectItem value="max" disabled={workspacePlan === "free" || workspacePlan === "pro"}>
-                  <div className="flex flex-col gap-0.5 py-0.5">
-                    <span className="text-sm font-medium">{t.modelMax}</span>
-                    <span className="text-[11px] text-muted-foreground">{t.modelMaxDesc}</span>
-                  </div>
-                </SelectItem>
-              </SelectContent>
-            </Select>
-            {isStreaming && (
-              <button
-                onClick={() => {
-                  const sid = fixedSessionId ?? sessionIdRef.current;
-                  if (!sid) return;
-                  const epoch = epochRef.current;
-                  void stopTurn(sid).then(() => {
-                    if (epochRef.current !== epoch) return;
-                    stream.abort();
-                    recoverSessionRef.current(sid);
-                  }).catch(() => { if (epochRef.current === epoch) setError(t.streamFailed); });
-                }}
-                className="p-2 rounded-xl text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0"
-                title={t.stop}
-              >
-                <StopIcon />
-              </button>
-            )}
-            {/* Send stays live during a turn — it QUEUES into the running one
-                (muted to mark the difference). See mid-turn-input.md. */}
-            <button
-              onClick={() => void onSend()}
-              disabled={!ready || !initialized || recoveryFailed || (busyRef.current && !isStreaming) || !input.trim()}
-              className={cn(
-                "p-2 rounded-xl transition-colors shadow-sm shrink-0",
-                "disabled:opacity-30 disabled:cursor-not-allowed",
-                isStreaming
-                  ? "bg-muted text-foreground/80 hover:bg-muted/80"
-                  : "bg-action text-action-foreground hover:bg-action/90",
+            {/* A desktop rail can be narrower than a phone. Wrap by available
+                width, keeping the model and primary actions together. */}
+            <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-1.5">
+              <Select value={model} onValueChange={(v) => { if (v) setModel(v as ModelTier); }}>
+                <SelectTrigger
+                  size="sm"
+                  aria-label={tChat.modelLabel}
+                  className="min-w-0 text-[16px] md:text-xs gap-1.5 bg-muted/50 hover:bg-muted border-transparent"
+                >
+                  <span className="min-w-0 truncate">{model === "pro" ? t.modelPro : model === "max" ? t.modelMax : t.modelStandard}</span>
+                </SelectTrigger>
+                <SelectContent side="top" align="end" alignItemWithTrigger={false} className="w-auto min-w-56">
+                  <SelectItem value="standard">
+                    <div className="flex flex-col gap-0.5 py-0.5">
+                      <span className="text-sm font-medium">{t.modelStandard}</span>
+                      <span className="text-[11px] text-muted-foreground">{t.modelStandardDesc}</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="pro" disabled={workspacePlan === "free"}>
+                    <div className="flex flex-col gap-0.5 py-0.5">
+                      <span className="text-sm font-medium">{t.modelPro}</span>
+                      <span className="text-[11px] text-muted-foreground">{t.modelProDesc}</span>
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="max" disabled={workspacePlan === "free" || workspacePlan === "pro"}>
+                    <div className="flex flex-col gap-0.5 py-0.5">
+                      <span className="text-sm font-medium">{t.modelMax}</span>
+                      <span className="text-[11px] text-muted-foreground">{t.modelMaxDesc}</span>
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              {isStreaming && (
+                <button
+                  onClick={() => {
+                    const sid = fixedSessionId ?? sessionIdRef.current;
+                    if (!sid) return;
+                    const epoch = epochRef.current;
+                    void stopTurn(sid).then(() => {
+                      if (epochRef.current !== epoch) return;
+                      stream.abort();
+                      recoverSessionRef.current(sid);
+                    }).catch(() => { if (epochRef.current === epoch) setError(t.streamFailed); });
+                  }}
+                  className="inline-flex size-11 items-center justify-center rounded-xl text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors shrink-0 md:size-8"
+                  title={t.stop}
+                >
+                  <StopIcon />
+                </button>
               )}
-              title={isStreaming ? tQueue.send : t.send}
-            >
-              <SendIcon />
-            </button>
+              {/* Send stays live during a turn — it QUEUES into the running one
+                  (muted to mark the difference). See mid-turn-input.md. */}
+              <button
+                onClick={() => void onSend()}
+                disabled={!ready || !initialized || recoveryFailed || (busyRef.current && !isStreaming) || !input.trim()}
+                className={cn(
+                  "inline-flex size-11 items-center justify-center rounded-xl transition-colors shadow-sm shrink-0 md:size-8",
+                  "disabled:opacity-30 disabled:cursor-not-allowed",
+                  isStreaming
+                    ? "bg-muted text-foreground/80 hover:bg-muted/80"
+                    : "bg-action text-action-foreground hover:bg-action/90",
+                )}
+                title={isStreaming ? tQueue.send : t.send}
+              >
+                <SendIcon />
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1286,9 +1289,10 @@ function ResearchModeToggle({
       type="button"
       onClick={onToggle}
       title={tooltip}
+      aria-label={t.research}
       aria-pressed={active}
       className={
-        "inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl text-[12px] font-medium transition-colors shrink-0 " +
+        "inline-flex min-w-0 max-w-full items-center gap-1 px-2.5 py-1.5 rounded-xl text-[12px] font-medium transition-colors shrink-0 " +
         (exhausted
           ? "text-amber-600 dark:text-amber-400 bg-amber-500/10 hover:bg-amber-500/20"
           : active
@@ -1296,12 +1300,12 @@ function ResearchModeToggle({
             : "text-muted-foreground hover:text-primary hover:bg-muted")
       }
     >
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <svg className="shrink-0" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         <path d="M12 3l2 5 5 2-5 2-2 5-2-5-5-2 5-2z" />
       </svg>
-      <span className="hidden sm:inline">{t.research}</span>
+      <span className="hidden min-w-0 truncate sm:block">{t.research}</span>
       {active && quota && !quota.isPaid && (
-        <span className="ml-0.5 text-[10.5px] opacity-70 tabular-nums">
+        <span className="ml-0.5 shrink-0 text-[10.5px] opacity-70 tabular-nums">
           {Math.max(0, quota.quota - quota.used)}/{quota.quota}
         </span>
       )}

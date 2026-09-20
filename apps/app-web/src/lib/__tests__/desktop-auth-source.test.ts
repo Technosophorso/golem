@@ -37,7 +37,7 @@ function setBridge(bridge: unknown) {
 
 /** Exercise the shipped preload cache with only Electron's IPC boundary mocked. */
 function loadPreload(
-  tokens: { accessToken: string; refreshToken: string } | null,
+  tokens: { accessToken: string; refreshToken: string; user?: { id: string; name: string; email: string } } | null,
   bundled = true,
 ) {
   const invoke = vi.fn();
@@ -349,7 +349,37 @@ describe("[COMP:app-web/desktop-auth-source] native refresh bridge", () => {
   it("keeps token methods absent from the thin-shell preload", () => {
     const { bridge } = loadPreload(null, false);
     expect(bridge.getAccessToken).toBeUndefined();
+    expect(bridge.getUserId).toBeUndefined();
     expect(bridge.refreshTokens).toBeUndefined();
+  });
+
+  it("keeps local ownership aligned with the seeded, refreshed, switched and cleared native session", async () => {
+    const user = { id: "viewer-a", name: "Sample Viewer", email: "viewer@example.com" };
+    const { bridge, invoke } = loadPreload({ ...storedTokens, user });
+    expect(bridge.getUserId?.()).toBe("viewer-a");
+
+    invoke.mockResolvedValueOnce({ kind: "transient" });
+    await bridge.refreshTokens?.();
+    expect(bridge.getUserId?.()).toBe("viewer-a");
+
+    invoke.mockResolvedValueOnce({ kind: "ok", tokens: { ...rotatedTokens, user: { ...user, id: "viewer-b" } } });
+    await bridge.refreshTokens?.();
+    expect(bridge.getUserId?.()).toBe("viewer-b");
+
+    bridge.setTokens?.({ ...storedTokens, user: { ...user, id: "viewer-c" } });
+    expect(bridge.getUserId?.()).toBe("viewer-c");
+    bridge.clear?.();
+    expect(bridge.getUserId?.()).toBeNull();
+
+    bridge.setTokens?.({ ...storedTokens, user });
+    invoke.mockResolvedValueOnce({ kind: "unauthenticated" });
+    await bridge.refreshTokens?.();
+    expect(bridge.getUserId?.()).toBeNull();
+  });
+
+  it("has no local owner when the native token record has no stored user", () => {
+    const { bridge } = loadPreload(storedTokens);
+    expect(bridge.getUserId?.()).toBeNull();
   });
 });
 

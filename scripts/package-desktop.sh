@@ -26,26 +26,25 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$ENV_FILE" ]]; then
-  echo "error: $ENV_FILE not found." >&2
-  echo "       cp .env.desktop.example .env.desktop  and fill in the 5 values." >&2
-  exit 1
-fi
-
 # Export every var defined in the env file without echoing the values.
+# CI supplies the same credentials through its protected environment.
 set +x
-set -a
-# shellcheck disable=SC1090
-source "$ENV_FILE"
-set +a
+if [[ -f "$ENV_FILE" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
 
 PUBLISH=0
 SKIP_BUILD=0
 BUMP=""
 SET_VERSION=""
+ARCH_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --publish) PUBLISH=1 ;;
+    --arm64) ARCH_ARGS=(--arm64) ;;
     --no-build|--skip-build) SKIP_BUILD=1 ;;
     --bump)
       BUMP="${2:-}"; shift
@@ -57,10 +56,11 @@ while [[ $# -gt 0 ]]; do
     --version=*) SET_VERSION="${1#--version=}" ;;
     -h|--help)
       cat <<'USAGE'
-usage: package-desktop.sh [--bump patch|minor|major | --version X.Y.Z] [--publish] [--no-build]
+usage: package-desktop.sh [--bump patch|minor|major | --version X.Y.Z] [--arm64] [--publish] [--no-build]
   --bump LEVEL     increment apps/app-desktop/package.json (patch|minor|major) before building
   --version X.Y.Z  set apps/app-desktop/package.json to an exact version before building
   --publish        (re)sign+notarize, then upload the dmg+zip+update feed to GitHub Releases
+  --arm64          pin the Apple Silicon architecture (used by automated releases)
   --no-build       skip tsc + electron-builder; reuse existing release/ artifacts
 The version change is written to package.json but NOT committed; the run prints
 the git command to commit it. --bump/--version cannot combine with --no-build.
@@ -107,7 +107,7 @@ for var in "${required[@]}"; do
   [[ -z "${!var:-}" ]] && missing+=("$var")
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
-  echo "error: missing values in .env.desktop: ${missing[*]}" >&2
+  echo "error: missing signing environment values (or .env.desktop): ${missing[*]}" >&2
   exit 1
 fi
 
@@ -165,13 +165,13 @@ if [[ "$SKIP_BUILD" == "1" ]]; then
   }
 else
   echo "==> Building the local app-web renderer"
-  pnpm --filter app-web run build:desktop
+  pnpm --filter @use-brian/app-desktop run build:renderer
   echo "==> Building app-desktop (tsc + asset copy)"
   pnpm --filter @use-brian/app-desktop run build
   echo "==> Building Siri App Intents extension"
   pnpm --filter @use-brian/app-desktop run build:siri
   echo "==> Packaging + signing + notarizing the app (Apple notary, a few min)"
-  pnpm --filter @use-brian/app-desktop exec electron-builder --mac --publish never
+  pnpm --filter @use-brian/app-desktop exec electron-builder --mac ${ARCH_ARGS[@]+"${ARCH_ARGS[@]}"} --publish never
 fi
 
 # electron-builder signs + notarizes + staples the .app (it submits the .zip),
@@ -195,7 +195,7 @@ else
   xcrun stapler staple "$DMG"
 fi
 echo "==> Gatekeeper check (want: accepted / Notarized Developer ID):"
-spctl -a -vv -t open --context context:primary-signature "$DMG" 2>&1 | head -3 || true
+spctl -a -vv -t open --context context:primary-signature "$DMG"
 
 if [[ "$PUBLISH" == "1" ]]; then
   # Upload the NOTARIZED artifacts ourselves. We can't use electron-builder

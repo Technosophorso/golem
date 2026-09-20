@@ -7,6 +7,7 @@
  *
  * Supported links:
  *   usebrian://open?path=/w/<ws>/p/<page>  -> ${appUrl}/w/<ws>/p/<page>
+ *   usebrian://open-url?v=1&url=<url>       -> typed remote destination
  *   usebrian://capture                      -> quickCaptureUrl(appUrl)
  *   usebrian://record                       -> recordTargetUrl(appUrl)
  *   usebrian://use?prompt=<text>            -> handled by the Siri bridge
@@ -16,6 +17,10 @@
  */
 
 import { quickCaptureUrl, recordTargetUrl } from "./quick-capture.js";
+import {
+  parseNativeOpenUrl,
+  type InternalLinkDestination,
+} from "@use-brian/shared/desktop-links";
 
 interface DeepLinkConfig {
   readonly appUrl: string;
@@ -23,6 +28,10 @@ interface DeepLinkConfig {
 }
 
 export const MAX_SIRI_PROMPT_LENGTH = 8_000;
+
+export type NavigationDeepLink =
+  | Readonly<{ kind: "active-target-url"; url: string }>
+  | Readonly<{ kind: "deployment-destination"; destination: InternalLinkDestination }>;
 
 /** Return a bounded Siri prompt only from the dedicated `use` deep link. */
 export function parseUseBrianDeepLink(
@@ -50,7 +59,10 @@ export function parseUseBrianDeepLink(
  * with `/`** — this refuses protocol-relative (`//evil.com`) and absolute
  * external targets, so a crafted link can never navigate the app off-origin.
  */
-export function resolveDeepLink(rawUrl: string, cfg: DeepLinkConfig): string | null {
+export function parseNavigationDeepLink(
+  rawUrl: string,
+  cfg: DeepLinkConfig,
+): NavigationDeepLink | null {
   let url: URL;
   try {
     url = new URL(rawUrl);
@@ -62,12 +74,17 @@ export function resolveDeepLink(rawUrl: string, cfg: DeepLinkConfig): string | n
 
   const command = url.hostname;
 
+  if (command === "open-url") {
+    const destination = parseNativeOpenUrl(rawUrl, cfg.protocolScheme);
+    return destination ? { kind: "deployment-destination", destination } : null;
+  }
+
   if (command === "capture") {
-    return quickCaptureUrl(cfg.appUrl);
+    return { kind: "active-target-url", url: quickCaptureUrl(cfg.appUrl) };
   }
 
   if (command === "record") {
-    return recordTargetUrl(cfg.appUrl);
+    return { kind: "active-target-url", url: recordTargetUrl(cfg.appUrl) };
   }
 
   if (command === "open") {
@@ -75,8 +92,17 @@ export function resolveDeepLink(rawUrl: string, cfg: DeepLinkConfig): string | n
     // Same-origin guard: must be an absolute in-app path, never `//host` or a
     // full external URL.
     if (!path.startsWith("/") || path.startsWith("//")) return null;
-    return `${cfg.appUrl}${path}`;
+    return { kind: "active-target-url", url: `${cfg.appUrl}${path}` };
   }
 
   return null;
+}
+
+/**
+ * Legacy convenience for active-target links. Deployment-bearing `open-url`
+ * deliberately returns null so call sites must opt into account selection.
+ */
+export function resolveDeepLink(rawUrl: string, cfg: DeepLinkConfig): string | null {
+  const parsed = parseNavigationDeepLink(rawUrl, cfg);
+  return parsed?.kind === "active-target-url" ? parsed.url : null;
 }

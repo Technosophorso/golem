@@ -1,4 +1,6 @@
 export { createWorkspaceTools } from './tools.js'
 export { createTranscriptionPrefTools } from './transcription-tools.js'
 export type { WorkspaceTranscriptionPrefsPort } from './transcription-tools.js'
+export { createInternalLinkTools } from './internal-link-tools.js'
+export type { InternalLinkToolsPort } from './internal-link-tools.js'
 export type { WorkspaceMemberInfo, WorkspaceDirectoryStore } from './types.js'

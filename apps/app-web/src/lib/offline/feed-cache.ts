@@ -7,7 +7,9 @@ import { loadSurfaceCache, readSurfaceCache } from "@/lib/surface-cache";
 import { idbDelete, idbGet, idbSet } from "./idb";
 
 export const FEED_API_URL = publicRuntimeConfig().apiUrl ?? "http://localhost:4000";
-export const feedOwner = () => getUserInfo()?.id ?? "";
+export const feedOwner = () => isDesktopAuth()
+  ? desktopBridge()?.getUserId?.() ?? ""
+  : getUserInfo()?.id ?? "";
 class FeedReadError extends Error {
   constructor(public status: number) { super(`Feed API ${status}`); }
 }

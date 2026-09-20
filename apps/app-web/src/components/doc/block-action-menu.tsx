@@ -62,7 +62,8 @@ import {
 } from "lucide-react";
 import { useT } from "@/lib/i18n/client";
 import { useCoarsePointer } from "@/lib/viewport";
-import { BLOCK_HASH_PREFIX, docBlockHash } from "@/lib/doc-page-url";
+import { BLOCK_HASH_PREFIX } from "@/lib/doc-page-url";
+import { bestInternalShareLink } from "@/lib/api/internal-links";
 import { TURN_INTO_ITEMS, type TurnIntoKind } from "./turn-into-menu";
 import {
   applyTurnIntoAt,
@@ -310,9 +311,8 @@ export function BlockActionMenu({
       window.location.hash = hashHref;
       return;
     }
-    const url = `${window.location.origin}${docBlockHash(workspaceId, pageId, id)}`;
-    void navigator.clipboard
-      .writeText(url)
+    void bestInternalShareLink({ workspaceId, pageId, blockId: id })
+      .then(({ url }) => navigator.clipboard.writeText(url))
       .then(() => {
         setCopied(true);
         window.clearTimeout(copyTimer.current);

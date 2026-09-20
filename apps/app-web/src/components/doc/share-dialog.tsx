@@ -31,7 +31,9 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Switch } from "@/components/ui/switch";
 import { useT, format } from "@/lib/i18n/client";
 import { useWorkspaceContext } from "@/lib/workspace-context";
-import { docPagePath } from "@/lib/doc-page-url";
+import { docPublicUrl } from "@/lib/doc-public-url";
+import { bestInternalShareLink } from "@/lib/api/internal-links";
+import { InternalLinkControl } from "@/components/internal-link-control";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { openWorkspaceSettings } from "@/components/settings-modal/settings-modal";
 import {
@@ -387,17 +389,20 @@ export function ShareDialog({
   pageId,
   workspaceId,
   currentUser,
+  canManageLinkAlias,
   onPublishChanged,
 }: {
   pageId: string;
   workspaceId: string;
   currentUser: { id: string; name: string; avatarUrl?: string | null };
+  canManageLinkAlias: boolean;
   /** Raised after a successful publish/unpublish so the page header can
    *  re-resolve its Published badge (the resolved state is cascade-aware,
    *  so the header re-fetches rather than trusting the direct flag). */
   onPublishChanged?: () => void;
 }) {
-  const t = useT().docPage.share;
+  const dict = useT();
+  const t = dict.docPage.share;
   const workspace = useWorkspaceContext();
 
   const [open, setOpen] = useState(false);
@@ -424,8 +429,7 @@ export function ShareDialog({
     setSite(await getSiteState(pageId).catch(() => null));
   };
 
-  const publishUrl =
-    typeof window !== "undefined" ? `${window.location.origin}/share/p/${pageId}` : `/share/p/${pageId}`;
+  const publishUrl = docPublicUrl(`/share/p/${pageId}`);
 
   async function reload() {
     try {
@@ -533,13 +537,15 @@ export function ShareDialog({
 
   async function copyPageLink() {
     if (typeof window === "undefined") return;
-    const url = `${window.location.origin}${docPagePath(workspaceId, pageId)}`;
+    let linkUrl: string | null = null;
     try {
+      const { url } = await bestInternalShareLink({ workspaceId, pageId });
+      linkUrl = url;
       await navigator.clipboard.writeText(url);
       setCopiedPage(true);
       window.setTimeout(() => setCopiedPage(false), 1600);
     } catch {
-      setError(url);
+      setError(linkUrl ?? dict.internalLinks.aliasError);
     }
   }
 
@@ -598,7 +604,7 @@ export function ShareDialog({
   }
 
   async function copyPublishUrl() {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || !publishUrl) return;
     try {
       await navigator.clipboard.writeText(publishUrl);
       setCopiedPublish(true);
@@ -787,6 +793,14 @@ export function ShareDialog({
 
             {error ? <p role="alert" className="mt-2 break-all text-xs text-destructive">{error}</p> : null}
 
+            <div className="mt-3">
+              <InternalLinkControl
+                workspaceId={workspaceId}
+                pageId={pageId}
+                canManage={canManageLinkAlias}
+              />
+            </div>
+
             {/* Footer */}
             <div className="mt-3 flex items-center justify-between border-t border-border pt-3">
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
@@ -829,6 +843,7 @@ export function ShareDialog({
                   <button
                     type="button"
                     onClick={() => void copyPublishUrl()}
+                    disabled={!publishUrl}
                     aria-label={t.copyLink}
                     className="shrink-0 rounded p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                   >
@@ -892,7 +907,7 @@ export function ShareDialog({
                     {t.unpublish}
                   </button>
                   <a
-                    href={publishUrl}
+                    href={publishUrl ?? undefined}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex-1 rounded-md bg-action px-3 py-2 text-center text-sm font-medium text-action-foreground transition-opacity hover:opacity-90"

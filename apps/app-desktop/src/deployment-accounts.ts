@@ -23,6 +23,10 @@ const entrySchema = z.object({ target: targetSchema, tokens: tokensSchema });
 const storeSchema = z.object({ version: z.literal(1), entries: z.array(entrySchema), active: z.record(z.string()) });
 export type AccountTarget = { kind: TargetKind; appUrl: string; apiUrl: string; auth: TargetAuth; publicConfig?: DesktopPublicConfig | null };
 export type SavedDeploymentAccount = z.infer<typeof entrySchema>;
+export type DeploymentAccountSnapshot = Readonly<{
+  entries: readonly SavedDeploymentAccount[]
+  active: Readonly<Record<string, string>>
+}>;
 type AccountStore = z.infer<typeof storeSchema>;
 export type DeploymentAccountRow = {
   key: string; id: string; name: string; email: string;
@@ -68,6 +72,11 @@ export class DeploymentAccounts {
   }
   find(key: string): SavedDeploymentAccount | null {
     return this.load().entries.find((entry) => deploymentAccountKey(entry) === key) ?? null;
+  }
+  /** Credential-bearing snapshot for pure main-process routing only. */
+  snapshot(): DeploymentAccountSnapshot {
+    const store = this.load();
+    return { entries: store.entries, active: store.active };
   }
   put(target: AccountTarget, tokens: StoredTokens, activate = true): boolean {
     const store = this.load();

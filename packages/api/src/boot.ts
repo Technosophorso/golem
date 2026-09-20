@@ -25,6 +25,7 @@ import { createFeedReviewContextLoader } from './content-planning/review-context
  */
 
 import { createHash, randomUUID } from 'node:crypto'
+import { detectInternalLinkAliasReadiness } from './internal-link-capabilities.js'
 import { seedBuiltinPrimitiveCapabilities } from './db/capability-seed.js'
 import type http from 'node:http'
 
@@ -91,6 +92,7 @@ import {
   type GoalRecord,
   createWorkspaceTools,
   createTranscriptionPrefTools,
+  createInternalLinkTools,
   createCrmTools,
   createCrmOperationsTools,
   createAssociationTools,
@@ -566,6 +568,9 @@ import {
 } from './synthesis/blueprint-record-tools.js'
 import { createDbPageGrantStore } from './db/page-grant-store.js'
 import { createDbPageDomainStore } from './db/page-domain-store.js'
+import { createDbInternalLinkAliasStore } from './db/internal-link-alias-store.js'
+import { createInternalLinkService } from './internal-link-service.js'
+import { internalLinkRoutes } from './routes/internal-links.js'
 import { createDbPageTemplateStore } from './db/page-templates-store.js'
 import { createDbBlueprintRecordStore } from './db/blueprint-records-store.js'
 import { createDbPageActionsStore } from './db/page-actions-store.js'
@@ -579,7 +584,7 @@ import { createDbDocEntityStore } from './db/doc-entity-store.js'
 import { docEntitiesRoutes } from './routes/doc-entities.js'
 import { createDbCommentThreadStore } from './db/comment-thread-store.js'
 import { createDbDocNotificationsStore } from './db/doc-notifications-store.js'
-import { notifyRoomMentionRecorded } from './brain-stream/notify.js'
+import { notifyRoomMentionRecorded, notifyWorkspaceChange } from './brain-stream/notify.js'
 import { commentRoutes } from './routes/comments.js'
 import { inboxRoutes } from './routes/inbox.js'
 import { createDbEpisodicStore } from './db/episodic-store.js'
@@ -1459,6 +1464,13 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     res.json({ status: 'ok', timestamp: new Date().toISOString() })
   })
 
+  // Public rollout signal consumed by app-web's own `/api/desktop-config`.
+  // It reports only schema readiness and never resolves an alias or target.
+  app.get('/capabilities/internal-links', async (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store')
+    res.json(await detectInternalLinkAliasReadiness())
+  })
+
   // ════════════════════════════════════════════════════════════════
   // Shared infrastructure + stores
   // ════════════════════════════════════════════════════════════════
@@ -1665,6 +1677,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const docEntityStore = createDbDocEntityStore()
   const pageGrantStore = createDbPageGrantStore()
   const pageDomainStore = createDbPageDomainStore()
+  const internalLinkAliasStore = createDbInternalLinkAliasStore()
   const domainProvisioner = createDomainProvisioner(env)
   // Assistant Email vendor seam — bind the late-bound global once so every
   // injectMcpTools call site (chat, channels, workflows, public API) sees the
@@ -2215,6 +2228,16 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const workspaceDirectoryStore = createWorkspaceDirectoryStore(workspaceStore)
 
   const workspaceAuditStore = createWorkspaceAuditStore()
+  const internalLinkService = createInternalLinkService({
+    store: internalLinkAliasStore,
+    workspaceStore,
+    savedViewStore,
+    auditStore: workspaceAuditStore,
+    appOrigin: env.AUTHED_APP_URL ?? env.APP_URL,
+    onAliasChanged: ({ workspaceId }) => {
+      notifyWorkspaceChange(workspaceId, 'workspace_config', 'update')
+    },
+  })
   const rawGoalDefaultBudgetStore = createGoalDefaultBudgetStore()
   const goalDefaultBudgetStore = {
     get: rawGoalDefaultBudgetStore.get,
@@ -3834,6 +3857,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   )
 
   allTools.set('listWorkspaceMembers', createWorkspaceTools(workspaceDirectoryStore).listWorkspaceMembers)
+
+  for (const tool of Object.values(createInternalLinkTools(internalLinkService))) {
+    allTools.set(tool.name, tool)
+  }
 
   // Workspace transcription preference (migration 332) — the assistant is the
   // configuration surface. Writes are admin/owner-gated in the store setter.
@@ -5869,6 +5896,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       ? ({ userId, pageId }) => ingestPageRunner({ userId, pageId })
       : undefined,
   }))
+  app.use('/api', requireAuth(env.JWT_SECRET), internalLinkRoutes(internalLinkService))
 
   // Standalone Generate from Brain is open in both editions. Hosted injects
   // quote/gate/charge billing policy; OSS confirms the long-lived run but is

@@ -52,7 +52,7 @@ import { getDictionary } from "@/lib/i18n/dictionaries";
 import { ConfirmDialogProvider } from "@/components/ui/confirm-dialog";
 import { PromptDialogProvider } from "@/components/ui/prompt-dialog";
 import { KindPickerDialogProvider } from "@/components/ui/kind-picker-dialog";
-import { DesktopAddAccountProvider } from "@/components/desktop-add-account";
+import { DesktopLinkRecovery } from "@/components/desktop-link-recovery";
 import { WorkspaceContextProvider, type WorkspaceContextValue } from "@/lib/workspace-context";
 import { CustomThemesProvider } from "@/lib/custom-themes";
 import { DocSidebarDataProvider } from "@/components/doc/doc-sidebar-data";
@@ -331,7 +331,7 @@ export function App() {
         <ConfirmDialogProvider />
         <PromptDialogProvider />
         <KindPickerDialogProvider />
-        <DesktopAddAccountProvider />
+        <DesktopLinkRecovery />
       </I18nProvider>
     </ThemeProvider>
   );

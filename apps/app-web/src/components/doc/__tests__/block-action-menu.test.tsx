@@ -11,7 +11,7 @@
  * pins the rendered rows).
  */
 
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Editor, type AnyExtension } from "@tiptap/core";
@@ -22,6 +22,11 @@ import { skillBodySchemaExtensions } from "@/lib/skill-markdown";
 import { browserDocExtensions } from "../doc-schema";
 import { BlockActionMenu } from "../block-action-menu";
 import type { BlockTarget } from "../block-actions";
+
+const mocks = vi.hoisted(() => ({ bestInternalShareLink: vi.fn() }));
+vi.mock("@/lib/api/internal-links", () => ({
+  bestInternalShareLink: mocks.bestInternalShareLink,
+}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -46,6 +51,7 @@ afterEach(() => {
   host = null;
   anchor?.remove();
   anchor = null;
+  mocks.bestInternalShareLink.mockReset();
 });
 
 function mountMenu(opts: { extensions: AnyExtension[]; pageContext?: boolean }) {
@@ -146,6 +152,31 @@ describe("[COMP:app-web/block-action-menu] capability gating", () => {
     expect(kinds.some((l) => l.includes(slashItems.to_do))).toBe(false);
     expect(kinds.some((l) => l.includes(slashItems.callout))).toBe(false);
     expect(kinds.some((l) => l.includes(slashItems.toggle))).toBe(false);
+  });
+
+  it("copies the capability-selected block link", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    mocks.bestInternalShareLink.mockResolvedValue({
+      url: "https://brain.example/s/product/roadmap#b-block-1",
+      capabilities: { internalLinkAliasesVersion: 1 },
+    });
+    mountMenu({ extensions: browserDocExtensions(), pageContext: true });
+    const copy = Array.from(menuEl().querySelectorAll<HTMLButtonElement>('[role="menuitem"]'))
+      .find((button) => button.textContent?.includes(ba.copyLink));
+    expect(copy).not.toBeUndefined();
+
+    await act(async () => { copy!.click(); });
+
+    expect(mocks.bestInternalShareLink).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: "w1",
+      pageId: "p1",
+      blockId: expect.any(String),
+    }));
+    expect(writeText).toHaveBeenCalledWith("https://brain.example/s/product/roadmap#b-block-1");
   });
 });
 

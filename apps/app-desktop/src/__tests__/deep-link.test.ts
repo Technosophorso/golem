@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   MAX_SIRI_PROMPT_LENGTH,
+  parseNavigationDeepLink,
   parseUseBrianDeepLink,
   resolveDeepLink,
 } from "../deep-link.js";
@@ -47,6 +48,24 @@ describe("[COMP:app-desktop/deep-link] resolveDeepLink", () => {
 
   it("returns null for an unknown command", () => {
     expect(resolveDeepLink("usebrian://wat?path=/x", cfg)).toBeNull();
+  });
+
+  it("keeps deployment-aware open-url distinct from active-target links", () => {
+    const destination = encodeURIComponent(
+      "https://selfhost.example/s/product/roadmap#b-section-1",
+    );
+    expect(parseNavigationDeepLink(`usebrian://open-url?v=1&url=${destination}`, cfg)).toEqual({
+      kind: "deployment-destination",
+      destination: {
+        kind: "aliases",
+        sourceUrl: "https://selfhost.example/s/product/roadmap#b-section-1",
+        appOrigin: "https://selfhost.example",
+        workspaceAlias: "product",
+        pageAlias: "roadmap",
+        blockId: "section-1",
+      },
+    });
+    expect(resolveDeepLink(`usebrian://open-url?v=1&url=${destination}`, cfg)).toBeNull();
   });
 });
 

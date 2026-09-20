@@ -37,6 +37,9 @@ let messageBrianPending = false;
 const useBrianListeners = new Set();
 let useBrianPending = false;
 const brianNearbyListeners = new Set();
+const linkNavigationListeners = new Set();
+const linkDeliveryListeners = new Set();
+let pendingLinkDelivery = null;
 let brianNearby = ipcRenderer.sendSync("Use Brian:get-brian-nearby-state") === true;
 ipcRenderer.on("Use Brian:message-brian", () => {
   if (messageBrianListeners.size === 0) {
@@ -55,6 +58,17 @@ ipcRenderer.on("Use Brian:use-brian", () => {
 ipcRenderer.on("Use Brian:brian-nearby-state", (_event, enabled) => {
   brianNearby = enabled === true;
   for (const listener of brianNearbyListeners) listener(brianNearby);
+});
+ipcRenderer.on("Use Brian:link-navigation-state", (_event, state) => {
+  for (const listener of linkNavigationListeners) listener(state || null);
+});
+ipcRenderer.on("Use Brian:link-navigation-delivery", (_event, requestId) => {
+  if (typeof requestId !== "string") return;
+  if (linkDeliveryListeners.size === 0) {
+    pendingLinkDelivery = requestId;
+    return;
+  }
+  for (const listener of linkDeliveryListeners) listener(requestId);
 });
 
 /** @type {Record<string, unknown>} */
@@ -157,6 +171,28 @@ const bridge = {
   // calls them is shell-owned.
   runLocal: (url) =>
     ipcRenderer.invoke("Use Brian:run-local", typeof url === "string" ? url : null),
+  // Deployment-aware navigation recovery. State contains only display-safe
+  // origin/account labels and fixed actions; credentials and fetch stay in main.
+  getLinkNavigation: () => ipcRenderer.invoke("Use Brian:get-link-navigation"),
+  onLinkNavigation: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    linkNavigationListeners.add(callback);
+    return () => linkNavigationListeners.delete(callback);
+  },
+  linkNavigationAction: (requestId, action, key) =>
+    ipcRenderer.invoke("Use Brian:link-navigation-action", { requestId, action, key }),
+  onLinkNavigationDelivery: (callback) => {
+    if (typeof callback !== "function") return () => {};
+    linkDeliveryListeners.add(callback);
+    if (pendingLinkDelivery !== null) {
+      const requestId = pendingLinkDelivery;
+      pendingLinkDelivery = null;
+      queueMicrotask(() => {
+        if (linkDeliveryListeners.has(callback)) callback(requestId);
+      });
+    }
+    return () => linkDeliveryListeners.delete(callback);
+  },
   // Cloudflare Access Managed OAuth progress for the shell-owned local-target
   // landing. The callback receives status strings only; credentials and
   // endpoint metadata never cross into the renderer. Return an unsubscribe
@@ -209,6 +245,8 @@ if (process.argv.includes("--usebrian-bundled")) {
 
   bridge.getAccessToken = () => (cache && cache.accessToken) || null;
   bridge.getRefreshToken = () => (cache && cache.refreshToken) || null;
+  // Local authored caches use the active native identity, not file:// cookies.
+  bridge.getUserId = () => (cache && cache.user && cache.user.id) || null;
   bridge.refreshTokens = async () => {
     // Main owns the selected deployment's transport and durable session. Update
     // only this renderer's cache; a second set/clear IPC could race a switch.

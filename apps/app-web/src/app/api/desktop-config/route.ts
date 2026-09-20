@@ -30,10 +30,27 @@ import { NextResponse } from "next/server";
 
 export async function GET() {
   const config = serverRuntimePublicConfig();
+  let aliasCapabilities: { internalLinkAliasesVersion?: 1 } = {};
+  if (config.apiUrl) {
+    try {
+      const response = await fetch(`${config.apiUrl}/capabilities/internal-links`, {
+        cache: "no-store",
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (response.ok) {
+        const body = await response.json() as { internalLinkAliasesVersion?: unknown };
+        if (body.internalLinkAliasesVersion === 1) aliasCapabilities = { internalLinkAliasesVersion: 1 };
+      }
+    } catch {
+      // Version skew or an unavailable API leaves the alias capability absent.
+    }
+  }
   return NextResponse.json(
     {
       ...config,
       docSyncUrl: config.docSyncUrl || "",
+      pageLinkHandoffVersion: 1,
+      ...aliasCapabilities,
     },
     { headers: { "Cache-Control": "no-store" } },
   );

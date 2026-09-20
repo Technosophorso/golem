@@ -116,6 +116,9 @@ describe("[COMP:app-desktop/main] deployment switching", () => {
     const active = { ...sender(), returnValue: undefined as unknown };
     state.handlers.get("Use Brian:get-tokens")!(active);
     expect(active.returnValue).toMatchObject({ accessToken: "cloud-new" });
+    expect(state.windows[1].webContents.loadFile).toHaveBeenCalledWith(
+      expect.any(String), expect.objectContaining({ query: expect.objectContaining({ app: cloud.appUrl }) }),
+    );
     const stale = { sender: first.webContents, returnValue: undefined as unknown };
     state.handlers.get("Use Brian:get-tokens")!(stale);
     expect(stale.returnValue).toBeNull();
@@ -124,6 +127,10 @@ describe("[COMP:app-desktop/main] deployment switching", () => {
     state.refresh.mockResolvedValue({ accessToken: "local-new", refreshToken: "local-rotated", accessTokenExpiresIn: 3600 });
     expect(await state.handlers.get("Use Brian:select-account")!(sender(), deploymentAccountKey({ target: local, tokens: tokens("local") }))).toEqual({ ok: true });
     expect(state.windows[2].options.webPreferences.session).toBe(first.options.webPreferences.session);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(state.windows[2].webContents.loadFile).toHaveBeenCalledWith(
+      expect.any(String), expect.objectContaining({ query: expect.objectContaining({ app: local.appUrl }) }),
+    );
   });
   it("keeps the active account and window if the selected server is offline", async () => {
     state.refresh.mockRejectedValue(new Error("offline"));
