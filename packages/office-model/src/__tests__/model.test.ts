@@ -23,8 +23,14 @@ describe('[COMP:office/model] Office canonical model', () => {
     const document = documentFixture()
     const paragraph = document.sections[0].nodes[0]
     if (paragraph.kind !== 'paragraph') throw new Error('fixture drift')
-    paragraph.runs[0] = { ...paragraph.runs[0], href: 'javascript:alert(1)' }
-    expect(() => OfficeArtifactSnapshotSchema.parse(document)).toThrow(/HTTPS and mailto/)
+    for (const href of ['http://example.com', 'https://example.com', 'mailto:writer@example.com']) {
+      paragraph.runs[0] = { ...paragraph.runs[0], href }
+      expect(() => OfficeArtifactSnapshotSchema.parse(document)).not.toThrow()
+    }
+    for (const href of ['javascript:alert(1)', 'file:///tmp/reference', 'data:text/plain,reference']) {
+      paragraph.runs[0] = { ...paragraph.runs[0], href }
+      expect(() => OfficeArtifactSnapshotSchema.parse(document)).toThrow(/HTTP, HTTPS and mailto/)
+    }
   })
 
   it('keeps Word table geometry, styling, and merged-cell placement canonical', () => {
