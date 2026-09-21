@@ -23,6 +23,16 @@
  *
  * The Postgres container is the code-identical escape hatch: set DATABASE_URL to
  * a real postgres:// string and the brain server step is skipped.
+ *
+ * Two env guards keep this same boot path usable without a human at the
+ * keyboard — a headless self-host, and the scripted rig that `scripts/rig-up.sh`
+ * drives for end-to-end testing (docs/workflow/local-rig.md). Neither changes
+ * what the default interactive `pnpm start` does:
+ *   USEBRIAN_NO_BROWSER=1  — don't open a browser at the end; print the entry URL.
+ *   USEBRIAN_CORE_ONLY=1   — brain + api + doc-sync + app-web only; skip the
+ *                            browser relay and the channel connectors, which
+ *                            need per-channel credentials to do anything and
+ *                            cost a port plus a readiness wait each.
  */
 import { spawn } from 'node:child_process'
 import { connect, createServer } from 'node:net'
@@ -34,6 +44,7 @@ import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { createInterface } from 'node:readline/promises'
 import { resolveMessageStoreLaunch } from './message-store-launch.mjs'
+import { bridgeEnv } from './bridge-env.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG_DIR = join(homedir(), '.usebrian')
@@ -239,11 +250,13 @@ writeFileSync(
 // External-store escape hatch: a real Postgres URL skips the embedded brain.
 const useEmbedded = !process.env.DATABASE_URL
 const databaseUrl = process.env.DATABASE_URL || `postgres://localhost:${PORTS.pglite}/postgres`
-const useLocalDiscordConnector = !process.env.DISCORD_CONNECTOR_URL
-const useLocalWaConnector = !process.env.WA_CONNECTOR_URL
-const useLocalWechatConnector = !process.env.WECHAT_CONNECTOR_URL
-const useLocalFeishuConnector = !process.env.FEISHU_CONNECTOR_URL
-const useLocalBrowserRelay = !process.env.BROWSER_RELAY_URL
+// Core-only: the product surface without the channel bridges (see header).
+const coreOnly = ['1', 'true'].includes((process.env.USEBRIAN_CORE_ONLY ?? '').trim().toLowerCase())
+const useLocalDiscordConnector = !coreOnly && !process.env.DISCORD_CONNECTOR_URL
+const useLocalWaConnector = !coreOnly && !process.env.WA_CONNECTOR_URL
+const useLocalWechatConnector = !coreOnly && !process.env.WECHAT_CONNECTOR_URL
+const useLocalFeishuConnector = !coreOnly && !process.env.FEISHU_CONNECTOR_URL
+const useLocalBrowserRelay = !coreOnly && !process.env.BROWSER_RELAY_URL
 const browserRelayReservation = useLocalBrowserRelay ? await reserveAvailablePort(8094) : null
 const browserRelayPort = browserRelayReservation?.port
 const messageStoreLaunch = resolveMessageStoreLaunch({ root: ROOT, env: process.env })
@@ -269,16 +282,13 @@ const env = {
   DOC_SYNC_URL: `ws://127.0.0.1:${PORTS.docSync}`,
   // Encrypts connector credentials at rest (see generation note above).
   CHANNEL_CREDENTIAL_KEY: channelCredentialKey,
-  DISCORD_CONNECTOR_URL: process.env.DISCORD_CONNECTOR_URL || `http://127.0.0.1:${PORTS.discordConnector}`,
-  DISCORD_CONNECTOR_SECRET: discordConnectorSecret,
-  WA_CONNECTOR_URL: process.env.WA_CONNECTOR_URL || `http://127.0.0.1:${PORTS.waConnector}`,
-  WA_CONNECTOR_SECRET: waConnectorSecret,
-  WECHAT_CONNECTOR_URL: process.env.WECHAT_CONNECTOR_URL || `http://127.0.0.1:${PORTS.wechatConnector}`,
-  WECHAT_CONNECTOR_SECRET: wechatConnectorSecret,
-  FEISHU_CONNECTOR_URL: process.env.FEISHU_CONNECTOR_URL || `http://127.0.0.1:${PORTS.feishuConnector}`,
-  FEISHU_CONNECTOR_SECRET: feishuConnectorSecret,
-  BROWSER_RELAY_URL: process.env.BROWSER_RELAY_URL || `http://127.0.0.1:${browserRelayPort}`,
-  BROWSER_RELAY_SECRET: browserRelaySecret,
+  // Each bridge's URL + secret, exported only when something will answer on it
+  // (bridge-env.mjs holds the rule and its tests).
+  ...bridgeEnv('DISCORD_CONNECTOR', { useLocal: useLocalDiscordConnector, port: PORTS.discordConnector, secret: discordConnectorSecret }),
+  ...bridgeEnv('WA_CONNECTOR', { useLocal: useLocalWaConnector, port: PORTS.waConnector, secret: waConnectorSecret }),
+  ...bridgeEnv('WECHAT_CONNECTOR', { useLocal: useLocalWechatConnector, port: PORTS.wechatConnector, secret: wechatConnectorSecret }),
+  ...bridgeEnv('FEISHU_CONNECTOR', { useLocal: useLocalFeishuConnector, port: PORTS.feishuConnector, secret: feishuConnectorSecret }),
+  ...bridgeEnv('BROWSER_RELAY', { useLocal: useLocalBrowserRelay, port: browserRelayPort, secret: browserRelaySecret }),
   BROWSER_VAULT_ENCRYPTION_KEY: browserVaultEncryptionKey,
   BROWSER_CREDENTIAL_ENCRYPTION_KEY: browserCredentialEncryptionKey,
   ...(messageStoreLaunch.enabled
@@ -588,14 +598,20 @@ if (useLocalFeishuConnector) {
   await waitForPort(PORTS.feishuConnector, 'Feishu/Lark connector')
 }
 const entryUrl = `http://localhost:${PORTS.appWeb}/api/auth/local-session`
-const discordStatus = useLocalDiscordConnector ? ` · discord :${PORTS.discordConnector}` : ' · discord external'
-const waStatus = useLocalWaConnector ? ` · whatsapp :${PORTS.waConnector}` : ' · whatsapp external'
+// A bridge is `off` when core-only skipped it and `external` only when some
+// other deployment owns it — the two are not the same thing to a reader
+// wondering why a channel is silent.
+const bridgeStatus = (label, useLocal, port) =>
+  useLocal ? ` · ${label} :${port}` : coreOnly ? ` · ${label} off` : ` · ${label} external`
+const discordStatus = bridgeStatus('discord', useLocalDiscordConnector, PORTS.discordConnector)
+const waStatus = bridgeStatus('whatsapp', useLocalWaConnector, PORTS.waConnector)
 const messageStoreStatus = messageStoreLaunch.enabled ? ` · chat-archive :${PORTS.messageStore}` : ' · chat-archive off'
-const wechatStatus = useLocalWechatConnector ? ` · wechat :${PORTS.wechatConnector}` : ' · wechat external'
-const feishuStatus = useLocalFeishuConnector ? ` · feishu :${PORTS.feishuConnector}` : ' · feishu external'
-const browserRelayStatus = useLocalBrowserRelay ? ` · browser-relay :${browserRelayPort}` : ' · browser-relay external'
-console.log(`\n[launch] Use Brian is up. Opening ${entryUrl}\n  (api :${PORTS.api} · doc-sync :${PORTS.docSync} · app-web :${PORTS.appWeb}${discordStatus}${waStatus}${messageStoreStatus}${wechatStatus}${feishuStatus}${browserRelayStatus})\n  Ctrl-C to stop everything.\n`)
+const wechatStatus = bridgeStatus('wechat', useLocalWechatConnector, PORTS.wechatConnector)
+const feishuStatus = bridgeStatus('feishu', useLocalFeishuConnector, PORTS.feishuConnector)
+const browserRelayStatus = bridgeStatus('browser-relay', useLocalBrowserRelay, browserRelayPort)
+const noBrowser = ['1', 'true'].includes((process.env.USEBRIAN_NO_BROWSER ?? '').trim().toLowerCase())
+console.log(`\n[launch] Use Brian is up. ${noBrowser ? `Entry URL: ${entryUrl}` : `Opening ${entryUrl}`}\n  (api :${PORTS.api} · doc-sync :${PORTS.docSync} · app-web :${PORTS.appWeb}${discordStatus}${waStatus}${messageStoreStatus}${wechatStatus}${feishuStatus}${browserRelayStatus})\n  Ctrl-C to stop everything.\n`)
 if (preferredProvider === 'openai-codex') {
   console.log('[launch] Open Settings → AI providers to complete ChatGPT sign-in.')
 }
-openBrowser(entryUrl)
+if (!noBrowser) openBrowser(entryUrl)

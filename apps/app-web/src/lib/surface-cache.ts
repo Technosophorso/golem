@@ -67,6 +67,17 @@ const EMPTY: CacheEntry<never> = {
   revalidating: false,
 };
 
+/** A fetcher can reject cached data as well as its current read (access denial).
+ * Commit this only while the request still owns the key, never by invalidating
+ * from inside the fetcher: that would detach the error and cause a retry loop.
+ */
+export class SurfaceCacheEvictionError extends Error {
+  constructor(readonly cause: unknown) {
+    super("Cached surface access denied");
+    this.name = "SurfaceCacheEvictionError";
+  }
+}
+
 type Listener = () => void;
 
 const store = new Map<string, CacheEntry<unknown>>();
@@ -120,6 +131,7 @@ export function loadSurfaceCache<T>(
   put(key, { revalidating: true });
   const request = fetcher()
     .then((data) => {
+      if (inflight.get(key) !== request) return undefined;
       const now = Date.now();
       put(key, {
         data,
@@ -131,16 +143,23 @@ export function loadSurfaceCache<T>(
       return data;
     })
     .catch((error: unknown) => {
+      if (inflight.get(key) !== request) return undefined;
       // Keep the last good value: a failed refresh should not blank a surface
       // the user is reading. Consumers decide whether to surface `error`.
       // `attemptedAt` closes the stale window for this attempt, so the hook
       // waits a full `staleMs` before trying again instead of retrying on the
       // very emit this write produces.
-      put(key, { error, attemptedAt: Date.now(), revalidating: false });
+      put(key, {
+        ...(error instanceof SurfaceCacheEvictionError
+          ? { data: undefined, updatedAt: 0, error: error.cause }
+          : { error }),
+        attemptedAt: Date.now(),
+        revalidating: false,
+      });
       return undefined;
     })
     .finally(() => {
-      inflight.delete(key);
+      if (inflight.get(key) === request) inflight.delete(key);
     });
 
   inflight.set(key, request);
@@ -198,6 +217,8 @@ export function invalidateSurfaceCache(prefix: string): void {
     if (key === prefix || key.startsWith(prefix)) dropped.push(key);
   }
   for (const key of dropped) {
+    // Detach old reads: their completion must not repopulate an invalidated key.
+    inflight.delete(key);
     store.delete(key);
     emit(key);
   }

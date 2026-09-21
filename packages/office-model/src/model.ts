@@ -43,8 +43,8 @@ export const OfficeRichTextRunSchema = z
     id: OfficeUuidSchema,
     text: z.string().max(100_000),
     style: OfficeTextStyleSchema,
-    href: z.string().url().refine((url) => /^(https:|mailto:)/.test(url), {
-      message: 'Only inert HTTPS and mailto links are supported',
+    href: z.string().url().refine((url) => /^(https?:|mailto:)/.test(url), {
+      message: 'Only inert HTTP, HTTPS and mailto links are supported',
     }).optional(),
   })
   .strict()

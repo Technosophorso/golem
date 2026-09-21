@@ -6646,6 +6646,7 @@ export const en = {
     thumbsUp: "Thumbs up",
     heart: "Heart",
     check: "Check",
+    lifecycleFailed: "Couldn't update this template. Try again.",
     templateTitle: "Office templates",
     templateDescription: "Published templates are immutable. Editing creates a new draft version.",
     chooseTemplateTitle: "Choose a template",

@@ -6203,6 +6203,7 @@ export const zhCN: Dictionary = {
     thumbsUp: "赞",
     heart: "爱心",
     check: "勾选",
+    lifecycleFailed: "无法更新此模板，请重试。",
     templateTitle: "Office 范本",
     templateDescription: "已发布的范本不可变更；编辑会创建新的草稿版本。",
     chooseTemplateTitle: "选择范本",

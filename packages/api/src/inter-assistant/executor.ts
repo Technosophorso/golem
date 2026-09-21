@@ -684,6 +684,8 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
       : false
     /** Capabilities MCP injection could not provide — see the assignment below. */
     let unavailableCapabilities: string[] = []
+    /** Source labels available behind the dynamic search gateway. */
+    let searchableSources: string[] = []
     /** Pinned custom/CLI names retained behind the restricted MCP gateway. */
     let restrictedSearchToolNames: string[] = []
 
@@ -753,6 +755,7 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
         // docs/architecture/channels/inter-assistant.md → "Unavailable
         // capabilities on the callee path".
         unavailableCapabilities = mcpInjection.unavailable
+        searchableSources = mcpInjection.searchableSources
         restrictedSearchToolNames = mcpInjection.restrictedSearchToolNames ?? []
       } catch (err) {
         console.error('[inter-assistant] MCP injection failed for callee:', err)
@@ -1459,7 +1462,11 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
     if (unavailableCapabilities.length > 0 || finalTools.has('mcp_search')) {
       try {
         const { buildUnavailableCapabilitiesPrompt } = await import('../routes/route-helpers.js')
-        unavailableBlock = buildUnavailableCapabilitiesPrompt(unavailableCapabilities, finalTools)
+        unavailableBlock = buildUnavailableCapabilitiesPrompt(
+          unavailableCapabilities,
+          finalTools,
+          searchableSources,
+        )
       } catch (err) {
         console.error('[inter-assistant] unavailable-capabilities prompt failed (skipped):', err)
       }

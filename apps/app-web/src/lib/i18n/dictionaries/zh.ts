@@ -6359,6 +6359,7 @@ export const zh: Dictionary = {
     thumbsUp: "讚",
     heart: "愛心",
     check: "勾選",
+    lifecycleFailed: "無法更新此範本，請再試一次。",
     templateTitle: "Office 範本",
     templateDescription: "已發佈的範本不可變更；編輯會建立新的草稿版本。",
     chooseTemplateTitle: "選擇範本",

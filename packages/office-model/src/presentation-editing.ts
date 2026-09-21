@@ -49,7 +49,7 @@ function textRuns(object: PresentationObject): OfficeRichTextRun[] | null {
 export function formatPresentationTextObject(object: PresentationObject, formatting: PresentationTextFormatting): PresentationObject {
   const runs = textRuns(object)
   if (!runs) throw new Error('Presentation object does not support text formatting')
-  if (formatting.href !== undefined && formatting.href !== null && !/^(https:|mailto:)/.test(formatting.href)) throw new Error('Presentation links must use HTTPS or mailto')
+  if (formatting.href !== undefined && formatting.href !== null && !/^(https?:|mailto:)/.test(formatting.href)) throw new Error('Presentation links must use HTTP, HTTPS or mailto')
   const stylePatch = Object.fromEntries(Object.entries(formatting).filter(([key, value]) => !['href', 'alignment', 'verticalAlignment'].includes(key) && value !== undefined))
   const nextRuns = runs.map((run) => ({
     ...run,

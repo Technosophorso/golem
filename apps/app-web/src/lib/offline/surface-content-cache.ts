@@ -38,7 +38,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { getUserInfo } from "@/lib/user";
 import {
-  invalidateSurfaceCache,
+  SurfaceCacheEvictionError,
   loadSurfaceCache,
   markSurfaceCacheStale,
   readSurfaceCache,
@@ -213,7 +213,10 @@ export function useSurfaceContentCache<T>(options: {
         // too, so the surface shows its load-failed state instead of the rows
         // the server just refused.
         if (scope) void deleteSurfaceContentCache(scope, resource);
-        if (key) invalidateSurfaceCache(key);
+        // Let the owning request publish the denial and clear data atomically.
+        // Invalidating here would detach this request, discard its error, and
+        // make useCachedResource start another cold load indefinitely.
+        throw new SurfaceCacheEvictionError(error);
       }
       throw error;
     }

@@ -178,7 +178,7 @@ export async function preflightOfficePackage(
       for (const match of xml.matchAll(/<Relationship\b[^>]*\/?\s*>/g)) {
         const attrs = relationshipAttributes(match[0])
         if (attrs.TargetMode !== 'External') continue
-        const hyperlink = attrs.Type?.endsWith('/hyperlink') && /^(https:|mailto:)/.test(attrs.Target ?? '')
+        const hyperlink = attrs.Type?.endsWith('/hyperlink') && /^(https?:|mailto:)/.test(attrs.Target ?? '')
         if (hyperlink && family === 'spreadsheet') diagnostics.push(error('package.unsupported_construct', entry.name, 'Spreadsheet hyperlinks are not yet preserved; remove them before import', 'spreadsheetHyperlink'))
         else if (!hyperlink) diagnostics.push(error('package.external_relationship', entry.name, 'External templates, data, media, and unknown relationships are rejected', 'externalRelationship'))
       }

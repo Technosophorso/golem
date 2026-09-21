@@ -6413,6 +6413,7 @@ export const ja: Dictionary = {
     thumbsUp: "いいね",
     heart: "ハート",
     check: "チェック",
+    lifecycleFailed: "テンプレートを更新できませんでした。もう一度お試しください。",
     templateTitle: "Office テンプレート",
     templateDescription: "公開済みテンプレートは変更されません。編集すると新しい下書きバージョンが作成されます。",
     chooseTemplateTitle: "テンプレートを選択",

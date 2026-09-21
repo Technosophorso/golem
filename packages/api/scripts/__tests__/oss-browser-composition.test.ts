@@ -47,7 +47,12 @@ describe('[COMP:sandbox/profiles] OSS browser composition', () => {
     expect(launcher).toContain("config.browserVaultEncryptionKey")
     expect(launcher).toContain("config.browserCredentialEncryptionKey")
     expect(launcher).toContain("'@use-brian/browser-relay'")
-    expect(launcher).toContain('BROWSER_RELAY_URL:')
+    // The relay's URL + secret are composed by `bridgeEnv` (scripts/bridge-env.mjs),
+    // which exports them only when something will answer on the port. Assert the
+    // seam, not the key it produces: the literal `BROWSER_RELAY_URL:` used to be
+    // inline here, and grepping for it went red on a refactor that changed nothing
+    // about the wiring. The rule itself is covered by bridge-env.test.mjs.
+    expect(launcher).toContain("bridgeEnv('BROWSER_RELAY'")
     expect(launcher).toContain('BROWSER_VAULT_ENCRYPTION_KEY:')
     expect(launcher).toContain('BROWSER_CREDENTIAL_ENCRYPTION_KEY:')
     expect(template).toContain('FROM e2bdev/code-interpreter:latest')
