@@ -98,6 +98,31 @@ it('[COMP:app-web/drawing] paints continuous preview changes without blanking or
     expect(host.querySelector('canvas')).toBeNull();
   } finally { doc.destroy(); vi.useRealTimers(); }
 });
+it.each([false, true])('[COMP:app-web/drawing] previews and downloads without opening the editor (editable=%s)', async editable => {
+  await render(<BlockDrawing editable={editable} block={{ ...original, title: 'Example drawing', scene: { ...original.scene, elements: [
+    { id: 'shape', type: 'rectangle', x: 0, y: 0, width: 100, height: 80 },
+  ] } }} />);
+  await settle(() => expect(host.querySelector('a[download]')).not.toBeNull());
+  const link = host.querySelector<HTMLAnchorElement>('a[download]')!;
+  expect(link.download).toBe('Example drawing.png');
+  expect(link.href).toBe(`data:image/png;base64,${png}`);
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label]')!.click());
+  await settle(() => expect(document.querySelector('[role="dialog"] img')).not.toBeNull());
+  expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(link.href);
+  expect(captureInitialData).not.toHaveBeenCalled();
+  await act(async () => document.querySelector<HTMLButtonElement>(`button[aria-label="${en.docPage.lightbox.close}"]`)!.click());
+  await render(<BlockDrawing block={original} />);
+  expect(host.querySelector('a[download]')).toBeNull();
+});
+it('[COMP:app-web/drawing] hides image controls when preview export fails', async () => {
+  exporting.invalid = true;
+  await render(<BlockDrawing block={{ ...original, scene: { ...original.scene, elements: [
+    { id: 'shape', type: 'rectangle', x: 0, y: 0, width: 100, height: 80 },
+  ] } }} />);
+  await settle(() => expect(host.querySelector('[role="alert"]')?.textContent).toBe(t.drawingFailed));
+  expect(host.querySelector('a[download]')).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>('button[aria-label]')?.disabled).toBe(true);
+});
 afterEach(() => { act(() => root?.unmount()); host?.remove(); editor?.destroy(); editor = undefined; exporting.wait = null; exporting.invalid = false; exporting.restoreDefaults = false; captureInitialData.mockClear(); });
 async function render(node: React.ReactNode) {
   if (!host?.isConnected) { host = document.createElement('div'); document.body.append(host); root = createRoot(host); }
