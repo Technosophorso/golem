@@ -254,7 +254,8 @@ describe('[COMP:app-web/drawing] editor lifecycle and authority', () => {
     expect(host.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe(t.drawing);
     await render(<BlockDrawing block={{ ...block, title: 'Read-only name' }} />);
     expect(host.textContent).toContain('Read-only name');
-    expect(host.querySelector('input, button')).toBeNull();
+    expect(host.querySelector('input')).toBeNull();
+    expect([...host.querySelectorAll('button')].some(button => button.textContent === t.drawingEdit)).toBe(false);
   });
   it.each(['svg', 'oversized'])('recovers after deleting a %s asset and preserves live image bytes', async kind => {
     const liveFile = { id: 'live', mimeType: 'image/png' as const, dataURL: 'data:image/png;base64,YQ==', created: 1 };
@@ -322,7 +323,8 @@ describe('[COMP:app-web/drawing] editor lifecycle and authority', () => {
   it('offers no edit in read-only mode and disables save after permission loss', async () => {
     const write = vi.fn(() => true);
     await render(<BlockDrawing block={original} onSave={write} />);
-    expect(host.querySelector('button')).toBeNull();
+    expect([...host.querySelectorAll('button')].some(button => button.textContent === t.drawingEdit)).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>(`button[aria-label="${en.docPage.lightbox.open}"]`)?.disabled).toBe(true);
     await render(<BlockDrawing block={original} editable onSave={write} />);
     await click(t.drawingEdit);
     await render(<BlockDrawing block={original} editable={false} onSave={write} />);
