@@ -232,7 +232,7 @@ export function buildFixtureWorkspace(): FixtureWorkspace {
     LAYER_1_SYSTEM_PROMPT +
     '\n\n' +
     FIXTURE_USER_CONTEXT +
-    buildUnavailableCapabilitiesPrompt(unavailable, tools)
+    buildUnavailableCapabilitiesPrompt(unavailable, tools, [])
 
   // Every injected fixture tool is intentionally usable. Derive both app and
   // named-set grants so evals never mistake a missing fixture grant for a
