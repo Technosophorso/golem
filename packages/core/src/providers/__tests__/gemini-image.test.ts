@@ -12,7 +12,9 @@ describe('[COMP:core/gemini-image] native HTTP contract', () => {
     const [url, init] = fetcher.mock.calls[0]!
     expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent')
     expect(init.headers['x-goog-api-key']).toBe('fictional-key')
-    expect(JSON.parse(init.body).generationConfig).toMatchObject({ candidateCount: 1, responseModalities: ['IMAGE'], responseFormat: { image: { imageSize: '1K', aspectRatio: '16:9' } }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } })
+    const generationConfig = JSON.parse(init.body).generationConfig
+    expect(generationConfig).toMatchObject({ candidateCount: 1, responseModalities: ['IMAGE'], imageConfig: { imageSize: '1K', aspectRatio: '16:9' }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } })
+    expect(generationConfig).not.toHaveProperty('responseFormat')
     expect(result).toMatchObject({ image: { mimeType: 'image/png', data: png }, responseId: 'fictional-response', usage: { inputTokens: 100, outputTokens: 1132, imageTokens: 1120, measured: true } })
     expect(feedImageCost(FEED_IMAGE_CAPABILITY.rates, 100, 1132, 1120)).toBeCloseTo(0.067286)
   })
@@ -22,6 +24,18 @@ describe('[COMP:core/gemini-image] native HTTP contract', () => {
     expect(fetcher.mock.calls[0]![0]).toContain('https://asia-east2-aiplatform.googleapis.com/v1/projects/fixture-project/locations/asia-east2/')
     expect(fetcher.mock.calls[0]![1].headers.Authorization).toBe('Bearer fixture-token')
     expect(result.error).toBe('image_provider_rejected'); expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('retains bounded provider diagnostics for a rejected request', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { status: 'INVALID_ARGUMENT', message: 'Invalid value at image config\n', details: [{ fieldViolations: [{ field: 'generation_config.image_config.image_size' }, { field: 'unsafe field path!' }] }] } }), { status: 400 }))
+    const result = await createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) })
+    expect(result).toMatchObject({ error: 'image_provider_rejected', status: 400, providerError: { code: 'INVALID_ARGUMENT', message: 'Invalid value at image config', fields: ['generation_config.image_config.image_size'] }, usage: { inputTokens: 0, outputTokens: 0, measured: false } })
+  })
+  it('keeps a known provider rejection when its advisory diagnostic stream fails', async () => {
+    const body = new ReadableStream({ start(controller) { controller.error(new Error('broken diagnostic stream')) } })
+    const fetcher = vi.fn().mockResolvedValue(new Response(body, { status: 400 }))
+    const result = await createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) })
+    expect(result).toMatchObject({ error: 'image_provider_rejected', status: 400, usage: { inputTokens: 0, outputTokens: 0, measured: false } })
+    expect(result.providerError).toBeUndefined()
   })
   it('refuses missing transport and credentials before HTTP', async () => {
     const fetcher = vi.fn(); const input = { model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) }
