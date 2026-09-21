@@ -3138,7 +3138,8 @@ button.doc-comment-card:hover {
 .office-document-prosemirror ul { list-style: disc; }
 .office-document-prosemirror ol { list-style: decimal; }
 .office-document-table { width: 100%; table-layout: fixed; border-collapse: collapse; }
-.office-document-table td { min-width: 3rem; border: 1px solid var(--border); padding: 0.35rem; vertical-align: top; }
+.office-document-table td { min-width: 0; }
+.office-document-table td p { white-space: inherit; }
 .office-document-image { display: block; margin-inline: auto; }
 .office-document-page-break { display: block; border-top: 2px dashed var(--border); }
 .office-document-section-break { display: block; border-top: 2px double var(--muted-foreground); }

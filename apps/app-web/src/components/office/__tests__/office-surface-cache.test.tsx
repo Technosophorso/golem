@@ -267,6 +267,20 @@ describe("[COMP:app-web/office-surface-cache] template lifecycle", () => {
     expect(navigation.replace).toHaveBeenCalledWith(`/w/${WORKSPACE}/office/templates`);
   });
 
+  it("invalidates every Files view and the linked draft caches after a successful lifecycle action", async () => {
+    render(<OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} />);
+    await act(async () => { await settle(); });
+    const keys = [
+      ...(["active", "archived", "trash", "retained"] as const).map(view => officeListCacheKey(WORKSPACE, view)),
+      officeArtifactCacheKey(ARTIFACT), officeSnapshotCacheKey(ARTIFACT),
+    ];
+    await act(async () => { for (const key of keys) await loadSurfaceCache(key, async () => [ROW]); });
+    api.transitionOfficeTemplateLifecycle.mockResolvedValue({ ...template, lifecycleState: "trash" });
+    api.listOfficeTemplates.mockResolvedValue([{ ...template, lifecycleState: "trash" }]);
+    await act(async () => { button(en.office.moveToTrash).click(); await settle(); });
+    for (const key of keys) expect(readSurfaceCache(key).data).toBeUndefined();
+  });
+
   it("disables duplicate actions while pending and retains the row on rejection", async () => {
     render(<OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} />);
     await act(async () => { await settle(); });

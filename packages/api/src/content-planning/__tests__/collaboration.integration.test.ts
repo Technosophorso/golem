@@ -486,6 +486,27 @@ describe('[COMP:feed/draft-generation] real database generation lifecycle', () =
     expect(f.call).not.toHaveBeenCalled()
     await expect(f.service.dispatch(f.actor, { ...request, estimateId: nextEstimate.id })).rejects.toMatchObject({ code: 'draft_access_required' })
   })
+  it('scenario 8: Retry archives an unusable image receipt and calls the provider again', async () => {
+    const f = await generationFixture()
+    await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [{ type: 'generationPlaceholder', attrs: { ...f.slot, kind: 'image', briefRevision: 1 } }] }] }])
+    const responses = ['image_provider_rejected', 'image_missing'] as const
+    const call = vi.fn(async () => { const error = responses[call.mock.calls.length - 1]!; return { text: '', imageReceipt: { error, status: error === 'image_provider_rejected' ? 400 : undefined, usage: { inputTokens: 0, outputTokens: 0, measured: false } }, usage: { inputTokens: 0, outputTokens: 0, measured: false } } })
+    const port: FeedGenerationPort = {
+      resolve: vi.fn(async () => ({ model: 'fixture-image', tier: 'image', identity: 'fixture-image:v1', inputCharacters: 160_000, maxTokens: 6000, call, price: () => ({ currency: 'USD' as const, maximumUsd: 0, rateVersion: 'fixture-image:v1', billing: 'included' as const }) })),
+      readReference: vi.fn(async () => ({ omission: 'fixture_unavailable' })),
+      persistImage: vi.fn(async (_run, receipt) => { throw new Error(receipt.error ?? 'image_missing') }),
+    }
+    const service = createFeedGenerationService(port)
+    const estimate = await service.estimate(f.actor, { ...f.request, mutationId: randomUUID(), expectedRevision: 4, count: 1, imageProvider: 'gemini' })
+    const queued = await service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
+    const first = (await claimFeedRun(['image_generation']))!; await expect(service.handler(first, new AbortController().signal)).rejects.toThrow('image_provider_rejected'); await failFeedRun(first, 'image_provider_rejected')
+    const failed = await getFeedRun(f.actor, queued.id); expect(failed.result.parts.generation).toBeTruthy(); expect(failed.usage.generation).toBeTruthy()
+    const retried = await retryFeedRun(f.actor, queued.id)
+    expect(retried.status).toBe('pending'); expect(retried.result.parts.generation).toBeUndefined(); expect(retried.usage.generation).toBeUndefined()
+    expect(retried.result.discardedParts).toEqual([expect.objectContaining({ part: 'generation', attempt: 1, response: expect.objectContaining({ imageReceipt: expect.objectContaining({ error: 'image_provider_rejected' }) }) })])
+    const second = (await claimFeedRun(['image_generation']))!; await expect(service.handler(second, new AbortController().signal)).rejects.toThrow('image_missing'); await failFeedRun(second, 'image_missing')
+    expect(call).toHaveBeenCalledTimes(2)
+  })
 })
 
 

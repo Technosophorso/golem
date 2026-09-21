@@ -6,6 +6,7 @@ import type { BinaryFiles } from '@excalidraw/excalidraw/types';
 import { drawingSceneSchema, type DrawingBlock, type DrawingScene, type DrawingPreview } from '@use-brian/shared/drawing';
 import { useT } from '@/lib/i18n/client';
 import { useTheme } from '@/lib/theme';
+import { VisualLightbox } from './visual-lightbox';
 import { loadDrawingRuntime } from './drawing-runtime';
 import type { LibraryTarget } from './drawing-library';
 import { DrawingToolbarContext } from './floating-toolbar';
@@ -23,7 +24,10 @@ export function BlockDrawing({ block: base, editable = false, onSave }: {
   editable?: boolean;
   onSave?: (next: DrawingBlock, original: DrawingBlock) => boolean;
 }) {
-  const t = useT().docPage.diagramSource;
+  const copy = useT().docPage;
+  const t = copy.diagramSource;
+  const [image, setImage] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
   const { resolved } = useTheme();
   const libraryScope = useContext(DrawingLibraryContext);
   const page = useContext(DrawingPageContext);
@@ -77,6 +81,8 @@ export function BlockDrawing({ block: base, editable = false, onSave }: {
     if (previousScope.current !== scopeIdentity) {
       previousScope.current = scopeIdentity;
       setDraft(null);
+      setPreviewOpen(false);
+      setImage(null);
     }
   }, [scopeIdentity]);
   useEffect(() => {
@@ -86,10 +92,10 @@ export function BlockDrawing({ block: base, editable = false, onSave }: {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const host = canvasHost.current;
     setFailed(false);
-    if (block.collaborationError) { host?.replaceChildren(); return; }
+    if (block.collaborationError) { host?.replaceChildren(); setImage(null); return; }
     async function preview() {
       const scene = drawingSceneSchema.parse(previewScene.current);
-      if (!scene.elements.some(element => !element.isDeleted)) { host?.replaceChildren(); setFailed(false); return; }
+      if (!scene.elements.some(element => !element.isDeleted)) { host?.replaceChildren(); setImage(null); setFailed(false); return; }
       const { exportToCanvas, restoreElements } = await loadDrawingRuntime();
       const canvas = await exportToCanvas({
         elements: restoreElements(scene.elements as unknown as ExcalidrawElement[], null),
@@ -98,6 +104,9 @@ export function BlockDrawing({ block: base, editable = false, onSave }: {
         maxWidthOrHeight: 1600,
       });
       if (active) {
+        const url = canvas.toDataURL('image/png');
+        if (!url.startsWith('data:image/png;base64,')) throw new Error('Invalid drawing preview');
+        setImage(url);
         setFailed(false);
         canvas.style.width = '100%';
         canvas.style.height = 'auto';
@@ -112,7 +121,7 @@ export function BlockDrawing({ block: base, editable = false, onSave }: {
       const run = async () => {
         const source = previewScene.current;
         try { await preview(); }
-        catch { if (active) { host?.replaceChildren(); setFailed(true); } }
+        catch { if (active) { host?.replaceChildren(); setImage(null); setFailed(true); } }
         finally {
           pending = false;
           if (active && source !== previewScene.current) render();
@@ -136,7 +145,19 @@ export function BlockDrawing({ block: base, editable = false, onSave }: {
   }
 
   return <div className="rounded-lg border border-border p-2" contentEditable={false}>
-    <div ref={canvasHost} role="img" aria-label={block.title?.trim() || t.drawing} />
+    <button type="button" className="block w-full cursor-zoom-in disabled:cursor-default" aria-label={copy.lightbox.open} disabled={!image || !!block.collaborationError} onClick={() => setPreviewOpen(true)}>
+      <div ref={canvasHost} role="img" aria-label={block.title?.trim() || t.drawing} />
+    </button>
+    {image && !block.collaborationError && <>
+      <div className="flex flex-wrap gap-2 text-sm">
+        <button type="button" className="rounded px-3 py-2 hover:bg-muted" onClick={() => setPreviewOpen(true)}>{copy.lightbox.open}</button>
+        <a className="rounded px-3 py-2 hover:bg-muted" href={image} download={`${block.title?.trim().replace(/[\\/:*?"<>|]/g, '-') || 'drawing'}.png`}>{t.drawingDownload}</a>
+      </div>
+      <VisualLightbox open={previewOpen} onOpenChange={setPreviewOpen} label={block.title?.trim() || t.drawing}>
+        {/* The complete bitmap is independent of the inline canvas's height cap. */}
+        <img src={image} alt={block.title?.trim() || t.drawing} className="h-auto w-full" draggable={false} />
+      </VisualLightbox>
+    </>}
     {failed && <p role="alert">{t.drawingFailed}</p>}
     {block.collaborationError && <p role="alert">{t.drawingError}</p>}
     <div className="flex items-center justify-between gap-2 p-1 text-sm">

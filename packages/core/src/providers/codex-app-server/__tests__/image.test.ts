@@ -34,7 +34,11 @@ describe('[COMP:core/codex-image] explicit image receipt bridge', () => {
       expect(receipt.image).toEqual({ data: f.png, mimeType: 'image/png' })
       expect(receipt.responseId).toBe('image')
       expect(receipt.usage.measured).toBe(false)
-      expect(f.calls.find(c => c.method === 'thread/start')?.params).toMatchObject({ environments: [], dynamicTools: [], sandbox: 'read-only', ephemeral: true })
+      const thread = f.calls.find(c => c.method === 'thread/start')?.params
+      expect(thread).toMatchObject({ environments: [], dynamicTools: [], sandbox: 'read-only', ephemeral: true })
+      expect(thread?.baseInstructions).toContain('tools.image_gen__imagegen')
+      expect(thread?.baseInstructions).toContain('generatedImage(result)')
+      expect(thread?.baseInstructions).not.toContain('image_gen.imagegen')
       expect(f.calls.filter(c => c.method === 'turn/start')).toHaveLength(1)
       expect(f.calls.some(c => c.method === 'turn/interrupt')).toBe(true)
     } finally { f.rpc.close() }

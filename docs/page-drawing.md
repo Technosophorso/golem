@@ -16,6 +16,14 @@ continuous edits, not wait for a pause in remote traffic. A previous canvas stay
 mounted until its replacement is ready; empty or invalid scenes clear it. This
 canvas is separate from the digest-bound PNG persisted for exports and AI reads.
 
+Clicking the embedded preview (or its keyboard-accessible expand control) opens
+the shared visual lightbox with pan and zoom, without entering the drawing editor.
+A Download PNG control exports the complete rendered image, not the clipped page
+thumbnail. Both controls are available to read-only viewers. Empty, failed and
+quarantined previews have no image actions; editing remains a separate action.
+The lightbox and download follow the current scene-derived preview and theme,
+without mutating the page or relying on a persisted preview.
+
 `node apps/app-web/scripts/drawing-page-browser.mjs` exercises two independent
 browser contexts through `useCollabProvider`, `CollabPageEditor`, the real Tiptap
 React node view and SDK. It uses an isolated Hocuspocus server with the production

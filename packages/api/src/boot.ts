@@ -517,6 +517,7 @@ import { teamspacesRoutes } from './routes/teamspaces.js'
 import { contextScopeRoutes } from './routes/context-scopes.js'
 import { createTeamspaceStore } from './db/teamspace-store.js'
 import { createOfficeArtifactStore } from './db/office-artifacts.js'
+import { OFFICE_LIFECYCLE_SWEEP_SQL } from './db/office-lifecycle.js'
 import { getBrandStore } from './db/brand-store.js'
 import { buildBrandVoiceFragment } from '@use-brian/core'
 import { createOfficeTemplateStore } from './db/office-templates.js'
@@ -2710,37 +2711,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const officeReleaseStore = createOfficeReleaseStore()
   const officeLifecycleWorker = createOfficeLifecycleWorker({
     async sweep() {
-      const result = await query<{ advanced: number }>(`
-        WITH advanced_artifacts AS (
-          UPDATE office_artifacts a SET
-            lifecycle_state=CASE WHEN lifecycle_state='trash' THEN 'retained' ELSE 'purged' END,
-            updated_at=now()
-          WHERE legal_hold=FALSE AND (
-            (lifecycle_state='trash' AND retain_at <= now()) OR
-            (lifecycle_state='retained' AND purge_at <= now())
-          )
-          RETURNING id,workspace_id,head_version,lifecycle_state
-        ), revoked AS (
-          UPDATE office_offline_packages p SET revoked_at=now(),complete=FALSE,updated_at=now()
-           FROM advanced_artifacts a WHERE p.artifact_id=a.id AND a.lifecycle_state='purged' AND p.revoked_at IS NULL
-        ), artifact_audit AS (
-          INSERT INTO office_audit_events(workspace_id,artifact_id,event_type,artifact_version,reason)
-          SELECT workspace_id,id,'office.lifecycle.'||lifecycle_state,head_version,'Retention clock elapsed' FROM advanced_artifacts
-        ), advanced_templates AS (
-          UPDATE office_templates t SET
-            lifecycle_state=CASE WHEN lifecycle_state='trash' THEN 'retained' ELSE 'purged' END,
-            updated_at=now()
-          WHERE legal_hold=FALSE AND (
-            (lifecycle_state='trash' AND retain_at <= now()) OR
-            (lifecycle_state='retained' AND purge_at <= now() AND NOT EXISTS (
-              SELECT 1 FROM office_artifacts a JOIN office_template_versions v ON v.id=a.template_version_id
-               WHERE v.template_id=t.id AND a.lifecycle_state <> 'purged'
-            ))
-          )
-          RETURNING id
-        )
-        SELECT (SELECT count(*) FROM advanced_artifacts)+(SELECT count(*) FROM advanced_templates) AS advanced
-      `)
+      const result = await query<{ advanced: number }>(OFFICE_LIFECYCLE_SWEEP_SQL)
       return Number(result.rows[0]?.advanced ?? 0)
     },
   })

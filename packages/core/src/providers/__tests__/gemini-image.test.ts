@@ -12,7 +12,7 @@ describe('[COMP:core/gemini-image] native HTTP contract', () => {
     const [url, init] = fetcher.mock.calls[0]!
     expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image:generateContent')
     expect(init.headers['x-goog-api-key']).toBe('fictional-key')
-    expect(JSON.parse(init.body).generationConfig).toMatchObject({ candidateCount: 1, responseModalities: ['IMAGE'], responseFormat: { image: { imageSize: '1K', aspectRatio: '16:9' } } })
+    expect(JSON.parse(init.body).generationConfig).toMatchObject({ candidateCount: 1, responseModalities: ['IMAGE'], responseFormat: { image: { imageSize: '1K', aspectRatio: '16:9' } }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } })
     expect(result).toMatchObject({ image: { mimeType: 'image/png', data: png }, responseId: 'fictional-response', usage: { inputTokens: 100, outputTokens: 1132, imageTokens: 1120, measured: true } })
     expect(feedImageCost(FEED_IMAGE_CAPABILITY.rates, 100, 1132, 1120)).toBeCloseTo(0.067286)
   })

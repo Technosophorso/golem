@@ -98,6 +98,31 @@ it('[COMP:app-web/drawing] paints continuous preview changes without blanking or
     expect(host.querySelector('canvas')).toBeNull();
   } finally { doc.destroy(); vi.useRealTimers(); }
 });
+it.each([false, true])('[COMP:app-web/drawing] previews and downloads without opening the editor (editable=%s)', async editable => {
+  await render(<BlockDrawing editable={editable} block={{ ...original, title: 'Example drawing', scene: { ...original.scene, elements: [
+    { id: 'shape', type: 'rectangle', x: 0, y: 0, width: 100, height: 80 },
+  ] } }} />);
+  await settle(() => expect(host.querySelector('a[download]')).not.toBeNull());
+  const link = host.querySelector<HTMLAnchorElement>('a[download]')!;
+  expect(link.download).toBe('Example drawing.png');
+  expect(link.href).toBe(`data:image/png;base64,${png}`);
+  await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label]')!.click());
+  await settle(() => expect(document.querySelector('[role="dialog"] img')).not.toBeNull());
+  expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(link.href);
+  expect(captureInitialData).not.toHaveBeenCalled();
+  await act(async () => document.querySelector<HTMLButtonElement>(`button[aria-label="${en.docPage.lightbox.close}"]`)!.click());
+  await render(<BlockDrawing block={original} />);
+  expect(host.querySelector('a[download]')).toBeNull();
+});
+it('[COMP:app-web/drawing] hides image controls when preview export fails', async () => {
+  exporting.invalid = true;
+  await render(<BlockDrawing block={{ ...original, scene: { ...original.scene, elements: [
+    { id: 'shape', type: 'rectangle', x: 0, y: 0, width: 100, height: 80 },
+  ] } }} />);
+  await settle(() => expect(host.querySelector('[role="alert"]')?.textContent).toBe(t.drawingFailed));
+  expect(host.querySelector('a[download]')).toBeNull();
+  expect(host.querySelector<HTMLButtonElement>('button[aria-label]')?.disabled).toBe(true);
+});
 afterEach(() => { act(() => root?.unmount()); host?.remove(); editor?.destroy(); editor = undefined; exporting.wait = null; exporting.invalid = false; exporting.restoreDefaults = false; captureInitialData.mockClear(); });
 async function render(node: React.ReactNode) {
   if (!host?.isConnected) { host = document.createElement('div'); document.body.append(host); root = createRoot(host); }
@@ -229,7 +254,8 @@ describe('[COMP:app-web/drawing] editor lifecycle and authority', () => {
     expect(host.querySelector('[role="img"]')?.getAttribute('aria-label')).toBe(t.drawing);
     await render(<BlockDrawing block={{ ...block, title: 'Read-only name' }} />);
     expect(host.textContent).toContain('Read-only name');
-    expect(host.querySelector('input, button')).toBeNull();
+    expect(host.querySelector('input')).toBeNull();
+    expect([...host.querySelectorAll('button')].some(button => button.textContent === t.drawingEdit)).toBe(false);
   });
   it.each(['svg', 'oversized'])('recovers after deleting a %s asset and preserves live image bytes', async kind => {
     const liveFile = { id: 'live', mimeType: 'image/png' as const, dataURL: 'data:image/png;base64,YQ==', created: 1 };
@@ -297,7 +323,8 @@ describe('[COMP:app-web/drawing] editor lifecycle and authority', () => {
   it('offers no edit in read-only mode and disables save after permission loss', async () => {
     const write = vi.fn(() => true);
     await render(<BlockDrawing block={original} onSave={write} />);
-    expect(host.querySelector('button')).toBeNull();
+    expect([...host.querySelectorAll('button')].some(button => button.textContent === t.drawingEdit)).toBe(false);
+    expect(host.querySelector<HTMLButtonElement>(`button[aria-label="${en.docPage.lightbox.open}"]`)?.disabled).toBe(true);
     await render(<BlockDrawing block={original} editable onSave={write} />);
     await click(t.drawingEdit);
     await render(<BlockDrawing block={original} editable={false} onSave={write} />);

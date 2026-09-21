@@ -1,4 +1,5 @@
 import JSZip from 'jszip'
+import { snapshotToYDoc, yDocToSnapshot, type DocumentSnapshot } from '@use-brian/office-model'
 import { describe, expect, it } from 'vitest'
 import { exportOfficeDocument, importOfficeDocument, reparseOfficeDocument } from '../docx/index.js'
 import { completeDocumentSnapshot, id, resolveFixtureResource } from './fixtures.js'
@@ -17,6 +18,106 @@ describe('[COMP:office/docx-engine] DOCX engine', () => {
     const zip = await JSZip.loadAsync(exported.bytes)
     expect(zip.file('word/document.xml')).not.toBeNull()
     expect(zip.file('customXml/brian-office.json')).not.toBeNull()
+  })
+
+  it('resolves defaults and style chains and preserves cell paragraphs, tabs and spacing in native XML', async () => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('word/styles.xml', `<w:styles xmlns:w="w">
+      <w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Georgia" w:eastAsia="Synthetic CJK"/><w:sz w:val="24"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="60" w:line="360" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
+      <w:style w:type="paragraph" w:styleId="Base"><w:pPr><w:jc w:val="center"/><w:spacing w:before="40"/></w:pPr><w:rPr><w:b/><w:color w:val="123456"/></w:rPr></w:style>
+      <w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:basedOn w:val="Base"/><w:pPr><w:spacing w:after="0"/></w:pPr></w:style>
+      <w:style w:type="character" w:styleId="Emphasis"><w:rPr><w:i/></w:rPr></w:style>
+      <w:style w:type="table" w:styleId="TableBase"><w:tblPr><w:tblCellMar><w:top w:w="0"/><w:left w:w="100"/><w:bottom w:w="20"/><w:right w:w="60"/></w:tblCellMar><w:tblBorders><w:top w:val="single" w:sz="4" w:color="334455"/><w:insideV w:val="single" w:sz="6" w:color="445566"/></w:tblBorders></w:tblPr></w:style>
+      <w:style w:type="table" w:default="1" w:styleId="TableDefault"><w:basedOn w:val="TableBase"/></w:style>
+    </w:styles>`)
+    zip.file('word/document.xml', `<w:document xmlns:w="w"><w:body>
+      <w:p><w:r><w:t>Inherited</w:t></w:r></w:p><w:p/>
+      <w:tbl><w:tblPr><w:tblBorders><w:top w:val="nil"/></w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="1600"/><w:gridCol w:w="3200"/></w:tblGrid><w:tr><w:trPr><w:trHeight w:val="720"/></w:trPr>
+        <w:tc><w:tcPr><w:tcMar><w:left w:w="0"/></w:tcMar></w:tcPr>
+          <w:p><w:pPr><w:spacing w:line="280" w:lineRule="exact"/></w:pPr><w:r><w:rPr><w:rStyle w:val="Emphasis"/><w:b w:val="0"/></w:rPr><w:t>Alpha</w:t><w:tab/><w:t>Beta</w:t><w:br/><w:t>Gamma</w:t></w:r></w:p>
+          <w:p/><w:p><w:pPr><w:jc w:val="right"/><w:spacing w:line="400" w:lineRule="atLeast" w:before="0"/></w:pPr><w:r><w:t>Delta</w:t></w:r></w:p>
+        </w:tc><w:tc><w:p><w:r><w:t>Other</w:t></w:r></w:p></w:tc>
+      </w:tr></w:tbl></w:body></w:document>`)
+    const context = { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Synthetic formatting' }
+    const result = await importOfficeDocument(await zip.generateAsync({ type: 'nodebuffer' }), context)
+    expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true)
+    if (result.snapshot?.family !== 'document') throw new Error('document required')
+    expect(result.snapshot.sections[0].nodes[0]).toMatchObject({ alignment: 'center', spacingBeforePt: 2, spacingAfterPt: 0, lineSpacingMultiple: 1.5, runs: [expect.objectContaining({ style: expect.objectContaining({ fontFamily: 'Georgia', fontSizePt: 12, bold: true, color: '#123456' }) })] })
+    expect(result.snapshot.sections[0].nodes[1].kind).toBe('paragraph')
+    const table = result.snapshot.sections[0].nodes[2]
+    if (table.kind !== 'table') throw new Error('table required')
+    expect(table).toMatchObject({ columnWidthsPt: [80, 160], margins: { topPt: 0, rightPt: 3, bottomPt: 1, leftPt: 5 }, borders: { top: { style: 'none' }, insideVertical: { widthPt: 0.75 } } })
+    expect(table.rows[0].cells[0].margins?.leftPt).toBe(0)
+    const runs = table.rows[0].cells[0].runs
+    expect(runs.map((run) => run.text)).toEqual(['Alpha\tBeta\nGamma', '', 'Delta'])
+    expect(runs[0]).toMatchObject({ style: { bold: false, italic: true, eastAsianFontFamily: 'Synthetic CJK' }, paragraphStart: { lineSpacingPt: 14, lineSpacingRule: 'exact', spacingAfterPt: 0 } })
+    expect(runs[2].paragraphStart).toMatchObject({ alignment: 'end', lineSpacingPt: 20, lineSpacingRule: 'atLeast', spacingBeforePt: 0 })
+    const collaborative = snapshotToYDoc(result.snapshot)
+    expect(yDocToSnapshot(collaborative)).toEqual(result.snapshot)
+    collaborative.destroy()
+    const exported = await exportOfficeDocument(result.snapshot, resolveFixtureResource)
+    expect((await reparseOfficeDocument(exported.bytes)).snapshot).toEqual(result.snapshot)
+    const nativeZip = await JSZip.loadAsync(exported.bytes)
+    const native = await nativeZip.file('word/document.xml')!.async('string')
+    expect(native).toContain('w:lineRule="exact"')
+    expect(native).toContain('w:lineRule="atLeast"')
+    expect(native).toContain('w:eastAsia="Synthetic CJK"')
+    expect(native).toMatch(/<w:bottom[^>]*w:val="none"/)
+    expect(native).toContain('<w:tab/>')
+    expect(native).toContain('<w:cr/>')
+    const firstCell = native.match(/<w:tc>[\s\S]*?<\/w:tc>/)![0]
+    expect([...firstCell.matchAll(/<w:p[ >]/g)]).toHaveLength(3)
+    // Do not let the embedded canonical part conceal a native-export regression.
+    nativeZip.remove('customXml/brian-office.json')
+    const nativeImport = await importOfficeDocument(await nativeZip.generateAsync({ type: 'nodebuffer' }), context)
+    expect(nativeImport.ok, JSON.stringify(nativeImport.diagnostics)).toBe(true)
+    const nativeTable = nativeImport.snapshot?.family === 'document' ? nativeImport.snapshot.sections[0].nodes.find((node) => node.kind === 'table') : undefined
+    expect(nativeTable?.kind === 'table' && nativeTable.rows[0].cells[0].runs.map((run) => run.text).join('')).toBe('Alpha\tBeta\nGammaDelta')
+  })
+
+  it.each([false, true])('applies inherited bold/italic as toggles and direct values absolutely (defaults=%s)', async (defaultOn) => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('word/styles.xml', `<w:styles><w:docDefaults><w:rPrDefault><w:rPr><w:b w:val="${defaultOn ? 1 : 0}"/><w:i w:val="${defaultOn ? 1 : 0}"/></w:rPr></w:rPrDefault></w:docDefaults>
+      <w:style w:styleId="Base" w:type="paragraph"><w:rPr><w:b/><w:i/></w:rPr></w:style>
+      <w:style w:styleId="Derived" w:type="paragraph"><w:basedOn w:val="Base"/><w:rPr><w:b/><w:i/></w:rPr></w:style>
+      <w:style w:styleId="NoToggle" w:type="paragraph"><w:basedOn w:val="Base"/><w:rPr><w:b w:val="0"/><w:i w:val="false"/></w:rPr></w:style>
+      <w:style w:styleId="CharBase" w:type="character"><w:rPr><w:b/><w:i/></w:rPr></w:style>
+      <w:style w:styleId="CharDerived" w:type="character"><w:basedOn w:val="CharBase"/><w:rPr><w:b/><w:i/></w:rPr></w:style>
+    </w:styles>`)
+    const cases: Array<[string, string, boolean]> = [
+      ['Derived', '', defaultOn], ['Derived', '<w:b/><w:i/>', true], ['Derived', '<w:b w:val="0"/><w:i w:val="off"/>', false],
+      ['Base', '<w:b w:val="false"/><w:i w:val="0"/>', false], ['NoToggle', '', !defaultOn],
+      ['Base', '<w:rStyle w:val="CharDerived"/>', !defaultOn], ['Base', '<w:rStyle w:val="CharBase"/>', defaultOn],
+    ]
+    zip.file('word/document.xml', `<w:document><w:body>${cases.map(([style, direct], index) => `<w:p><w:pPr><w:pStyle w:val="${style}"/></w:pPr><w:r><w:rPr>${direct}</w:rPr><w:t>Sample ${index}</w:t></w:r></w:p>`).join('')}</w:body></w:document>`)
+    const context = { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Synthetic toggles' }
+    const result = await importOfficeDocument(await zip.generateAsync({ type: 'nodebuffer' }), context)
+    expect(result.ok, JSON.stringify(result.diagnostics)).toBe(true)
+    if (result.snapshot?.family !== 'document') throw new Error('document required')
+    const expected = cases.map(([, , value]) => ({ bold: value, italic: value }))
+    const emphasis = (snapshot: DocumentSnapshot) => snapshot.sections[0].nodes.filter((node) => node.kind === 'paragraph').map((node) => ({ bold: node.runs[0].style.bold, italic: node.runs[0].style.italic }))
+    expect(emphasis(result.snapshot)).toEqual(expected)
+    const exported = await exportOfficeDocument(result.snapshot, resolveFixtureResource)
+    const native = await JSZip.loadAsync(exported.bytes)
+    native.remove('customXml/brian-office.json')
+    const reopened = await importOfficeDocument(await native.generateAsync({ type: 'nodebuffer' }), context)
+    expect(reopened.ok).toBe(true)
+    if (reopened.snapshot?.family !== 'document') throw new Error('document required')
+    expect(emphasis(reopened.snapshot)).toEqual(expected)
+  })
+
+  it('bounds cyclic styles and reports unsupported formatting without copying source content', async () => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('word/styles.xml', '<w:styles><w:style w:styleId="A" w:type="paragraph" w:default="1"><w:basedOn w:val="B"/></w:style><w:style w:styleId="B"><w:basedOn w:val="A"/></w:style></w:styles>')
+    zip.file('word/document.xml', '<w:document><w:body><w:p><w:pPr><w:tabs><w:tab w:pos="1000"/></w:tabs></w:pPr><w:r><w:rPr><w:w w:val="80"/></w:rPr><w:t>Example</w:t></w:r></w:p></w:body></w:document>')
+    const result = await importOfficeDocument(await zip.generateAsync({ type: 'nodebuffer' }), { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Synthetic limits' })
+    expect(result.ok).toBe(true)
+    expect(result.diagnostics.map((d) => d.code)).toEqual(expect.arrayContaining(['docx.formatting.tab_stops', 'docx.formatting.style_chain']))
+    expect(JSON.stringify(result.diagnostics)).not.toContain('Example')
+    expect(result.snapshot?.family === 'document' && result.snapshot.sections[0].nodes[0]).toMatchObject({ spacingAfterPt: 0, runs: [expect.objectContaining({ style: expect.objectContaining({ widthScalePercent: 80 }) })] })
   })
 
   it('normalizes a conventional external DOCX and never partially admits active content', async () => {
@@ -136,8 +237,8 @@ describe('[COMP:office/docx-engine] DOCX engine', () => {
     expect(section.footer.map((run) => run.text).join('')).toBe('USEBRIAN.AI')
     expect(section.footerAlignment).toBe('end')
     expect(section.footerBorderTop).toEqual({ color: '#DCE9EE', widthPt: 0.75 })
-    expect(section.nodes[0]).toMatchObject({ kind: 'paragraph', alignment: 'end', styleName: 'LetterDate', spacingAfterPt: 16, lineSpacingPt: 12, runs: [expect.objectContaining({ style: expect.objectContaining({ fontFamily: 'Arial', fontSizePt: 9.5 }) })] })
-    expect(section.nodes[1]).toMatchObject({ kind: 'paragraph', styleName: 'LetterSubject', spacingBeforePt: 13, spacingAfterPt: 10, lineSpacingPt: 12, runs: [expect.objectContaining({ style: expect.objectContaining({ bold: true, color: '#10202C', fontSizePt: 10.5 }) })] })
+    expect(section.nodes[0]).toMatchObject({ kind: 'paragraph', alignment: 'end', styleName: 'LetterDate', spacingAfterPt: 16, lineSpacingMultiple: 1, runs: [expect.objectContaining({ style: expect.objectContaining({ fontFamily: 'Arial', fontSizePt: 9.5 }) })] })
+    expect(section.nodes[1]).toMatchObject({ kind: 'paragraph', styleName: 'LetterSubject', spacingBeforePt: 13, spacingAfterPt: 10, lineSpacingMultiple: 1, runs: [expect.objectContaining({ style: expect.objectContaining({ bold: true, color: '#10202C', fontSizePt: 10.5 }) })] })
     const resource = result.resources[0]
     const exported = await exportOfficeDocument(result.snapshot, async (resourceId) => resourceId === resource.ref.id ? { bytes: resource.bytes, mime: resource.ref.mime } : null)
     const exportedZip = await JSZip.loadAsync(exported.bytes)

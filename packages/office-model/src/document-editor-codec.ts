@@ -2,6 +2,7 @@ import * as Y from 'yjs'
 import { z } from 'zod'
 import {
   DocumentFlowNodeSchema,
+  officeCellParagraphs,
   DocumentSectionSchema,
   DocumentSnapshotSchema,
   OfficeRichTextRunSchema,
@@ -59,7 +60,7 @@ const FlowNodeSchema: z.ZodType<OfficeEditorJsonNode> = z.lazy(() => z.discrimin
       content: z.array(z.object({
         type: z.literal('officeTableCell'),
         attrs: z.record(z.unknown()),
-        content: z.array(RichContainerSchema).length(1),
+        content: z.array(RichContainerSchema).min(1),
       }).strict()),
     }).strict()),
   }).strict(),
@@ -128,7 +129,7 @@ function flowNodeToEditor(node: DocumentSnapshot['sections'][number]['nodes'][nu
       content: row.cells.map((cell) => ({
         type: 'officeTableCell',
         attrs: without(cell, ['runs']),
-        content: [{ type: 'officeTableCellText', attrs: { id: cell.id }, content: runsToEditor(cell.runs) }],
+        content: officeCellParagraphs(cell).map(({ format, runs }, index) => ({ type: 'officeTableCellText', attrs: { id: runs[0]?.paragraphStart?.id ?? cell.id, ...format, paragraphStart: Boolean(runs[0]?.paragraphStart) || index > 0 }, content: runsToEditor(runs.map((run) => without(run, ['paragraphStart']))) })),
       })),
     })),
   }
@@ -152,7 +153,15 @@ function flowNodeFromEditor(input: OfficeEditorJsonNode): DocumentSnapshot['sect
     kind: 'table',
     rows: (node.content ?? []).map((row) => ({
       ...defined(row.attrs),
-      cells: (row.content ?? []).map((cell) => ({ ...defined(cell.attrs), runs: runsFromEditor(cell.content?.[0]?.content ?? []) })),
+      cells: (row.content ?? []).map((cell) => ({ ...defined(cell.attrs), runs: (cell.content ?? []).flatMap((paragraph, index) => {
+        const runs = runsFromEditor(paragraph.content ?? [])
+        const { id, paragraphStart, ...format } = defined(paragraph.attrs)
+        if (paragraphStart || index > 0) {
+          if (!runs.length) runs.push(OfficeRichTextRunSchema.parse({ id, text: '', style: { fontFamily: 'Arial', fontSizePt: 11, color: '#111111' } }))
+          runs[0] = { ...runs[0], paragraphStart: { ...format, id: OfficeRichTextRunSchema.shape.id.parse(id) } }
+        }
+        return runs
+      }) })),
     })),
   })
   const kindByType = {

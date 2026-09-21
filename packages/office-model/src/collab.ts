@@ -201,6 +201,15 @@ function textTarget(snapshot: DocumentSnapshot, targetId: string): { runs: Offic
   const visit = (value: unknown): { runs: OfficeRichTextRun[] } | null => {
     if (!value || typeof value !== 'object') return null
     if (!Array.isArray(value) && (value as { id?: unknown }).id === targetId && Array.isArray((value as { runs?: unknown }).runs)) return value as { runs: OfficeRichTextRun[] }
+    if (!Array.isArray(value) && Array.isArray((value as { runs?: unknown }).runs)) {
+      const owner = value as { runs: OfficeRichTextRun[] }
+      const start = owner.runs.findIndex((run) => run.paragraphStart?.id === targetId)
+      if (start >= 0) {
+        const following = owner.runs.findIndex((run, index) => index > start && run.paragraphStart)
+        const end = following < 0 ? owner.runs.length : following
+        return { get runs() { return owner.runs.slice(start, end) }, set runs(runs) { owner.runs.splice(start, end - start, ...runs) } }
+      }
+    }
     for (const child of Array.isArray(value) ? value : Object.values(value)) {
       const found = visit(child)
       if (found) return found
@@ -218,15 +227,28 @@ function replaceTextRange(snapshot: DocumentSnapshot, command: Extract<AtomicOff
   if (command.to < command.from || command.to > text.length) throw new Error('Document text range is outside the target')
   const deterministicPreimage = documentRangePreimageHash(text.slice(command.from, command.to))
   if (deterministicPreimage !== command.preimageHash) throw new Error('Document text range preimage changed')
-  const beforeText = text.slice(0, command.from)
-  const afterText = text.slice(command.to)
-  const fallback = target.runs[0] ?? command.runs[0]
-  if (!fallback && (beforeText || afterText)) throw new Error('Document text range has no formatting source')
-  target.runs = [
-    ...(beforeText ? [{ ...fallback!, text: beforeText }] : []),
-    ...command.runs,
-    ...(afterText ? [{ ...fallback!, id: afterText === beforeText ? fallback!.id : command.commandId, text: afterText }] : []),
-  ]
+  // A cell's paragraph IDs are the unambiguous range targets. A raw cell
+  // range cannot represent boundaries/empty paragraphs with character offsets.
+  if (target.runs.some((run, index) => index > 0 && run.paragraphStart)) throw new Error('Target a cell paragraph ID for range edits, or use updateText with paragraphStart markers')
+  const original = target.runs
+  const slice = (from: number, to: number): OfficeRichTextRun[] => {
+    let offset = 0
+    return original.flatMap((run) => {
+      const start = offset
+      offset += run.text.length
+      const text = run.text.slice(Math.max(0, from - start), Math.max(0, Math.min(run.text.length, to - start)))
+      if (!text || offset <= from || start >= to) return []
+      const { paragraphStart: _paragraph, ...rest } = run
+      return [{ ...rest, ...(start < from ? { id: command.commandId } : {}), text }]
+    })
+  }
+  const updated: OfficeRichTextRun[] = [...slice(0, command.from), ...command.runs.map(({ paragraphStart: _paragraph, ...run }) => run), ...slice(command.to, text.length)]
+  const paragraphStart = original[0]?.paragraphStart
+  if (paragraphStart) {
+    if (!updated.length) updated.push({ ...original[0], text: '' })
+    updated[0] = { ...updated[0], paragraphStart }
+  }
+  target.runs = updated
   return DocumentSnapshotSchema.parse(next)
 }
 

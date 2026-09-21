@@ -36,7 +36,7 @@ export type ArtifactTextFragment = {
 
 function runsToText(runs: readonly OfficeRichTextRun[] | undefined): string {
   if (!runs || runs.length === 0) return ''
-  return runs.map((r) => r.text).join('')
+  return runs.map((r, index) => `${index > 0 && r.paragraphStart ? '\n' : ''}${r.text}`).join('')
 }
 
 function push(out: ArtifactTextFragment[], text: string, locator: string): void {
