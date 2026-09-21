@@ -288,7 +288,7 @@ function FeedSegmentEditor(props: Parameters<typeof CompositionEditor>[0] & { se
       try { savedNode = locateFeedNode(props.composition, props.segmentId, mount.id).node; } catch { /* A newly inserted marker is still saving. */ }
       const pending = props.generation!.pending || Boolean(props.pendingLocalSave) || !savedNode || canonicalFeedValue(node) !== canonicalFeedValue(savedNode);
       return createPortal(<GenerationPlaceholder slot={node.attrs} segmentId={props.segmentId} controls={{ ...props.generation!, pending }} onEdit={props.onEdit} onContinue={() => continueAfterSlot(mount.id)}
-        onSelect={() => { const view = viewRef.current; if (!view) return; let position: number | undefined; view.state.doc.descendants((node, pos) => { if (node.attrs.id === mount.id) position = pos; }); if (position !== undefined && (!(view.state.selection instanceof NodeSelection) || view.state.selection.from !== position)) view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, position))); }} onAction={props.onAction} />, mount.dom, mount.id);
+        onSelect={() => { const view = viewRef.current; if (!view) return; let position: number | undefined; view.state.doc.descendants((node, pos) => { if (node.attrs.id === mount.id) position = pos; }); if (position !== undefined && (!(view.state.selection instanceof NodeSelection) || view.state.selection.from !== position)) view.dispatch(view.state.tr.setSelection(NodeSelection.create(view.state.doc, position))); }} />, mount.dom, mount.id);
     }) : null}
 
   </div>;

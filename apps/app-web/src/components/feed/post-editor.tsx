@@ -1023,7 +1023,8 @@ function PostPane({
                             event.currentTarget.blur();
                           }
                         }}
-                        className="h-9 md:h-7 min-w-0 w-full truncate rounded-md border border-transparent bg-transparent px-1 text-[16px] md:text-[15px] font-semibold outline-none transition-colors hover:border-border/70 focus:border-border focus:bg-background disabled:opacity-60"
+                        style={{ fieldSizing: "content" } as React.CSSProperties}
+                        className="h-9 md:h-7 min-w-0 max-w-[calc(100%_-_1.125rem)] w-auto truncate rounded-md border border-transparent bg-transparent px-1 text-[16px] md:text-[15px] font-semibold outline-none transition-colors hover:border-border/70 focus:border-border focus:bg-background disabled:opacity-60"
                       />
                       <Pencil className="size-3 shrink-0 text-muted-foreground/70" aria-hidden />
                     </div>

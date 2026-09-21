@@ -1094,7 +1094,7 @@ export const TuningChatPanel = forwardRef<
               style={{ fieldSizing: "content" } as React.CSSProperties}
             />
           </div>
-          <div className="flex flex-wrap items-center gap-1.5 px-2.5 pb-2 pt-1">
+          <div className="flex flex-wrap items-center gap-0.5 px-2 pb-2 pt-1 md:flex-nowrap">
             {dockRecorder ? <DockRecorderButton rec={dockRecorder} /> : null}
             <ResearchModeToggle
               active={researchMode}
@@ -1110,8 +1110,9 @@ export const TuningChatPanel = forwardRef<
                 setResearchMode((v) => !v);
               }}
             />
-            {/* A desktop rail can be narrower than a phone. Wrap by available
-                width, keeping the model and primary actions together. */}
+            {/* A desktop rail can be narrower than a phone. Phone controls may
+                wrap to preserve touch targets; desktop controls compress into
+                one row so the tier picker and Send are never orphaned below. */}
             <div className="ml-auto flex min-w-0 max-w-full items-center justify-end gap-1.5">
               <Select value={model} onValueChange={(v) => { if (v) setModel(v as ModelTier); }}>
                 <SelectTrigger
@@ -1292,7 +1293,7 @@ function ResearchModeToggle({
       aria-label={t.research}
       aria-pressed={active}
       className={
-        "inline-flex min-w-0 max-w-full items-center gap-1 px-2.5 py-1.5 rounded-xl text-[12px] font-medium transition-colors shrink-0 " +
+        "inline-flex min-w-0 max-w-full shrink items-center gap-1 px-2 py-1.5 rounded-xl text-[12px] font-medium transition-colors " +
         (exhausted
           ? "text-amber-600 dark:text-amber-400 bg-amber-500/10 hover:bg-amber-500/20"
           : active
