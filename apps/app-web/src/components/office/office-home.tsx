@@ -40,7 +40,7 @@ export function OfficeHome({ workspaceId, initialArtifacts }: { workspaceId: str
   const failed = artifacts === null && list.error !== undefined;
 
   const visible = useMemo(
-    () => (artifacts ?? []).filter((artifact) => filter === "all" || artifact.family === filter),
+    () => (artifacts ?? []).filter((artifact) => artifact.mode !== "template" && (filter === "all" || artifact.family === filter)),
     [artifacts, filter],
   );
   const breadcrumbs = [

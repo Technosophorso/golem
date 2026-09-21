@@ -22,7 +22,7 @@ describe('[COMP:api/office-store] Office stores', () => {
     const db = fakeDb({ 'INSERT INTO office_artifacts': [{ id: 'a1' }] })
     const row = await createOfficeArtifactStore(db.query).createShell({ userId: 'u1', workspaceId: 'w1', family: 'document', title: 'Doc', templateVersionId: null, capabilityVersion: 1, sensitivity: 'internal' })
     expect(row).toEqual({ id: 'a1' })
-    expect(db.calls[0]).toMatchObject({ userId: 'u1', params: ['w1', 'document', 'Doc', 'u1', null, 1, 'internal', [], [], 'artifact'] })
+    expect(db.calls[0]).toMatchObject({ userId: 'u1', params: ['w1', 'document', 'Doc', 'u1', null, 1, 'internal', [], [], [], 'artifact'] })
   })
 
   it('never persists the app-level policy sentinel as an assistant foreign key', async () => {
