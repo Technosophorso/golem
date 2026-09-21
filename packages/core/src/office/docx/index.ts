@@ -10,6 +10,7 @@ import {
   Footer,
   Header,
   HeightRule,
+  LineRuleType,
   HeadingLevel,
   ImageRun,
   type IBorderOptions,
@@ -25,12 +26,17 @@ import {
   TableLayoutType,
   TableRow,
   TextRun,
+  Tab,
+  CarriageReturn,
   VerticalAlignTable,
   WidthType,
+  UnderlineType,
 } from 'docx'
 import {
   assertOfficeArtifactSnapshot,
   officeTableColumnCount,
+  officeCellParagraphs,
+  type OfficeParagraphFormat,
   preflightOfficeCandidate,
   type DocumentFlowNode,
   type DocumentSnapshot,
@@ -71,13 +77,13 @@ function richChildren(runs: readonly OfficeRichTextRun[]): Array<TextRun | Exter
   if (runs.length === 0) return [new TextRun('')]
   return runs.map((run) => {
     const child = new TextRun({
-      text: run.text,
-      font: run.style.fontFamily,
+      children: run.text.split(/(\t|\n)/).filter(Boolean).map((part) => part === '\t' ? new Tab() : part === '\n' ? new CarriageReturn() : part),
+      font: { ascii: run.style.fontFamily, hAnsi: run.style.fontFamily, eastAsia: run.style.eastAsianFontFamily ?? run.style.fontFamily },
       size: Math.round(run.style.fontSizePt * 2),
-      bold: run.style.bold || undefined,
-      italics: run.style.italic || undefined,
-      underline: run.style.underline ? {} : undefined,
-      strike: run.style.strike || undefined,
+      bold: run.style.bold,
+      italics: run.style.italic,
+      underline: run.style.underline ? {} : { type: UnderlineType.NONE },
+      strike: run.style.strike,
       color: color(run.style.color),
     })
     return run.href ? new ExternalHyperlink({ link: run.href, children: [child] }) : child
@@ -106,18 +112,18 @@ function docxBorderStyle(value: OfficeTableBorder['style']): IBorderOptions['sty
 }
 
 function docxBorder(value: OfficeTableBorder | undefined): IBorderOptions | undefined {
-  return value ? { style: docxBorderStyle(value.style), color: color(value.color), size: Math.max(0, Math.round(value.widthPt * 8)) } : undefined
+  return value ? { style: value.widthPt === 0 ? BorderStyle.NONE : docxBorderStyle(value.style), color: color(value.color), size: Math.max(0, Math.round(value.widthPt * 8)) } : undefined
 }
 
 function docxTableBorders(value: OfficeTableBorders | undefined): ITableBordersOptions | undefined {
   if (!value) return undefined
   return {
-    top: docxBorder(value.top),
-    right: docxBorder(value.right),
-    bottom: docxBorder(value.bottom),
-    left: docxBorder(value.left),
-    insideHorizontal: docxBorder(value.insideHorizontal),
-    insideVertical: docxBorder(value.insideVertical),
+    top: docxBorder(value.top) ?? { style: BorderStyle.NONE },
+    right: docxBorder(value.right) ?? { style: BorderStyle.NONE },
+    bottom: docxBorder(value.bottom) ?? { style: BorderStyle.NONE },
+    left: docxBorder(value.left) ?? { style: BorderStyle.NONE },
+    insideHorizontal: docxBorder(value.insideHorizontal) ?? { style: BorderStyle.NONE },
+    insideVertical: docxBorder(value.insideVertical) ?? { style: BorderStyle.NONE },
   }
 }
 
@@ -155,7 +161,7 @@ function tableFromNode(node: Extract<DocumentFlowNode, { kind: 'table' }>, conte
     alignment: paragraphAlignment(node.alignment),
     indent: node.indentPt === undefined ? undefined : { size: Math.round(node.indentPt * 20), type: WidthType.DXA },
     margins: docxCellMargins(node.margins),
-    borders: docxTableBorders(node.borders),
+    borders: docxTableBorders(node.borders ?? (node.rows.some((row) => row.cells.some((cell) => cell.borders)) ? {} : undefined)),
     rows: node.rows.map((row, rowIndex) => new TableRow({
       tableHeader: rowIndex < node.headerRows,
       height: row.minHeightPt === undefined ? undefined : { value: Math.round(row.minHeightPt * 20), rule: HeightRule.ATLEAST },
@@ -166,7 +172,7 @@ function tableFromNode(node: Extract<DocumentFlowNode, { kind: 'table' }>, conte
         margins: docxCellMargins(cell.margins),
         verticalAlign: cell.verticalAlignment === 'middle' ? VerticalAlignTable.CENTER : cell.verticalAlignment === 'bottom' ? VerticalAlignTable.BOTTOM : VerticalAlignTable.TOP,
         borders: docxCellBorders(cell.borders),
-        children: [new Paragraph({ alignment: paragraphAlignment(cell.alignment), children: richChildren(cell.runs) })],
+        children: officeCellParagraphs(cell).map(({ format, runs }) => new Paragraph({ alignment: paragraphAlignment(format.alignment), spacing: paragraphSpacing({ spacingAfterPt: 0, ...format }), children: richChildren(runs) })),
       })),
     })),
   })
@@ -224,11 +230,12 @@ async function nodeChildren(node: DocumentFlowNode, resolveResource: OfficeResou
   return []
 }
 
-function paragraphSpacing(node: Extract<DocumentFlowNode, { kind: 'paragraph' | 'heading' }>): { before?: number; after?: number; line?: number } {
+function paragraphSpacing(node: OfficeParagraphFormat) {
   return {
     before: Math.round((node.spacingBeforePt ?? 0) * 20),
     after: Math.round((node.spacingAfterPt ?? 8) * 20),
-    line: node.lineSpacingPt === undefined ? undefined : Math.round(node.lineSpacingPt * 20),
+    line: node.lineSpacingMultiple !== undefined ? Math.round(node.lineSpacingMultiple * 240) : node.lineSpacingPt === undefined ? undefined : Math.round(node.lineSpacingPt * 20),
+    lineRule: node.lineSpacingMultiple !== undefined ? LineRuleType.AUTO : node.lineSpacingPt !== undefined ? node.lineSpacingRule === 'atLeast' ? LineRuleType.AT_LEAST : LineRuleType.EXACT : undefined,
   }
 }
 
@@ -286,16 +293,12 @@ export async function exportOfficeDocument(
   return { bytes: await attachCanonicalOfficePart(raw, snapshot), semanticHash: officeSemanticHash(snapshot), layoutSerialization: layout.serialization, diagnostics }
 }
 
-function defaultStyle() {
-  return { fontFamily: 'Arial', fontSizePt: 11, bold: false, italic: false, underline: false, strike: false, color: '#111111' }
-}
-
 function textFromWordXml(xml: string): string {
-  return [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => decodeXmlText(match[1])).join('')
+  return [...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:(tab|br|cr)\b[^>]*\/?>/g)].map((match) => match[2] === 'tab' ? '\t' : match[2] ? '\n' : decodeXmlText(match[1])).join('')
 }
 
 function xmlValue(xml: string, tag: string, attribute = 'w:val'): string | undefined {
-  return xml.match(new RegExp(`<${tag}[^>]*${attribute}="([^"]+)"`, 'i'))?.[1]
+  return xml.match(new RegExp(`<${tag}\\b[^>]*${attribute}="([^"]+)"`, 'i'))?.[1]
 }
 
 function onOff(xml: string, tag: string): boolean {
@@ -303,12 +306,29 @@ function onOff(xml: string, tag: string): boolean {
   return Boolean(match) && !/w:val="(?:0|false|off|none)"/i.test(match?.[0] ?? '')
 }
 
-function richRunsFromWordXml(xml: string, seed: string): OfficeRichTextRun[] {
+/** In styles, true toggles the inherited value; false leaves it unchanged.
+ * Direct run properties are absolute, including explicit false. */
+function inheritedToggle(base: boolean, properties: string, tag: 'b' | 'i'): boolean {
+  for (const match of properties.matchAll(new RegExp(`<w:${tag}(?:\\s[^>]*)?\\/?>`, 'g'))) {
+    if (onOff(match[0], `w:${tag}`)) base = !base
+  }
+  return base
+}
+
+function richRunsFromWordXml(xml: string, seed: string, inherited = '', styles?: WordStyles): OfficeRichTextRun[] {
   const runs = [...xml.matchAll(/<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g)].flatMap((match, index) => {
-    const fragment = match[1]
-    const text = textFromWordXml(fragment)
-    if (!text) return []
-    const fontFamily = xmlValue(fragment, 'w:rFonts', 'w:ascii') ?? 'Arial'
+    const direct = wordContainer(match[1], 'rPr')
+    const characterStyle = styles?.get(xmlValue(direct, 'w:rStyle') ?? styles.defaultCharacter) ?? ''
+    const characterProperties = wordContainer(characterStyle, 'rPr')
+    const inheritedProperties = wordContainer(inherited, 'rPr')
+    const fragment = direct + characterProperties + inheritedProperties
+    const toggle = (tag: 'b' | 'i'): boolean => {
+      if (new RegExp(`<w:${tag}(?:\\s|\\/?>)`).test(direct)) return onOff(direct, `w:${tag}`)
+      const base = onOff(wordContainer(styles?.defaults ?? '', 'rPr'), `w:${tag}`)
+      return inheritedToggle(inheritedToggle(base, inheritedProperties, tag), characterProperties, tag)
+    }
+    const text = textFromWordXml(match[1])
+    const fontFamily = decodeXmlText(xmlValue(fragment, 'w:rFonts', 'w:ascii') ?? xmlValue(fragment, 'w:rFonts', 'w:hAnsi') ?? 'Arial')
     const sizeHalfPoints = Number(xmlValue(fragment, 'w:sz') ?? 22)
     const rawColor = xmlValue(fragment, 'w:color')
     const colorValue = rawColor && /^[0-9A-Fa-f]{6}$/.test(rawColor) ? `#${rawColor}` : '#111111'
@@ -317,16 +337,17 @@ function richRunsFromWordXml(xml: string, seed: string): OfficeRichTextRun[] {
       text,
       style: {
         fontFamily,
+        ...(xmlValue(fragment, 'w:rFonts', 'w:eastAsia') ? { eastAsianFontFamily: decodeXmlText(xmlValue(fragment, 'w:rFonts', 'w:eastAsia')!) } : {}),
         fontSizePt: sizeHalfPoints / 2,
-        bold: onOff(fragment, 'w:b'),
-        italic: onOff(fragment, 'w:i'),
+        bold: toggle('b'),
+        italic: toggle('i'),
         underline: Boolean(fragment.match(/<w:u\b/i)) && xmlValue(fragment, 'w:u') !== 'none',
         strike: onOff(fragment, 'w:strike'),
         color: colorValue,
       },
     }]
   })
-  return runs.length ? runs : [{ id: stableOfficeUuid(`${seed}:run:0`), text: textFromWordXml(xml), style: defaultStyle() }]
+  return runs.length ? runs : richRunsFromWordXml('<w:r><w:t></w:t></w:r>', seed, inherited, styles)
 }
 
 function alignmentFromWordXml(xml: string): 'start' | 'center' | 'end' | 'justify' {
@@ -338,25 +359,72 @@ function paragraphProperties(xml: string): string {
   return xml.match(/<w:pPr(?:\s[^>]*)?>([\s\S]*?)<\/w:pPr>/i)?.[1] ?? ''
 }
 
-function styleFragments(stylesXml: string): Map<string, string> {
-  const styles = new Map<string, string>()
-  for (const match of stylesXml.matchAll(/<w:style\b([^>]*)>([\s\S]*?)<\/w:style>/g)) {
-    const id = match[1].match(/w:styleId="([^"]+)"/)?.[1]
-    if (id) styles.set(id, match[2])
+// Containers are merged property-by-property: direct attributes precede inherited
+// attributes, so explicit zero/off values win without dropping sibling defaults.
+function cascadeXml(...layers: string[]): string {
+  const containers = ['pPr', 'rPr', 'tblPr', 'tcPr', 'tblBorders', 'tcBorders', 'tblCellMar', 'tcMar']
+  let joined = layers.join('')
+  for (const tag of containers) {
+    const pattern = new RegExp(`<w:${tag}(?:\\s[^>]*)?>([\\s\\S]*?)<\\/w:${tag}>`, 'g')
+    const matches = [...joined.matchAll(pattern)]
+    if (matches.length > 1) {
+      const merged = `<w:${tag}>${cascadeXml(...matches.map((match) => match[1]))}</w:${tag}>`
+      joined = joined.replace(pattern, (_match, _body, offset: number) => offset === matches[0].index ? merged : '')
+    }
   }
-  return styles
+  return joined
 }
 
-function effectiveParagraphFormat(fragment: string, styleFragment = ''): { alignment: 'start' | 'center' | 'end' | 'justify'; spacingBeforePt: number; spacingAfterPt: number; lineSpacingPt?: number } {
-  const direct = paragraphProperties(fragment)
-  const inherited = paragraphProperties(styleFragment)
-  const twips = (attribute: 'w:before' | 'w:after' | 'w:line', fallback?: number): number | undefined => {
-    const value = xmlValue(direct, 'w:spacing', attribute) ?? xmlValue(inherited, 'w:spacing', attribute)
-    return value === undefined ? fallback : Number(value) / 20
+type WordStyles = { get: (id?: string) => string; defaults: string; defaultParagraph: string; defaultCharacter: string; defaultTable: string }
+function styleFragments(stylesXml: string): WordStyles {
+  const styles = new Map<string, string>()
+  const defaults = wordContainer(stylesXml, 'docDefaults')
+  const resolved = new Map<string, string>()
+  const defaultIds: Record<string, string> = {}
+  for (const match of stylesXml.matchAll(/<w:style\b([^>]*)>([\s\S]*?)<\/w:style>/g)) {
+    const id = match[1].match(/w:styleId="([^"]+)"/)?.[1]
+    if (id) {
+      styles.set(id, match[2].replace(/<w:tblStylePr\b[^>]*>[\s\S]*?<\/w:tblStylePr>/g, ''))
+      if (/w:default="(?:1|true)"/.test(match[1])) defaultIds[match[1].match(/w:type="([^"]+)"/)?.[1] ?? ''] = id
+    }
   }
-  const directAlignment = xmlValue(direct, 'w:jc')
-  const alignment = directAlignment ? alignmentFromWordXml(direct) : alignmentFromWordXml(inherited)
-  return { alignment, spacingBeforePt: twips('w:before', 0) ?? 0, spacingAfterPt: twips('w:after', 8) ?? 8, lineSpacingPt: twips('w:line') }
+  return {
+    defaults, defaultParagraph: defaultIds.paragraph ?? '', defaultCharacter: defaultIds.character ?? '', defaultTable: defaultIds.table ?? '',
+    get(id) {
+      if (!id) return ''
+      const key = id
+      if (resolved.has(key)) return resolved.get(key)!
+      const chain: string[] = []
+      const visited = new Set<string>()
+      while (id && styles.has(id) && !visited.has(id) && chain.length < 32) {
+        visited.add(id)
+        const fragment = styles.get(id)!
+        chain.push(fragment)
+        id = xmlValue(fragment, 'w:basedOn')
+      }
+      const result = cascadeXml(...chain)
+      resolved.set(key, result)
+      return result
+    },
+  }
+}
+
+function paragraphInheritance(fragment: string, styles: WordStyles, tableStyle = ''): string {
+  // Defaults are the absolute starting value, not another style toggle. Run
+  // import reads their bold/italic separately; other properties still cascade.
+  const defaults = styles.defaults.replace(/<w:(b|i)(?:\s[^>]*)?\/?>(?:<\/w:\1>)?/g, '')
+  return cascadeXml(styles.get(xmlValue(paragraphProperties(fragment), 'w:pStyle') ?? styles.defaultParagraph), tableStyle, defaults)
+}
+
+function effectiveParagraphFormat(fragment: string, styleFragment = ''): OfficeParagraphFormat & { alignment: NonNullable<OfficeParagraphFormat['alignment']> } {
+  const properties = paragraphProperties(fragment) + paragraphProperties(styleFragment)
+  const twips = (attribute: string, fallback = 0): number => Number(xmlValue(properties, 'w:spacing', attribute) ?? fallback * 20) / 20
+  const line = xmlValue(properties, 'w:spacing', 'w:line')
+  const rule = xmlValue(properties, 'w:spacing', 'w:lineRule') ?? 'auto'
+  return {
+    alignment: alignmentFromWordXml(properties), spacingBeforePt: twips('w:before'), spacingAfterPt: twips('w:after'),
+    ...(line && Number(line) > 0 ? rule === 'auto' ? { lineSpacingMultiple: Number(line) / 240 } : { lineSpacingPt: Number(line) / 20, lineSpacingRule: rule === 'exact' ? 'exact' as const : 'atLeast' as const } : {}),
+  }
 }
 
 function textParagraphAlignment(xml: string): 'start' | 'center' | 'end' {
@@ -444,13 +512,15 @@ function wordVerticalAlignment(xml: string): DocumentTableCell['verticalAlignmen
   return value === 'center' ? 'middle' : value === 'bottom' ? 'bottom' : value === 'top' ? 'top' : undefined
 }
 
-function parseWordTable(fragment: string, id: string): DocumentTableNode {
+function parseWordTable(fragment: string, id: string, styles: WordStyles): DocumentTableNode {
   if (/<w:tc(?:\s[^>]*)?>[\s\S]*?<w:tbl\b/i.test(fragment)) throw new Error('Nested Word tables are outside the supported Office subset')
-  const properties = wordContainer(fragment, 'tblPr')
+  const directProperties = wordContainer(fragment, 'tblPr')
+  const tableStyle = styles.get(xmlValue(directProperties, 'w:tblStyle') ?? styles.defaultTable)
+  const properties = wordContainer(cascadeXml(`<w:tblPr>${directProperties}</w:tblPr>`, tableStyle), 'tblPr')
   const columnWidthsPt = [...wordContainer(fragment, 'tblGrid').matchAll(/<w:gridCol\b[^>]*w:w="(\d+)"[^>]*\/?\s*>/gi)]
     .map((match) => Number(match[1]) / 20)
     .filter((width) => Number.isFinite(width) && width > 0)
-  const tableMargins = wordCellMargins(properties, 'tblCellMar')
+  const tableMargins = wordCellMargins(properties, 'tblCellMar') ?? { topPt: 0, rightPt: 5.4, bottomPt: 0, leftPt: 5.4 }
   const rowFragments = [...fragment.matchAll(/<w:tr(?:\s[^>]*)?>([\s\S]*?)<\/w:tr>/g)].map((match) => match[1])
   let headerRows = 0
   while (headerRows < rowFragments.length && onOff(wordContainer(rowFragments[headerRows], 'trPr'), 'w:tblHeader')) headerRows += 1
@@ -463,7 +533,7 @@ function parseWordTable(fragment: string, id: string): DocumentTableNode {
     let column = 0
     for (const [cellIndex, match] of [...rowFragment.matchAll(/<w:tc(?:\s[^>]*)?>([\s\S]*?)<\/w:tc>/g)].entries()) {
       const cellFragment = match[1]
-      const cellProperties = wordContainer(cellFragment, 'tcPr')
+      const cellProperties = wordContainer(cascadeXml(cellFragment, tableStyle), 'tcPr')
       const colSpan = Math.max(1, Number(xmlValue(cellProperties, 'w:gridSpan') ?? 1))
       const verticalMergeTag = cellProperties.match(/<w:vMerge\b[^>]*\/?\s*>/i)?.[0]
       const verticalMergeValue = verticalMergeTag?.match(/w:val="([^"]+)"/i)?.[1]
@@ -482,7 +552,12 @@ function parseWordTable(fragment: string, id: string): DocumentTableNode {
       const fill = wordColor(xmlValue(cellProperties, 'w:shd', 'w:fill'))
       const cell: DocumentTableCell = {
         id: stableOfficeUuid(`${id}:row:${rowIndex}:cell:${cellIndex}`),
-        runs: richRunsFromWordXml(cellFragment, `${id}:row:${rowIndex}:cell:${cellIndex}`),
+        runs: [...cellFragment.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>|<w:p\s*\/>/g)].flatMap((paragraph, paragraphIndex) => {
+          const inherited = paragraphInheritance(paragraph[0], styles, tableStyle)
+          const runs = richRunsFromWordXml(paragraph[0], `${id}:row:${rowIndex}:cell:${cellIndex}:p:${paragraphIndex}`, inherited, styles)
+          runs[0].paragraphStart = { id: stableOfficeUuid(`${id}:row:${rowIndex}:cell:${cellIndex}:paragraph:${paragraphIndex}`), ...effectiveParagraphFormat(paragraph[0], inherited) }
+          return runs
+        }),
         rowSpan: 1,
         colSpan,
         fill,
@@ -520,7 +595,7 @@ function parseWordTable(fragment: string, id: string): DocumentTableNode {
     indentPt: Number.isFinite(indent) ? indent : undefined,
     layout: xmlValue(properties, 'w:tblLayout', 'w:type') === 'fixed' ? 'fixed' : 'autofit',
     margins: tableMargins,
-    borders: wordTableBorders(properties, 'tblBorders'),
+    borders: wordTableBorders(properties, 'tblBorders') ?? {},
     rows,
   }
 }
@@ -551,17 +626,43 @@ async function headerImageFromWordXml(zip: JSZip, partPath: string, xml: string,
   }
 }
 
-async function externalDocumentSnapshot(zip: JSZip, xml: string, context: OfficeImportContext): Promise<{ snapshot: DocumentSnapshot; resources: OfficeImportResult['resources'] }> {
+function formattingDiagnostics(xml: string, stylesXml: string): OfficePreflightDiagnostic[] {
+  const source = xml + stylesXml
+  const checks: Array<[RegExp, string, string]> = [
+    [/<w:w\b/, 'text_scale', 'Horizontal text scaling is not supported.'],
+    [/<w:tab\b/, 'tab_layout', 'Tab characters are retained, but browser tab layout may differ from Word.'],
+    [/<w:tabs\b/, 'tab_stops', 'Custom tab stops are not supported; tab characters are retained.'],
+    [/<w:tblStylePr\b/, 'conditional_table_style', 'Conditional table style regions are not supported; base table properties are retained.'],
+    [/w:(?:asciiTheme|hAnsiTheme|eastAsiaTheme|cstheme)=/, 'theme_font', 'Theme font references are not resolved; explicit font names are retained.'],
+    [/<w:trHeight\b[^>]*w:hRule="exact"/, 'exact_row_height', 'Exact row heights are rendered as minimum heights.'],
+    [/<w:rFonts\b[^>]*w:eastAsia=/, 'east_asian_shaping', 'East Asian font names are retained; browser font availability and shaping may differ from Word.'],
+  ]
+  const diagnostics: OfficePreflightDiagnostic[] = checks.filter(([pattern]) => pattern.test(source)).map(([, code, message]) => ({ severity: 'warning', code: `docx.formatting.${code}`, path: 'word/document.xml', message }))
+  const bases = new Map([...stylesXml.matchAll(/<w:style\b([^>]*)>([\s\S]*?)<\/w:style>/g)].map((match) => [match[1].match(/w:styleId="([^"]+)"/)?.[1] ?? '', xmlValue(match[2], 'w:basedOn')]))
+  for (const id of bases.keys()) {
+    let current: string | undefined = id
+    const visited = new Set<string>()
+    while (current && bases.has(current) && !visited.has(current) && visited.size < 32) { visited.add(current); current = bases.get(current) }
+    if (current && (visited.has(current) || visited.size >= 32)) {
+      diagnostics.push({ severity: 'warning', code: 'docx.formatting.style_chain', path: 'word/styles.xml', message: 'A cyclic or over-depth style chain was bounded at 32 styles.' })
+      break
+    }
+  }
+  return diagnostics
+}
+
+async function externalDocumentSnapshot(zip: JSZip, xml: string, context: OfficeImportContext): Promise<{ snapshot: DocumentSnapshot; resources: OfficeImportResult['resources']; diagnostics: OfficePreflightDiagnostic[] }> {
   const body = xml.match(/<w:body(?:\s[^>]*)?>([\s\S]*?)<\/w:body>/)?.[1] ?? ''
-  const styles = styleFragments(await zip.file('word/styles.xml')?.async('string') ?? '')
+  const stylesXml = await zip.file('word/styles.xml')?.async('string') ?? ''
+  const styles = styleFragments(stylesXml)
   const nodes: DocumentFlowNode[] = []
   let ordinal = 0
-  for (const match of body.matchAll(/<(w:p|w:tbl)(?:\s[^>]*)?>[\s\S]*?<\/\1>/g)) {
+  for (const match of body.matchAll(/<(w:p|w:tbl)(?:\s[^>]*)?>[\s\S]*?<\/\1>|<w:p\s*\/>/g)) {
     const fragment = match[0]
     const id = stableOfficeUuid(`${context.artifactId}:docx:${ordinal}`)
     ordinal += 1
     if (match[1] === 'w:tbl') {
-      nodes.push(parseWordTable(fragment, id))
+      nodes.push(parseWordTable(fragment, id, styles))
       continue
     }
     if (/<w:br[^>]*w:type="page"/.test(fragment)) {
@@ -570,10 +671,11 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
     }
     const text = textFromWordXml(fragment)
     if (!text && !/<w:p\b/.test(fragment)) continue
-    const styleName = xmlValue(fragment, 'w:pStyle') ?? 'Body'
+    const styleName = xmlValue(paragraphProperties(fragment), 'w:pStyle') ?? (styles.defaultParagraph || 'Body')
     const heading = styleName.match(/^Heading\s*([1-6])$/i)
-    const runs = richRunsFromWordXml(fragment, id)
-    const format = effectiveParagraphFormat(fragment, styles.get(styleName))
+    const inherited = paragraphInheritance(fragment, styles)
+    const runs = richRunsFromWordXml(fragment, id, inherited, styles)
+    const format = effectiveParagraphFormat(fragment, inherited)
     nodes.push(heading ? { id, kind: 'heading', level: Number(heading[1]), styleName, runs, ...format } : { id, kind: 'paragraph', styleName, runs, ...format })
   }
   const documentRels = await zip.file('word/_rels/document.xml.rels')?.async('string') ?? ''
@@ -617,7 +719,7 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
       nodes,
     }],
   }
-  return { snapshot, resources: headerImage.resource ? [headerImage.resource] : [] }
+  return { snapshot, resources: headerImage.resource ? [headerImage.resource] : [], diagnostics: formattingDiagnostics(xml, stylesXml) }
 }
 
 export async function importOfficeDocument(bytes: Uint8Array, context: OfficeImportContext): Promise<OfficeImportResult> {
@@ -628,7 +730,7 @@ export async function importOfficeDocument(bytes: Uint8Array, context: OfficeImp
     const external = canonical ? null : await externalDocumentSnapshot(packageResult.zip, await packageResult.zip.file('word/document.xml')!.async('string'), context)
     const snapshot = canonical ?? external!.snapshot
     const model = preflightOfficeCandidate(snapshot)
-    const diagnostics = [...packageResult.diagnostics, ...model.diagnostics]
+    const diagnostics = [...packageResult.diagnostics, ...(external?.diagnostics ?? []), ...model.diagnostics]
     return { ok: diagnostics.every((diagnostic) => diagnostic.severity !== 'error'), snapshot, resources: external?.resources ?? [], diagnostics }
   } catch (cause) {
     return { ok: false, resources: [], diagnostics: [...packageResult.diagnostics, { severity: 'error', code: 'docx.import_failed', path: 'word/document.xml', message: cause instanceof Error ? cause.message : 'DOCX import failed' }] }

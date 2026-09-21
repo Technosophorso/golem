@@ -426,7 +426,7 @@ function currentAlignment(editor: Editor | null): DocumentAlignment {
   const $from = editor.state.selection.$from;
   for (let depth = $from.depth; depth > 0; depth -= 1) {
     const node = $from.node(depth);
-    if (["paragraph", "heading", "officeTableCell"].includes(node.type.name)) return (node.attrs.alignment ?? "start") as DocumentAlignment;
+    if (["paragraph", "heading", "officeTableCellText", "officeTableCell"].includes(node.type.name)) return (node.attrs.alignment ?? "start") as DocumentAlignment;
   }
   return "start";
 }
