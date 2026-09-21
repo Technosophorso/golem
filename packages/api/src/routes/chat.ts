@@ -5660,6 +5660,7 @@ export function chatRoutes(options: WebChatOptions): Router {
       const {
         enrichConfirmation,
         unavailable: unavailableCapabilities,
+        searchableSources,
         knowledgeCapturePrompt,
       } = await applyMcpInjection({
         scope: 'chat',
@@ -5769,7 +5770,11 @@ export function chatRoutes(options: WebChatOptions): Router {
 
       // Inject unavailable capabilities so the model doesn't waste turns
       // searching for tools that don't exist.
-      systemAddenda += buildUnavailableCapabilitiesPrompt(unavailableCapabilities, allTools)
+      systemAddenda += buildUnavailableCapabilitiesPrompt(
+        unavailableCapabilities,
+        allTools,
+        searchableSources,
+      )
 
       // Browser-escalation guidance — dynamic injection gated on the acting
       // browser tools being in the map (tool-awareness carve-out): search

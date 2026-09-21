@@ -143,6 +143,7 @@ import {
 import {
   APP_LEVEL_ASSISTANT_ID,
   MULTI_INSTANCE_CONNECTOR_IDS,
+  OFFICIAL_CONNECTORS,
   OFFICIAL_CONNECTOR_TOOLS,
 } from '@use-brian/shared'
 import { connectorInstanceGovernanceId, parseConnectorInstanceGovernanceId } from '../db/connector-instance-store.js'
@@ -401,6 +402,8 @@ export type McpInjectionResult = {
   enrichConfirmation: ConfirmationEnricher
   /** Capabilities that are unavailable (not connected, disabled, or blocked). Injected into the system prompt so the model doesn't waste turns searching for them. */
   unavailable: string[]
+  /** Sources represented in `mcp_search`, rendered with official display names where provenance proves they are built-ins. */
+  searchableSources: string[]
   /** Names from `restrictSearchToToolNames` that survived connector discovery and policy scoping. */
   restrictedSearchToolNames?: string[]
   /** Trusted runtime block, present only when usable matched rules emitted write tools. */
@@ -582,6 +585,7 @@ export async function injectMcpTools(params: {
   } = params
 
   const unavailable: string[] = []
+  let searchableSources: string[] = []
   let knowledgeCapturePrompt: string | undefined
 
   let matchedCaptureRules = [] as Awaited<ReturnType<KnowledgeCaptureRuleStore['listEnabledForWorkspace']>>
@@ -639,7 +643,7 @@ export async function injectMcpTools(params: {
     connectors = loadOwnerPersonalConnectors ? await connectorStore.list(userId) : []
   } catch (err) {
     console.error('[mcp-inject] failed to list connectors:', err)
-    return { enrichConfirmation: async (_t, input) => input, unavailable }
+    return { enrichConfirmation: async (_t, input) => input, unavailable, searchableSources }
   }
   const teamPolicyStore = assistantTeamId && workspaceToolPolicyStore
     ? workspacePolicyAsSettingsStore(workspaceToolPolicyStore, assistantTeamId)
@@ -1910,7 +1914,11 @@ export async function injectMcpTools(params: {
   // stale not-connected notice can be correlated against reality.
   clearStaleNotConnectedNotices(tools, unavailable)
 
-  const localSources: LocalSource[] = []
+  type SearchLocalSource = LocalSource & { displayName?: string }
+  const officialConnectorNames = new Map(
+    OFFICIAL_CONNECTORS.map((connector) => [connector.id, connector.name]),
+  )
+  const localSources: SearchLocalSource[] = []
   if (!keepBuiltinsDirect) {
     for (const [connectorId, toolNames] of Object.entries(INJECTED_BUILTIN_TOOLS_BY_CONNECTOR)) {
       const canonical = new Set(toolNames)
@@ -1931,7 +1939,12 @@ export async function injectMcpTools(params: {
         }
       }
       if (localTools.length > 0) {
-        localSources.push({ kind: 'local', serverName: connectorId, tools: localTools })
+        localSources.push({
+          kind: 'local',
+          serverName: connectorId,
+          displayName: officialConnectorNames.get(connectorId),
+          tools: localTools,
+        })
       }
     }
 
@@ -2038,6 +2051,11 @@ export async function injectMcpTools(params: {
 
   if (searchSources.length > 0) {
     const index = buildToolIndex(searchSources)
+    searchableSources = [...new Set(searchSources.map((source) =>
+      source.kind === 'remote'
+        ? source.server.name
+        : source.displayName ?? source.serverName,
+    ))]
     const searchTools = createMcpSearchTools({
       index,
       settingsStore,
@@ -2085,6 +2103,7 @@ export async function injectMcpTools(params: {
   return {
     enrichConfirmation: enricher,
     unavailable,
+    searchableSources,
     restrictedSearchToolNames: [...restrictedSearchToolNames],
     knowledgeCapturePrompt,
   }
