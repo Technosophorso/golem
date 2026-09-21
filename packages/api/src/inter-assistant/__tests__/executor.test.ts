@@ -627,8 +627,8 @@ describe('[COMP:api/inter-assistant-executor] createCalleeExecutor', () => {
     // hunting for the tool the next. The entry carries the user-actionable fix,
     // so the callee can report something the user can act on.
     const notice =
-      'Google Calendar and Google Tasks: not connected for this assistant ' +
-      '(calendar events, tasks, and reminders)'
+      'Google Calendar: not connected for this assistant ' +
+      '(calendar events and availability)'
     mockInjectMcp.mockResolvedValueOnce({
       enrichConfirmation: async (_t: string, i: unknown) => i,
       unavailable: [notice],
@@ -639,7 +639,7 @@ describe('[COMP:api/inter-assistant-executor] createCalleeExecutor', () => {
     await executorWithMcp()(baseParams)
     const systemPrompt = mockQueryLoop.mock.calls[0][0].systemPrompt as string
     expect(systemPrompt).toContain('# Unavailable capabilities')
-    expect(systemPrompt).toContain('Google Calendar and Google Tasks')
+    expect(systemPrompt).toContain('Google Calendar')
     // The directive half matters as much as the list: without it the model
     // treats absence as "keep looking".
     expect(systemPrompt).toContain('Do not call, search for, or simulate them')

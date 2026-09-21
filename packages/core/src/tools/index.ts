@@ -78,8 +78,6 @@ export type {
 } from './base/google-calendar.js'
 export { createGmailTools, MAX_EMAIL_ATTACHMENTS, MAX_EMAIL_ATTACHMENT_TOTAL_BYTES } from './base/google-gmail.js'
 export type { GmailApi, GmailOutgoingAttachment } from './base/google-gmail.js'
-export { createGoogleTasksTools } from './base/google-tasks.js'
-export type { GoogleTasksApi } from './base/google-tasks.js'
 export { createGoogleDriveTools } from './base/google-drive.js'
 export type { GoogleDriveApi, AuthorizedFile } from './base/google-drive.js'
 export { createGoogleDocsTools } from './base/google-docs.js'

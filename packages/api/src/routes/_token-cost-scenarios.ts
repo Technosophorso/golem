@@ -19,7 +19,7 @@
  * - `buildMemoryContext` — same call shape those routes feed it.
  * - Tool schemas loaded from the actual factories (`createBaseTools`,
  *   `createGoogleCalendarTools`, `createGmailTools`,
- *   `createGoogleTasksTools`, `createGitHubTools`, `createNotionTools`,
+ *   `createGitHubTools`, `createNotionTools`,
  *   `createMcpSearchTools`) with Proxy-stubbed API adapters — the
  *   stubs satisfy the TS contract but never actually run (we only
  *   introspect definitions).
@@ -53,7 +53,6 @@ import {
   createBaseTools,
   createGoogleCalendarTools,
   createGmailTools,
-  createGoogleTasksTools,
   createGitHubTools,
   createNotionTools,
   createMcpSearchTools,
@@ -221,10 +220,25 @@ export const toolBundles = {
   base: (): Tool[] => Array.from(createBaseTools().values()),
   googleCalendar: (): Tool[] => createGoogleCalendarTools(stubApi(), 'America/Los_Angeles'),
   gmail: (): Tool[] => createGmailTools(stubApi()),
-  googleTasks: (): Tool[] => createGoogleTasksTools(stubApi()),
   github: (): Tool[] => createGitHubTools(stubApi()),
   notion: (): Tool[] => createNotionTools(stubApi()),
   mcpPair: (): Tool[] => buildMcpPair(),
+}
+
+/**
+ * The token benchmark intentionally covers only the connector factories this
+ * file can instantiate. This is not an "all official connectors" registry;
+ * keep the named subset in an object so the builtin-id drift check does not
+ * mistake the fixture for a shadow registry.
+ */
+function benchmarkLocalBundles(): Array<{ serverName: string; tools: Tool[] }> {
+  const bundles: Record<string, Tool[]> = {
+    gcal: toolBundles.googleCalendar(),
+    gmail: toolBundles.gmail(),
+    github: toolBundles.github(),
+    notion: toolBundles.notion(),
+  }
+  return Object.entries(bundles).map(([serverName, tools]) => ({ serverName, tools }))
 }
 
 // ── Fixture helpers ─────────────────────────────────────────────
@@ -313,8 +327,8 @@ export const scenarios: Scenario[] = [
   },
   {
     id: 'active',
-    label: 'active user (200 mem, 3 Google direct)',
-    note: '200 memories (cap kicks in: 60 shown + footer hinting at 125 more), Calendar + Gmail + Tasks directly injected, skills.',
+    label: 'active user (200 mem, 2 Google direct)',
+    note: '200 memories (cap kicks in: 60 shown + footer hinting at 125 more), Calendar + Gmail directly injected, skills.',
     build: () => ({
       systemPrompt: buildFullSystemPrompt({
         ...minimalPromptArgs(),
@@ -337,7 +351,6 @@ export const scenarios: Scenario[] = [
         ...toolBundles.base(),
         ...toolBundles.googleCalendar(),
         ...toolBundles.gmail(),
-        ...toolBundles.googleTasks(),
       ],
     }),
   },
@@ -372,13 +385,7 @@ export const scenarios: Scenario[] = [
         ...toolBundles.base(),
         ...buildMcpPair({
           remoteServers: [{ name: 'custom-mcp', toolCount: 5 }],
-          localBundles: [
-            { serverName: 'gcal', tools: toolBundles.googleCalendar() },
-            { serverName: 'gmail', tools: toolBundles.gmail() },
-            { serverName: 'gtasks', tools: toolBundles.googleTasks() },
-            { serverName: 'github', tools: toolBundles.github() },
-            { serverName: 'notion', tools: toolBundles.notion() },
-          ],
+          localBundles: benchmarkLocalBundles(),
         }),
       ],
     }),
@@ -410,7 +417,6 @@ export const scenarios: Scenario[] = [
         ...toolBundles.base(),
         ...toolBundles.googleCalendar(),
         ...toolBundles.gmail(),
-        ...toolBundles.googleTasks(),
         ...toolBundles.github(),
         ...toolBundles.notion(),
         ...toolBundles.mcpPair(),

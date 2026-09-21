@@ -231,6 +231,11 @@ describe('[COMP:shared/connector-registry] Official connector registry', () => {
       expect(strays).toEqual([])
     })
 
+    it('keeps Google Calendar calendar-only after retiring Google Tasks', () => {
+      expect(OFFICIAL_CONNECTOR_TOOLS.gcal.every((tool) => tool.name.startsWith('googleCalendar'))).toBe(true)
+      expect(OFFICIAL_OAUTH_SCOPES.gcal).not.toContain('https://www.googleapis.com/auth/tasks')
+    })
+
     it('keeps restricted full-Drive read off Brian OAuth and on BYO only', () => {
       expect(OFFICIAL_OAUTH_SCOPES.gdrive).toEqual([
         'https://www.googleapis.com/auth/drive.file',

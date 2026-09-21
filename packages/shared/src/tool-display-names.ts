@@ -72,14 +72,6 @@ export const TOOL_DISPLAY_NAMES: Record<string, string> = {
   // Google Drive — local index of files the assistant created
   findGDriveFiles: 'Search my Google Drive files',
 
-  // Google Tasks
-  googleTasksListTaskLists: 'List task lists',
-  googleTasksListTasks: 'List tasks',
-  googleTasksGetTask: 'View task',
-  googleTasksCreateTask: 'Create task',
-  googleTasksUpdateTask: 'Update task',
-  googleTasksDeleteTask: 'Delete task',
-
   // Notion
   notionSearch: 'Search Notion',
   notionGetPage: 'Read Notion page',

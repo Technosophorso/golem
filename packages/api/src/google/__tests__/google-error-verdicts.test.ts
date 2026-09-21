@@ -65,7 +65,7 @@ describe('[COMP:tools/google-error] googleApiError() parser (api client)', () =>
 
   it('tolerates a Response double with only json()', async () => {
     const res = { ok: false, status: 400, json: async () => ({ error: { message: 'bad', errors: [{ reason: 'badRequest' }] } }) } as unknown as Response
-    const err = await googleApiError(res, 'Tasks')
+    const err = await googleApiError(res, 'Calendar')
     expect(err.reason).toBe('badRequest')
     expect(err.detail).toBe('bad')
   })
@@ -108,7 +108,7 @@ describe('[COMP:tools/google-error] classifyConnectorAuthError verdicts on the n
   })
 
   it('the not-connected / plain frames never flip a connector', () => {
-    expect(classifyConnectorAuthError(describeGoogleError(new Error('Google Calendar and Google Tasks is not connected for this assistant (no Google grant is stored for it), so the call could not be made.'), ctx))).toBe(false)
+    expect(classifyConnectorAuthError(describeGoogleError(new Error('Google Calendar is not connected for this assistant (no Google grant is stored for it), so the call could not be made.'), ctx))).toBe(false)
     expect(classifyConnectorAuthError(describeGoogleError(new TypeError('fetch failed'), ctx))).toBe(false)
   })
 })
