@@ -34,6 +34,36 @@ describe('[COMP:office/docx-engine] DOCX engine', () => {
     expect(rejected.diagnostics).toContainEqual(expect.objectContaining({ code: 'package.active_content' }))
   })
 
+  it.each([
+    ['hyperlink', 'http://example.com/reference', true],
+    ['hyperlink', 'https://example.com/reference', true],
+    ['hyperlink', 'mailto:writer@example.com', true],
+    ['hyperlink', 'javascript:alert(1)', false],
+    ['hyperlink', 'file:///tmp/reference', false],
+    ['hyperlink', 'data:text/plain,reference', false],
+    ['image', 'http://example.com/image.png', false],
+    ['attachedTemplate', 'https://example.com/template.dotx', false],
+    ['unknown', 'https://example.com/resource', false],
+  ])('validates conventional external relationship %s %s (allowed=%s)', async (type, target, allowed) => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('word/document.xml', '<w:document xmlns:w="w" xmlns:r="r"><w:body><w:p><w:hyperlink r:id="rLink"><w:r><w:t>Reference</w:t></w:r></w:hyperlink></w:p></w:body></w:document>')
+    zip.file('word/_rels/document.xml.rels', `<Relationships><Relationship Id="rLink" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/${type}" Target="${target}" TargetMode="External"/></Relationships>`)
+    const result = await importOfficeDocument(await zip.generateAsync({ type: 'nodebuffer' }), { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Linked document' })
+    expect(result.ok).toBe(allowed)
+    if (!allowed) expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: 'package.external_relationship' }))
+  })
+
+  it('round-trips canonical HTTP hyperlinks without rewriting their targets', async () => {
+    const source = completeDocumentSnapshot()
+    const paragraph = source.sections[0].nodes.find((node) => node.kind === 'paragraph')!
+    if (paragraph.kind !== 'paragraph') throw new Error('Expected paragraph')
+    paragraph.runs[0].href = 'http://example.com/reference'
+    const exported = await exportOfficeDocument(source, resolveFixtureResource)
+    const reopened = await reparseOfficeDocument(exported.bytes)
+    expect(reopened.snapshot).toEqual(source)
+  })
+
   it('preserves conventional Word table grids, merged cells, fills, borders, margins, and alignment', async () => {
     const zip = new JSZip()
     zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
