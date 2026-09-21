@@ -68,6 +68,28 @@ describe('[COMP:office/document-editor-codec] Document editor codec', () => {
     expect(editorJsonToDocumentSnapshot(documentEditorJsonFromFragment(fragment))).toEqual(snapshot)
   })
 
+  it('keeps marked cell paragraphs and their empty runs stable through JSON and two Yjs clients', () => {
+    const snapshot = completeDocumentFixture()
+    const table = snapshot.sections[0].nodes.find((node) => node.kind === 'table')!
+    if (table.kind !== 'table') throw new Error('table required')
+    const cell = table.rows[0].cells[0]
+    const style = cell.runs[0].style
+    cell.runs = [
+      { id: id(200), text: 'Alpha\tBeta', style, paragraphStart: { id: id(301), alignment: 'center', spacingBeforePt: 0, spacingAfterPt: 0, lineSpacingPt: 14, lineSpacingRule: 'exact' } },
+      { id: id(201), text: '', style, paragraphStart: { id: id(302), lineSpacingMultiple: 1.5 } },
+      { id: id(202), text: 'Gamma\nDelta', style, paragraphStart: { id: id(303), alignment: 'end', lineSpacingPt: 20, lineSpacingRule: 'atLeast' } },
+    ]
+    const json = documentSnapshotToEditorJson(snapshot)
+    expect(editorJsonToDocumentSnapshot(json)).toEqual(snapshot)
+    const left = new Y.Doc()
+    const right = new Y.Doc()
+    writeDocumentSnapshotToFragment(left.getXmlFragment('documentContent'), snapshot)
+    Y.applyUpdate(right, Y.encodeStateAsUpdate(left))
+    expect(documentSnapshotFromFragment(right.getXmlFragment('documentContent'))).toEqual(snapshot)
+    expect(documentSnapshotToEditorJson(documentSnapshotFromFragment(right.getXmlFragment('documentContent')))).toEqual(json)
+    left.destroy(); right.destroy()
+  })
+
   it('fails closed for unknown nodes and marks', () => {
     const editor = documentSnapshotToEditorJson(documentFixture())
     editor.content![0].content![1].content![0].type = 'unsupportedWidget'

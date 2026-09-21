@@ -27,7 +27,9 @@ export const OfficeColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f
 export const OfficeTextStyleSchema = z
   .object({
     fontFamily: z.string().min(1).max(128),
+    eastAsianFontFamily: z.string().min(1).max(128).optional(),
     fontSizePt: z.number().min(1).max(144),
+    widthScalePercent: z.number().int().min(10).max(600).optional(),
     bold: z.boolean().default(false),
     italic: z.boolean().default(false),
     underline: z.boolean().default(false),
@@ -38,11 +40,36 @@ export const OfficeTextStyleSchema = z
   })
   .strict()
 
+/** Single-level native numbering; marker text is derived, never user text. */
+export const OfficeNumberingSchema = z.object({
+  listId: OfficeUuidSchema,
+  format: z.enum(['decimal', 'upperRoman', 'lowerRoman', 'upperLetter', 'lowerLetter']),
+  start: z.number().int().min(1).max(3999),
+  pattern: z.string().max(32).regex(/^[^%<>\x00-\x1f]*%1[^%<>\x00-\x1f]*$/),
+  markerStyle: OfficeTextStyleSchema.omit({ highlight: true, language: true }).partial().optional(),
+}).strict()
+export type OfficeNumbering = z.infer<typeof OfficeNumberingSchema>
+
+export const OfficeParagraphFormatSchema = z.object({
+  alignment: z.enum(['start', 'center', 'end', 'justify']).optional(),
+  spacingBeforePt: z.number().min(0).max(1_000).optional(),
+  spacingAfterPt: z.number().min(0).max(1_000).optional(),
+  lineSpacingPt: z.number().positive().max(1_000).optional(),
+  lineSpacingRule: z.enum(['exact', 'atLeast']).optional(),
+  lineSpacingMultiple: z.number().positive().max(100).optional(),
+  indentLeftPt: z.number().min(0).max(1000).optional(),
+  hangingPt: z.number().min(0).max(1000).optional(),
+  numbering: OfficeNumberingSchema.optional(),
+}).strict()
+export type OfficeParagraphFormat = z.infer<typeof OfficeParagraphFormatSchema>
+
 export const OfficeRichTextRunSchema = z
   .object({
     id: OfficeUuidSchema,
     text: z.string().max(100_000),
     style: OfficeTextStyleSchema,
+    // Cell paragraphs store text once, with a format marker on their first run.
+    paragraphStart: OfficeParagraphFormatSchema.extend({ id: OfficeUuidSchema }).optional(),
     href: z.string().url().refine((url) => /^(https?:|mailto:)/.test(url), {
       message: 'Only inert HTTP, HTTPS and mailto links are supported',
     }).optional(),
@@ -60,6 +87,11 @@ export const OfficeParagraphSchema = NodeBaseSchema.extend({
   spacingBeforePt: z.number().min(0).max(1_000).optional(),
   spacingAfterPt: z.number().min(0).max(1_000).optional(),
   lineSpacingPt: z.number().positive().max(1_000).optional(),
+  lineSpacingRule: z.enum(['exact', 'atLeast']).optional(),
+  lineSpacingMultiple: z.number().positive().max(100).optional(),
+  indentLeftPt: z.number().min(0).max(1000).optional(),
+  hangingPt: z.number().min(0).max(1000).optional(),
+  numbering: OfficeNumberingSchema.optional(),
 }).strict()
 
 export const OfficeHeadingSchema = NodeBaseSchema.extend({
@@ -71,6 +103,11 @@ export const OfficeHeadingSchema = NodeBaseSchema.extend({
   spacingBeforePt: z.number().min(0).max(1_000).optional(),
   spacingAfterPt: z.number().min(0).max(1_000).optional(),
   lineSpacingPt: z.number().positive().max(1_000).optional(),
+  lineSpacingRule: z.enum(['exact', 'atLeast']).optional(),
+  lineSpacingMultiple: z.number().positive().max(100).optional(),
+  indentLeftPt: z.number().min(0).max(1000).optional(),
+  hangingPt: z.number().min(0).max(1000).optional(),
+  numbering: OfficeNumberingSchema.optional(),
 }).strict()
 
 export const OfficeListSchema = NodeBaseSchema.extend({
@@ -118,6 +155,16 @@ export const OfficeTableCellSchema = z.object({
   wrapText: z.boolean().optional(),
 }).strict()
 export type OfficeTableCell = z.infer<typeof OfficeTableCellSchema>
+
+/** Legacy cells are one paragraph; markers preserve empty and differently styled paragraphs. */
+export function officeCellParagraphs(cell: Pick<OfficeTableCell, 'runs' | 'alignment'>): Array<{ format: OfficeParagraphFormat; runs: OfficeRichTextRun[] }> {
+  const paragraphs: Array<{ format: OfficeParagraphFormat; runs: OfficeRichTextRun[] }> = []
+  for (const run of cell.runs) {
+    if (!paragraphs.length || run.paragraphStart) paragraphs.push({ format: run.paragraphStart ?? { alignment: cell.alignment }, runs: [] })
+    paragraphs[paragraphs.length - 1].runs.push(run)
+  }
+  return paragraphs.length ? paragraphs : [{ format: { alignment: cell.alignment }, runs: [] }]
+}
 
 export const OfficeTableSchema = NodeBaseSchema.extend({
   kind: z.literal('table'),
@@ -366,7 +413,20 @@ const ArtifactCommonSchema = z.object({
 export const DocumentSnapshotSchema = ArtifactCommonSchema.extend({
   family: z.literal('document'),
   sections: z.array(DocumentSectionSchema).min(1).max(10_000),
-}).strict()
+}).strict().superRefine((snapshot, ctx) => {
+  const definitions = new Map<string, string>()
+  for (const section of snapshot.sections) for (const node of section.nodes) {
+    const formats: OfficeParagraphFormat[] = node.kind === 'paragraph' || node.kind === 'heading' ? [node] : node.kind === 'table' ? node.rows.flatMap(row => row.cells.flatMap(cell => officeCellParagraphs(cell).map(p => p.format))) : []
+    for (const format of formats) {
+      const numbering = format.numbering
+      if (!numbering) continue
+      const signature = JSON.stringify([numbering.format, numbering.start, numbering.pattern])
+      const previous = definitions.get(numbering.listId)
+      if (previous && previous !== signature) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sections'], message: 'A list identity must use one numbering format, start and pattern' })
+      definitions.set(numbering.listId, signature)
+    }
+  }
+})
 export type DocumentSnapshot = z.infer<typeof DocumentSnapshotSchema>
 
 export const PresentationSnapshotSchema = ArtifactCommonSchema.extend({

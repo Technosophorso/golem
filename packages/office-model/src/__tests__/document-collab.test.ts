@@ -157,6 +157,30 @@ describe('[COMP:office/document-collab] Document fragment collaboration', () => 
     expect(() => applyDocumentCommand(snapshotToYDoc(snapshot), { ...command, preimageHash: '0'.repeat(64) })).toThrow(/preimage changed/)
   })
 
+  it('edits a stable cell paragraph without flattening its siblings or formatting', () => {
+    const snapshot = documentFixture()
+    const style = snapshot.sections[0].nodes[0].kind === 'paragraph' ? snapshot.sections[0].nodes[0].runs[0].style : null!
+    const runs = [
+      { id: id(200), text: 'First', style, paragraphStart: { id: id(201), lineSpacingPt: 14, lineSpacingRule: 'exact' as const } },
+      { id: id(202), text: 'Second', style: { ...style, bold: true }, paragraphStart: { id: id(203), lineSpacingMultiple: 1.5 } },
+      { id: id(204), text: ' tail', style: { ...style, italic: true } },
+      { id: id(205), text: '', style, paragraphStart: { id: id(206), spacingAfterPt: 0 } },
+    ]
+    snapshot.sections[0].nodes = [{ id: id(207), kind: 'table', headerRows: 0, rows: [{ id: id(208), cells: [{ id: id(209), rowSpan: 1, colSpan: 1, runs }] }] }]
+    const doc = snapshotToYDoc(snapshot)
+    const command = { artifactId: snapshot.artifactId, baseVersion: 0, actor: { type: 'user' as const, id: id(40) }, origin: 'manual' as const, commandId: id(210), kind: 'replaceTextRange' as const, targetId: id(203), from: 0, to: 6, preimageHash: documentRangePreimageHash('Second'), runs: [{ id: id(211), text: 'Updated', style }] }
+    const edited = applyDocumentCommand(doc, command)
+    const table = edited.sections[0].nodes[0]
+    if (table.kind !== 'table') throw new Error('table required')
+    expect(table.rows[0].cells[0].runs).toEqual([runs[0], { ...command.runs[0], paragraphStart: runs[1].paragraphStart }, runs[2], runs[3]])
+    expect(() => applyDocumentCommand(doc, { ...command, targetId: id(209), from: 0, to: 5, preimageHash: documentRangePreimageHash('First') })).toThrow(/paragraph ID/)
+    // A legacy first paragraph without a marker still makes the cell ambiguous.
+    delete runs[0].paragraphStart
+    const legacyFirst = snapshotToYDoc(snapshot)
+    expect(() => applyDocumentCommand(legacyFirst, { ...command, targetId: id(209), from: 0, to: 5, preimageHash: documentRangePreimageHash('First') })).toThrow(/paragraph ID/)
+    legacyFirst.destroy(); doc.destroy()
+  })
+
   it('keeps legacy updateText as generated compatibility without storing a Document command', () => {
     const snapshot = documentFixture()
     const doc = snapshotToYDoc(snapshot)

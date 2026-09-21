@@ -2269,7 +2269,7 @@ export const en = {
     // is always available (read-only on a non-editable page); "Edit source"
     // and "Update" only when the page is editable.
     diagramSource: {
-      drawing: "Drawing", drawingEdit: "Edit drawing", drawingSave: "Save drawing",
+      drawing: "Drawing", drawingEdit: "Edit drawing", drawingDownload: "Download PNG", drawingSave: "Save drawing",
       drawingClose: "Close", drawingUndo: "Undo drawing", drawingRedo: "Redo drawing",
       drawingRetention: "This page has reached its retained drawing storage limit. Copy the drawing to a new page to continue. Deleting shapes does not clear offline or undo history.",
       drawingReload: "Reload to use the current drawing collaboration protocol. Local offline content is kept.",

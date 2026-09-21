@@ -1,16 +1,87 @@
 import { describe, expect, it } from 'vitest'
 import type { DocumentSnapshot, PresentationSnapshot, SpreadsheetSnapshot } from '@use-brian/office-model'
-import { fitOfficeArtifact, layoutOfficeArtifact, officeGoldenSerialization, renderOfficePreviewSvg, type OfficeDisplayPage } from '../layout.js'
+import { officeParagraphCss, fitOfficeArtifact, layoutOfficeArtifact, officeGoldenSerialization, renderOfficePreviewSvg, type OfficeDisplayPage } from '../layout.js'
 
 const id = (suffix: number): string => `00000000-0000-4000-8000-${suffix.toString().padStart(12, '0')}`
 const style = { fontFamily: 'Arial', fontSizePt: 12, bold: false, italic: false, underline: false, strike: false, color: '#111111' }
 
 describe('[COMP:office/layout] Deterministic Office layout', () => {
+  it('uses width scale in wrapping advances while retaining font height and word boundaries', () => {
+    const source: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Scale', resources: [], accessibility: { title: 'Scale' }, sections: [{ id: id(5), page: { widthPt: 200, heightPt: 200, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [{ id: id(10), kind: 'paragraph', styleName: 'Body', alignment: 'start', spacingAfterPt: 0, runs: [{ id: id(11), text: 'A '.repeat(20), style }] }] }] }
+    const normal = layoutOfficeArtifact(source).pages[0].primitives[0].heightPt
+    const scaled = structuredClone(source)
+    const paragraph = scaled.sections[0].nodes[0]
+    if (paragraph.kind !== 'paragraph') throw new Error('paragraph')
+    paragraph.runs[0].style.widthScalePercent = 50
+    const layout = layoutOfficeArtifact(scaled)
+    expect(layout.pages[0].primitives[0].heightPt).toBe(normal / 2)
+    expect(paragraph.runs[0].style.fontSizePt).toBe(12)
+    const svg = renderOfficePreviewSvg(layout.pages[0])
+    expect(svg).toContain('font-size:12px')
+    expect(svg).toMatch(/width:[0-9.]+px;transform:scaleX\(0.5\)/)
+    expect(svg.match(/display:inline-block/g)?.length).toBe(40)
+    paragraph.indentLeftPt = 100
+    expect(layoutOfficeArtifact(scaled).pages[0].primitives[0].heightPt).toBe(normal)
+  })
+
+  it.each(['paragraph', 'heading'] as const)('applies outer %s spacing once without clipping the preview text box', kind => {
+    const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Spacing once', resources: [], accessibility: { title: 'Spacing once' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 400, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [
+      { id: id(10), ...(kind === 'heading' ? { kind: 'heading' as const, level: 1 } : { kind: 'paragraph' as const }), styleName: 'Body', alignment: 'start', spacingBeforePt: 30, spacingAfterPt: 40, lineSpacingPt: 14, lineSpacingRule: 'exact', runs: [{ id: id(11), text: 'Visible line', style }] },
+      { id: id(12), kind: 'paragraph', styleName: 'Body', alignment: 'start', spacingAfterPt: 0, runs: [{ id: id(13), text: 'Next', style }] },
+    ] }] }
+    const page = layoutOfficeArtifact(snapshot).pages[0]
+    expect(page.primitives[0]).toMatchObject({ yPt: 50, heightPt: 14 })
+    expect(page.primitives[1].yPt).toBe(104) // 20 + 30 + 14 + 40
+    const svg = renderOfficePreviewSvg(page)
+    const first = svg.match(/<foreignObject[^>]*>([\s\S]*?)<\/foreignObject>/)![0]
+    expect(first).toContain('y="50"')
+    expect(first).toContain('height="14"')
+    expect(first).toContain('line-height:14px')
+    expect(first).toContain('Visible line')
+    expect(first).not.toMatch(/margin-(?:top|bottom):/)
+    // Cell paragraphs are a separate flow: keep their internal margins.
+    expect(officeParagraphCss({ spacingBeforePt: 30, spacingAfterPt: 40 })).toContain('margin-top:30px;margin-bottom:40px')
+  })
+
   it('paginates document flow from one deterministic measurement path', () => {
     const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: id(3), rootId: id(4), title: 'Doc', resources: [], accessibility: { title: 'Doc' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 200, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: true, nodes: Array.from({ length: 10 }, (_, index) => ({ id: id(10 + index), kind: 'paragraph' as const, styleName: 'Body', alignment: 'start' as const, runs: [{ id: id(30 + index), text: 'A line of readable content', style }] })) }] }
     const first = layoutOfficeArtifact(snapshot)
     expect(first.pages.length).toBeGreaterThan(1)
     expect(layoutOfficeArtifact(snapshot).serialization).toBe(first.serialization)
+  })
+
+  it('measures and renders exact, multiple and at-least spacing including empty cell paragraphs', () => {
+    const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Spacing', resources: [], accessibility: { title: 'Spacing' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 400, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [
+      { id: id(10), kind: 'paragraph', styleName: 'Body', alignment: 'start', spacingBeforePt: 0, spacingAfterPt: 0, lineSpacingMultiple: 2, runs: [{ id: id(11), text: 'Body', style }] },
+      { id: id(12), kind: 'table', headerRows: 0, columnWidthsPt: [80, 160], widthPt: 240, margins: { topPt: 0, rightPt: 0, bottomPt: 0, leftPt: 0 }, borders: { top: { style: 'none', widthPt: 0, color: '#000000' } }, rows: [{ id: id(13), cells: [{ id: id(14), colSpan: 2, rowSpan: 1, runs: [
+        { id: id(15), text: 'A\tB\nC', style, paragraphStart: { id: id(16), lineSpacingPt: 14, lineSpacingRule: 'exact', spacingAfterPt: 0 } },
+        { id: id(17), text: '', style, paragraphStart: { id: id(18), lineSpacingMultiple: 1.5 } },
+        { id: id(19), text: 'D', style, paragraphStart: { id: id(20), lineSpacingPt: 20, lineSpacingRule: 'atLeast', spacingBeforePt: 2 } },
+      ] }] }] },
+    ] }] }
+    const page = layoutOfficeArtifact(snapshot).pages[0]
+    expect(page.primitives[0].heightPt).toBe(24)
+    expect(page.primitives[1].heightPt).toBe(68) // 2*14 + 12*1.5 + 20 + 2
+    const svg = renderOfficePreviewSvg(page)
+    expect(svg.match(/<p style=/g)).toHaveLength(3)
+    expect(svg).toContain('line-height:14px')
+    expect(svg).toContain('line-height:1.5')
+    expect(svg).toContain('line-height:20px')
+    expect(svg).toContain('border-bottom:none')
+    expect(svg).toContain('padding:0px 0px 0px 0px')
+  })
+
+  it('uses the largest actual paragraph run for at-least CSS and measurement, not the parent font', () => {
+    const runs = [{ id: id(401), text: 'Large\n', style: { ...style, fontSizePt: 30 } }, { id: id(402), text: 'Small', style: { ...style, fontSizePt: 8 } }]
+    const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'At least', resources: [], accessibility: { title: 'At least' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 400, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [
+      { id: id(403), kind: 'paragraph', styleName: 'Body', alignment: 'start', lineSpacingPt: 14, lineSpacingRule: 'atLeast', spacingAfterPt: 0, runs },
+      { id: id(404), kind: 'table', headerRows: 0, margins: { topPt: 0, rightPt: 0, bottomPt: 0, leftPt: 0 }, rows: [{ id: id(405), cells: [{ id: id(406), rowSpan: 1, colSpan: 1, runs: [{ ...runs[0], paragraphStart: { id: id(407), lineSpacingPt: 14, lineSpacingRule: 'atLeast' } }, runs[1]] }] }] },
+    ] }] }
+    const page = layoutOfficeArtifact(snapshot).pages[0]
+    expect(page.primitives.map((primitive) => primitive.heightPt)).toEqual([69, 69])
+    const svg = renderOfficePreviewSvg(page)
+    expect(svg.match(/line-height:34.5px/g)).toHaveLength(2)
+    expect(svg).not.toContain('max(1.15em')
   })
 
   it('names slide overflow instead of clipping it', () => {
@@ -76,7 +147,7 @@ describe('[COMP:office/layout] Deterministic Office layout', () => {
     expect(svg).toContain('width:35%')
     expect(svg).toContain('background:#131A24')
     expect(svg).toContain('border-bottom:1.125px solid #34D3FF')
-    expect(svg).toContain('font-family:Courier New')
+    expect(svg).toContain('font-family:&quot;Courier New&quot;')
     expect(svg).toContain('font-size:7.5px')
     expect(svg).toContain('stroke:#34D3FF;stroke-width:1.5')
     expect(svg).not.toContain('>Image<')

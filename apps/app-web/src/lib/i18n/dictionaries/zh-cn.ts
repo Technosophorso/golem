@@ -2075,7 +2075,7 @@ export const zhCN: Dictionary = {
       reset: "重设缩放",
     },
     diagramSource: {
-      drawing: "绘图", drawingEdit: "编辑绘图", drawingSave: "保存绘图",
+      drawing: "绘图", drawingEdit: "编辑绘图", drawingDownload: "下载 PNG", drawingSave: "保存绘图",
       drawingClose: "关闭", drawingUndo: "撤销绘图更改", drawingRedo: "重做绘图更改",
       drawingRetention: "此页面保留的绘图存储空间已达上限。请将绘图复制到新页面以继续。删除图形不会清除离线或撤销记录。",
       drawingReload: "请重新加载以使用最新的绘图协作协议。本地离线内容将保留。",

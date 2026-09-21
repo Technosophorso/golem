@@ -11,7 +11,7 @@ import { cn } from "@/lib/utils";
 import { useFileDrop } from "@/lib/use-file-drop";
 import { createOfficeTemplate, getOfficeJob, importOfficeTemplateDraft, listOfficeTemplates, transitionOfficeTemplateLifecycle, uploadOfficeSource, type OfficeArtifact, type OfficeFamily, type OfficeTemplate } from "@/lib/office/api";
 import { invalidateSurfaceCache, markSurfaceCacheStale, useCachedResource } from "@/lib/surface-cache";
-import { officeTemplateListCacheKey } from "@/lib/surface-prefetch";
+import { invalidateOfficeList, officeArtifactCacheKey, officeSnapshotCacheKey, officeTemplateListCacheKey } from "@/lib/surface-prefetch";
 import { useOfficeCacheRevalidation } from "@/lib/office/surface-cache";
 import { GridSurfaceSkeleton } from "@/components/chrome/surface-skeleton";
 import { OfficeCardPreview } from "./office-card-preview";
@@ -116,6 +116,12 @@ export function OfficeTemplateLibrary({ workspaceId, templateId }: { workspaceId
     try {
       await transitionOfficeTemplateLifecycle(templateId, action, reason);
       invalidateSurfaceCache(cacheKey);
+      invalidateOfficeList(workspaceId);
+      const draftId = templates?.find((template) => template.id === templateId)?.draftArtifactId;
+      if (draftId) {
+        invalidateSurfaceCache(officeArtifactCacheKey(draftId));
+        invalidateSurfaceCache(officeSnapshotCacheKey(draftId));
+      }
       if (mutationScope.current !== scope) return;
       setPurgeConfirmation("");
       if (action === "purge") router.replace(templatesHref);

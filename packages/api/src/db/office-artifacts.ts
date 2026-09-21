@@ -43,6 +43,7 @@ export function createOfficeArtifactStore(db: OfficeDbQuery = defaultOfficeDbQue
                lifecycle_state AS "lifecycleState", updated_at AS "updatedAt"
           FROM office_artifacts
          WHERE workspace_id = $1 AND lifecycle_state = $2
+           AND mode = 'artifact'
          ORDER BY updated_at DESC
          LIMIT 200
       `, [workspaceId, lifecycleState])
@@ -328,7 +329,10 @@ export function createOfficeArtifactStore(db: OfficeDbQuery = defaultOfficeDbQue
       const result = await db<OfficeArtifactRow>(params.userId, `
         WITH candidate AS (
           SELECT * FROM office_artifacts
-           WHERE id=$1 AND legal_hold=FALSE AND (
+           WHERE id=$1 AND legal_hold=FALSE
+             -- Linked drafts are governed atomically by their template registry.
+             AND NOT EXISTS (SELECT 1 FROM office_templates t WHERE t.draft_artifact_id=office_artifacts.id)
+             AND (
              ($2='archive' AND lifecycle_state='active') OR
              ($2='unarchive' AND lifecycle_state='archived') OR
              ($2='trash' AND lifecycle_state IN ('active','archived')) OR

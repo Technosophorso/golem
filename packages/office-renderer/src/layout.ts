@@ -1,5 +1,11 @@
+import { officeScaleSegments, officeScaledSegmentCss, officeTextAdvance } from './inline.js'
 import {
   officeTableCellPlacements,
+  officeCellParagraphs,
+  OfficeParagraphFormatSchema,
+  documentNumberedParagraphs,
+  officeNumberingCounter,
+  type OfficeParagraphFormat,
   officeTableResolvedColumnWidthsPt,
   parseCellAddress,
   spreadsheetCellDisplayValue,
@@ -32,6 +38,11 @@ export type OfficeDisplayPrimitive = {
   alignment?: 'start' | 'center' | 'end' | 'justify'
   verticalAlignment?: 'top' | 'middle' | 'bottom'
   lineSpacingPt?: number
+  lineSpacingRule?: OfficeParagraphFormat['lineSpacingRule']
+  lineSpacingMultiple?: number
+  paragraphFormat?: OfficeParagraphFormat
+  numberLabel?: string
+  numberLabels?: Record<string, string>
   resourceId?: string
   tableRows?: Array<Array<{ runs: OfficeRichTextRun[]; rowSpan: number; colSpan: number; fill?: string }>>
   tableHeaderRows?: number
@@ -90,16 +101,8 @@ function textOf(runs: readonly OfficeRichTextRun[]): string {
   return runs.map((run) => run.text).join('')
 }
 
-function characterWidthFactor(character: string): number {
-  if (/\s/.test(character)) return 0.28
-  if (/[ilI1|.,'`:;]/.test(character)) return 0.28
-  if (/[mwMW@%&]/.test(character)) return 0.82
-  if (/[A-Z0-9]/.test(character)) return 0.6
-  return 0.5
-}
-
 function lineWidth(runs: readonly OfficeRichTextRun[]): number {
-  return runs.reduce((width, run) => width + [...run.text].reduce((sum, character) => sum + run.style.fontSizePt * characterWidthFactor(character), 0), 0)
+  return runs.reduce((width, run) => width + officeTextAdvance(run.text, run.style.fontSizePt) * (run.style.widthScalePercent ?? 100) / 100, 0)
 }
 
 function textLines(runs: readonly OfficeRichTextRun[]): OfficeRichTextRun[][] {
@@ -114,19 +117,22 @@ function textLines(runs: readonly OfficeRichTextRun[]): OfficeRichTextRun[][] {
   return lines
 }
 
-function textMetrics(runs: readonly OfficeRichTextRun[], widthPt: number): { widthPt: number; heightPt: number } {
+function textMetrics(runs: readonly OfficeRichTextRun[], widthPt: number, format: OfficeParagraphFormat = {}): { widthPt: number; heightPt: number } {
+  widthPt = Math.max(1, widthPt - (format.indentLeftPt ?? 0))
   const lines = textLines(runs)
+  const paragraphFont = Math.max(1, ...runs.map((run) => run.style.fontSizePt))
   const widths = lines.map(lineWidth)
   const heightPt = lines.reduce((height, line, index) => {
-    const font = Math.max(1, ...line.map((run) => run.style.fontSizePt))
+    const font = Math.max(1, ...(line.length ? line : runs).map((run) => run.style.fontSizePt))
     const wraps = Math.max(1, Math.ceil(widths[index] / Math.max(1, widthPt)))
-    return height + wraps * font * 1.15
+    const lineHeight = format.lineSpacingMultiple !== undefined ? font * format.lineSpacingMultiple : format.lineSpacingPt !== undefined ? format.lineSpacingRule === 'atLeast' ? Math.max(paragraphFont * 1.15, format.lineSpacingPt) : format.lineSpacingPt : font * 1.15
+    return height + wraps * lineHeight
   }, 0)
   return { widthPt: Math.min(widthPt, Math.max(0, ...widths)), heightPt }
 }
 
-function textHeight(runs: readonly OfficeRichTextRun[], widthPt: number): number {
-  return textMetrics(runs, widthPt).heightPt
+function textHeight(runs: readonly OfficeRichTextRun[], widthPt: number, format: OfficeParagraphFormat = {}): number {
+  return textMetrics(runs, widthPt, format).heightPt
 }
 
 function documentTableRowHeights(table: OfficeTable, availableWidthPt: number): number[] {
@@ -138,7 +144,7 @@ function documentTableRowHeights(table: OfficeTable, availableWidthPt: number): 
       const horizontalMargins = (margins?.leftPt ?? 2) + (margins?.rightPt ?? 2)
       const verticalMargins = (margins?.topPt ?? 2) + (margins?.bottomPt ?? 2)
       const cellWidth = widths.slice(placement.startColumn, placement.endColumn).reduce((sum, width) => sum + width, 0)
-      return Math.max(height, (textHeight(placement.cell.runs, Math.max(1, cellWidth - horizontalMargins)) + verticalMargins) / placement.cell.rowSpan)
+      return Math.max(height, (officeCellParagraphs(placement.cell).reduce((sum, paragraph) => sum + textHeight(paragraph.runs, Math.max(1, cellWidth - horizontalMargins), paragraph.format) + (paragraph.format.spacingBeforePt ?? 0) + (paragraph.format.spacingAfterPt ?? 0), 0) + verticalMargins) / placement.cell.rowSpan)
     }, 0)
     return Math.max(row.minHeightPt ?? 0, contentHeight, 12)
   })
@@ -160,7 +166,7 @@ function textInkBounds(object: Extract<PresentationObject, { kind: 'text' }>): O
 }
 
 function documentNodeHeight(node: DocumentFlowNode, widthPt: number): number {
-  if (node.kind === 'paragraph' || node.kind === 'heading') return (node.spacingBeforePt ?? 0) + textHeight(node.runs, widthPt) + (node.spacingAfterPt ?? 8)
+  if (node.kind === 'paragraph' || node.kind === 'heading') return (node.spacingBeforePt ?? 0) + textHeight(node.runs, widthPt, node) + (node.spacingAfterPt ?? 8)
   if (node.kind === 'list') return node.items.reduce((height, item) => height + textHeight(item.runs, widthPt - 24), 0) + 8
   if (node.kind === 'table') return Math.max(12, documentTableRowHeights(node, widthPt).reduce((sum, height) => sum + height, 0))
   if (node.kind === 'image') return node.heightPt
@@ -171,7 +177,7 @@ function documentNodeHeight(node: DocumentFlowNode, widthPt: number): number {
 
 function nodePrimitive(node: DocumentFlowNode, xPt: number, yPt: number, widthPt: number, heightPt: number, z: number): OfficeDisplayPrimitive | null {
   if (node.kind === 'pageBreak' || node.kind === 'sectionBreak') return null
-  if (node.kind === 'paragraph' || node.kind === 'heading') return { id: node.id, kind: 'text', xPt, yPt, widthPt, heightPt, text: textOf(node.runs), runs: node.runs, alignment: node.alignment, lineSpacingPt: node.lineSpacingPt, sourceKind: node.kind, z }
+  if (node.kind === 'paragraph' || node.kind === 'heading') return { id: node.id, kind: 'text', xPt, yPt, widthPt, heightPt, text: textOf(node.runs), runs: node.runs, alignment: node.alignment, lineSpacingPt: node.lineSpacingPt, lineSpacingRule: node.lineSpacingRule, lineSpacingMultiple: node.lineSpacingMultiple, sourceKind: node.kind, paragraphFormat: Object.fromEntries(Object.entries(node).filter(([key]) => key in OfficeParagraphFormatSchema.shape)), z }
   if (node.kind === 'list') return { id: node.id, kind: 'text', xPt, yPt, widthPt, heightPt, text: node.items.map((item, index) => `${node.ordered ? `${index + 1}.` : '•'} ${textOf(item.runs)}`).join('\n'), sourceKind: node.kind, z }
   if (node.kind === 'image') return { id: node.id, kind: 'image', xPt, yPt, widthPt: Math.min(widthPt, node.widthPt), heightPt, resourceId: node.resourceId, sourceKind: node.kind, z }
   if (node.kind === 'table') {
@@ -187,6 +193,8 @@ function nodePrimitive(node: DocumentFlowNode, xPt: number, yPt: number, widthPt
 function layoutDocument(snapshot: DocumentSnapshot): OfficeLayoutResult {
   const pages: OfficeDisplayPage[] = []
   const issues: OfficeLayoutIssue[] = []
+  const nextNumber = officeNumberingCounter()
+  const numberLabels = Object.fromEntries(documentNumberedParagraphs(snapshot).filter(p => p.format.numbering).map(p => [p.id, nextNumber(p.format.numbering!)]))
   for (const section of snapshot.sections) {
     const width = section.page.widthPt
     const height = section.page.heightPt
@@ -217,7 +225,11 @@ function layoutDocument(snapshot: DocumentSnapshot): OfficeLayoutResult {
       const spacingBefore = node.kind === 'paragraph' || node.kind === 'heading' ? node.spacingBeforePt ?? 0 : 0
       const spacingAfter = node.kind === 'paragraph' || node.kind === 'heading' ? node.spacingAfterPt ?? 8 : 0
       const primitive = nodePrimitive(node, section.page.marginLeftPt, y + spacingBefore, bodyWidth, Math.max(0, nodeHeight - spacingBefore - spacingAfter), page.primitives.length)
-      if (primitive) page.primitives.push(primitive)
+      if (primitive) {
+        if (primitive.paragraphFormat?.numbering) primitive.numberLabel = numberLabels[primitive.id]
+        if (node.kind === 'table') primitive.numberLabels = Object.fromEntries(node.rows.flatMap(row => row.cells.flatMap(cell => officeCellParagraphs(cell).map(p => p.runs[0]?.paragraphStart?.id ?? cell.id))).filter(id => numberLabels[id] !== undefined).map(id => [id, numberLabels[id]]))
+        page.primitives.push(primitive)
+      }
       y += nodeHeight
     }
   }
@@ -429,21 +441,31 @@ function richTextHtml(runs: readonly OfficeRichTextRun[] | undefined, fallback: 
     const decorations = [run.style.underline ? 'underline' : '', run.style.strike ? 'line-through' : ''].filter(Boolean).join(' ')
     const style = [
       `color:${run.style.color}`,
-      `font-family:${escapeXml(run.style.fontFamily)}`,
+      `font-family:${escapeXml(JSON.stringify(run.style.fontFamily))}${run.style.eastAsianFontFamily ? `,${escapeXml(JSON.stringify(run.style.eastAsianFontFamily))}` : ''}`,
       `font-size:${run.style.fontSizePt}px`,
       `font-style:${run.style.italic ? 'italic' : 'normal'}`,
       `font-weight:${run.style.bold ? '700' : '400'}`,
       decorations ? `text-decoration:${decorations}` : '',
     ].filter(Boolean).join(';')
-    return `<span style="${style}">${escapeXml(run.text)}</span>`
+    const contents = run.style.widthScalePercent !== undefined && run.style.widthScalePercent !== 100
+      ? officeScaleSegments(run.text).map(segment => /[\r\n\t]/.test(segment.text) ? escapeXml(segment.text) : `<span style="${officeScaledSegmentCss(officeTextAdvance(segment.text, run.style.fontSizePt), run.style.widthScalePercent!)}">${escapeXml(segment.text)}</span>`).join('')
+      : escapeXml(run.text)
+    return `<span style="${style}">${contents}</span>`
   }).join('')
 }
 
-function documentBorderCss(border: OfficeTableBorder | undefined, fallback: string): string {
+function numberMarkerHtml(format: OfficeParagraphFormat | undefined, runs: readonly OfficeRichTextRun[] | undefined, label: string | undefined): string {
+  if (!format?.numbering || !label) return ''
+  const base = runs?.[0]?.style ?? { fontFamily: 'Arial', fontSizePt: 11, color: '#111111', bold: false, italic: false, underline: false, strike: false }
+  const marker = { id: format.numbering.listId, text: label, style: { ...base, ...format.numbering.markerStyle } }
+  return `<span data-office-number-marker="true" style="position:absolute;left:${Math.max(0, (format.indentLeftPt ?? 0) - (format.hangingPt ?? 0))}px;white-space:pre">${richTextHtml([marker], '')}</span>`
+}
+
+function documentBorderCss(border: OfficeTableBorder | undefined, fallback: string, unit = 'px'): string {
   if (!border) return fallback
   if (border.style === 'none' || border.widthPt === 0) return 'none'
   const style = border.style === 'dotted' ? 'dotted' : border.style === 'dashed' ? 'dashed' : border.style === 'double' ? 'double' : 'solid'
-  return `${Math.max(0.5, border.widthPt)}px ${style} ${border.color}`
+  return `${border.widthPt}${unit} ${style} ${border.color}`
 }
 
 function documentCellBorder(table: OfficeTable, cell: OfficeTableCell, placement: ReturnType<typeof officeTableCellPlacements>[number], edge: 'top' | 'right' | 'bottom' | 'left', columnCount: number): OfficeTableBorder | undefined {
@@ -455,36 +477,39 @@ function documentCellBorder(table: OfficeTable, cell: OfficeTableCell, placement
   return placement.endColumn >= columnCount ? table.borders?.right : table.borders?.insideVertical
 }
 
+/** CSS units are pt in the editor and px inside the point-space preview SVG. */
+export function officeParagraphCss(format: OfficeParagraphFormat, unit = 'px', maxRunFontSizePt = 12): string {
+  const line = format.lineSpacingMultiple !== undefined ? String(format.lineSpacingMultiple) : format.lineSpacingPt !== undefined ? format.lineSpacingRule === 'atLeast' ? `${Math.max(maxRunFontSizePt * 1.15, format.lineSpacingPt)}${unit}` : `${format.lineSpacingPt}${unit}` : undefined
+  return [format.indentLeftPt !== undefined ? `padding-left:${format.indentLeftPt}${unit}` : '', format.numbering ? 'position:relative' : format.hangingPt !== undefined ? `text-indent:${-format.hangingPt}${unit}` : '', format.alignment ? `text-align:${cssAlignment(format.alignment)}` : '', format.spacingBeforePt !== undefined ? `margin-top:${format.spacingBeforePt}${unit}` : '', format.spacingAfterPt !== undefined ? `margin-bottom:${format.spacingAfterPt}${unit}` : '', line ? `line-height:${line}` : ''].filter(Boolean).join(';')
+}
+
+export function officeDocumentCellStyles(table: OfficeTable, unit = 'px'): ReadonlyMap<string, string> {
+  const widths = officeTableResolvedColumnWidthsPt(table, table.widthPt ?? 468)
+  const canonicalBorders = Boolean(table.borders || table.rows.some((row) => row.cells.some((cell) => cell.borders)))
+  const fallback = canonicalBorders ? 'none' : `1${unit} solid #cbd5e1`
+  return new Map(officeTableCellPlacements(table).map((placement) => {
+    const cell = placement.cell
+    const margins = cell.margins ?? table.margins
+    return [cell.id, [
+    ...(['top', 'right', 'bottom', 'left'] as const).map((edge) => `border-${edge}:${documentBorderCss(documentCellBorder(table, cell, placement, edge, widths.length), fallback, unit)}`),
+    `padding:${margins?.topPt ?? 2}${unit} ${margins?.rightPt ?? 2}${unit} ${margins?.bottomPt ?? 2}${unit} ${margins?.leftPt ?? 2}${unit}`,
+    `vertical-align:${cell.verticalAlignment ?? 'top'}`, `text-align:${cssAlignment(cell.alignment)}`,
+    `background:${cell.fill ?? (placement.rowIndex < table.headerRows ? '#f8fafc' : 'transparent')}`,
+    `white-space:${cell.wrapText === false ? 'pre' : 'pre-wrap'}`, 'overflow-wrap:anywhere',
+    ].join(';')]
+  }))
+}
+
 function renderTableHtml(primitive: OfficeDisplayPrimitive): string {
   const table = primitive.documentTable
   if (table) {
     const widths = officeTableResolvedColumnWidthsPt(table, primitive.widthPt)
     const totalWidth = widths.reduce((sum, width) => sum + width, 0)
-    const placements = officeTableCellPlacements(table)
-    const placementByCell = new Map(placements.map((placement) => [placement.cell.id, placement]))
-    const canonicalBorders = Boolean(table.borders || table.rows.some((row) => row.cells.some((cell) => cell.borders)))
-    const borderFallback = canonicalBorders ? 'none' : '1px solid #cbd5e1'
+    const cellStyles = officeDocumentCellStyles(table)
     const columns = widths.map((width) => `<col style="width:${totalWidth > 0 ? width / totalWidth * 100 : 100 / widths.length}%"/>`).join('')
     const body = table.rows.map((row, rowIndex) => `<tr style="${row.minHeightPt ? `height:${row.minHeightPt}px` : ''}">${row.cells.map((cell) => {
-      const placement = placementByCell.get(cell.id)
-      if (!placement) return ''
-      const margins = cell.margins ?? table.margins
-      const header = rowIndex < table.headerRows
-      const style = [
-        `border-top:${documentBorderCss(documentCellBorder(table, cell, placement, 'top', widths.length), borderFallback)}`,
-        `border-right:${documentBorderCss(documentCellBorder(table, cell, placement, 'right', widths.length), borderFallback)}`,
-        `border-bottom:${documentBorderCss(documentCellBorder(table, cell, placement, 'bottom', widths.length), borderFallback)}`,
-        `border-left:${documentBorderCss(documentCellBorder(table, cell, placement, 'left', widths.length), borderFallback)}`,
-        `padding:${margins?.topPt ?? 2}px ${margins?.rightPt ?? 2}px ${margins?.bottomPt ?? 2}px ${margins?.leftPt ?? 2}px`,
-        `vertical-align:${cell.verticalAlignment === 'middle' ? 'middle' : cell.verticalAlignment === 'bottom' ? 'bottom' : 'top'}`,
-        `text-align:${cssAlignment(cell.alignment)}`,
-        `background:${cell.fill ?? (header ? '#f8fafc' : 'transparent')}`,
-        `white-space:${cell.wrapText === false ? 'nowrap' : 'pre-wrap'}`,
-        'overflow:hidden',
-        'overflow-wrap:anywhere',
-        'word-break:break-word',
-      ].join(';')
-      return `<td data-office-table-cell="${escapeXml(cell.id)}" rowspan="${cell.rowSpan}" colspan="${cell.colSpan}" style="${style}">${richTextHtml(cell.runs, '')}</td>`
+      const style = cellStyles.get(cell.id)
+      return `<td data-office-table-cell="${escapeXml(cell.id)}" rowspan="${cell.rowSpan}" colspan="${cell.colSpan}" style="${style}">${officeCellParagraphs(cell).map(({ format, runs }) => `<p style="margin:0;${officeParagraphCss(format, 'px', Math.max(1, ...runs.map((run) => run.style.fontSizePt)))}">${numberMarkerHtml(format, runs, primitive.numberLabels?.[runs[0]?.paragraphStart?.id ?? cell.id])}${richTextHtml(runs, '') || '<br/>'}</p>`).join('')}</td>`
     }).join('')}</tr>`).join('')
     return `<table xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:100%;height:100%;border-collapse:collapse;table-layout:${table.layout === 'autofit' && !table.columnWidthsPt ? 'auto' : 'fixed'};font-family:Arial,sans-serif;font-size:10px;line-height:1.15;color:#0f172a"><colgroup>${columns}</colgroup><tbody>${body}</tbody></table>`
   }
@@ -547,7 +572,7 @@ export type OfficePreviewSvgOptions = {
 export function renderOfficePreviewSvg(page: OfficeDisplayPage, options: OfficePreviewSvgOptions = {}): string {
   const primitives = [...page.primitives].sort((left, right) => left.z - right.z).map((primitive) => {
     const common = `data-office-object="${escapeXml(primitive.id)}" x="${primitive.xPt}" y="${primitive.yPt}" width="${primitive.widthPt}" height="${primitive.heightPt}"`
-    if (primitive.kind === 'text') return `<foreignObject ${common}>${primitive.sourceKind === 'cell' ? spreadsheetCellHtml(primitive) : `<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:100%;height:100%;overflow:hidden;white-space:pre-wrap;font-family:Arial,sans-serif;font-size:12px;line-height:${primitive.lineSpacingPt ? `${primitive.lineSpacingPt}px` : '1.15'};text-align:${cssAlignment(primitive.alignment)}">${richTextHtml(primitive.runs, primitive.text ?? '')}</div>`}</foreignObject>`
+    if (primitive.kind === 'text') return `<foreignObject ${common}>${primitive.sourceKind === 'cell' ? spreadsheetCellHtml(primitive) : `<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:100%;height:100%;overflow:hidden;white-space:pre-wrap;font-family:Arial,sans-serif;font-size:12px;line-height:1.15;${officeParagraphCss({ ...(primitive.paragraphFormat ?? primitive), spacingBeforePt: undefined, spacingAfterPt: undefined }, 'px', Math.max(1, ...(primitive.runs ?? []).map((run) => run.style.fontSizePt)))}">${numberMarkerHtml(primitive.paragraphFormat, primitive.runs, primitive.numberLabel)}${richTextHtml(primitive.runs, primitive.text ?? '')}</div>`}</foreignObject>`
     if (primitive.kind === 'table') return `<foreignObject ${common}>${renderTableHtml(primitive)}</foreignObject>`
     if (primitive.kind === 'image') {
       const url = primitive.resourceId ? options.resourceUrls?.[primitive.resourceId] : undefined

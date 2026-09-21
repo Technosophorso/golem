@@ -63,6 +63,19 @@ describe("[COMP:app-web/office-home] Office home", () => {
     expect(html.match(/data-office-file-card-footer="true"/g)).toHaveLength(2);
   });
 
+  it.each(["", "family=document", "view=trash", "view=retained", "view=archived"])("excludes cached template shells but preserves failed normal imports (%s)", (search) => {
+    navigation.search = search;
+    const common = { family: "document" as const, version: 0, lifecycleState: "active" as const, role: "edit" as const, job: { id: "failed-job", status: "failed" as const, stage: "failed", errorCode: null } };
+    const html = renderToStaticMarkup(<I18nProvider locale="en" dict={en as unknown as Dictionary}><OfficeHome workspaceId="workspace" initialArtifacts={[
+      { ...common, artifactId: "template-shell", mode: "template", title: "Deleted template shell" },
+      { ...common, artifactId: "normal-import", mode: "artifact", title: "Failed normal import" },
+    ]} /></I18nProvider>);
+    expect(html).not.toContain("Deleted template shell");
+    expect(html).toContain("Failed normal import");
+    expect(html).toContain(">Failed<");
+    expect(html.match(/data-office-file-card-footer="true"/g)).toHaveLength(1);
+  });
+
   it("marks a version-zero artifact with no job as a failed start", () => {
     const html = renderToStaticMarkup(<I18nProvider locale="en" dict={en as unknown as Dictionary}><OfficeHome workspaceId="11111111-1111-4111-8111-111111111111" initialArtifacts={[
       { artifactId: "44444444-4444-4444-8444-444444444444", family: "presentation", mode: "artifact", title: "Company introduction", version: 0, lifecycleState: "active", role: "edit" },

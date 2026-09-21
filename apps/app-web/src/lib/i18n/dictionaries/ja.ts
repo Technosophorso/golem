@@ -2107,7 +2107,7 @@ export const ja: Dictionary = {
       reset: "ズームをリセット",
     },
     diagramSource: {
-      drawing: "ドローイング", drawingEdit: "図を編集", drawingSave: "図を保存",
+      drawing: "ドローイング", drawingEdit: "図を編集", drawingDownload: "PNGをダウンロード", drawingSave: "図を保存",
       drawingClose: "閉じる", drawingUndo: "図の変更を元に戻す", drawingRedo: "図の変更をやり直す",
       drawingRetention: "このページの図の履歴の保存容量が上限に達しました。新しいページに図をコピーして続行してください。図形を削除してもオフラインや元に戻す履歴は消去されません。",
       drawingReload: "最新の図の共同編集機能を使うには再読み込みしてください。ローカルのオフライン内容は保持されます。",
