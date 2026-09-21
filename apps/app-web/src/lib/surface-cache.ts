@@ -67,6 +67,17 @@ const EMPTY: CacheEntry<never> = {
   revalidating: false,
 };
 
+/** A fetcher can reject cached data as well as its current read (access denial).
+ * Commit this only while the request still owns the key, never by invalidating
+ * from inside the fetcher: that would detach the error and cause a retry loop.
+ */
+export class SurfaceCacheEvictionError extends Error {
+  constructor(readonly cause: unknown) {
+    super("Cached surface access denied");
+    this.name = "SurfaceCacheEvictionError";
+  }
+}
+
 type Listener = () => void;
 
 const store = new Map<string, CacheEntry<unknown>>();
@@ -138,7 +149,13 @@ export function loadSurfaceCache<T>(
       // `attemptedAt` closes the stale window for this attempt, so the hook
       // waits a full `staleMs` before trying again instead of retrying on the
       // very emit this write produces.
-      put(key, { error, attemptedAt: Date.now(), revalidating: false });
+      put(key, {
+        ...(error instanceof SurfaceCacheEvictionError
+          ? { data: undefined, updatedAt: 0, error: error.cause }
+          : { error }),
+        attemptedAt: Date.now(),
+        revalidating: false,
+      });
       return undefined;
     })
     .finally(() => {

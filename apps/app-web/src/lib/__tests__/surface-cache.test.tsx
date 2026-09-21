@@ -19,6 +19,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { describe, expect, it, afterEach, beforeEach, vi } from "vitest";
 import {
+  SurfaceCacheEvictionError,
   invalidateSurfaceCache,
   isSurfaceCacheStale,
   loadSurfaceCache,
@@ -174,6 +175,46 @@ describe("[COMP:app-web/surface-cache] Surface cache", () => {
     mutateSurfaceCache<string[]>("cold", () => ["invented"]);
     // Fabricating a list the server never sent would be worse than no-op.
     expect(readSurfaceCache("cold").data).toBeUndefined();
+  });
+
+  it.each(["success", "failure", "denial"])(
+    "ignores a superseded %s without clearing the replacement request",
+    async (outcome) => {
+      let resolveOld!: (value: string) => void;
+      let rejectOld!: (error: unknown) => void;
+      const old = loadSurfaceCache("k", () => new Promise<string>((resolve, reject) => {
+        resolveOld = resolve;
+        rejectOld = reject;
+      }));
+      invalidateSurfaceCache("k");
+      let resolveNew!: (value: string) => void;
+      const current = loadSurfaceCache("k", () => new Promise<string>((resolve) => {
+        resolveNew = resolve;
+      }));
+      if (outcome === "success") resolveOld("obsolete");
+      else rejectOld(outcome === "denial"
+        ? new SurfaceCacheEvictionError(new Error("Forbidden"))
+        : new Error("obsolete"));
+      await old;
+      expect(readSurfaceCache("k")).toMatchObject({
+        data: undefined, error: undefined, revalidating: true,
+      });
+      const extra = vi.fn(async () => "duplicate");
+      expect(loadSurfaceCache("k", extra)).toBe(current);
+      expect(extra).not.toHaveBeenCalled();
+      resolveNew("current");
+      await current;
+      expect(readSurfaceCache("k").data).toBe("current");
+    },
+  );
+
+  it("does not resurrect data after a reset", async () => {
+    let resolve!: (value: string) => void;
+    const pending = loadSurfaceCache("k", () => new Promise<string>((done) => { resolve = done; }));
+    resetSurfaceCache();
+    resolve("signed-out");
+    await pending;
+    expect(readSurfaceCache("k").data).toBeUndefined();
   });
 
   it("invalidates by exact key and by prefix", async () => {
