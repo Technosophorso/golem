@@ -1,11 +1,48 @@
 import { describe, expect, it } from 'vitest'
 import type { DocumentSnapshot, PresentationSnapshot, SpreadsheetSnapshot } from '@use-brian/office-model'
-import { fitOfficeArtifact, layoutOfficeArtifact, officeGoldenSerialization, renderOfficePreviewSvg, type OfficeDisplayPage } from '../layout.js'
+import { officeParagraphCss, fitOfficeArtifact, layoutOfficeArtifact, officeGoldenSerialization, renderOfficePreviewSvg, type OfficeDisplayPage } from '../layout.js'
 
 const id = (suffix: number): string => `00000000-0000-4000-8000-${suffix.toString().padStart(12, '0')}`
 const style = { fontFamily: 'Arial', fontSizePt: 12, bold: false, italic: false, underline: false, strike: false, color: '#111111' }
 
 describe('[COMP:office/layout] Deterministic Office layout', () => {
+  it('uses width scale in wrapping advances while retaining font height and word boundaries', () => {
+    const source: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Scale', resources: [], accessibility: { title: 'Scale' }, sections: [{ id: id(5), page: { widthPt: 200, heightPt: 200, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [{ id: id(10), kind: 'paragraph', styleName: 'Body', alignment: 'start', spacingAfterPt: 0, runs: [{ id: id(11), text: 'A '.repeat(20), style }] }] }] }
+    const normal = layoutOfficeArtifact(source).pages[0].primitives[0].heightPt
+    const scaled = structuredClone(source)
+    const paragraph = scaled.sections[0].nodes[0]
+    if (paragraph.kind !== 'paragraph') throw new Error('paragraph')
+    paragraph.runs[0].style.widthScalePercent = 50
+    const layout = layoutOfficeArtifact(scaled)
+    expect(layout.pages[0].primitives[0].heightPt).toBe(normal / 2)
+    expect(paragraph.runs[0].style.fontSizePt).toBe(12)
+    const svg = renderOfficePreviewSvg(layout.pages[0])
+    expect(svg).toContain('font-size:12px')
+    expect(svg).toMatch(/width:[0-9.]+px;transform:scaleX\(0.5\)/)
+    expect(svg.match(/display:inline-block/g)?.length).toBe(40)
+    paragraph.indentLeftPt = 100
+    expect(layoutOfficeArtifact(scaled).pages[0].primitives[0].heightPt).toBe(normal)
+  })
+
+  it.each(['paragraph', 'heading'] as const)('applies outer %s spacing once without clipping the preview text box', kind => {
+    const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Spacing once', resources: [], accessibility: { title: 'Spacing once' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 400, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [
+      { id: id(10), ...(kind === 'heading' ? { kind: 'heading' as const, level: 1 } : { kind: 'paragraph' as const }), styleName: 'Body', alignment: 'start', spacingBeforePt: 30, spacingAfterPt: 40, lineSpacingPt: 14, lineSpacingRule: 'exact', runs: [{ id: id(11), text: 'Visible line', style }] },
+      { id: id(12), kind: 'paragraph', styleName: 'Body', alignment: 'start', spacingAfterPt: 0, runs: [{ id: id(13), text: 'Next', style }] },
+    ] }] }
+    const page = layoutOfficeArtifact(snapshot).pages[0]
+    expect(page.primitives[0]).toMatchObject({ yPt: 50, heightPt: 14 })
+    expect(page.primitives[1].yPt).toBe(104) // 20 + 30 + 14 + 40
+    const svg = renderOfficePreviewSvg(page)
+    const first = svg.match(/<foreignObject[^>]*>([\s\S]*?)<\/foreignObject>/)![0]
+    expect(first).toContain('y="50"')
+    expect(first).toContain('height="14"')
+    expect(first).toContain('line-height:14px')
+    expect(first).toContain('Visible line')
+    expect(first).not.toMatch(/margin-(?:top|bottom):/)
+    // Cell paragraphs are a separate flow: keep their internal margins.
+    expect(officeParagraphCss({ spacingBeforePt: 30, spacingAfterPt: 40 })).toContain('margin-top:30px;margin-bottom:40px')
+  })
+
   it('paginates document flow from one deterministic measurement path', () => {
     const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: id(3), rootId: id(4), title: 'Doc', resources: [], accessibility: { title: 'Doc' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 200, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: true, nodes: Array.from({ length: 10 }, (_, index) => ({ id: id(10 + index), kind: 'paragraph' as const, styleName: 'Body', alignment: 'start' as const, runs: [{ id: id(30 + index), text: 'A line of readable content', style }] })) }] }
     const first = layoutOfficeArtifact(snapshot)

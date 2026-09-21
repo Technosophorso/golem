@@ -4,6 +4,7 @@ import sharp from 'sharp'
 import type JSZip from 'jszip'
 import {
   AlignmentType,
+  type IRunOptions,
   BorderStyle,
   Document,
   ExternalHyperlink,
@@ -36,6 +37,9 @@ import {
   assertOfficeArtifactSnapshot,
   officeTableColumnCount,
   officeCellParagraphs,
+  documentNumberedParagraphs,
+  OfficeNumberingSchema,
+  type OfficeNumbering,
   type OfficeParagraphFormat,
   preflightOfficeCandidate,
   type DocumentFlowNode,
@@ -80,6 +84,7 @@ function richChildren(runs: readonly OfficeRichTextRun[]): Array<TextRun | Exter
       children: run.text.split(/(\t|\n)/).filter(Boolean).map((part) => part === '\t' ? new Tab() : part === '\n' ? new CarriageReturn() : part),
       font: { ascii: run.style.fontFamily, hAnsi: run.style.fontFamily, eastAsia: run.style.eastAsianFontFamily ?? run.style.fontFamily },
       size: Math.round(run.style.fontSizePt * 2),
+      scale: run.style.widthScalePercent,
       bold: run.style.bold,
       italics: run.style.italic,
       underline: run.style.underline ? {} : { type: UnderlineType.NONE },
@@ -172,7 +177,7 @@ function tableFromNode(node: Extract<DocumentFlowNode, { kind: 'table' }>, conte
         margins: docxCellMargins(cell.margins),
         verticalAlign: cell.verticalAlignment === 'middle' ? VerticalAlignTable.CENTER : cell.verticalAlignment === 'bottom' ? VerticalAlignTable.BOTTOM : VerticalAlignTable.TOP,
         borders: docxCellBorders(cell.borders),
-        children: officeCellParagraphs(cell).map(({ format, runs }) => new Paragraph({ alignment: paragraphAlignment(format.alignment), spacing: paragraphSpacing({ spacingAfterPt: 0, ...format }), children: richChildren(runs) })),
+        children: officeCellParagraphs(cell).map(({ format, runs }) => new Paragraph({ alignment: paragraphAlignment(format.alignment), ...paragraphNumbering(format), spacing: paragraphSpacing({ spacingAfterPt: 0, ...format }), children: richChildren(runs) })),
       })),
     })),
   })
@@ -202,9 +207,9 @@ function imageType(mime: string): 'png' | 'jpg' | null {
 async function nodeChildren(node: DocumentFlowNode, resolveResource: OfficeResourceResolver, contentWidthDxa: number): Promise<Array<Paragraph | Table>> {
   if (node.kind === 'paragraph') {
     const alignment = node.alignment === 'start' ? AlignmentType.LEFT : node.alignment === 'end' ? AlignmentType.RIGHT : node.alignment === 'center' ? AlignmentType.CENTER : AlignmentType.JUSTIFIED
-    return [new Paragraph({ alignment, spacing: paragraphSpacing(node), children: richChildren(node.runs) })]
+    return [new Paragraph({ alignment, ...paragraphNumbering(node), spacing: paragraphSpacing(node), children: richChildren(node.runs) })]
   }
-  if (node.kind === 'heading') return [new Paragraph({ heading: headingLevels[node.level as keyof typeof headingLevels], alignment: paragraphAlignment(node.alignment), spacing: paragraphSpacing(node), children: richChildren(node.runs) })]
+  if (node.kind === 'heading') return [new Paragraph({ heading: headingLevels[node.level as keyof typeof headingLevels], alignment: paragraphAlignment(node.alignment), ...paragraphNumbering(node), spacing: paragraphSpacing(node), children: richChildren(node.runs) })]
   if (node.kind === 'list') return node.items.map((item, index) => new Paragraph({ children: [new TextRun(`${node.ordered ? `${index + 1}.` : '•'}\t`), ...richChildren(item.runs)] }))
   if (node.kind === 'table') return [tableFromNode(node, contentWidthDxa)]
   if (node.kind === 'chart') return chartFromNode(node, contentWidthDxa)
@@ -228,6 +233,22 @@ async function nodeChildren(node: DocumentFlowNode, resolveResource: OfficeResou
     ]
   }
   return []
+}
+
+function markerRun(style: OfficeNumbering['markerStyle']): IRunOptions | undefined {
+  if (!style) return undefined
+  return { font: style.fontFamily || style.eastAsianFontFamily ? { ascii: style.fontFamily, hAnsi: style.fontFamily, eastAsia: style.eastAsianFontFamily } : undefined,
+    size: style.fontSizePt === undefined ? undefined : Math.round(style.fontSizePt * 2),
+    color: style.color ? color(style.color) : undefined, bold: style.bold, italics: style.italic,
+    strike: style.strike, underline: style.underline === undefined ? undefined : style.underline ? {} : { type: UnderlineType.NONE }, scale: style.widthScalePercent }
+}
+
+function paragraphNumbering(format: OfficeParagraphFormat) {
+  return {
+    indent: format.indentLeftPt !== undefined || format.hangingPt !== undefined ? { left: Math.round((format.indentLeftPt ?? 0) * 20), hanging: Math.round((format.hangingPt ?? 0) * 20) } : undefined,
+    numbering: format.numbering ? { reference: format.numbering.listId, level: 0 } : undefined,
+    run: markerRun(format.numbering?.markerStyle),
+  }
 }
 
 function paragraphSpacing(node: OfficeParagraphFormat) {
@@ -288,7 +309,11 @@ export async function exportOfficeDocument(
       children: children.length ? children : [new Paragraph('')],
     })
   }
-  const doc = new Document({ title: snapshot.title, description: snapshot.accessibility.description, sections })
+  const definitions = new Map<string, OfficeNumbering>()
+  for (const { format } of documentNumberedParagraphs(snapshot)) if (format.numbering && !definitions.has(format.numbering.listId)) definitions.set(format.numbering.listId, format.numbering)
+  const doc = new Document({ title: snapshot.title, description: snapshot.accessibility.description, sections,
+    numbering: { config: [...definitions.values()].map(definition => ({ reference: definition.listId, levels: [{ level: 0, format: definition.format, text: definition.pattern, start: definition.start }] })) },
+  })
   const raw = await Packer.toBuffer(doc)
   return { bytes: await attachCanonicalOfficePart(raw, snapshot), semanticHash: officeSemanticHash(snapshot), layoutSerialization: layout.serialization, diagnostics }
 }
@@ -315,7 +340,15 @@ function inheritedToggle(base: boolean, properties: string, tag: 'b' | 'i'): boo
   return base
 }
 
+/** Only this allowlist converts font-specific codes. Unknown codes stay visible. */
+function symbolText(tag: string): string {
+  const font = xmlValue(tag, 'w:sym', 'w:font')
+  const code = xmlValue(tag, 'w:sym', 'w:char')?.toUpperCase()
+  return /^wingdings ?2$/i.test(font ?? '') && code === 'F0A3' ? '☐' : '�'
+}
+
 function richRunsFromWordXml(xml: string, seed: string, inherited = '', styles?: WordStyles): OfficeRichTextRun[] {
+  let checkboxField = false
   const runs = [...xml.matchAll(/<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g)].flatMap((match, index) => {
     const direct = wordContainer(match[1], 'rPr')
     const characterStyle = styles?.get(xmlValue(direct, 'w:rStyle') ?? styles.defaultCharacter) ?? ''
@@ -327,7 +360,20 @@ function richRunsFromWordXml(xml: string, seed: string, inherited = '', styles?:
       const base = onOff(wordContainer(styles?.defaults ?? '', 'rPr'), `w:${tag}`)
       return inheritedToggle(inheritedToggle(base, inheritedProperties, tag), characterProperties, tag)
     }
-    const text = textFromWordXml(match[1])
+    let text = ''
+    for (const token of match[1].matchAll(/<w:fldChar\b[^>]*\/>|<w:fldChar\b[^>]*>[\s\S]*?<\/w:fldChar>|<w:sym\b[^>]*\/>|<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:(tab|br|cr)\b[^>]*\/?>/g)) {
+      if (token[0].startsWith('<w:fldChar')) {
+        const kind = xmlValue(token[0], 'w:fldChar', 'w:fldCharType')
+        if (kind === 'end') checkboxField = false
+        else if (kind === 'begin' && /<w:checkBox\b/.test(token[0])) {
+          const stateTag = /<w:checked\b/.test(token[0]) ? 'w:checked' : 'w:default'
+          const rawState = xmlValue(token[0], stateTag)
+          const checked = rawState === undefined ? onOff(token[0], stateTag) : /^(?:1|true|on)$/i.test(rawState)
+          text += checked ? '☒' : '☐'
+          checkboxField = true
+        }
+      } else if (!checkboxField) text += token[0].startsWith('<w:sym') ? symbolText(token[0]) : token[2] === 'tab' ? '\t' : token[2] ? '\n' : decodeXmlText(token[1])
+    }
     const fontFamily = decodeXmlText(xmlValue(fragment, 'w:rFonts', 'w:ascii') ?? xmlValue(fragment, 'w:rFonts', 'w:hAnsi') ?? 'Arial')
     const sizeHalfPoints = Number(xmlValue(fragment, 'w:sz') ?? 22)
     const rawColor = xmlValue(fragment, 'w:color')
@@ -336,7 +382,8 @@ function richRunsFromWordXml(xml: string, seed: string, inherited = '', styles?:
       id: stableOfficeUuid(`${seed}:run:${index}`),
       text,
       style: {
-        fontFamily,
+        fontFamily: /<w:sym\b/.test(match[1]) ? 'Arial' : fontFamily,
+        ...(validWidthScale(xmlValue(fragment, 'w:w')) ? { widthScalePercent: Number(xmlValue(fragment, 'w:w')) } : {}),
         ...(xmlValue(fragment, 'w:rFonts', 'w:eastAsia') ? { eastAsianFontFamily: decodeXmlText(xmlValue(fragment, 'w:rFonts', 'w:eastAsia')!) } : {}),
         fontSizePt: sizeHalfPoints / 2,
         bold: toggle('b'),
@@ -416,12 +463,46 @@ function paragraphInheritance(fragment: string, styles: WordStyles, tableStyle =
   return cascadeXml(styles.get(xmlValue(paragraphProperties(fragment), 'w:pStyle') ?? styles.defaultParagraph), tableStyle, defaults)
 }
 
-function effectiveParagraphFormat(fragment: string, styleFragment = ''): OfficeParagraphFormat & { alignment: NonNullable<OfficeParagraphFormat['alignment']> } {
-  const properties = paragraphProperties(fragment) + paragraphProperties(styleFragment)
+function validWidthScale(value: string | undefined): boolean {
+  return value !== undefined && /^\d+$/.test(value) && Number(value) >= 10 && Number(value) <= 600
+}
+
+type WordNumbering = Map<string, { definition: OfficeNumbering; properties: string }>
+function parseWordNumbering(xml: string, seed: string): WordNumbering {
+  const abstracts = new Map([...xml.matchAll(/<w:abstractNum\b[^>]*w:abstractNumId="(\d+)"[^>]*>([\s\S]*?)<\/w:abstractNum>/g)].map(m => [m[1], m[2]]))
+  const result: WordNumbering = new Map()
+  for (const match of xml.matchAll(/<w:num\b[^>]*w:numId="(\d+)"[^>]*>([\s\S]*?)<\/w:num>/g)) {
+    const abstract = abstracts.get(xmlValue(match[2], 'w:abstractNumId') ?? '') ?? ''
+    const levels = [...abstract.matchAll(/<w:lvl\b[^>]*w:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvl>/g)]
+    const overrides = [...match[2].matchAll(/<w:lvlOverride\b[^>]*w:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvlOverride>/g)]
+    if (overrides.length > 1 || overrides.some(m => m[1] !== '0' || /<w:lvl\b/.test(m[2]))) continue
+    if (levels.length !== 1 || levels[0][1] !== '0' || /<w:numStyleLink\b|<w:styleLink\b|<w:lvlRestart\b|<w:isLgl\b/.test(match[2] + abstract)) continue
+    const level = levels[0][2]
+    const parsed = OfficeNumberingSchema.safeParse({ listId: stableOfficeUuid(`${seed}:numbering:${match[1]}`), format: xmlValue(level, 'w:numFmt'), start: Number(xmlValue(overrides[0]?.[2] ?? '', 'w:startOverride') ?? xmlValue(level, 'w:start') ?? 1), pattern: decodeXmlText(xmlValue(level, 'w:lvlText') ?? '%1.') })
+    if (parsed.success) result.set(match[1], { definition: parsed.data, properties: level })
+  }
+  return result
+}
+
+function effectiveParagraphFormat(fragment: string, styleFragment = '', numbering?: WordNumbering): OfficeParagraphFormat & { alignment: NonNullable<OfficeParagraphFormat['alignment']> } {
+  const paragraph = paragraphProperties(fragment) + paragraphProperties(styleFragment)
+  const numId = xmlValue(paragraph, 'w:numId')
+  const entry = numId !== '0' && Number(xmlValue(paragraph, 'w:ilvl') ?? 0) === 0 ? numbering?.get(numId ?? '') : undefined
+  const properties = paragraph + paragraphProperties(entry?.properties ?? '')
+  const markerProperties = wordContainer(paragraphProperties(fragment), 'rPr') + wordContainer(paragraphProperties(styleFragment), 'rPr') + wordContainer(entry?.properties ?? '', 'rPr')
+  const parsedMarker = richRunsFromWordXml(`<w:r><w:rPr>${markerProperties}</w:rPr><w:t></w:t></w:r>`, 'marker')[0].style
+  const markerStyle = Object.fromEntries(([
+    ['fontFamily', 'rFonts'], ['eastAsianFontFamily', 'rFonts'], ['fontSizePt', 'sz'], ['widthScalePercent', 'w'], ['color', 'color'], ['bold', 'b'], ['italic', 'i'], ['underline', 'u'], ['strike', 'strike'],
+  ] as const).filter(([key, tag]) => parsedMarker[key] !== undefined && new RegExp(`<w:${tag}(?:\\s|/?>)`).test(markerProperties)).map(([key]) => [key, parsedMarker[key]]))
+  const left = xmlValue(properties, 'w:ind', 'w:left') ?? xmlValue(properties, 'w:ind', 'w:start')
+  const hanging = xmlValue(properties, 'w:ind', 'w:hanging')
   const twips = (attribute: string, fallback = 0): number => Number(xmlValue(properties, 'w:spacing', attribute) ?? fallback * 20) / 20
   const line = xmlValue(properties, 'w:spacing', 'w:line')
   const rule = xmlValue(properties, 'w:spacing', 'w:lineRule') ?? 'auto'
   return {
+    ...(entry ? { numbering: { ...entry.definition, ...(Object.keys(markerStyle).length ? { markerStyle } : {}) } } : {}),
+    ...(left !== undefined && /^\d+$/.test(left) && Number(left) <= 20000 ? { indentLeftPt: Number(left) / 20 } : {}),
+    ...(hanging !== undefined && /^\d+$/.test(hanging) && Number(hanging) <= 20000 ? { hangingPt: Number(hanging) / 20 } : {}),
     alignment: alignmentFromWordXml(properties), spacingBeforePt: twips('w:before'), spacingAfterPt: twips('w:after'),
     ...(line && Number(line) > 0 ? rule === 'auto' ? { lineSpacingMultiple: Number(line) / 240 } : { lineSpacingPt: Number(line) / 20, lineSpacingRule: rule === 'exact' ? 'exact' as const : 'atLeast' as const } : {}),
   }
@@ -512,7 +593,7 @@ function wordVerticalAlignment(xml: string): DocumentTableCell['verticalAlignmen
   return value === 'center' ? 'middle' : value === 'bottom' ? 'bottom' : value === 'top' ? 'top' : undefined
 }
 
-function parseWordTable(fragment: string, id: string, styles: WordStyles): DocumentTableNode {
+function parseWordTable(fragment: string, id: string, styles: WordStyles, numbering: WordNumbering): DocumentTableNode {
   if (/<w:tc(?:\s[^>]*)?>[\s\S]*?<w:tbl\b/i.test(fragment)) throw new Error('Nested Word tables are outside the supported Office subset')
   const directProperties = wordContainer(fragment, 'tblPr')
   const tableStyle = styles.get(xmlValue(directProperties, 'w:tblStyle') ?? styles.defaultTable)
@@ -555,7 +636,7 @@ function parseWordTable(fragment: string, id: string, styles: WordStyles): Docum
         runs: [...cellFragment.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>|<w:p\s*\/>/g)].flatMap((paragraph, paragraphIndex) => {
           const inherited = paragraphInheritance(paragraph[0], styles, tableStyle)
           const runs = richRunsFromWordXml(paragraph[0], `${id}:row:${rowIndex}:cell:${cellIndex}:p:${paragraphIndex}`, inherited, styles)
-          runs[0].paragraphStart = { id: stableOfficeUuid(`${id}:row:${rowIndex}:cell:${cellIndex}:paragraph:${paragraphIndex}`), ...effectiveParagraphFormat(paragraph[0], inherited) }
+          runs[0].paragraphStart = { id: stableOfficeUuid(`${id}:row:${rowIndex}:cell:${cellIndex}:paragraph:${paragraphIndex}`), ...effectiveParagraphFormat(paragraph[0], inherited, numbering) }
           return runs
         }),
         rowSpan: 1,
@@ -626,10 +707,26 @@ async function headerImageFromWordXml(zip: JSZip, partPath: string, xml: string,
   }
 }
 
+function malformedCheckboxFields(xml: string): boolean {
+  for (const paragraph of xml.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g)) {
+    const fields: boolean[] = []
+    for (const token of paragraph[1].matchAll(/<w:fldChar\b[^>]*\/>|<w:fldChar\b[^>]*>[\s\S]*?<\/w:fldChar>/g)) {
+      const kind = xmlValue(token[0], 'w:fldChar', 'w:fldCharType')
+      if (kind === 'begin') {
+        const checkbox = /<w:checkBox\b/.test(token[0])
+        if (fields.length >= 16 || fields.some(Boolean) || (checkbox && fields.length > 0)) return true
+        fields.push(checkbox)
+      } else if (kind === 'end') fields.pop()
+    }
+    if (fields.some(Boolean)) return true
+  }
+  return false
+}
+
 function formattingDiagnostics(xml: string, stylesXml: string): OfficePreflightDiagnostic[] {
   const source = xml + stylesXml
   const checks: Array<[RegExp, string, string]> = [
-    [/<w:w\b/, 'text_scale', 'Horizontal text scaling is not supported.'],
+
     [/<w:tab\b/, 'tab_layout', 'Tab characters are retained, but browser tab layout may differ from Word.'],
     [/<w:tabs\b/, 'tab_stops', 'Custom tab stops are not supported; tab characters are retained.'],
     [/<w:tblStylePr\b/, 'conditional_table_style', 'Conditional table style regions are not supported; base table properties are retained.'],
@@ -638,6 +735,15 @@ function formattingDiagnostics(xml: string, stylesXml: string): OfficePreflightD
     [/<w:rFonts\b[^>]*w:eastAsia=/, 'east_asian_shaping', 'East Asian font names are retained; browser font availability and shaping may differ from Word.'],
   ]
   const diagnostics: OfficePreflightDiagnostic[] = checks.filter(([pattern]) => pattern.test(source)).map(([, code, message]) => ({ severity: 'warning', code: `docx.formatting.${code}`, path: 'word/document.xml', message }))
+  if ([...source.matchAll(/<w:w\b[^>]*>/g)].some(m => !validWidthScale(xmlValue(m[0], 'w:w')))) diagnostics.push({ severity: 'warning', code: 'docx.formatting.text_scale', path: 'word/document.xml', message: 'Unsupported horizontal scaling was omitted; supported integer range is 10–600 percent.' })
+  if ([...source.matchAll(/<w:sym\b[^>]*>/g)].some(m => symbolText(m[0]) === '�')) diagnostics.push({ severity: 'warning', code: 'docx.formatting.symbol', path: 'word/document.xml', message: 'Unsupported font-specific symbols were replaced with a replacement character.' })
+  if (/<w:instrText\b/.test(source)) diagnostics.push({ severity: 'warning', code: 'docx.formatting.inert_fields', path: 'word/document.xml', message: 'Fields are not executed. Supported checkboxes become editable ballot-box text; other field results remain inert.' })
+  if ([...source.matchAll(/<w:(?:checked|default)\b[^>]*w:val="([^"]+)"/g)].some(m => !/^(?:0|1|true|false|on|off)$/i.test(m[1]))) diagnostics.push({ severity: 'warning', code: 'docx.formatting.checkbox_state', path: 'word/document.xml', message: 'Unsupported checkbox state values become unchecked ballot boxes.' })
+  if ([...stylesXml.matchAll(/<w:(lvlJc|suff)\b[^>]*w:val="([^"]+)"/g)].some(m => m[1] === 'lvlJc' ? !['left', 'start'].includes(m[2]) : m[2] !== 'tab')) diagnostics.push({ severity: 'warning', code: 'docx.formatting.numbering_layout', path: 'word/numbering.xml', message: 'Non-left marker alignment and non-tab numbering suffixes are not supported; marker labels and hanging indents are retained.' })
+  if (malformedCheckboxFields(xml)) diagnostics.push({ severity: 'error', code: 'docx.formatting.checkbox_structure', path: 'word/document.xml', message: 'Checkbox fields must be balanced, non-nested and contained in one paragraph.' })
+  if (/<w:checkBox\b[\s\S]*?<w:size\b/.test(source)) diagnostics.push({ severity: 'warning', code: 'docx.formatting.checkbox_size', path: 'word/document.xml', message: 'Fixed checkbox sizes are not supported; ballot boxes use the run font size.' })
+  if ([...source.matchAll(/<w:ind\b[^>]*>/g)].some(m => /w:(?:firstLine|right|end)=/.test(m[0]) || [...m[0].matchAll(/w:(?:left|start|hanging)="([^"]+)"/g)].some(a => !/^\d+$/.test(a[1]) || Number(a[1]) > 20000))) diagnostics.push({ severity: 'warning', code: 'docx.formatting.indent', path: 'word/document.xml', message: 'Only nonnegative left/hanging indents up to 1000pt are supported.' })
+  if (/<w:rFonts\b/.test(source)) diagnostics.push({ severity: 'warning', code: 'docx.formatting.font_availability', path: 'word/document.xml', message: 'Font names are retained, not downloaded; missing local fonts and browser shaping may change glyph metrics.' })
   const bases = new Map([...stylesXml.matchAll(/<w:style\b([^>]*)>([\s\S]*?)<\/w:style>/g)].map((match) => [match[1].match(/w:styleId="([^"]+)"/)?.[1] ?? '', xmlValue(match[2], 'w:basedOn')]))
   for (const id of bases.keys()) {
     let current: string | undefined = id
@@ -655,6 +761,8 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
   const body = xml.match(/<w:body(?:\s[^>]*)?>([\s\S]*?)<\/w:body>/)?.[1] ?? ''
   const stylesXml = await zip.file('word/styles.xml')?.async('string') ?? ''
   const styles = styleFragments(stylesXml)
+  const numberingXml = await zip.file('word/numbering.xml')?.async('string') ?? ''
+  const numbering = parseWordNumbering(numberingXml, context.artifactId)
   const nodes: DocumentFlowNode[] = []
   let ordinal = 0
   for (const match of body.matchAll(/<(w:p|w:tbl)(?:\s[^>]*)?>[\s\S]*?<\/\1>|<w:p\s*\/>/g)) {
@@ -662,7 +770,7 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
     const id = stableOfficeUuid(`${context.artifactId}:docx:${ordinal}`)
     ordinal += 1
     if (match[1] === 'w:tbl') {
-      nodes.push(parseWordTable(fragment, id, styles))
+      nodes.push(parseWordTable(fragment, id, styles, numbering))
       continue
     }
     if (/<w:br[^>]*w:type="page"/.test(fragment)) {
@@ -675,7 +783,7 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
     const heading = styleName.match(/^Heading\s*([1-6])$/i)
     const inherited = paragraphInheritance(fragment, styles)
     const runs = richRunsFromWordXml(fragment, id, inherited, styles)
-    const format = effectiveParagraphFormat(fragment, inherited)
+    const format = effectiveParagraphFormat(fragment, inherited, numbering)
     nodes.push(heading ? { id, kind: 'heading', level: Number(heading[1]), styleName, runs, ...format } : { id, kind: 'paragraph', styleName, runs, ...format })
   }
   const documentRels = await zip.file('word/_rels/document.xml.rels')?.async('string') ?? ''
@@ -719,7 +827,10 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
       nodes,
     }],
   }
-  return { snapshot, resources: headerImage.resource ? [headerImage.resource] : [], diagnostics: formattingDiagnostics(xml, stylesXml) }
+  const diagnostics = formattingDiagnostics(xml + headerXml + footerXml, stylesXml + numberingXml)
+  const references = [...(xml + stylesXml).matchAll(/<w:numPr\b[^>]*>([\s\S]*?)<\/w:numPr>/g)]
+  if (references.some(m => xmlValue(m[1], 'w:numId') !== '0' && (!numbering.has(xmlValue(m[1], 'w:numId') ?? '') || Number(xmlValue(m[1], 'w:ilvl') ?? 0) !== 0))) diagnostics.push({ severity: 'warning', code: 'docx.formatting.numbering', path: 'word/numbering.xml', message: 'Only single-level decimal, Roman and letter numbering without level overrides is supported; unsupported markers were omitted.' })
+  return { snapshot, resources: headerImage.resource ? [headerImage.resource] : [], diagnostics }
 }
 
 export async function importOfficeDocument(bytes: Uint8Array, context: OfficeImportContext): Promise<OfficeImportResult> {
