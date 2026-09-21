@@ -5,7 +5,11 @@ import { Mark, Node, mergeAttributes, type AnyExtension } from "@tiptap/core";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, useEditorState, type NodeViewProps } from "@tiptap/react";
 import { createElement, useEffect, useState, type CSSProperties } from "react";
 import StarterKit from "@tiptap/starter-kit";
-import type { OfficeEditorJsonNode } from "@use-brian/office-model";
+import { officeTableResolvedColumnWidthsPt, type OfficeTable, type OfficeEditorJsonNode, type OfficeParagraphFormat } from "@use-brian/office-model";
+import { officeDocumentCellStyles, officeParagraphCss } from "@use-brian/office-renderer";
+import { Extension } from "@tiptap/core";
+import { Plugin } from "@tiptap/pm/state";
+import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { getOfficeResourceObjectUrl } from "@/lib/office/api";
 import { DocumentCommentDecorations } from "./comment-decorations";
 import { DocumentPaginationDecorations } from "./pagination-decorations";
@@ -73,14 +77,14 @@ function OfficeHeaderView({ node, editor }: NodeViewProps) {
 
 const Paragraph = Node.create({
   name: "paragraph", content: "inline*", group: "officeFlow", defining: true,
-  addAttributes: () => attrs("id", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt"),
-  parseHTML: () => [{ tag: "p" }], renderHTML: ({ HTMLAttributes }) => ["p", mergeAttributes(withoutObjectAttributes(HTMLAttributes, []), { style: blockStyle(HTMLAttributes) }), 0],
+  addAttributes: () => attrs("id", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple"),
+  parseHTML: () => [{ tag: "p" }], renderHTML: ({ node, HTMLAttributes }) => ["p", mergeAttributes(withoutObjectAttributes(HTMLAttributes, []), { style: blockStyle(HTMLAttributes, node) }), 0],
 });
 const Heading = Node.create({
   name: "heading", content: "inline*", group: "officeFlow", defining: true,
-  addAttributes: () => attrs("id", "level", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt"),
+  addAttributes: () => attrs("id", "level", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple"),
   parseHTML: () => [1, 2, 3, 4, 5, 6].map((level) => ({ tag: `h${level}`, attrs: { level } })),
-  renderHTML: ({ node, HTMLAttributes }) => [`h${Math.min(6, Math.max(1, Number(node.attrs.level) || 1))}`, mergeAttributes(withoutObjectAttributes(HTMLAttributes, []), { style: blockStyle(HTMLAttributes) }), 0],
+  renderHTML: ({ node, HTMLAttributes }) => [`h${Math.min(6, Math.max(1, Number(node.attrs.level) || 1))}`, mergeAttributes(withoutObjectAttributes(HTMLAttributes, []), { style: blockStyle(HTMLAttributes, node) }), 0],
 });
 const OfficeList = Node.create({
   name: "officeList", content: "officeListItem+", group: "officeFlow", defining: true,
@@ -89,10 +93,80 @@ const OfficeList = Node.create({
   renderHTML: ({ node, HTMLAttributes }) => [node.attrs.ordered ? "ol" : "ul", mergeAttributes(HTMLAttributes, { "data-office-list": "true", style: `padding-inline-start:${24 + Number(node.attrs.level ?? 0) * 20}px` }), 0],
 });
 const OfficeListItem = Node.create({ name: "officeListItem", content: "inline*", addAttributes: () => attrs("id"), parseHTML: () => [{ tag: "li[data-office-list-item]" }], renderHTML: render("li") });
-const OfficeTable = Node.create({ name: "officeTable", content: "officeTableRow+", group: "officeFlow", defining: true, addAttributes: () => attrs("id", "headerRows", "columnWidthsPt", "widthPt", "alignment", "indentPt", "layout", "margins", "borders"), parseHTML: () => [{ tag: "table[data-office-table]" }], renderHTML: ({ HTMLAttributes }) => ["table", mergeAttributes(withoutObjectAttributes(HTMLAttributes, ["columnWidthsPt", "margins", "borders"]), { class: "office-document-table", style: tableStyle(HTMLAttributes) }), 0] });
-const OfficeTableRow = Node.create({ name: "officeTableRow", content: "officeTableCell+", addAttributes: () => attrs("id", "minHeightPt"), parseHTML: () => [{ tag: "tr" }], renderHTML: render("tr") });
-const OfficeTableCell = Node.create({ name: "officeTableCell", content: "officeTableCellText", isolating: true, addAttributes: () => attrs("id", "rowSpan", "colSpan", "fill", "alignment", "verticalAlignment", "margins", "borders", "wrapText"), parseHTML: () => [{ tag: "td" }, { tag: "th" }], renderHTML: ({ HTMLAttributes }) => ["td", mergeAttributes(withoutObjectAttributes(HTMLAttributes, ["margins", "borders"]), { rowspan: HTMLAttributes.rowSpan, colspan: HTMLAttributes.colSpan, style: cellStyle(HTMLAttributes) }), 0] });
-const OfficeTableCellText = Node.create({ name: "officeTableCellText", content: "inline*", group: "block", addAttributes: () => attrs("id"), parseHTML: () => [{ tag: "p[data-office-table-cell-text]" }], renderHTML: render("p") });
+function tableProjection(node: import("@tiptap/pm/model").Node): OfficeTable {
+  return { ...node.attrs, id: String(node.attrs.id), headerRows: Number(node.attrs.headerRows ?? 0), kind: "table", rows: Array.from({ length: node.childCount }, (_, index) => {
+    const row = node.child(index);
+    return { ...row.attrs, id: String(row.attrs.id), cells: Array.from({ length: row.childCount }, (_, cellIndex) => ({ ...row.child(cellIndex).attrs, id: String(row.child(cellIndex).attrs.id), rowSpan: Number(row.child(cellIndex).attrs.rowSpan ?? 1), colSpan: Number(row.child(cellIndex).attrs.colSpan ?? 1), runs: [] })) };
+  }) };
+}
+const OfficeTable = Node.create({
+  name: "officeTable", content: "officeTableRow+", group: "officeFlow", defining: true,
+  addAttributes: () => attrs("id", "headerRows", "columnWidthsPt", "widthPt", "alignment", "indentPt", "layout", "margins", "borders"),
+  parseHTML: () => [{ tag: "table[data-office-table]" }],
+  renderHTML: ({ node, HTMLAttributes }) => {
+    const widths = officeTableResolvedColumnWidthsPt(tableProjection(node), Number(node.attrs.widthPt) || 468);
+    const total = widths.reduce((sum, width) => sum + width, 0);
+    return ["table", mergeAttributes(withoutObjectAttributes(HTMLAttributes, ["columnWidthsPt", "margins", "borders"]), { "data-office-table": "true", class: "office-document-table", style: tableStyle(HTMLAttributes) }),
+      ["colgroup", {}, ...widths.map((width) => ["col", { style: `width:${width / total * 100}%` }])], ["tbody", {}, 0]];
+  },
+});
+const OfficeTableRow = Node.create({ name: "officeTableRow", content: "officeTableCell*", addAttributes: () => attrs("id", "minHeightPt"), parseHTML: () => [{ tag: "tr" }], renderHTML: ({ HTMLAttributes }) => ["tr", mergeAttributes(HTMLAttributes, { style: typeof HTMLAttributes.minHeightPt === "number" ? `height:${HTMLAttributes.minHeightPt}pt` : undefined }), 0] });
+const OfficeTableCell = Node.create({ name: "officeTableCell", content: "officeTableCellText+", isolating: true, addAttributes: () => attrs("id", "rowSpan", "colSpan", "fill", "alignment", "verticalAlignment", "margins", "borders", "wrapText"), parseHTML: () => [{ tag: "td" }, { tag: "th" }], renderHTML: ({ HTMLAttributes }) => ["td", mergeAttributes(withoutObjectAttributes(HTMLAttributes, ["margins", "borders"]), { rowspan: HTMLAttributes.rowSpan, colspan: HTMLAttributes.colSpan }), 0] });
+const OfficeTableCellText = Node.create({
+  priority: 1000,
+  addKeyboardShortcuts() {
+    return { Enter: () => {
+      if (!this.editor.isActive("officeTableCellText")) return false;
+      const { $from } = this.editor.state.selection;
+      const attributes = $from.parent.attrs;
+      const cellId = $from.node($from.depth - 1).attrs.id;
+      const promoted = { ...attributes, paragraphStart: true, id: !attributes.paragraphStart || attributes.id === cellId ? crypto.randomUUID() : attributes.id };
+      return this.editor.chain().command(({ tr }) => {
+        tr.setNodeMarkup(tr.selection.$from.before(), undefined, promoted);
+        return true;
+      }).splitBlock().command(({ tr }) => {
+        tr.setNodeMarkup(tr.selection.$from.before(), undefined, { ...attributes, id: crypto.randomUUID(), paragraphStart: true });
+        return true;
+      }).run();
+    } };
+  },
+  name: "officeTableCellText", content: "inline*", group: "block", addAttributes: () => attrs("id", "paragraphStart", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple"), parseHTML: () => [{ tag: "p[data-office-table-cell-text]" }], renderHTML: ({ node, HTMLAttributes }) => ["p", { "data-office-table-cell-text": "true", style: `margin:0;${blockStyle(HTMLAttributes, node) ?? ''}` }, 0] });
+
+// Cell edges depend on their parent table and merged-cell placement. Decorations
+// project them without persisting derived CSS or changing the collaboration data.
+const OfficeTableFormatting = Extension.create({
+  name: "officeTableFormatting",
+  addProseMirrorPlugins: () => [new Plugin({ props: { decorations(state) {
+    const decorations: Decoration[] = [];
+    state.doc.descendants((node, position) => {
+      if (node.type.name !== "officeTable") return;
+      const table = tableProjection(node);
+      const cellStyles = officeDocumentCellStyles(table, "pt");
+      node.forEach((row, rowOffset) => row.forEach((cell, cellOffset) => {
+        const start = position + 2 + rowOffset + cellOffset;
+        decorations.push(Decoration.node(start, start + cell.nodeSize, { style: cellStyles.get(String(cell.attrs.id)) ?? "" }));
+      }));
+      return false;
+    });
+    return DecorationSet.create(state.doc, decorations);
+  } } })],
+});
+
+// Parent DOM is reused for inline mark changes. Recompute the at-least strut
+// from live runs rather than leaving the initial renderHTML font-size estimate.
+const OfficeParagraphSpacing = Extension.create({
+  name: "officeParagraphSpacing",
+  addProseMirrorPlugins: () => [new Plugin({ props: { decorations(state) {
+    const decorations: Decoration[] = [];
+    state.doc.descendants((node, position) => {
+      if (!["paragraph", "heading", "officeTableCellText"].includes(node.type.name) || node.attrs.lineSpacingRule !== "atLeast" || typeof node.attrs.lineSpacingPt !== "number" || node.attrs.lineSpacingMultiple != null) return;
+      decorations.push(Decoration.node(position, position + node.nodeSize, {
+        style: officeParagraphCss({ lineSpacingPt: node.attrs.lineSpacingPt, lineSpacingRule: "atLeast" }, "pt", maxRunFontSize(node)),
+      }));
+    });
+    return DecorationSet.create(state.doc, decorations);
+  } } })],
+});
 
 function atom(name: string, label: string, extraAttrs: string[] = []): AnyExtension {
   return Node.create({ name, group: "officeFlow", atom: true, selectable: true, addAttributes: () => attrs("id", ...extraAttrs), parseHTML: () => [{ tag: `span[data-office-${label}]` }], renderHTML: atomRender("span", `office-document-${label}`) });
@@ -145,19 +219,23 @@ function OfficeImageView({ node }: { node: { attrs: Record<string, unknown> } })
   );
 }
 
-const OfficeEmptyRun = Node.create({ name: "officeEmptyRun", inline: true, group: "inline", atom: true, selectable: false, addAttributes: () => attrs("id", "style", "href"), parseHTML: () => [{ tag: "span[data-office-empty-run]" }], renderHTML: ({ HTMLAttributes }) => ["span", mergeAttributes(HTMLAttributes, { "data-office-empty-run": "true", "aria-hidden": "true" }), "\u200b"] });
+function runCss(runStyle: Record<string, unknown> | null): string | undefined {
+  return runStyle ? [
+      `font-family:${JSON.stringify(runStyle.fontFamily)}${runStyle.eastAsianFontFamily ? `,${JSON.stringify(runStyle.eastAsianFontFamily)}` : ""}`, `font-size:${String(runStyle.fontSizePt)}pt`,
+      runStyle.bold ? "font-weight:700" : "font-weight:400", runStyle.italic ? "font-style:italic" : "font-style:normal",
+      runStyle.color ? `color:${String(runStyle.color)}` : "", runStyle.highlight ? `background-color:${String(runStyle.highlight)}` : "",
+      runStyle.underline || runStyle.strike ? `text-decoration:${[runStyle.underline ? "underline" : "", runStyle.strike ? "line-through" : ""].filter(Boolean).join(" ")}` : "",
+  ].filter(Boolean).join(";") : undefined;
+}
+
+const OfficeEmptyRun = Node.create({ name: "officeEmptyRun", inline: true, group: "inline", atom: true, selectable: false, addAttributes: () => attrs("id", "style", "href"), parseHTML: () => [{ tag: "span[data-office-empty-run]" }], renderHTML: ({ HTMLAttributes }) => ["span", mergeAttributes(withoutObjectAttributes(HTMLAttributes, ["style"]), { "data-office-empty-run": "true", "aria-hidden": "true", style: runCss(HTMLAttributes.style as Record<string, unknown> | null) }), "\u200b"] });
 const OfficeRun = Mark.create({
   name: "officeRun", inclusive: true,
   addAttributes: () => attrs("id", "style", "href"),
   parseHTML: () => [{ tag: "span[data-office-run]" }, { tag: "a[data-office-run]" }],
   renderHTML: ({ HTMLAttributes }) => {
     const runStyle = HTMLAttributes.style as Record<string, unknown> | null;
-    const css = runStyle ? [
-      `font-family:${String(runStyle.fontFamily)}`, `font-size:${String(runStyle.fontSizePt)}pt`,
-      runStyle.bold ? "font-weight:700" : "", runStyle.italic ? "font-style:italic" : "",
-      runStyle.color ? `color:${String(runStyle.color)}` : "", runStyle.highlight ? `background-color:${String(runStyle.highlight)}` : "",
-      runStyle.underline || runStyle.strike ? `text-decoration:${[runStyle.underline ? "underline" : "", runStyle.strike ? "line-through" : ""].filter(Boolean).join(" ")}` : "",
-    ].filter(Boolean).join(";") : undefined;
+    const css = runCss(runStyle);
     const tag = HTMLAttributes.href ? "a" : "span";
     const { style: _style, ...attributes } = HTMLAttributes;
     return [tag, mergeAttributes(attributes, { "data-office-run": "true", style: css, rel: tag === "a" ? "noopener noreferrer" : undefined }), 0];
@@ -168,7 +246,7 @@ export function officeDocumentEditorExtensions(): AnyExtension[] {
   return [
     OfficeDocument, OfficeSection, OfficeHeader, OfficeBody, OfficeFooter,
     Paragraph, Heading, OfficeList, OfficeListItem, OfficeTable, OfficeTableRow,
-    OfficeTableCell, OfficeTableCellText, OfficeEmptyRun, OfficeRun,
+    OfficeTableCell, OfficeTableCellText, OfficeTableFormatting, OfficeParagraphSpacing, OfficeEmptyRun, OfficeRun,
     OfficeImage,
     DocumentCommentDecorations,
     projectionAtom("officeChart", "chart", ["altText", "title"], ["chartType", "title", "categories", "series", "altText"]),
@@ -189,27 +267,24 @@ function withoutObjectAttributes(value: Record<string, unknown>, names: string[]
   return Object.fromEntries(Object.entries(value).filter(([key, field]) => !names.includes(key) && (typeof field !== "object" || field === null)));
 }
 
-function cellStyle(value: Record<string, unknown>): string | undefined {
-  const styles: string[] = [];
-  if (typeof value.fill === "string") styles.push(`background-color:${value.fill}`);
-  if (typeof value.alignment === "string") styles.push(`text-align:${value.alignment === "start" ? "left" : value.alignment === "end" ? "right" : value.alignment}`);
-  if (typeof value.verticalAlignment === "string") styles.push(`vertical-align:${value.verticalAlignment}`);
-  return styles.join(";") || undefined;
+function maxRunFontSize(node: import("@tiptap/pm/model").Node): number {
+  let maxRunFontSizePt = 1;
+  node.forEach((child) => {
+    const style = child.type.name === "officeEmptyRun" ? child.attrs.style : child.marks.find((mark) => mark.type.name === "officeRun")?.attrs.style;
+    if (typeof style?.fontSizePt === "number") maxRunFontSizePt = Math.max(maxRunFontSizePt, style.fontSizePt);
+  });
+  return maxRunFontSizePt;
 }
 
-function blockStyle(value: Record<string, unknown>): string | undefined {
-  const styles: string[] = [];
-  if (typeof value.alignment === "string") styles.push(`text-align:${value.alignment === "start" ? "left" : value.alignment === "end" ? "right" : value.alignment}`);
-  if (typeof value.spacingBeforePt === "number") styles.push(`margin-top:${value.spacingBeforePt}pt`);
-  if (typeof value.spacingAfterPt === "number") styles.push(`margin-bottom:${value.spacingAfterPt}pt`);
-  if (typeof value.lineSpacingPt === "number") styles.push(`line-height:${value.lineSpacingPt}pt`);
-  return styles.join(";") || undefined;
+function blockStyle(value: Record<string, unknown>, node: import("@tiptap/pm/model").Node): string | undefined {
+  return officeParagraphCss(Object.fromEntries(Object.entries(value).filter(([, field]) => field != null)) as OfficeParagraphFormat, "pt", maxRunFontSize(node)) || undefined;
 }
 
 function tableStyle(value: Record<string, unknown>): string | undefined {
   const styles: string[] = [];
   if (typeof value.widthPt === "number") styles.push(`width:${value.widthPt}pt;max-width:100%`);
-  if (value.layout === "fixed") styles.push("table-layout:fixed");
+  styles.push(`table-layout:${value.layout === "autofit" && !value.columnWidthsPt ? "auto" : "fixed"}`);
+  if (typeof value.widthPt !== "number" && Array.isArray(value.columnWidthsPt)) styles.push(`width:${value.columnWidthsPt.reduce((sum, width) => sum + Number(width), 0)}pt;max-width:100%`);
   if (typeof value.indentPt === "number") styles.push(`margin-inline-start:${value.indentPt}pt`);
   if (value.alignment === "center") styles.push("margin-inline:auto");
   if (value.alignment === "end") styles.push("margin-inline-start:auto");

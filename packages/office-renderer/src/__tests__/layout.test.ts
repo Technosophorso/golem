@@ -13,6 +13,40 @@ describe('[COMP:office/layout] Deterministic Office layout', () => {
     expect(layoutOfficeArtifact(snapshot).serialization).toBe(first.serialization)
   })
 
+  it('measures and renders exact, multiple and at-least spacing including empty cell paragraphs', () => {
+    const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Spacing', resources: [], accessibility: { title: 'Spacing' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 400, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [
+      { id: id(10), kind: 'paragraph', styleName: 'Body', alignment: 'start', spacingBeforePt: 0, spacingAfterPt: 0, lineSpacingMultiple: 2, runs: [{ id: id(11), text: 'Body', style }] },
+      { id: id(12), kind: 'table', headerRows: 0, columnWidthsPt: [80, 160], widthPt: 240, margins: { topPt: 0, rightPt: 0, bottomPt: 0, leftPt: 0 }, borders: { top: { style: 'none', widthPt: 0, color: '#000000' } }, rows: [{ id: id(13), cells: [{ id: id(14), colSpan: 2, rowSpan: 1, runs: [
+        { id: id(15), text: 'A\tB\nC', style, paragraphStart: { id: id(16), lineSpacingPt: 14, lineSpacingRule: 'exact', spacingAfterPt: 0 } },
+        { id: id(17), text: '', style, paragraphStart: { id: id(18), lineSpacingMultiple: 1.5 } },
+        { id: id(19), text: 'D', style, paragraphStart: { id: id(20), lineSpacingPt: 20, lineSpacingRule: 'atLeast', spacingBeforePt: 2 } },
+      ] }] }] },
+    ] }] }
+    const page = layoutOfficeArtifact(snapshot).pages[0]
+    expect(page.primitives[0].heightPt).toBe(24)
+    expect(page.primitives[1].heightPt).toBe(68) // 2*14 + 12*1.5 + 20 + 2
+    const svg = renderOfficePreviewSvg(page)
+    expect(svg.match(/<p style=/g)).toHaveLength(3)
+    expect(svg).toContain('line-height:14px')
+    expect(svg).toContain('line-height:1.5')
+    expect(svg).toContain('line-height:20px')
+    expect(svg).toContain('border-bottom:none')
+    expect(svg).toContain('padding:0px 0px 0px 0px')
+  })
+
+  it('uses the largest actual paragraph run for at-least CSS and measurement, not the parent font', () => {
+    const runs = [{ id: id(401), text: 'Large\n', style: { ...style, fontSizePt: 30 } }, { id: id(402), text: 'Small', style: { ...style, fontSizePt: 8 } }]
+    const snapshot: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'At least', resources: [], accessibility: { title: 'At least' }, sections: [{ id: id(5), page: { widthPt: 300, heightPt: 400, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [
+      { id: id(403), kind: 'paragraph', styleName: 'Body', alignment: 'start', lineSpacingPt: 14, lineSpacingRule: 'atLeast', spacingAfterPt: 0, runs },
+      { id: id(404), kind: 'table', headerRows: 0, margins: { topPt: 0, rightPt: 0, bottomPt: 0, leftPt: 0 }, rows: [{ id: id(405), cells: [{ id: id(406), rowSpan: 1, colSpan: 1, runs: [{ ...runs[0], paragraphStart: { id: id(407), lineSpacingPt: 14, lineSpacingRule: 'atLeast' } }, runs[1]] }] }] },
+    ] }] }
+    const page = layoutOfficeArtifact(snapshot).pages[0]
+    expect(page.primitives.map((primitive) => primitive.heightPt)).toEqual([69, 69])
+    const svg = renderOfficePreviewSvg(page)
+    expect(svg.match(/line-height:34.5px/g)).toHaveLength(2)
+    expect(svg).not.toContain('max(1.15em')
+  })
+
   it('names slide overflow instead of clipping it', () => {
     const snapshot: PresentationSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(51), workspaceId: id(2), family: 'presentation', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: id(3), rootId: id(52), title: 'Deck', resources: [], accessibility: { title: 'Deck' }, slideSize: { widthPt: 300, heightPt: 200 }, themeId: id(53), masters: [{ id: id(54), name: 'Master', lockedObjectIds: [] }], layouts: [{ id: id(55), masterId: id(54), name: 'Title', placeholderIds: [] }], slides: [{ id: id(56), title: 'Slide', masterId: id(54), layoutId: id(55), notes: [], objects: [{ id: id(57), kind: 'text', geometry: { xPt: 250, yPt: 10, widthPt: 100, heightPt: 20, rotationDeg: 0 }, locked: false, alignment: 'start', verticalAlignment: 'top', runs: [{ id: id(58), text: 'Overflow', style }] }], readingOrder: [id(57)] }] }
     expect(layoutOfficeArtifact(snapshot).issues).toContainEqual(expect.objectContaining({ code: 'overflow', objectId: id(57) }))
@@ -76,7 +110,7 @@ describe('[COMP:office/layout] Deterministic Office layout', () => {
     expect(svg).toContain('width:35%')
     expect(svg).toContain('background:#131A24')
     expect(svg).toContain('border-bottom:1.125px solid #34D3FF')
-    expect(svg).toContain('font-family:Courier New')
+    expect(svg).toContain('font-family:&quot;Courier New&quot;')
     expect(svg).toContain('font-size:7.5px')
     expect(svg).toContain('stroke:#34D3FF;stroke-width:1.5')
     expect(svg).not.toContain('>Image<')

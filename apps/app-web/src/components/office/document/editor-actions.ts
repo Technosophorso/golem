@@ -120,9 +120,14 @@ export function setDocumentBlockStyle(editor: Editor | null, style: DocumentBloc
 
 export function setDocumentBlockAttributes(editor: Editor | null, patch: Record<string, unknown>): void {
   if (!editor) return;
-  const current = ancestor(editor, ["paragraph", "heading", "officeList", "officeTableCell"]);
+  const current = ancestor(editor, ["paragraph", "heading", "officeList", "officeTableCellText", "officeTableCell"]);
   if (!current) return;
-  editor.view.dispatch(editor.state.tr.setNodeMarkup(current.pos, undefined, { ...current.node.attrs, ...patch }).scrollIntoView());
+  const spacing = typeof patch.lineSpacingPt === "number" ? { lineSpacingMultiple: null, lineSpacingRule: "exact" } : {};
+  const cell = ancestor(editor, ["officeTableCell"]);
+  const paragraph = current.node.type.name === "officeTableCellText"
+    ? { paragraphStart: true, ...(!current.node.attrs.paragraphStart || current.node.attrs.id === cell?.node.attrs.id ? { id: uuid() } : {}) }
+    : {};
+  editor.view.dispatch(editor.state.tr.setNodeMarkup(current.pos, undefined, { ...current.node.attrs, ...spacing, ...paragraph, ...patch }).scrollIntoView());
   editor.commands.focus();
 }
 
@@ -275,11 +280,17 @@ export function runDocumentTableAction(editor: Editor | null, action: DocumentTa
 }
 
 export function moveDocumentTableCell(editor: Editor | null, direction: -1 | 1): boolean {
-  if (!editor || !ancestor(editor, ["officeTableCell"])) return false;
-  const cells: number[] = [];
-  editor.state.doc.descendants((node, pos) => { if (node.type.name === "officeTableCellText") cells.push(pos + 1); });
-  const current = editor.state.selection.from;
-  const next = direction > 0 ? cells.find((pos) => pos > current) : [...cells].reverse().find((pos) => pos < current);
+  if (!editor) return false;
+  const current = ancestor(editor, ["officeTableCell"]);
+  if (!current) return false;
+  const cells: Array<{ pos: number; textStart: number }> = [];
+  editor.state.doc.descendants((node, pos) => {
+    if (node.type.name !== "officeTableCell") return;
+    cells.push({ pos, textStart: pos + 2 }); // first paragraph's content, not every paragraph
+    return false;
+  });
+  const index = cells.findIndex((cell) => cell.pos === current.pos);
+  const next = index < 0 ? undefined : cells[index + direction]?.textStart;
   if (next === undefined) return false;
   editor.commands.setTextSelection(next);
   editor.commands.focus();
