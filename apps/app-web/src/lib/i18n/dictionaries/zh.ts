@@ -2092,7 +2092,7 @@ export const zh: Dictionary = {
       reset: "重設縮放",
     },
     diagramSource: {
-      drawing: "繪圖", drawingEdit: "編輯繪圖", drawingSave: "儲存繪圖",
+      drawing: "繪圖", drawingEdit: "編輯繪圖", drawingDownload: "下載 PNG", drawingSave: "儲存繪圖",
       drawingClose: "關閉", drawingUndo: "復原繪圖變更", drawingRedo: "重做繪圖變更",
       drawingRetention: "此頁面保留的繪圖儲存空間已達上限。請將繪圖複製到新頁面以繼續。刪除圖形不會清除離線或復原記錄。",
       drawingReload: "請重新載入以使用最新的繪圖協作協定。本機離線內容將保留。",

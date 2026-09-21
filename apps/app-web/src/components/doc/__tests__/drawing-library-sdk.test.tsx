@@ -28,6 +28,9 @@ it.each(['v1', 'v2', 'legacy-draw', 'metadata-defaults', 'empty', 'invalid', 'di
     get: (target, key) => key in target ? target[key as keyof typeof target] : () => {},
   });
   vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  // jsdom has no bitmap encoder, just as it has no drawing context. Keep the
+  // real SDK and library lifecycle, but supply a valid PNG for inline previews.
+  vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue('data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADUlEQVR4nGP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==');
   vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.stubGlobal('Path2D', class {});
   vi.stubGlobal('FontFace', class { status = 'loaded'; async load() { return this; } });
