@@ -6,11 +6,34 @@ export type GeneratedImageReceipt = {
   image?: { data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' };
   error?: 'image_provider_rejected' | 'image_refused' | 'image_missing' | 'image_malformed';
   status?: number; responseId?: string;
+  providerError?: { code?: string; message?: string; fields?: string[] };
   usage: { inputTokens: number; outputTokens: number; imageTokens?: number; measured: boolean };
 }
 export type GeminiImageReceipt = GeneratedImageReceipt
 const record = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
 const tokens = (value: unknown) => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+const boundedText = (value: unknown, max: number) => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, max) || undefined : undefined
+async function parseGeminiProviderError(response: Response): Promise<GeneratedImageReceipt['providerError']> {
+  try {
+    if (!response.body) return undefined
+    const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0
+    while (true) {
+      const part = await reader.read()
+      if (part.done) break
+      size += part.value.length
+      if (size > 32 * 1024) { await reader.cancel(); return undefined }
+      chunks.push(part.value)
+    }
+    const error = record(record(JSON.parse(Buffer.concat(chunks).toString('utf8'))).error)
+    const details = Array.isArray(error.details) ? error.details.map(record) : []
+    const fields = details.flatMap(detail => Array.isArray(detail.fieldViolations) ? detail.fieldViolations.map(record) : [])
+      .map(violation => boundedText(violation.field, 160))
+      .filter((field): field is string => Boolean(field && /^[A-Za-z0-9_.\[\]-]+$/.test(field)))
+      .slice(0, 8)
+    const code = boundedText(error.status, 64); const message = boundedText(error.message, 512)
+    return code || message || fields.length ? { ...(code ? { code } : {}), ...(message ? { message } : {}), ...(fields.length ? { fields } : {}) } : undefined
+  } catch { return undefined }
+}
 export function parseGeminiImageReceipt(raw: unknown): GeminiImageReceipt {
   const root = record(raw); const usage = record(root.usageMetadata)
   const imageDetail = Array.isArray(usage.candidatesTokensDetails) ? usage.candidatesTokensDetails.map(record).find(item => item.modality === 'IMAGE') : undefined
@@ -36,8 +59,8 @@ export function createGeminiImageProvider(transport: GoogleTransport | undefined
     const authorization = await authorizeGoogleRequest(transport)
     const headers = authorization.headers
     if (transport.kind === 'ai-studio' && !headers['x-goog-api-key']) throw new Error('image_generation_unavailable')
-    const response = await fetcher(transport.endpoint(input.model, 'generateContent'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal: input.signal, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input.prompt }] }], generationConfig: { candidateCount: 1, responseModalities: ['IMAGE'], maxOutputTokens: FEED_IMAGE_CAPABILITY.outputTokens, responseFormat: { image: { imageSize: FEED_IMAGE_CAPABILITY.size, aspectRatio: input.aspectRatio ?? '1:1' } }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } } }) })
-    if (!response.ok) { await response.body?.cancel(); return { error: 'image_provider_rejected', status: response.status, usage: { inputTokens: 0, outputTokens: 0, measured: false } } }
+    const response = await fetcher(transport.endpoint(input.model, 'generateContent'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal: input.signal, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input.prompt }] }], generationConfig: { candidateCount: 1, responseModalities: ['IMAGE'], maxOutputTokens: FEED_IMAGE_CAPABILITY.outputTokens, imageConfig: { imageSize: FEED_IMAGE_CAPABILITY.size, aspectRatio: input.aspectRatio ?? '1:1' }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } } }) })
+    if (!response.ok) return { error: 'image_provider_rejected', status: response.status, providerError: await parseGeminiProviderError(response), usage: { inputTokens: 0, outputTokens: 0, measured: false } }
     if (!response.body) return { error: 'image_malformed', usage: { inputTokens: 0, outputTokens: 0, measured: false } }
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0
     while (true) { const part = await reader.read(); if (part.done) break; size += part.value.length; if (size > FEED_IMAGE_CAPABILITY.maxImageBytes * 1.5) { await reader.cancel(); return { error: 'image_malformed', usage: { inputTokens: input.prompt.length, outputTokens: FEED_IMAGE_CAPABILITY.outputTokens, measured: false } } } chunks.push(part.value) }
