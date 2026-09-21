@@ -83,7 +83,7 @@ async function main() {
     '## Interpretation notes',
     '',
     '- **Token approximation** is `Math.ceil(chars / 3.5)`. Gemini\'s real tokenizer varies ~10% with content. These numbers are stable proxies, not invoices — production truth lives in `usageMetadata.promptTokenCount`.',
-    '- **Tool schemas** use the real factory outputs (`createBaseTools`, `createGoogleCalendarTools`, `createGmailTools`, `createGoogleTasksTools`, `createGitHubTools`, `createNotionTools`, `createMcpSearchTools`) passed through the same Zod → JSON-schema transform the engine applies at runtime.',
+    '- **Tool schemas** use the real factory outputs (`createBaseTools`, `createGoogleCalendarTools`, `createGmailTools`, `createGitHubTools`, `createNotionTools`, `createMcpSearchTools`) passed through the same Zod → JSON-schema transform the engine applies at runtime.',
     '- **Tool count undercounts production by ~7**: `createBaseTools()` returns only the core-package subset. Scheduling / workers / cache / files / bug-report tools are wired up by the server apps (`apps/api`, `apps/api-admin`) via `buildAllTools()` and aren\'t exercised here. Scenarios are directionally correct; expect ~500–1,000 more tool tokens in production.',
     '- **Power-user row is the target of PR #4** (route built-in connectors through `mcp_search`/`mcp_call`). See `docs/plans/builtin-connectors-tool-search.md`.',
     '',

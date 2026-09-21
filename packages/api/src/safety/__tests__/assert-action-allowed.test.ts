@@ -116,14 +116,14 @@ describe('[COMP:safety/assert-action-allowed] gateToolsOnActionGrants', () => {
       assistantId: 'a-1',
       connectorId: 'gcal',
       readAllowed: true,
-      allowedActions: ['googleTasksCreateTask'],
+      allowedActions: ['googleCalendarCreateEvent'],
       grantedByUserId: 'u-1',
       grantedAt: new Date(),
       updatedAt: new Date(),
     })
-    const { tool, execute } = fakeTool('googleTasksCreateTask')
+    const { tool, execute } = fakeTool('googleCalendarCreateEvent')
     const [gated] = gateToolsOnActionGrants([tool], 'gcal', store, 'a-1')
-    await expect(gated.execute({ x: 1 } as never, {} as never)).resolves.toEqual({ data: 'googleTasksCreateTask-ran' })
+    await expect(gated.execute({ x: 1 } as never, {} as never)).resolves.toEqual({ data: 'googleCalendarCreateEvent-ran' })
     expect(execute).toHaveBeenCalledWith({ x: 1 }, {})
   })
 

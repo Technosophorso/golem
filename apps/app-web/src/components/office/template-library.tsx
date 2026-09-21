@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Dialog } from "@base-ui/react/dialog";
 import { FileSpreadsheet, FileText, FileUp, Presentation, Sparkles, Upload, X } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
@@ -10,6 +10,10 @@ import { useT } from "@/lib/i18n/client";
 import { cn } from "@/lib/utils";
 import { useFileDrop } from "@/lib/use-file-drop";
 import { createOfficeTemplate, getOfficeJob, importOfficeTemplateDraft, listOfficeTemplates, transitionOfficeTemplateLifecycle, uploadOfficeSource, type OfficeArtifact, type OfficeFamily, type OfficeTemplate } from "@/lib/office/api";
+import { invalidateSurfaceCache, markSurfaceCacheStale, useCachedResource } from "@/lib/surface-cache";
+import { officeTemplateListCacheKey } from "@/lib/surface-prefetch";
+import { useOfficeCacheRevalidation } from "@/lib/office/surface-cache";
+import { GridSurfaceSkeleton } from "@/components/chrome/surface-skeleton";
 import { OfficeCardPreview } from "./office-card-preview";
 import { OfficeTopbar } from "./office-topbar";
 
@@ -48,9 +52,18 @@ export function OfficeTemplateLibrary({ workspaceId, templateId }: { workspaceId
   const t = copy.office;
   const router = useRouter();
   const searchParams = useSearchParams();
+  const pathname = usePathname();
+  const routeSearch = searchParams.toString();
   const starterTemplate = readOfficeStarterTemplate(searchParams);
   const choosingForArtifact = searchParams.get("intent") === "use";
-  const [templates, setTemplates] = useState<OfficeTemplate[] | null>(null);
+  const cacheKey = officeTemplateListCacheKey(workspaceId);
+  const list = useCachedResource(cacheKey, () => listOfficeTemplates(workspaceId));
+  const templates = list.data ?? null;
+  useOfficeCacheRevalidation([cacheKey]);
+  const mutationLock = useRef(false);
+  const mutationScope = useRef<object | null>(null);
+  const [mutationPending, setMutationPending] = useState(false);
+  const [mutationFailed, setMutationFailed] = useState(false);
   const [generateOpen, setGenerateOpen] = useState(starterTemplate !== null);
   const [family, setFamily] = useState<OfficeFamily>(starterTemplate === "general-presentation" ? "presentation" : starterTemplate === "invoice" ? "spreadsheet" : "document");
   const [name, setName] = useState("");
@@ -82,7 +95,39 @@ export function OfficeTemplateLibrary({ workspaceId, templateId }: { workspaceId
   }, []);
   const uploadDrop = useFileDrop(selectUploadFiles, { disabled: uploadState === "working" });
 
-  useEffect(() => { void listOfficeTemplates(workspaceId).then(setTemplates).catch(() => setTemplates([])); }, [workspaceId]);
+  useEffect(() => { markSurfaceCacheStale(cacheKey); }, [cacheKey]);
+  // A new token on every route entry also handles A -> B -> A and Strict Mode.
+  // Layout cleanup revokes UI ownership before a late promise can navigate.
+  useLayoutEffect(() => {
+    mutationScope.current = {};
+    mutationLock.current = false;
+    setMutationPending(false);
+    setPurgeConfirmation("");
+    setMutationFailed(false);
+    return () => { mutationScope.current = null; };
+  }, [workspaceId, templateId, pathname, routeSearch]);
+
+  async function transition(action: "deprecate" | "restore" | "trash" | "purge", reason: string) {
+    const scope = mutationScope.current;
+    if (!templateId || !scope || mutationLock.current) return;
+    mutationLock.current = true;
+    setMutationPending(true);
+    setMutationFailed(false);
+    try {
+      await transitionOfficeTemplateLifecycle(templateId, action, reason);
+      invalidateSurfaceCache(cacheKey);
+      if (mutationScope.current !== scope) return;
+      setPurgeConfirmation("");
+      if (action === "purge") router.replace(templatesHref);
+    } catch {
+      if (mutationScope.current === scope) setMutationFailed(true);
+    } finally {
+      if (mutationScope.current === scope) {
+        mutationLock.current = false;
+        setMutationPending(false);
+      }
+    }
+  }
   useEffect(() => {
     if (!starterTemplate) return;
     applyStarter(starterTemplate);
@@ -198,9 +243,13 @@ export function OfficeTemplateLibrary({ workspaceId, templateId }: { workspaceId
         <h1 className="text-2xl font-semibold">{selectedName ?? (choosingForArtifact ? t.chooseTemplateTitle : t.templateTitle)}</h1>
         <p className="mt-1 text-sm text-muted-foreground">{choosingForArtifact ? t.chooseTemplateDescription : t.templateDescription}</p>
 
-        {selected ? <div className="mt-5 space-y-3 rounded-md border p-3 text-sm"><p>{t.templateMode}</p><div className="flex flex-wrap gap-2">{selected.lifecycleState === "admitted" ? <button type="button" onClick={() => void transitionOfficeTemplateLifecycle(String(selected.id), "deprecate", "Deprecated from template library")} className="rounded border px-3 py-2">{t.deprecateTemplate}</button> : selected.lifecycleState === "deprecated" || selected.lifecycleState === "trash" || selected.lifecycleState === "retained" ? <button type="button" onClick={() => void transitionOfficeTemplateLifecycle(String(selected.id), "restore", "Restored from template library")} className="rounded border px-3 py-2">{t.restore}</button> : null}{selected.lifecycleState !== "trash" && selected.lifecycleState !== "retained" ? <button type="button" onClick={() => void transitionOfficeTemplateLifecycle(String(selected.id), "trash", "Moved to Trash from template library")} className="rounded border border-destructive px-3 py-2 text-destructive">{t.moveToTrash}</button> : null}</div>{selected.lifecycleState === "trash" || selected.lifecycleState === "retained" ? <div className="space-y-2"><input value={purgeConfirmation} onChange={(event) => setPurgeConfirmation(event.target.value)} placeholder={String(selected.name)} className="h-9 w-full rounded border px-2" /><button type="button" disabled={purgeConfirmation !== String(selected.name)} onClick={() => void transitionOfficeTemplateLifecycle(String(selected.id), "purge", "Permanent template deletion confirmed by exact name")} className="rounded bg-destructive px-3 py-2 text-destructive-foreground disabled:opacity-50">{t.deletePermanently}</button></div> : null}</div> : null}
+        {selected ? <div className="mt-5 space-y-3 rounded-md border p-3 text-sm"><p>{t.templateMode}</p><div className="flex flex-wrap gap-2">{selected.lifecycleState === "admitted" ? <button type="button" disabled={mutationPending} onClick={() => void transition("deprecate", "Deprecated from template library")} className="rounded border px-3 py-2">{t.deprecateTemplate}</button> : selected.lifecycleState === "deprecated" || selected.lifecycleState === "trash" || selected.lifecycleState === "retained" ? <button type="button" disabled={mutationPending} onClick={() => void transition("restore", "Restored from template library")} className="rounded border px-3 py-2">{t.restore}</button> : null}{selected.lifecycleState !== "trash" && selected.lifecycleState !== "retained" ? <button type="button" disabled={mutationPending} onClick={() => void transition("trash", "Moved to Trash from template library")} className="rounded border border-destructive px-3 py-2 text-destructive">{t.moveToTrash}</button> : null}</div>{selected.lifecycleState === "trash" || selected.lifecycleState === "retained" ? <div className="space-y-2"><input value={purgeConfirmation} onChange={(event) => setPurgeConfirmation(event.target.value)} placeholder={String(selected.name)} className="h-9 w-full rounded border px-2" /><button type="button" disabled={mutationPending || purgeConfirmation !== String(selected.name)} onClick={() => void transition("purge", "Permanent template deletion confirmed by exact name")} className="rounded bg-destructive px-3 py-2 text-destructive-foreground disabled:opacity-50">{t.deletePermanently}</button></div> : null}</div> : null}
 
-        {templates === null ? <p className="py-16 text-center text-sm text-muted-foreground">{t.loading}</p> : templates.length === 0 ? (
+        {mutationFailed ? <p role="alert" className="mt-3 text-sm text-destructive">{t.lifecycleFailed}</p> : null}
+        {templates === null ? list.error ? <div className="py-16 text-center text-sm">
+          <p role="alert" className="text-destructive">{t.loadFailed}</p>
+          <button type="button" disabled={list.revalidating} onClick={() => void list.refresh()} className="mt-3 min-h-11 rounded border px-3 py-2 disabled:opacity-50">{copy.chat.retry}</button>
+        </div> : <GridSurfaceSkeleton chrome={false} padded={false} /> : templates.length === 0 ? (
           <section className="mt-8 rounded-xl border border-dashed p-8 text-center">
             <h2 className="font-medium">{t.noTemplates}</h2>
             <p className="mt-1 text-sm text-muted-foreground">{t.templateEmptyBody}</p>

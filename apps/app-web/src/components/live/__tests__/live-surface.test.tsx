@@ -133,7 +133,7 @@ describe("[COMP:app-web/live-app] visual overview", () => {
     expect(html).not.toContain("focus=session%3Aprivate-session");
   });
 
-  it("packs busy and empty zones into a density-aware wide grid", () => {
+  it("packs busy zones while keeping empty-zone headers readable", () => {
     const html = wrap(
       <LiveOverview
         workspaceId="workspace-1"
@@ -146,7 +146,8 @@ describe("[COMP:app-web/live-app] visual overview", () => {
     expect(html).toContain('data-live-zone-size="empty"');
     expect(html).toContain("xl:col-span-6");
     expect(html).toContain("xl:row-span-13");
-    expect(html).toContain("xl:col-span-2");
+    expect(html).toContain("xl:col-span-3");
+    expect(html).not.toContain("xl:col-span-2");
     expect(html).toContain("xl:row-span-6");
     expect(html).toContain("xl:grid-flow-row-dense");
     expect(html).toContain("xl:grid-cols-12");

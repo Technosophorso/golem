@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 const injectMcpTools = vi.fn(async (_opts: Record<string, unknown>) => ({
   enrichConfirmation: async (_t: unknown, i: unknown) => i,
   unavailable: [],
+  searchableSources: [],
 }))
 const resolveWriteTarget = vi.fn(async () => ({
   ownerUserId: 'owner-1',

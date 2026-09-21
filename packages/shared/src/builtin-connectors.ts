@@ -95,12 +95,6 @@ export const OFFICIAL_CONNECTOR_TOOLS: Record<string, BuiltinConnectorTool[]> = 
     { name: 'googleCalendarCreateEvent', description: 'Create a new calendar event', classification: 'write', defaultPolicy: 'ask' },
     { name: 'googleCalendarUpdateEvent', description: 'Update an existing calendar event or RSVP', classification: 'write', defaultPolicy: 'ask' },
     { name: 'googleCalendarDeleteEvent', description: 'Delete a calendar event', classification: 'write', defaultPolicy: 'ask' },
-    { name: 'googleTasksListTaskLists', description: 'List all task lists', classification: 'read', defaultPolicy: 'allow' },
-    { name: 'googleTasksListTasks', description: 'List tasks in a task list', classification: 'read', defaultPolicy: 'allow' },
-    { name: 'googleTasksGetTask', description: 'Get a specific task', classification: 'read', defaultPolicy: 'allow' },
-    { name: 'googleTasksCreateTask', description: 'Create a new task', classification: 'write', defaultPolicy: 'ask' },
-    { name: 'googleTasksUpdateTask', description: 'Update or complete a task', classification: 'write', defaultPolicy: 'ask' },
-    { name: 'googleTasksDeleteTask', description: 'Delete a task', classification: 'write', defaultPolicy: 'ask' },
   ],
   gmail: [
     // Read tools are phase-gated (require the restricted `gmail.readonly`
@@ -456,7 +450,6 @@ export const OFFICIAL_OAUTH_SCOPES: Record<string, string[]> = {
   gcal: [
     'https://www.googleapis.com/auth/calendar.readonly',
     'https://www.googleapis.com/auth/calendar.events',
-    'https://www.googleapis.com/auth/tasks',
   ],
   gmail: [
     'https://www.googleapis.com/auth/gmail.send',

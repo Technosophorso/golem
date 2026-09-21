@@ -19,6 +19,10 @@ apps/browser-extension/release/
 # Local brain store (PGLite default)
 .use-brian/
 
+# Local e2e rig state: launcher pid, logs, and the owner bearer token it mints
+# (scripts/rig-up.sh — docs/workflow/local-rig.md)
+.rig/
+
 # OS / editor
 .DS_Store
 

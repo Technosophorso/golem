@@ -377,20 +377,20 @@ describe('[COMP:api/office-generation] Office generation worker', () => {
     expect(deps.deleteEmptyShell).toHaveBeenCalledWith('user-1', 'new-shell')
   })
 
-  it('projects a safe job failure code without internal error detail', async () => {
+  it.each(['presentation_fit_failed', 'template_compile_failed'])('projects safe job failure code %s without internal error detail', async (errorCode) => {
     const deps = {
       ...OFFICE_SCOPE_DEPS,
       generationAvailable: vi.fn(() => true), createShell: vi.fn(), deleteEmptyShell: vi.fn(), createJob: vi.fn(),
       getArtifact: vi.fn(async () => ({ id: 'artifact-1', family: 'presentation', mode: 'artifact', title: 'Company introduction', headVersion: 0, lifecycleState: 'active', sensitivity: 'internal', compartments: [], projectIds: [] } as never)),
       resolveAccess: vi.fn(async () => ({ role: 'edit' } as never)),
-      latestJob: vi.fn(async () => ({ id: 'job-1', status: 'failed', stage: 'failed', errorCode: 'presentation_fit_failed', errorDetail: 'Internal fit diagnostics' } as never)),
+      latestJob: vi.fn(async () => ({ id: 'job-1', status: 'failed', stage: 'failed', errorCode, errorDetail: 'Internal fit diagnostics' } as never)),
       getSnapshot: vi.fn(async () => null),
     }
     const service = createOfficeService(deps)
 
     await expect(service.get({ userId: 'user-1', artifactId: 'artifact-1' })).resolves.toEqual({
       artifactId: 'artifact-1', family: 'presentation', mode: 'artifact', title: 'Company introduction', version: 0,
-      lifecycleState: 'active', role: 'edit', scopeEvidence: { sensitivity: 'internal', compartments: [], projectIds: [] }, job: { id: 'job-1', status: 'failed', stage: 'failed', errorCode: 'presentation_fit_failed' },
+      lifecycleState: 'active', role: 'edit', scopeEvidence: { sensitivity: 'internal', compartments: [], projectIds: [] }, job: { id: 'job-1', status: 'failed', stage: 'failed', errorCode },
     })
   })
 
@@ -501,6 +501,37 @@ describe('[COMP:api/office-generation] Office generation worker', () => {
     const templateWorker = createOfficeTemplateCompileWorker(templateDeps)
     await expect(templateWorker(base.initiatedByUserId)).resolves.toBe(true)
     expect(templateDeps.finish).toHaveBeenCalledWith(expect.objectContaining({ status: 'failed', errorCode: 'template_compile_failed' }))
+  })
+
+  it.each([
+    { label: 'upload Error', brief: { templateId: 'template-1', source: { kind: 'upload', fileId: 'file-1' }, secret: 'not-for-logs' }, cause: new Error('Invalid ZIP central directory'), templateId: 'template-1', sourceFileId: 'file-1' },
+    { label: 'compile non-Error', brief: { templateId: 'template-1', source: { kind: 'scratch' } }, cause: 'routing lookup failed', templateId: 'template-1', sourceFileId: undefined },
+    ...[null, undefined, 42, 'malformed', [], { templateId: { secret: 'not-for-logs' }, source: { fileId: { secret: 'not-for-logs' } } }].map((brief, index) => ({ label: `malformed brief ${index}`, brief, cause: undefined, templateId: undefined, sourceFileId: undefined })),
+    { label: 'malformed source', brief: { templateId: 'template-1', source: null }, cause: new Error('snapshot unavailable'), templateId: 'template-1', sourceFileId: undefined },
+  ])('logs correlated template failure and preserves persistence: $label', async ({ brief, cause, templateId, sourceFileId }) => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const job = { id: 'job-1', workspaceId: 'workspace-1', artifactId: 'artifact-1', assistantId: null, brief } as unknown as OfficeGenerationJobRow
+      const deps = {
+        claim: vi.fn(async () => job),
+        getTemplate: vi.fn(async () => ({ id: 'template-1', workspaceId: job.workspaceId, draftArtifactId: job.artifactId, family: 'presentation' as const, name: 'Example deck', description: '', sensitivity: 'internal' as const })),
+        readSource: vi.fn().mockRejectedValue(cause), getSnapshot: vi.fn().mockRejectedValue(cause),
+        initialize: vi.fn(), saveImportedResource: vi.fn(), loadResourceAdmissions: vi.fn(),
+        getDraftRouting: vi.fn(), saveDraftRouting: vi.fn(), saveBundle: vi.fn(), addVersion: vi.fn(),
+        appendEvent: vi.fn(), finish: vi.fn<Parameters<typeof createOfficeTemplateCompileWorker>[0]['finish']>(async () => true),
+      }
+      await expect(createOfficeTemplateCompileWorker(deps)('user-1')).resolves.toBe(true)
+      const persisted = deps.finish.mock.calls[0]?.[0]
+      expect(persisted).toEqual({ userId: 'user-1', jobId: job.id, leaseToken: expect.any(String), status: 'failed', stage: 'failed', errorCode: 'template_compile_failed', errorDetail: expect.any(String) })
+      if (cause !== undefined) expect(persisted?.errorDetail).toBe(cause instanceof Error ? cause.message : cause)
+      expect(log).toHaveBeenCalledExactlyOnceWith('[office-template] compile failed', {
+        jobId: job.id, workspaceId: job.workspaceId, artifactId: job.artifactId,
+        templateId, sourceFileId, errorDetail: persisted?.errorDetail,
+      })
+      expect(deps.appendEvent).toHaveBeenCalledExactlyOnceWith({ userId: 'user-1', jobId: job.id, workspaceId: job.workspaceId, code: 'office.job.failed', values: { code: 'template_compile_failed' }, actorType: 'system', safeNarration: 'Template admission failed' })
+    } finally {
+      log.mockRestore()
+    }
   })
 
   it('imports an uploaded PPTX into the linked template draft before admission', async () => {

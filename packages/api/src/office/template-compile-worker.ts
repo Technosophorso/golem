@@ -171,8 +171,19 @@ export function createOfficeTemplateCompileWorker(deps: OfficeTemplateCompileWor
       await deps.appendEvent({ userId, jobId: job.id, workspaceId: job.workspaceId, code: 'office.job.completed', values: { kind: 'template_compile' }, actorType: 'system', safeNarration: 'Template admitted' })
       await deps.finish({ userId, jobId: job.id, leaseToken, status: 'completed', stage: 'completed' })
     } catch (cause) {
+      const errorDetail = cause instanceof Error ? cause.message : String(cause)
+      // Briefs can be malformed; only project string IDs into the backend log.
+      const brief = job.brief as { templateId?: unknown; source?: { fileId?: unknown } | null } | null
+      console.error('[office-template] compile failed', {
+        jobId: job.id,
+        workspaceId: job.workspaceId,
+        artifactId: job.artifactId,
+        templateId: typeof brief?.templateId === 'string' ? brief.templateId : undefined,
+        sourceFileId: typeof brief?.source?.fileId === 'string' ? brief.source.fileId : undefined,
+        errorDetail,
+      })
       await deps.appendEvent({ userId, jobId: job.id, workspaceId: job.workspaceId, code: 'office.job.failed', values: { code: 'template_compile_failed' }, actorType: 'system', safeNarration: 'Template admission failed' })
-      await deps.finish({ userId, jobId: job.id, leaseToken, status: 'failed', stage: 'failed', errorCode: 'template_compile_failed', errorDetail: cause instanceof Error ? cause.message : String(cause) })
+      await deps.finish({ userId, jobId: job.id, leaseToken, status: 'failed', stage: 'failed', errorCode: 'template_compile_failed', errorDetail })
     }
     return true
   }

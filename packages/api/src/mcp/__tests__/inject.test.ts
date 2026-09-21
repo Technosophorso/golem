@@ -21,14 +21,11 @@ vi.mock('../../connector-config.js', () => ({
   getConnectorConfig: (provider: string) => getConnectorConfig(provider),
 }))
 
-// Google API client — the multi-account suite needs token refresh + the
-// enricher's task fetch to be observable without the network. Everything
-// else keeps the real (unreached) implementation.
+// Google API client — the multi-account suite needs token refresh and
+// Calendar enrichment to be observable without the network. Everything else
+// keeps the real (unreached) implementation.
 const refreshGoogleAccessToken = vi.fn(
   async (refreshToken: string, _clientId: string, _clientSecret: string) => `access-${refreshToken}`,
-)
-const getGoogleTask = vi.fn(
-  async (_token: string, _taskListId: string, _taskId: string) => ({ title: 'Standup prep' }),
 )
 const getCalendarEvent = vi.fn(
   async (_token: string, eventId: string, _calendarId: string) => ({ id: eventId, summary: 'Planning' }),
@@ -49,8 +46,6 @@ vi.mock('../../google/client.js', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   refreshGoogleAccessToken: (refreshToken: string, clientId: string, clientSecret: string) =>
     refreshGoogleAccessToken(refreshToken, clientId, clientSecret),
-  getGoogleTask: (token: string, taskListId: string, taskId: string) =>
-    getGoogleTask(token, taskListId, taskId),
   getCalendarEvent: (token: string, eventId: string, calendarId: string) =>
     getCalendarEvent(token, eventId, calendarId),
   getDriveFileContentWithMetadata: (token: string, fileId: string, mime?: string) =>
@@ -167,6 +162,7 @@ describe('[COMP:api/mcp-inject] injectMcpTools', () => {
     })
     expect(typeof result.enrichConfirmation).toBe('function')
     expect(Array.isArray(result.unavailable)).toBe(true)
+    expect(result.searchableSources).toEqual([])
     expect(tools.size).toBe(0)
   })
 
@@ -180,6 +176,7 @@ describe('[COMP:api/mcp-inject] injectMcpTools', () => {
     })
     expect(typeof result.enrichConfirmation).toBe('function')
     expect(Array.isArray(result.unavailable)).toBe(true)
+    expect(result.searchableSources).toEqual([])
     // enrichConfirmation is an identity pass-through when no enrichers wired
     const input = { a: 1 }
     expect(await result.enrichConfirmation('someTool', input)).toEqual(input)
@@ -390,6 +387,29 @@ describe('[COMP:api/mcp-inject] granted custom MCP overlay', () => {
     expect(tools.has('mcp_search')).toBe(true)
     expect(tools.has('mcp_call')).toBe(true)
     expect(isEnabled).toHaveBeenCalledWith('a-1', 'mcp-uuid-123:ci-mcp', 'mcp-uuid-123')
+  })
+
+  it('does not relabel a custom source that collides with an official connector id', async () => {
+    discoverMcpServer.mockResolvedValueOnce({
+      name: 'gcal',
+      tools: [{ name: 'lookupShift', description: 'looks up a work shift', inputSchema: { type: 'object' } }],
+    })
+    const result = await injectMcpTools({
+      userId: 'u-1',
+      assistantId: 'a-1',
+      tools: new Map(),
+      connectorStore: {
+        list: vi.fn().mockResolvedValue([{
+          id: 'ci-custom', connectorId: 'custom-1', name: 'gcal',
+          url: 'http://localhost:8773/mcp', connected: true, custom: true,
+          createdAt: new Date(0), updatedAt: new Date(0),
+        }]),
+      } as never,
+      settingsStore: settingsStoreStub() as never,
+    })
+
+    expect(result.searchableSources).toContain('gcal')
+    expect(result.searchableSources).not.toContain('Google Calendar')
   })
 
   it('restricts a custom MCP search index to pinned workflow tool names', async () => {
@@ -1195,7 +1215,7 @@ describe('[COMP:api/mcp-inject] multi-account Google built-ins', () => {
   // Two connected accounts per Google provider: the oldest keeps the
   // canonical names + the legacy per-provider token path; the newer one is a
   // suffixed variant set bound to its OWN refresh token (resolved lazily off
-  // its connector_instance row). Tasks variants ride the gcal instance.
+  // its connector_instance row).
   function googleStores() {
     const connectorStore = {
       list: vi.fn().mockResolvedValue([
@@ -1222,7 +1242,6 @@ describe('[COMP:api/mcp-inject] multi-account Google built-ins', () => {
       provider === 'google' ? { clientId: 'app-id', clientSecret: 'app-secret' } : undefined,
     )
     refreshGoogleAccessToken.mockClear()
-    getGoogleTask.mockClear()
     getCalendarEvent.mockClear()
     sendGmailMessage.mockClear()
   })
@@ -1248,15 +1267,11 @@ describe('[COMP:api/mcp-inject] multi-account Google built-ins', () => {
     // Primaries keep canonical names.
     expect(names).toContain('gmailSendMessage')
     expect(names).toContain('googleCalendarListEvents')
-    expect(names).toContain('googleTasksListTasks')
-    // Extras get suffixed variants, description-tagged with the label —
-    // Gmail, Calendar, AND Tasks (which ride the gcal credential).
+    // Extras get suffixed variants, description-tagged with the label.
     const gmailVariant = names.find((n) => n.startsWith('gmailSendMessage__'))
     const calVariant = names.find((n) => n.startsWith('googleCalendarListEvents__'))
-    const tasksVariant = names.find((n) => n.startsWith('googleTasksListTasks__'))
     expect(gmailVariant).toBeTruthy()
     expect(calVariant).toBeTruthy()
-    expect(tasksVariant).toBeTruthy()
     expect((tools.get(gmailVariant!) as { description: string }).description).toMatch(/^\[Work\]/)
     // Only the PRIMARY refresh token was exchanged at inject time
     // (prevalidation); extras resolve lazily at first tool call.
@@ -1264,6 +1279,25 @@ describe('[COMP:api/mcp-inject] multi-account Google built-ins', () => {
     expect(exchanged).toContain('refresh-primary')
     expect(exchanged).not.toContain('refresh-ci-gm2')
     expect(exchanged).not.toContain('refresh-ci-gc2')
+  })
+
+  it('advertises the official Calendar name when Google tools are folded behind search', async () => {
+    const tools = new Map()
+    const { connectorStore, connectorInstanceStore } = googleStores()
+    const result = await injectMcpTools({
+      userId: 'u-1',
+      assistantId: 'a-1',
+      tools,
+      connectorStore: connectorStore as never,
+      settingsStore: settingsStoreStub() as never,
+      connectorInstanceStore: connectorInstanceStore as never,
+      keepBuiltinsDirect: false,
+    })
+
+    expect(tools.has('googleCalendarListEvents')).toBe(false)
+    expect(tools.has('mcp_search')).toBe(true)
+    expect(result.searchableSources).toContain('Google Calendar')
+    expect(result.searchableSources).not.toContain('gcal')
   })
 
   it('binds each Gmail confirmation preview to its concrete sender account', async () => {
@@ -1340,28 +1374,6 @@ describe('[COMP:api/mcp-inject] multi-account Google built-ins', () => {
         payload: expect.not.objectContaining({ body: expect.anything() }),
       }),
     )
-  })
-
-  it('enriches a suffixed confirmation with THAT account\'s token, not the primary\'s', async () => {
-    const tools = new Map()
-    const { connectorStore, connectorInstanceStore } = googleStores()
-    const result = await injectMcpTools({
-      userId: 'u-1',
-      assistantId: 'a-1',
-      tools,
-      connectorStore: connectorStore as never,
-      settingsStore: settingsStoreStub() as never,
-      connectorInstanceStore: connectorInstanceStore as never,
-      keepBuiltinsDirect: true,
-    })
-
-    const variant = [...tools.keys()].find((n) => n.startsWith('googleTasksDeleteTask__'))
-    expect(variant).toBeTruthy()
-    const enriched = await result.enrichConfirmation(variant!, { taskId: 'task-1' })
-    // The extra gcal instance is ci-gc2 → its refresh token exchanged lazily,
-    // and the task fetched with the VARIANT account's access token.
-    expect(getGoogleTask).toHaveBeenCalledWith('access-refresh-ci-gc2', '@default', 'task-1')
-    expect(enriched).toMatchObject({ task: 'Standup prep' })
   })
 
   it('enriches an event mutation from the calendar it will modify', async () => {
@@ -1453,11 +1465,11 @@ describe('[COMP:api/mcp-inject] per-assistant write-grant gate', () => {
     expect(grantsStore.getForAssistantSystem).toHaveBeenCalledWith('a-1', 'gmail')
   })
 
-  it('does not inject an ungranted googleTasksCreateTask', async () => {
+  it('does not expose retired Google Tasks tools through a Calendar connection', async () => {
     const tools = await injectWith([
       { id: 'ci-gc1', connectorId: 'gcal', name: 'Google Calendar', connected: true, url: null, custom: false, createdAt: new Date('2026-01-01T00:00:00Z') },
     ])
-    expect(tools.has('googleTasksCreateTask')).toBe(false)
+    expect([...tools.keys()].some((name) => name.startsWith('googleTasks'))).toBe(false)
   })
 
   it('does not inject an ungranted githubCreateIssue', async () => {
@@ -2464,7 +2476,7 @@ describe('[COMP:api/mcp-inject] built-in fold vs direct (keepBuiltinsDirect)', (
 
   async function injectWith(keepBuiltinsDirect: boolean) {
     const tools = new Map()
-    await injectMcpTools({
+    const result = await injectMcpTools({
       userId: 'u-1',
       assistantId: 'a-1',
       tools,
@@ -2472,17 +2484,17 @@ describe('[COMP:api/mcp-inject] built-in fold vs direct (keepBuiltinsDirect)', (
       settingsStore: settingsStoreStub() as never,
       keepBuiltinsDirect,
     })
-    return tools
+    return { tools, result }
   }
 
   it('keeps githubListPullRequests under its own name when direct', async () => {
-    const tools = await injectWith(true)
+    const { tools } = await injectWith(true)
     expect(tools.has('githubListPullRequests')).toBe(true)
     expect(tools.has('githubGetPullRequest')).toBe(true)
   })
 
   it('folds it behind mcp_search when NOT direct (why a pinned name resolved to nothing)', async () => {
-    const tools = await injectWith(false)
+    const { tools } = await injectWith(false)
     expect(tools.has('githubListPullRequests')).toBe(false)
     expect(tools.has('mcp_search')).toBe(true)
     expect(tools.has('mcp_call')).toBe(true)
@@ -2519,15 +2531,21 @@ describe('[COMP:api/mcp-inject] built-in fold vs direct (keepBuiltinsDirect)', (
       expect(tools.has('mcp_search')).toBe(true)
 
       // Which means the prompt must NOT treat those two sets as exhaustive.
-      const prompt = buildUnavailableCapabilitiesPrompt(result.unavailable, tools)
+      const prompt = buildUnavailableCapabilitiesPrompt(
+        result.unavailable,
+        tools,
+        result.searchableSources,
+      )
       expect(prompt).not.toContain('This list plus your tools is the complete integration surface')
       expect(prompt).toContain('mcp_search')
     })
 
     it('still emits the search order when every connector is healthy (empty unavailable list)', async () => {
-      const tools = await injectWith(false)
-      const prompt = buildUnavailableCapabilitiesPrompt([], tools)
+      const { tools, result } = await injectWith(false)
+      const prompt = buildUnavailableCapabilitiesPrompt([], tools, result.searchableSources)
       expect(prompt).toContain('mcp_search')
+      expect(result.searchableSources).toContain('GitHub')
+      expect(prompt).toContain('"GitHub"')
     })
   })
 })

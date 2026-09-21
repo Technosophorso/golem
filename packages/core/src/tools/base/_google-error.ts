@@ -2,7 +2,7 @@
  * Google API failures as STRUCTURED errors + the model-facing translation.
  *
  * Every Google product client in `packages/api/src/google/client.ts`
- * (Calendar, Gmail, Tasks, Drive, Docs, Sheets, Slides, plus the OAuth
+ * (Calendar, Gmail, Drive, Docs, Sheets, Slides, plus the OAuth
  * token endpoint) used to throw `new Error(\`<Api> API error (<status>):
  * <raw body>\`)` — the whole JSON envelope, untranslated — and every tool
  * wrapped it as `<Product> error: <that>`. The model then read
@@ -40,7 +40,6 @@
 export type GoogleApiProduct =
   | 'Calendar'
   | 'Gmail'
-  | 'Tasks'
   | 'Drive'
   | 'Docs'
   | 'Sheets'
@@ -161,7 +160,6 @@ export function parseGoogleErrorBody(raw: string): { message: string; reason?: s
 const PRODUCT_DISPLAY: Record<GoogleApiProduct, string> = {
   Calendar: 'Google Calendar',
   Gmail: 'Gmail',
-  Tasks: 'Google Tasks',
   Drive: 'Google Drive',
   Docs: 'Google Docs',
   Sheets: 'Google Sheets',
@@ -223,12 +221,12 @@ function looksLikeNetworkBlip(message: string): boolean {
  */
 /**
  * A plain `Error` whose message already carries the client's legacy prefix
- * (`Tasks API error (401): Unauthorized`) — thrown by older callers, test
+ * (`Calendar API error (401): Unauthorized`) — thrown by older callers, test
  * doubles, or a sibling package that pre-dates `GoogleApiError` — is
  * upgraded to the structured shape so it still gets the per-status rendering
  * instead of the plain-error frame.
  */
-const LEGACY_PREFIX = /^(Calendar|Gmail|Tasks|Drive|Docs|Sheets|Slides|Google)(?: API)?(?: ([a-z][\w ]*?))? error \((\d{3})\):\s*([\s\S]*)$/
+const LEGACY_PREFIX = /^(Calendar|Gmail|Drive|Docs|Sheets|Slides|Google)(?: API)?(?: ([a-z][\w ]*?))? error \((\d{3})\):\s*([\s\S]*)$/
 function coerceGoogleApiError(err: unknown): GoogleApiError | undefined {
   if (isGoogleApiError(err)) return err
   const message = err instanceof Error ? err.message : typeof err === 'string' ? err : undefined

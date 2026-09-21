@@ -856,6 +856,7 @@ export async function executePublicTurn(
     ? {
         enrichConfirmation: async (_toolName: string, toolInput: Record<string, unknown>) => toolInput,
         unavailable: [] as string[],
+        searchableSources: [] as string[],
       }
     : await applyMcpInjection({
         scope: 'public-api',
@@ -1155,6 +1156,7 @@ export async function executePublicTurn(
       unavailableCapabilitiesPrompt: buildUnavailableCapabilitiesPrompt(
         mcpInjection.unavailable,
         baseTools,
+        mcpInjection.searchableSources,
       ),
       // Internal lane: the same "You are talking with:" lead line web chat
       // ships (web-chat speaker identity, 08-06) — the actor is a member.
@@ -1187,7 +1189,11 @@ export async function executePublicTurn(
     // Append the unavailable-capabilities block so the model doesn't
     // burn turns hunting for tools that aren't connected. Same pattern
     // as chat.ts (line 1124).
-    const capabilityAddendum = buildUnavailableCapabilitiesPrompt(mcpInjection.unavailable, baseTools)
+    const capabilityAddendum = buildUnavailableCapabilitiesPrompt(
+      mcpInjection.unavailable,
+      baseTools,
+      mcpInjection.searchableSources,
+    )
     const identityBlock = formatPrivateRuntimeContext([
       endUserContext,
       formatActiveWorkspaceContext(turnScope),

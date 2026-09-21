@@ -55,7 +55,7 @@ const LIVE_ZONE_VISIBLE_ROWS = 6;
 function zoneLayoutClass(count: number): string {
   const columns =
     count === 0
-      ? "xl:col-span-2"
+      ? "xl:col-span-3"
       : count === 1
         ? "xl:col-span-3"
         : count === 2

@@ -198,9 +198,9 @@ describe('[COMP:tools/google-error] describeGoogleError', () => {
   })
 
   it('upgrades a plain Error carrying the legacy prefix so it still renders by status', () => {
-    const text = describeGoogleError(new Error('Tasks API error (401): Unauthorized'), { tool: 'googleTasksListTasks', product: 'Tasks' })
-    expect(text).toContain('Google Tasks rejected this connector\'s credential')
-    expect(text).toContain('Tasks API error (401)')
+    const text = describeGoogleError(new Error('Drive API error (401): Unauthorized'), { tool: 'googleDriveListFiles', product: 'Drive' })
+    expect(text).toContain('Google Drive rejected this connector\'s credential')
+    expect(text).toContain('Drive API error (401)')
     expect(text).toContain('invalid or expired')
     const legacyBody = describeGoogleError(new Error(`Calendar API error (404): ${REST_404}`), ctx)
     expect(legacyBody).toContain('could not find event `evt_1`')
@@ -218,7 +218,7 @@ describe('[COMP:tools/google-error] describeGoogleError', () => {
     expect(blip).toContain('network blip')
     expect(blip).toContain('Retry once')
     // Non-Error throws are stringified, never "[object Object]"-ed into a crash.
-    expect(describeGoogleError('string error', { tool: 'googleTasksGetTask', product: 'Tasks' })).toContain('string error')
+    expect(describeGoogleError('string error', { tool: 'googleDriveGetFile', product: 'Drive' })).toContain('string error')
   })
 
   it('googleFailure wraps the text as an isError result', () => {

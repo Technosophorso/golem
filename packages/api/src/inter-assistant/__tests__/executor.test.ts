@@ -65,6 +65,7 @@ vi.mock('../../mcp/inject.js', () => ({
   injectMcpTools: vi.fn().mockResolvedValue({
     enrichConfirmation: async (_t: string, i: unknown) => i,
     unavailable: [],
+    searchableSources: [],
     restrictedSearchToolNames: [],
   }),
 }))
@@ -627,11 +628,12 @@ describe('[COMP:api/inter-assistant-executor] createCalleeExecutor', () => {
     // hunting for the tool the next. The entry carries the user-actionable fix,
     // so the callee can report something the user can act on.
     const notice =
-      'Google Calendar and Google Tasks: not connected for this assistant ' +
-      '(calendar events, tasks, and reminders)'
+      'Google Calendar: not connected for this assistant ' +
+      '(calendar events and availability)'
     mockInjectMcp.mockResolvedValueOnce({
       enrichConfirmation: async (_t: string, i: unknown) => i,
       unavailable: [notice],
+      searchableSources: [],
     } as never)
     yieldsText()
     // MCP injection only runs when both stores are wired — the bare `executor()`
@@ -639,7 +641,7 @@ describe('[COMP:api/inter-assistant-executor] createCalleeExecutor', () => {
     await executorWithMcp()(baseParams)
     const systemPrompt = mockQueryLoop.mock.calls[0][0].systemPrompt as string
     expect(systemPrompt).toContain('# Unavailable capabilities')
-    expect(systemPrompt).toContain('Google Calendar and Google Tasks')
+    expect(systemPrompt).toContain('Google Calendar')
     // The directive half matters as much as the list: without it the model
     // treats absence as "keep looking".
     expect(systemPrompt).toContain('Do not call, search for, or simulate them')
@@ -1049,6 +1051,7 @@ describe('[COMP:api/inter-assistant-executor] createCalleeExecutor', () => {
       return {
         enrichConfirmation: async (_toolName: string, input: Record<string, unknown>) => input,
         unavailable: [],
+        searchableSources: ['Customer directory'],
         restrictedSearchToolNames: ['lookupCustomer'],
       }
     })
@@ -1062,6 +1065,9 @@ describe('[COMP:api/inter-assistant-executor] createCalleeExecutor', () => {
     expect(mockInjectMcp.mock.calls[0][0].restrictSearchToToolNames).toEqual(['lookupCustomer'])
     const passed = mockQueryLoop.mock.calls[0][0].tools as Map<string, unknown>
     expect([...passed.keys()].sort()).toEqual(['mcp_call', 'mcp_search'])
+    const systemPrompt = mockQueryLoop.mock.calls[0][0].systemPrompt as string
+    expect(systemPrompt).toContain('"Customer directory"')
+    expect(systemPrompt).toContain('before using a tool from another domain or denying access')
   })
 
   it('persists the assistant turn on turn_complete', async () => {

@@ -5,6 +5,7 @@ import { en } from "@/lib/i18n/dictionaries/en";
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ back: vi.fn(), forward: vi.fn(), push: vi.fn(), replace: vi.fn() }),
+  usePathname: () => "/office/templates",
   useSearchParams: () => new URLSearchParams(),
 }));
 vi.mock("@/components/doc/doc-sidebar-data", () => ({

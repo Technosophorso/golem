@@ -1,6 +1,6 @@
 /**
- * Google API client — thin fetch-based wrappers for Calendar, Gmail, Tasks,
- * Drive, Docs, Sheets, and Slides.
+ * Google API client — thin fetch-based wrappers for Calendar, Gmail, Drive,
+ * Docs, Sheets, and Slides.
  *
  * No heavy SDK. Each function takes an access token and uses direct fetch;
  * token refresh is handled by the caller. Composite Calendar intents such as
@@ -31,7 +31,6 @@ const GMAIL_API = 'https://www.googleapis.com/gmail/v1'
 // endpoint (`uploadType=media`, raw RFC 822 body, 35 MB transport cap)
 // instead of base64url-in-JSON, which is sized for text-only messages.
 const GMAIL_UPLOAD_API = 'https://www.googleapis.com/upload/gmail/v1'
-const TASKS_API = 'https://www.googleapis.com/tasks/v1'
 const DRIVE_API = 'https://www.googleapis.com/drive/v3'
 const DOCS_API = 'https://docs.googleapis.com/v1'
 const SHEETS_API = 'https://sheets.googleapis.com/v4'
@@ -45,7 +44,7 @@ const SLIDES_API = 'https://slides.googleapis.com/v1'
  * `error.errors[0].reason`, `error.status` — capped, and rendered by status
  * in the tools through `describeGoogleError`. Every `if (!res.ok)` in this
  * file goes through this so no caller ever throws the raw body again.
- * Usage: `if (!res.ok) throw await googleApiError(res, 'Tasks')`.
+ * Usage: `if (!res.ok) throw await googleApiError(res, 'Calendar')`.
  */
 export async function googleApiError(
   res: Response,
@@ -1315,169 +1314,6 @@ async function sendGmailToProvider(accessToken: string, params: Parameters<typeo
   if (!res.ok) throw await googleApiError(res, 'Gmail')
 
   return await res.json() as { id: string; threadId: string }
-}
-
-// ── Tasks ──────────────────────────────────────────────────────
-
-export type TaskList = {
-  id: string
-  title: string
-  updated?: string
-}
-
-export type GoogleTask = {
-  id: string
-  title: string
-  notes?: string
-  status: 'needsAction' | 'completed'
-  due?: string
-  completed?: string
-  parent?: string
-  position?: string
-  updated?: string
-}
-
-export async function listTaskLists(
-  accessToken: string,
-  params: { maxResults?: number },
-): Promise<TaskList[]> {
-  const qs = new URLSearchParams({
-    maxResults: String(params.maxResults ?? 100),
-  })
-
-  const res = await fetch(`${TASKS_API}/users/@me/lists?${qs}`, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  })
-
-  if (!res.ok) throw await googleApiError(res, 'Tasks')
-
-  const data = await res.json() as { items?: TaskList[] }
-  return data.items ?? []
-}
-
-export async function listGoogleTasks(
-  accessToken: string,
-  params: {
-    taskListId: string
-    showCompleted?: boolean
-    dueMin?: string
-    dueMax?: string
-    maxResults?: number
-  },
-): Promise<GoogleTask[]> {
-  const qs = new URLSearchParams({
-    maxResults: String(params.maxResults ?? 100),
-  })
-  if (params.showCompleted !== undefined) qs.set('showCompleted', String(params.showCompleted))
-  if (params.dueMin) qs.set('dueMin', params.dueMin)
-  if (params.dueMax) qs.set('dueMax', params.dueMax)
-
-  const res = await fetch(
-    `${TASKS_API}/lists/${encodeURIComponent(params.taskListId)}/tasks?${qs}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  )
-
-  if (!res.ok) throw await googleApiError(res, 'Tasks')
-
-  const data = await res.json() as { items?: GoogleTask[] }
-  return data.items ?? []
-}
-
-export async function getGoogleTask(
-  accessToken: string,
-  taskListId: string,
-  taskId: string,
-): Promise<GoogleTask> {
-  const res = await fetch(
-    `${TASKS_API}/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`,
-    { headers: { Authorization: `Bearer ${accessToken}` } },
-  )
-
-  if (!res.ok) throw await googleApiError(res, 'Tasks')
-
-  return await res.json() as GoogleTask
-}
-
-export async function createGoogleTask(
-  accessToken: string,
-  taskListId: string,
-  task: {
-    title: string
-    notes?: string
-    due?: string
-    parent?: string
-  },
-): Promise<GoogleTask> {
-  const body: Record<string, unknown> = { title: task.title }
-  if (task.notes) body.notes = task.notes
-  if (task.due) body.due = task.due
-  if (task.parent) body.parent = task.parent
-
-  const res = await fetch(
-    `${TASKS_API}/lists/${encodeURIComponent(taskListId)}/tasks`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    },
-  )
-
-  if (!res.ok) throw await googleApiError(res, 'Tasks')
-
-  return await res.json() as GoogleTask
-}
-
-export async function updateGoogleTask(
-  accessToken: string,
-  taskListId: string,
-  taskId: string,
-  updates: {
-    title?: string
-    notes?: string
-    due?: string
-    status?: 'needsAction' | 'completed'
-  },
-): Promise<GoogleTask> {
-  const body: Record<string, unknown> = {}
-  if (updates.title !== undefined) body.title = updates.title
-  if (updates.notes !== undefined) body.notes = updates.notes
-  if (updates.due !== undefined) body.due = updates.due
-  if (updates.status !== undefined) body.status = updates.status
-
-  const res = await fetch(
-    `${TASKS_API}/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`,
-    {
-      method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    },
-  )
-
-  if (!res.ok) throw await googleApiError(res, 'Tasks')
-
-  return await res.json() as GoogleTask
-}
-
-export async function deleteGoogleTask(
-  accessToken: string,
-  taskListId: string,
-  taskId: string,
-): Promise<void> {
-  const res = await fetch(
-    `${TASKS_API}/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`,
-    {
-      method: 'DELETE',
-      headers: { Authorization: `Bearer ${accessToken}` },
-    },
-  )
-
-  if (!res.ok) throw await googleApiError(res, 'Tasks')
 }
 
 // ── Drive ─────────────────────────────────────────────────────

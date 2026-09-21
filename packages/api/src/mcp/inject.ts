@@ -19,7 +19,7 @@
  */
 
 import type { AccessContext, CachedFile } from '@use-brian/core'
-import { promoteCachedFile, wrapMcpTools, buildToolIndex, createMcpSearchTools, legacyMcpToolName, createGoogleCalendarTools, createGmailTools, createGoogleTasksTools, createGoogleDriveTools, createGoogleDocsTools, createGoogleSheetsTools, createGoogleSlidesTools, createGDriveFilesTools, createGitHubTools, createNotionTools, createFathomTools, createShopifyTools, createWordPressTools, createSearchConsoleTools, createMsGraphTools, createKnowledgeTools, createAgentmailTools, createMailboxTools, workspaceFilesCtxFor, workspaceFilesErrorMessage, workspaceFilesGate, GOOGLE_MAPS_TOOL_NAMES } from '@use-brian/core'
+import { promoteCachedFile, wrapMcpTools, buildToolIndex, createMcpSearchTools, legacyMcpToolName, createGoogleCalendarTools, createGmailTools, createGoogleDriveTools, createGoogleDocsTools, createGoogleSheetsTools, createGoogleSlidesTools, createGDriveFilesTools, createGitHubTools, createNotionTools, createFathomTools, createShopifyTools, createWordPressTools, createSearchConsoleTools, createMsGraphTools, createKnowledgeTools, createAgentmailTools, createMailboxTools, workspaceFilesCtxFor, workspaceFilesErrorMessage, workspaceFilesGate, GOOGLE_MAPS_TOOL_NAMES } from '@use-brian/core'
 import type { Tool, McpSettingsStore, McpServerConfig, KnowledgeStoreInterface, KnowledgeRepoWriter, KnowledgeWriteCaptureRule, AuthorizedFile, GDriveFilesStore, GDriveFileKind, LocalSource, RemoteSource, EngineHooks, FilesApi, AgentmailToolApi, MailboxApi, MailboxAccountRouter } from '@use-brian/core'
 import { getGlobalEmailInboxProvider, type EmailInboxProvider } from '../agentmail/provider.js'
 import { renderEmailBody } from '@use-brian/channels'
@@ -56,7 +56,6 @@ import {
   listCalendarList, listCalendarEventColors, listCalendarEvents, getCalendarEvent, queryCalendarFreeBusy,
   createCalendarEvent, updateCalendarEvent, deleteCalendarEvent,
   listGmailMessages, getGmailMessage, sendGmailMessage,
-  listTaskLists, listGoogleTasks, getGoogleTask, createGoogleTask, updateGoogleTask, deleteGoogleTask,
   listDriveFiles, getDriveFile, getDriveFileContentWithMetadata, createDriveFile, updateDriveFileContent,
   getDocContent, appendToDoc, replaceInDoc, createDocument,
   getSpreadsheetInfo, readSheetRange, writeSheetRange, appendSheetRows, createSpreadsheet, formatSpreadsheet, batchUpdateSpreadsheet,
@@ -143,6 +142,7 @@ import {
 import {
   APP_LEVEL_ASSISTANT_ID,
   MULTI_INSTANCE_CONNECTOR_IDS,
+  OFFICIAL_CONNECTORS,
   OFFICIAL_CONNECTOR_TOOLS,
 } from '@use-brian/shared'
 import { connectorInstanceGovernanceId, parseConnectorInstanceGovernanceId } from '../db/connector-instance-store.js'
@@ -233,12 +233,6 @@ export const INJECTED_BUILTIN_TOOLS_BY_CONNECTOR: Record<string, readonly string
     'googleCalendarCreateEvent',
     'googleCalendarUpdateEvent',
     'googleCalendarDeleteEvent',
-    'googleTasksListTaskLists',
-    'googleTasksListTasks',
-    'googleTasksGetTask',
-    'googleTasksCreateTask',
-    'googleTasksUpdateTask',
-    'googleTasksDeleteTask',
   ],
   gmail: [
     // 'gmailListMessages' / 'gmailGetMessage' are phase-gated off in
@@ -401,6 +395,8 @@ export type McpInjectionResult = {
   enrichConfirmation: ConfirmationEnricher
   /** Capabilities that are unavailable (not connected, disabled, or blocked). Injected into the system prompt so the model doesn't waste turns searching for them. */
   unavailable: string[]
+  /** Sources represented in `mcp_search`, rendered with official display names where provenance proves they are built-ins. */
+  searchableSources: string[]
   /** Names from `restrictSearchToToolNames` that survived connector discovery and policy scoping. */
   restrictedSearchToolNames?: string[]
   /** Trusted runtime block, present only when usable matched rules emitted write tools. */
@@ -582,6 +578,7 @@ export async function injectMcpTools(params: {
   } = params
 
   const unavailable: string[] = []
+  let searchableSources: string[] = []
   let knowledgeCapturePrompt: string | undefined
 
   let matchedCaptureRules = [] as Awaited<ReturnType<KnowledgeCaptureRuleStore['listEnabledForWorkspace']>>
@@ -639,7 +636,7 @@ export async function injectMcpTools(params: {
     connectors = loadOwnerPersonalConnectors ? await connectorStore.list(userId) : []
   } catch (err) {
     console.error('[mcp-inject] failed to list connectors:', err)
-    return { enrichConfirmation: async (_t, input) => input, unavailable }
+    return { enrichConfirmation: async (_t, input) => input, unavailable, searchableSources }
   }
   const teamPolicyStore = assistantTeamId && workspaceToolPolicyStore
     ? workspacePolicyAsSettingsStore(workspaceToolPolicyStore, assistantTeamId)
@@ -1910,7 +1907,11 @@ export async function injectMcpTools(params: {
   // stale not-connected notice can be correlated against reality.
   clearStaleNotConnectedNotices(tools, unavailable)
 
-  const localSources: LocalSource[] = []
+  type SearchLocalSource = LocalSource & { displayName?: string }
+  const officialConnectorNames = new Map(
+    OFFICIAL_CONNECTORS.map((connector) => [connector.id, connector.name]),
+  )
+  const localSources: SearchLocalSource[] = []
   if (!keepBuiltinsDirect) {
     for (const [connectorId, toolNames] of Object.entries(INJECTED_BUILTIN_TOOLS_BY_CONNECTOR)) {
       const canonical = new Set(toolNames)
@@ -1931,7 +1932,12 @@ export async function injectMcpTools(params: {
         }
       }
       if (localTools.length > 0) {
-        localSources.push({ kind: 'local', serverName: connectorId, tools: localTools })
+        localSources.push({
+          kind: 'local',
+          serverName: connectorId,
+          displayName: officialConnectorNames.get(connectorId),
+          tools: localTools,
+        })
       }
     }
 
@@ -2038,6 +2044,11 @@ export async function injectMcpTools(params: {
 
   if (searchSources.length > 0) {
     const index = buildToolIndex(searchSources)
+    searchableSources = [...new Set(searchSources.map((source) =>
+      source.kind === 'remote'
+        ? source.server.name
+        : source.displayName ?? source.serverName,
+    ))]
     const searchTools = createMcpSearchTools({
       index,
       settingsStore,
@@ -2085,6 +2096,7 @@ export async function injectMcpTools(params: {
   return {
     enrichConfirmation: enricher,
     unavailable,
+    searchableSources,
     restrictedSearchToolNames: [...restrictedSearchToolNames],
     knowledgeCapturePrompt,
   }
@@ -2297,7 +2309,7 @@ async function injectInstanceVariants(opts: {
  * correlate against and its notice can never go stale this way.
  */
 export const NOT_CONNECTED_DISPLAY_NAMES: Record<string, string> = {
-  gcal: 'Google Calendar and Google Tasks',
+  gcal: 'Google Calendar',
   gmail: 'Gmail',
   gdrive: 'Google Drive, Docs, Sheets and Slides',
   github: 'GitHub',
@@ -2354,7 +2366,7 @@ function notConnectedNotice(displayName: string, capabilities: string): string {
  * a real injection rather than on this table.
  */
 const NOT_CONNECTED_DISPLAY_NAME: Record<string, string> = {
-  gcal: 'Google Calendar and Google Tasks',
+  gcal: 'Google Calendar',
   gmail: 'Gmail',
   gdrive: 'Google Drive, Docs, Sheets and Slides',
   github: 'GitHub',
@@ -2623,7 +2635,7 @@ async function injectGoogleTools(
   if (revokedConnectors.has('gcal')) {
     unavailable?.push(expiredCredentialsNotice('Google Calendar'))
   } else if ((!gcal || !gcalEnabled) && !gcalExtraEnabled) {
-    unavailable?.push(notConnectedNotice('Google Calendar and Google Tasks', 'calendar events, tasks, and reminders'))
+    unavailable?.push(notConnectedNotice('Google Calendar', 'calendar events and availability'))
   }
   if (gcalRaw && (gcalEnabled || gcalExtraEnabled)) {
     try {
@@ -2845,8 +2857,7 @@ async function injectGoogleTools(
       }
 
       // Extra Google Calendar accounts → label-qualified variant sets bound
-      // to their own tokens (the Tasks variants ride the same suffix in the
-      // Tasks section below).
+      // to their own tokens.
       if (gcalExtras.length) {
         await injectInstanceVariants({
           provider: 'gcal',
@@ -3449,69 +3460,7 @@ async function injectGoogleTools(
     }
   }
 
-  // Google Tasks — bundled with gcal (same OAuth credentials, Tasks scope added to gcal)
-  if (revokedConnectors.has('gcal')) {
-    unavailable?.push(expiredCredentialsNotice('Google Tasks'))
-  }
-  if (gcalRaw && (gcalEnabled || gcalExtraEnabled)) {
-    try {
-      const buildTasksTools = (
-        getToken: () => Promise<string>,
-        governanceId: string = 'gcal',
-      ) => gateToolsOnActionGrants(createGoogleTasksTools({
-        listTaskLists: async (params) => {
-          const token = await getToken()
-          return listTaskLists(token, params)
-        },
-        listTasks: async (params) => {
-          const token = await getToken()
-          return listGoogleTasks(token, params)
-        },
-        getTask: async (taskListId, taskId) => {
-          const token = await getToken()
-          return getGoogleTask(token, taskListId, taskId)
-        },
-        createTask: async (taskListId, task) => {
-          const token = await getToken()
-          return createGoogleTask(token, taskListId, task)
-        },
-        updateTask: async (taskListId, taskId, updates) => {
-          const token = await getToken()
-          return updateGoogleTask(token, taskListId, taskId, updates)
-        },
-        deleteTask: async (taskListId, taskId) => {
-          const token = await getToken()
-          return deleteGoogleTask(token, taskListId, taskId)
-        },
-      }), 'gcal', assistantConnectorGrantsStore, assistantId, governanceId)
-      if (gcalEnabled) {
-        const tasksTools = buildTasksTools(() => getAccessToken('gcal'))
-        for (const tool of tasksTools) {
-          if (await applyPolicyOrSkip(tool, 'gcal', settingsStore, assistantId, userId, unavailable) === 'include') {
-            tools.set(tool.name, tool)
-          }
-        }
-      }
-
-      // Tasks ride the gcal credential, so each extra Calendar account also
-      // gets its Tasks variants (same suffix as its Calendar set above).
-      const tasksExtras = gcalExtras
-      if (tasksExtras.length) {
-        await injectInstanceVariants({
-          provider: 'gcal',
-          extras: tasksExtras,
-          settingsStore, assistantId, userId, assistantConnectorStore, tools,
-          buildToolsForInstance: (inst, governanceId) =>
-            probeVariant(buildTasksTools(() => getAccessTokenForInstance(inst.id), governanceId), inst.id),
-        })
-      }
-      console.debug('[mcp-inject] Google Tasks: injected tools (via gcal)')
-    } catch (err) {
-      console.error('[mcp-inject] Google Tasks injection failed:', err)
-    }
-  }
-
-  // Build a confirmation enricher that fetches real data for calendar/tasks tools.
+  // Build a confirmation enricher that fetches real data for calendar tools.
   // This prevents AI hallucination and shows human-readable details in the
   // Approve/Deny prompt instead of opaque IDs.
   const gcalConnected = gcal && gcalEnabled
@@ -3524,28 +3473,6 @@ async function injectGoogleTools(
     const canonicalName = baseToolName(toolName)
     const suffix = toolName.slice(canonicalName.length)
     const getEnrichToken = suffix ? instanceTokenBySuffix.get(suffix) : () => getAccessToken('gcal')
-
-    // ── Google Tasks: fetch title so the user sees "記得 Call 大隻佬" not "eHXMFJ..." ──
-    if (canonicalName === 'googleTasksUpdateTask' || canonicalName === 'googleTasksDeleteTask') {
-      const taskId = input.taskId as string | undefined
-      const taskListId = (input.taskListId as string | undefined) ?? '@default'
-      if (!taskId || !getEnrichToken) return input
-
-      try {
-        const token = await getEnrichToken()
-        const task = await getGoogleTask(token, taskListId, taskId)
-        // Replace raw IDs with human-readable fields
-        const { taskId: _tid, taskListId: _tlid, ...rest } = input
-        return {
-          task: task.title,
-          ...rest,
-          ...(task.due ? { due: task.due } : {}),
-        }
-      } catch (err) {
-        console.warn('[mcp-inject] Failed to enrich task confirmation:', err)
-        return input
-      }
-    }
 
     // ── Google Calendar: fetch event summary/attendees ──
     if (canonicalName !== 'googleCalendarUpdateEvent' && canonicalName !== 'googleCalendarDeleteEvent') return input

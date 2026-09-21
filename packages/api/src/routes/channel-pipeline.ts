@@ -1835,6 +1835,7 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
     ? await getConnectorUserId(billingUserId, assistant.workspaceId)
     : userId
   let unavailableCapabilities: string[] = []
+  let searchableSources: string[] = []
   if (connectorToolsAllowed && connectorStore && mcpSettingsStore) {
     // Built every turn so local filesystem sources remain writable even when
     // GitHub credential stores are absent. GitHub targets fail closed without
@@ -1917,6 +1918,7 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
         },
       })
       unavailableCapabilities = injection.unavailable
+      searchableSources = injection.searchableSources
       if (injection.knowledgeCapturePrompt) {
         privateRuntimeContextParts.push(injection.knowledgeCapturePrompt)
       }
@@ -1994,7 +1996,11 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
   if (preparedCommand?.kind === 'workflow' && allTools.has('runWorkflow')) {
     privateRuntimeContextParts.push(buildWorkflowSlashCommandBlock(preparedCommand))
   }
-  systemAddenda += buildUnavailableCapabilitiesPrompt(unavailableCapabilities, allTools)
+  systemAddenda += buildUnavailableCapabilitiesPrompt(
+    unavailableCapabilities,
+    allTools,
+    searchableSources,
+  )
   systemAddenda += buildBrowserEscalationPrompt(allTools)
   systemAddenda += buildEmailDraftAnchorPrompt(allTools)
 
