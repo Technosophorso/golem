@@ -160,13 +160,23 @@ function FeedGenerationFilePicker({ controls: c, onPick, onCancel }: { controls:
   </section>;
 }
 export function FeedGenerationResults({ controls: c, runs, candidates, slot, onRunAction }: { controls: FeedGenerationControls; runs: FeedEditorialRunSummary[]; candidates: FeedDraftSuggestion[]; slot?: FeedPlaceholderAttrs; onRunAction: (id: string, action: 'retry' | 'cancel') => Promise<void> }) {
-  const t = useT().feedGeneration; const tc = useT().feedCollaboration; const tr = useT().feedReview; const disabled = c.readOnly || c.offline || c.pending;
+  const t = useT().feedGeneration; const tc = useT().feedCollaboration; const tr = useT().feedReview; const locale = useLocale(); const disabled = c.readOnly || c.offline || c.pending;
   return <div className="space-y-3">
-    {runs.map(run => <div key={run.id} className="space-y-2 border-t pt-2 text-sm"><p>{tr[run.status]}</p>{run.generation && (!slot || run.generation.briefRevision !== slot.briefRevision) ? <p className="whitespace-pre-wrap">{t.originalBrief}: {run.generation.estimate.slot.brief}</p> : null}
-      {run.status === 'unknown_outcome' || run.error === 'cancelled_after_dispatch' ? <p>{tr.unknownExplanation}</p> : null}
-      {run.status === 'pending' || run.status === 'running' ? <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled} onClick={() => void onRunAction(run.id, 'cancel')}>{tc.cancel}</Button> : null}
-      {run.status === 'failed' && run.attempts < 3 ? <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled} onClick={() => void onRunAction(run.id, 'retry')}>{tc.retry}</Button> : null}
-    </div>)}
+    {runs.length ? <div className="divide-y">{runs.map(run => {
+      const originalBrief = run.generation && (!slot || run.generation.briefRevision !== slot.briefRevision) ? `${t.originalBrief}: ${run.generation.estimate.slot.brief}` : null;
+      const uncertain = run.status === 'unknown_outcome' || run.error === 'cancelled_after_dispatch' ? tr.unknownExplanation : null;
+      const detail = [originalBrief, uncertain, run.error].filter(Boolean).join(' · ');
+      const timestamp = new Intl.DateTimeFormat(locale, { dateStyle: 'short', timeStyle: 'short' }).format(new Date(run.createdAt));
+      return <div key={run.id} data-feed-generation-run className="flex min-h-11 min-w-0 items-center gap-2 overflow-hidden py-1 text-xs" title={detail || undefined}>
+        <span className="shrink-0 font-medium">{tr[run.status]}</span>
+        <time className="shrink-0 text-muted-foreground" dateTime={run.createdAt}>{timestamp}</time>
+        <span className="min-w-0 flex-1 truncate text-muted-foreground" title={run.model}>{run.model}</span>
+        <span className="shrink-0 text-muted-foreground">×{run.attempts}</span>
+        {detail ? <span className="sr-only">{detail}</span> : null}
+        {run.status === 'pending' || run.status === 'running' ? <Button variant="outline" size="sm" className="min-h-11 shrink-0 px-2 md:min-h-8" disabled={disabled} onClick={() => void onRunAction(run.id, 'cancel')}>{tc.cancel}</Button> : null}
+        {run.status === 'failed' && run.attempts < 3 ? <Button variant="outline" size="sm" className="min-h-11 shrink-0 px-2 md:min-h-8" disabled={disabled} onClick={() => void onRunAction(run.id, 'retry')}>{tc.retry}</Button> : null}
+      </div>;
+    })}</div> : null}
     {candidates.map(candidate => {
       const edit = candidate.edits[0]; const stale = !slot || edit?.kind !== 'replaceBlock' || canonicalFeedValue(edit.preimage) !== canonicalFeedValue({ type: 'generationPlaceholder', attrs: slot });
       const candidateRun = runs.find(run => run.id === candidate.sourceRunId);

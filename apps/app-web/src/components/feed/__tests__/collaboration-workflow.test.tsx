@@ -6,7 +6,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EditorView } from '@tiptap/pm/view';
 import { TextSelection } from '@tiptap/pm/state';
-import type { FeedCommand, FeedEdit, FeedTarget, FeedPlaceholderAttrs, FeedGenerationEstimate } from '@use-brian/shared';
+import type { FeedCommand, FeedEdit, FeedTarget, FeedPlaceholderAttrs, FeedGenerationEstimate, FeedEditorialRunSummary } from '@use-brian/shared';
 import { applyFeedEdits, createFeedAnchor, importLegacyFeed, projectFeed, proposeFeedReplacement } from '@use-brian/doc-model';
 import { en } from '@/lib/i18n/dictionaries/en';
 const state = vi.hoisted(() => ({ http: vi.fn(), upload: vi.fn(), image: vi.fn(), edition: 'oss', messages: { data: { messages: [] }, loading: false, error: undefined, refresh: vi.fn() } }));
@@ -611,6 +611,23 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     expect(host.textContent).toContain('Retained candidate.'); expect(host.textContent).toContain(en.feedGeneration.stale); expect(button(en.feedCollaboration.accept).disabled).toBe(true);
     await click(en.feedGeneration.keepLater);
     expect(controls.onCommand).toHaveBeenCalledWith([{ kind: 'decide', suggestionId: candidate.id, outcome: 'deferred' }]);
+  });
+  it('renders each generation attempt as one compact row with status, timestamp, model, count and inline recovery', async () => {
+    const controls = generationControls(); const onRunAction = vi.fn(async () => {});
+    const runs: FeedEditorialRunSummary[] = [
+      { id: 'gemini-run', kind: 'image_generation', revision: 2, status: 'failed', attempts: 1, error: 'image_provider_rejected', createdAt: '2026-09-21T10:06:09.807Z', model: 'gemini-3.1-flash-image', coverage: {}, summaryThreadId: null },
+      { id: 'codex-run', kind: 'image_generation', revision: 2, status: 'failed', attempts: 2, error: 'image_missing', createdAt: '2026-09-21T07:50:18.425Z', model: 'gpt-image-2', coverage: {}, summaryThreadId: null },
+    ];
+    act(() => root.render(<FeedGenerationResults controls={controls} runs={runs} candidates={[]} onRunAction={onRunAction} />));
+    const rows = [...host.querySelectorAll<HTMLElement>('[data-feed-generation-run]')];
+    expect(rows).toHaveLength(2);
+    expect(rows[0]!.parentElement?.className).toContain('divide-y');
+    expect(rows.every(row => row.className.includes('flex') && row.querySelector('time') && row.querySelector('button'))).toBe(true);
+    expect(rows[0]!.querySelector('time')?.getAttribute('datetime')).toBe(runs[0]!.createdAt);
+    expect(rows[0]!.textContent).toContain(en.feedReview.failed); expect(rows[0]!.textContent).toContain('gemini-3.1-flash-image'); expect(rows[0]!.textContent).toContain('×1');
+    expect(rows[1]!.textContent).toContain('gpt-image-2'); expect(rows[1]!.textContent).toContain('×2');
+    await act(async () => rows[0]!.querySelector<HTMLButtonElement>('button')!.click());
+    expect(onRunAction).toHaveBeenCalledWith('gemini-run', 'retry');
   });
   it('scenarios 4 and 6: the slash shortcut creates a real slot and the portal preserves block selection for touch controls', async () => {
     const doc = importLegacyFeed({ text: '/text', postFormat: 'post', threadSegments: [], media: [] }); const onEdit = vi.fn(); const onSelection = vi.fn(); const controls = generationControls();

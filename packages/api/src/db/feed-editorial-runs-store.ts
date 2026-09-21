@@ -99,6 +99,16 @@ export async function retryFeedRun(actor: FeedActor, runId: string) {
     if (run.status === 'succeeded') return run
     if (run.dispatchedPart || run.status === 'unknown_outcome') throw new FeedCollaborationError(409, 'fresh_explicit_attempt_required')
     if (run.attempts >= FEED_EDITORIAL_LIMITS.attempts || !['failed', 'cancelled'].includes(run.status)) throw new FeedCollaborationError(409, 'run_not_retryable')
+    if (run.kind === 'image_generation') {
+      const generation = run.result.parts.generation as { imageReceipt?: { image?: unknown; error?: unknown } } | undefined
+      if (generation?.imageReceipt && (generation.imageReceipt.error || !generation.imageReceipt.image)) {
+        const result = structuredClone(run.result); const usage = structuredClone(run.usage)
+        const discarded = Array.isArray(result.discardedParts) ? result.discardedParts : []
+        discarded.push({ part: 'generation', response: result.parts.generation, usage: usage.generation, attempt: run.attempts })
+        delete result.parts.generation; delete usage.generation; result.discardedParts = discarded
+        await client.query('UPDATE feed_editorial_runs SET result=$2,usage=$3 WHERE id=$1', [run.id, JSON.stringify(result), JSON.stringify(usage)])
+      }
+    }
     if (run.kind === 'confirmation_learning' && run.result.invalidParts) {
       const result = structuredClone(run.result)
       const discarded = Array.isArray(result.discardedParts) ? result.discardedParts : []
