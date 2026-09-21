@@ -863,6 +863,18 @@ export const ja: Dictionary = {
     goToWorkspace: "ワークスペースへ",
     networkError: "ネットワーク エラー",
     noWorkspace: "アカウントに紐づくワークスペースが見つかりません。",
+    back: "戻る",
+    replaceTitle: "現在のプランを置き換えますか？",
+    replaceConfirm: "プランを置き換える",
+    replaceCancel: "現在のプランを維持する",
+    replaceDescriptionDated:
+      "現在のプランは {currentPlan} で、{currentDate} まで有効です。このコードは {incomingPlan} を付与し、{incomingDate} まで有効です。置き換えると、現在のプロモプランが新しいプランに変わります。",
+    replaceDescriptionPermanent:
+      "現在のプランは {currentPlan} で、{currentDate} まで有効です。このコードは期限のない {incomingPlan} を付与します。置き換えると、現在のプロモプランが新しいプランに変わります。",
+    notLongerDated:
+      "現在のプランは {plan} で、{date} まで有効です。このコードはそれより長く続かないため、置き換えできません。",
+    notLongerPermanent: "現在のプランは {plan} で期限がないため、このコードでは置き換えできません。",
+    replaced: "以前のプロモプランは置き換えられました。",
   },
   desktopSignedIn: {
     title: "サインインが完了しました",
