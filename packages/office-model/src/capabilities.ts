@@ -150,6 +150,7 @@ export function preflightOfficeCandidate(input: unknown): OfficePreflightResult 
     if (!value || typeof value !== 'object') return
     if (!Array.isArray(value)) {
       const object = value as Record<string, unknown>
+      if (snapshot.family !== 'document' && 'widthScalePercent' in object) diagnostics.push({ severity: 'error', code: 'formatting.width_scale_family', path, message: 'Horizontal width scaling is currently supported only in Documents' })
       if ((object.kind === 'image' || object.kind === 'video') && typeof object.resourceId === 'string' && !resourceIds.has(object.resourceId)) {
         diagnostics.push({ severity: 'error', code: 'resource.missing', path, message: `Referenced resource ${object.resourceId} is missing` })
       }

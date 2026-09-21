@@ -5,8 +5,8 @@ import { Mark, Node, mergeAttributes, type AnyExtension } from "@tiptap/core";
 import { NodeViewContent, NodeViewWrapper, ReactNodeViewRenderer, useEditorState, type NodeViewProps } from "@tiptap/react";
 import { createElement, useEffect, useState, type CSSProperties } from "react";
 import StarterKit from "@tiptap/starter-kit";
-import { officeTableResolvedColumnWidthsPt, type OfficeTable, type OfficeEditorJsonNode, type OfficeParagraphFormat } from "@use-brian/office-model";
-import { officeDocumentCellStyles, officeParagraphCss } from "@use-brian/office-renderer";
+import { officeTableResolvedColumnWidthsPt, officeNumberingCounter, type OfficeRichTextRun, type OfficeTable, type OfficeEditorJsonNode, type OfficeParagraphFormat } from "@use-brian/office-model";
+import { officeDocumentCellStyles, officeParagraphCss, officeScaleSegments, officeScaledSegmentCss, officeTextAdvance, officeRunFontCss } from "@use-brian/office-renderer";
 import { Extension } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
@@ -77,12 +77,12 @@ function OfficeHeaderView({ node, editor }: NodeViewProps) {
 
 const Paragraph = Node.create({
   name: "paragraph", content: "inline*", group: "officeFlow", defining: true,
-  addAttributes: () => attrs("id", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple"),
+  addAttributes: () => attrs("id", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple", "indentLeftPt", "hangingPt", "numbering"),
   parseHTML: () => [{ tag: "p" }], renderHTML: ({ node, HTMLAttributes }) => ["p", mergeAttributes(withoutObjectAttributes(HTMLAttributes, []), { style: blockStyle(HTMLAttributes, node) }), 0],
 });
 const Heading = Node.create({
   name: "heading", content: "inline*", group: "officeFlow", defining: true,
-  addAttributes: () => attrs("id", "level", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple"),
+  addAttributes: () => attrs("id", "level", "styleName", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple", "indentLeftPt", "hangingPt", "numbering"),
   parseHTML: () => [1, 2, 3, 4, 5, 6].map((level) => ({ tag: `h${level}`, attrs: { level } })),
   renderHTML: ({ node, HTMLAttributes }) => [`h${Math.min(6, Math.max(1, Number(node.attrs.level) || 1))}`, mergeAttributes(withoutObjectAttributes(HTMLAttributes, []), { style: blockStyle(HTMLAttributes, node) }), 0],
 });
@@ -130,7 +130,7 @@ const OfficeTableCellText = Node.create({
       }).run();
     } };
   },
-  name: "officeTableCellText", content: "inline*", group: "block", addAttributes: () => attrs("id", "paragraphStart", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple"), parseHTML: () => [{ tag: "p[data-office-table-cell-text]" }], renderHTML: ({ node, HTMLAttributes }) => ["p", { "data-office-table-cell-text": "true", style: `margin:0;${blockStyle(HTMLAttributes, node) ?? ''}` }, 0] });
+  name: "officeTableCellText", content: "inline*", group: "block", addAttributes: () => attrs("id", "paragraphStart", "alignment", "spacingBeforePt", "spacingAfterPt", "lineSpacingPt", "lineSpacingRule", "lineSpacingMultiple", "indentLeftPt", "hangingPt", "numbering"), parseHTML: () => [{ tag: "p[data-office-table-cell-text]" }], renderHTML: ({ node, HTMLAttributes }) => ["p", { "data-office-table-cell-text": "true", style: `margin:0;${blockStyle(HTMLAttributes, node) ?? ''}` }, 0] });
 
 // Cell edges depend on their parent table and merged-cell placement. Decorations
 // project them without persisting derived CSS or changing the collaboration data.
@@ -166,6 +166,57 @@ const OfficeParagraphSpacing = Extension.create({
     });
     return DecorationSet.create(state.doc, decorations);
   } } })],
+});
+
+// Derived markers and scaled advances never enter the collaborative text.
+// Inline decorations split only at wrap opportunities, not whole rich runs.
+const OfficeInlineFidelity = Extension.create({
+  name: "officeInlineFidelity",
+  addProseMirrorPlugins() {
+    let context: CanvasRenderingContext2D | null = null;
+    if (typeof CanvasRenderingContext2D !== "undefined") context = document.createElement("canvas").getContext("2d");
+    return [new Plugin({
+      view(view) {
+        const refresh = () => { if (!view.isDestroyed) view.dispatch(view.state.tr); };
+        document.fonts?.addEventListener("loadingdone", refresh);
+        return { destroy: () => document.fonts?.removeEventListener("loadingdone", refresh) };
+      },
+      props: { decorations(state) {
+        const decorations: Decoration[] = [];
+        const nextNumber = officeNumberingCounter();
+        state.doc.descendants((node, position) => {
+          if (["paragraph", "heading", "officeTableCellText"].includes(node.type.name) && node.attrs.numbering) {
+            const definition = node.attrs.numbering as NonNullable<OfficeParagraphFormat["numbering"]>;
+            const label = nextNumber(definition);
+            const first = node.firstChild?.marks.find(mark => mark.type.name === "officeRun")?.attrs.style;
+            const style = { fontFamily: "Arial", fontSizePt: 11, color: "#111111", ...first, ...definition.markerStyle } as OfficeRichTextRun["style"];
+            decorations.push(Decoration.widget(position + 1, () => {
+              const marker = document.createElement("span");
+              marker.dataset.officeNumberMarker = "true";
+              marker.textContent = label;
+              marker.contentEditable = "false";
+              marker.style.cssText = `${officeRunFontCss(style, "pt")};position:absolute;left:${Math.max(0, (node.attrs.indentLeftPt ?? 0) - (node.attrs.hangingPt ?? 0))}pt;white-space:pre;user-select:none;transform:scaleX(${(style.widthScalePercent ?? 100) / 100});transform-origin:left center`;
+              return marker;
+            }, { side: -1, key: `${node.attrs.id}:${label}:${node.attrs.indentLeftPt}:${node.attrs.hangingPt}:${JSON.stringify(style)}`, ignoreSelection: true }));
+          }
+          if (!node.isText || !node.text) return;
+          const style = node.marks.find(mark => mark.type.name === "officeRun")?.attrs.style as OfficeRichTextRun["style"] | undefined;
+          if (!style?.widthScalePercent || style.widthScalePercent === 100) return;
+          const sizePx = style.fontSizePt * 96 / 72;
+          if (context) context.font = `${style.italic ? "italic" : "normal"} ${style.bold ? "bold" : "normal"} ${sizePx}px ${JSON.stringify(style.fontFamily)}${style.eastAsianFontFamily ? `,${JSON.stringify(style.eastAsianFontFamily)}` : ""}`;
+          for (const segment of officeScaleSegments(node.text)) {
+            if (/[\r\n\t]/.test(segment.text)) continue;
+            const width = context?.measureText(segment.text).width ?? officeTextAdvance(segment.text, sizePx);
+            decorations.push(Decoration.inline(position + segment.offset, position + segment.offset + segment.text.length, {
+              "data-office-width-scale": String(style.widthScalePercent),
+              style: officeScaledSegmentCss(width, style.widthScalePercent),
+            }));
+          }
+        });
+        return DecorationSet.create(state.doc, decorations);
+      } },
+    })];
+  },
 });
 
 function atom(name: string, label: string, extraAttrs: string[] = []): AnyExtension {
@@ -246,7 +297,7 @@ export function officeDocumentEditorExtensions(): AnyExtension[] {
   return [
     OfficeDocument, OfficeSection, OfficeHeader, OfficeBody, OfficeFooter,
     Paragraph, Heading, OfficeList, OfficeListItem, OfficeTable, OfficeTableRow,
-    OfficeTableCell, OfficeTableCellText, OfficeTableFormatting, OfficeParagraphSpacing, OfficeEmptyRun, OfficeRun,
+    OfficeTableCell, OfficeTableCellText, OfficeTableFormatting, OfficeParagraphSpacing, OfficeInlineFidelity, OfficeEmptyRun, OfficeRun,
     OfficeImage,
     DocumentCommentDecorations,
     projectionAtom("officeChart", "chart", ["altText", "title"], ["chartType", "title", "categories", "series", "altText"]),

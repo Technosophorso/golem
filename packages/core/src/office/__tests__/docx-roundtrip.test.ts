@@ -115,9 +115,9 @@ describe('[COMP:office/docx-engine] DOCX engine', () => {
     zip.file('word/document.xml', '<w:document><w:body><w:p><w:pPr><w:tabs><w:tab w:pos="1000"/></w:tabs></w:pPr><w:r><w:rPr><w:w w:val="80"/></w:rPr><w:t>Example</w:t></w:r></w:p></w:body></w:document>')
     const result = await importOfficeDocument(await zip.generateAsync({ type: 'nodebuffer' }), { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Synthetic limits' })
     expect(result.ok).toBe(true)
-    expect(result.diagnostics.map((d) => d.code)).toEqual(expect.arrayContaining(['docx.formatting.text_scale', 'docx.formatting.tab_stops', 'docx.formatting.style_chain']))
+    expect(result.diagnostics.map((d) => d.code)).toEqual(expect.arrayContaining(['docx.formatting.tab_stops', 'docx.formatting.style_chain']))
     expect(JSON.stringify(result.diagnostics)).not.toContain('Example')
-    expect(result.snapshot?.family === 'document' && result.snapshot.sections[0].nodes[0]).toMatchObject({ spacingAfterPt: 0 })
+    expect(result.snapshot?.family === 'document' && result.snapshot.sections[0].nodes[0]).toMatchObject({ spacingAfterPt: 0, runs: [expect.objectContaining({ style: expect.objectContaining({ widthScalePercent: 80 }) })] })
   })
 
   it('normalizes a conventional external DOCX and never partially admits active content', async () => {

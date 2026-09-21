@@ -1,6 +1,10 @@
+import { officeScaleSegments, officeScaledSegmentCss, officeTextAdvance } from './inline.js'
 import {
   officeTableCellPlacements,
   officeCellParagraphs,
+  OfficeParagraphFormatSchema,
+  documentNumberedParagraphs,
+  officeNumberingCounter,
   type OfficeParagraphFormat,
   officeTableResolvedColumnWidthsPt,
   parseCellAddress,
@@ -36,6 +40,9 @@ export type OfficeDisplayPrimitive = {
   lineSpacingPt?: number
   lineSpacingRule?: OfficeParagraphFormat['lineSpacingRule']
   lineSpacingMultiple?: number
+  paragraphFormat?: OfficeParagraphFormat
+  numberLabel?: string
+  numberLabels?: Record<string, string>
   resourceId?: string
   tableRows?: Array<Array<{ runs: OfficeRichTextRun[]; rowSpan: number; colSpan: number; fill?: string }>>
   tableHeaderRows?: number
@@ -94,16 +101,8 @@ function textOf(runs: readonly OfficeRichTextRun[]): string {
   return runs.map((run) => run.text).join('')
 }
 
-function characterWidthFactor(character: string): number {
-  if (/\s/.test(character)) return 0.28
-  if (/[ilI1|.,'`:;]/.test(character)) return 0.28
-  if (/[mwMW@%&]/.test(character)) return 0.82
-  if (/[A-Z0-9]/.test(character)) return 0.6
-  return 0.5
-}
-
 function lineWidth(runs: readonly OfficeRichTextRun[]): number {
-  return runs.reduce((width, run) => width + [...run.text].reduce((sum, character) => sum + run.style.fontSizePt * characterWidthFactor(character), 0), 0)
+  return runs.reduce((width, run) => width + officeTextAdvance(run.text, run.style.fontSizePt) * (run.style.widthScalePercent ?? 100) / 100, 0)
 }
 
 function textLines(runs: readonly OfficeRichTextRun[]): OfficeRichTextRun[][] {
@@ -119,6 +118,7 @@ function textLines(runs: readonly OfficeRichTextRun[]): OfficeRichTextRun[][] {
 }
 
 function textMetrics(runs: readonly OfficeRichTextRun[], widthPt: number, format: OfficeParagraphFormat = {}): { widthPt: number; heightPt: number } {
+  widthPt = Math.max(1, widthPt - (format.indentLeftPt ?? 0))
   const lines = textLines(runs)
   const paragraphFont = Math.max(1, ...runs.map((run) => run.style.fontSizePt))
   const widths = lines.map(lineWidth)
@@ -177,7 +177,7 @@ function documentNodeHeight(node: DocumentFlowNode, widthPt: number): number {
 
 function nodePrimitive(node: DocumentFlowNode, xPt: number, yPt: number, widthPt: number, heightPt: number, z: number): OfficeDisplayPrimitive | null {
   if (node.kind === 'pageBreak' || node.kind === 'sectionBreak') return null
-  if (node.kind === 'paragraph' || node.kind === 'heading') return { id: node.id, kind: 'text', xPt, yPt, widthPt, heightPt, text: textOf(node.runs), runs: node.runs, alignment: node.alignment, lineSpacingPt: node.lineSpacingPt, lineSpacingRule: node.lineSpacingRule, lineSpacingMultiple: node.lineSpacingMultiple, sourceKind: node.kind, z }
+  if (node.kind === 'paragraph' || node.kind === 'heading') return { id: node.id, kind: 'text', xPt, yPt, widthPt, heightPt, text: textOf(node.runs), runs: node.runs, alignment: node.alignment, lineSpacingPt: node.lineSpacingPt, lineSpacingRule: node.lineSpacingRule, lineSpacingMultiple: node.lineSpacingMultiple, sourceKind: node.kind, paragraphFormat: Object.fromEntries(Object.entries(node).filter(([key]) => key in OfficeParagraphFormatSchema.shape)), z }
   if (node.kind === 'list') return { id: node.id, kind: 'text', xPt, yPt, widthPt, heightPt, text: node.items.map((item, index) => `${node.ordered ? `${index + 1}.` : '•'} ${textOf(item.runs)}`).join('\n'), sourceKind: node.kind, z }
   if (node.kind === 'image') return { id: node.id, kind: 'image', xPt, yPt, widthPt: Math.min(widthPt, node.widthPt), heightPt, resourceId: node.resourceId, sourceKind: node.kind, z }
   if (node.kind === 'table') {
@@ -193,6 +193,8 @@ function nodePrimitive(node: DocumentFlowNode, xPt: number, yPt: number, widthPt
 function layoutDocument(snapshot: DocumentSnapshot): OfficeLayoutResult {
   const pages: OfficeDisplayPage[] = []
   const issues: OfficeLayoutIssue[] = []
+  const nextNumber = officeNumberingCounter()
+  const numberLabels = Object.fromEntries(documentNumberedParagraphs(snapshot).filter(p => p.format.numbering).map(p => [p.id, nextNumber(p.format.numbering!)]))
   for (const section of snapshot.sections) {
     const width = section.page.widthPt
     const height = section.page.heightPt
@@ -223,7 +225,11 @@ function layoutDocument(snapshot: DocumentSnapshot): OfficeLayoutResult {
       const spacingBefore = node.kind === 'paragraph' || node.kind === 'heading' ? node.spacingBeforePt ?? 0 : 0
       const spacingAfter = node.kind === 'paragraph' || node.kind === 'heading' ? node.spacingAfterPt ?? 8 : 0
       const primitive = nodePrimitive(node, section.page.marginLeftPt, y + spacingBefore, bodyWidth, Math.max(0, nodeHeight - spacingBefore - spacingAfter), page.primitives.length)
-      if (primitive) page.primitives.push(primitive)
+      if (primitive) {
+        if (primitive.paragraphFormat?.numbering) primitive.numberLabel = numberLabels[primitive.id]
+        if (node.kind === 'table') primitive.numberLabels = Object.fromEntries(node.rows.flatMap(row => row.cells.flatMap(cell => officeCellParagraphs(cell).map(p => p.runs[0]?.paragraphStart?.id ?? cell.id))).filter(id => numberLabels[id] !== undefined).map(id => [id, numberLabels[id]]))
+        page.primitives.push(primitive)
+      }
       y += nodeHeight
     }
   }
@@ -441,8 +447,18 @@ function richTextHtml(runs: readonly OfficeRichTextRun[] | undefined, fallback: 
       `font-weight:${run.style.bold ? '700' : '400'}`,
       decorations ? `text-decoration:${decorations}` : '',
     ].filter(Boolean).join(';')
-    return `<span style="${style}">${escapeXml(run.text)}</span>`
+    const contents = run.style.widthScalePercent !== undefined && run.style.widthScalePercent !== 100
+      ? officeScaleSegments(run.text).map(segment => /[\r\n\t]/.test(segment.text) ? escapeXml(segment.text) : `<span style="${officeScaledSegmentCss(officeTextAdvance(segment.text, run.style.fontSizePt), run.style.widthScalePercent!)}">${escapeXml(segment.text)}</span>`).join('')
+      : escapeXml(run.text)
+    return `<span style="${style}">${contents}</span>`
   }).join('')
+}
+
+function numberMarkerHtml(format: OfficeParagraphFormat | undefined, runs: readonly OfficeRichTextRun[] | undefined, label: string | undefined): string {
+  if (!format?.numbering || !label) return ''
+  const base = runs?.[0]?.style ?? { fontFamily: 'Arial', fontSizePt: 11, color: '#111111', bold: false, italic: false, underline: false, strike: false }
+  const marker = { id: format.numbering.listId, text: label, style: { ...base, ...format.numbering.markerStyle } }
+  return `<span data-office-number-marker="true" style="position:absolute;left:${Math.max(0, (format.indentLeftPt ?? 0) - (format.hangingPt ?? 0))}px;white-space:pre">${richTextHtml([marker], '')}</span>`
 }
 
 function documentBorderCss(border: OfficeTableBorder | undefined, fallback: string, unit = 'px'): string {
@@ -464,7 +480,7 @@ function documentCellBorder(table: OfficeTable, cell: OfficeTableCell, placement
 /** CSS units are pt in the editor and px inside the point-space preview SVG. */
 export function officeParagraphCss(format: OfficeParagraphFormat, unit = 'px', maxRunFontSizePt = 12): string {
   const line = format.lineSpacingMultiple !== undefined ? String(format.lineSpacingMultiple) : format.lineSpacingPt !== undefined ? format.lineSpacingRule === 'atLeast' ? `${Math.max(maxRunFontSizePt * 1.15, format.lineSpacingPt)}${unit}` : `${format.lineSpacingPt}${unit}` : undefined
-  return [format.alignment ? `text-align:${cssAlignment(format.alignment)}` : '', format.spacingBeforePt !== undefined ? `margin-top:${format.spacingBeforePt}${unit}` : '', format.spacingAfterPt !== undefined ? `margin-bottom:${format.spacingAfterPt}${unit}` : '', line ? `line-height:${line}` : ''].filter(Boolean).join(';')
+  return [format.indentLeftPt !== undefined ? `padding-left:${format.indentLeftPt}${unit}` : '', format.numbering ? 'position:relative' : format.hangingPt !== undefined ? `text-indent:${-format.hangingPt}${unit}` : '', format.alignment ? `text-align:${cssAlignment(format.alignment)}` : '', format.spacingBeforePt !== undefined ? `margin-top:${format.spacingBeforePt}${unit}` : '', format.spacingAfterPt !== undefined ? `margin-bottom:${format.spacingAfterPt}${unit}` : '', line ? `line-height:${line}` : ''].filter(Boolean).join(';')
 }
 
 export function officeDocumentCellStyles(table: OfficeTable, unit = 'px'): ReadonlyMap<string, string> {
@@ -493,7 +509,7 @@ function renderTableHtml(primitive: OfficeDisplayPrimitive): string {
     const columns = widths.map((width) => `<col style="width:${totalWidth > 0 ? width / totalWidth * 100 : 100 / widths.length}%"/>`).join('')
     const body = table.rows.map((row, rowIndex) => `<tr style="${row.minHeightPt ? `height:${row.minHeightPt}px` : ''}">${row.cells.map((cell) => {
       const style = cellStyles.get(cell.id)
-      return `<td data-office-table-cell="${escapeXml(cell.id)}" rowspan="${cell.rowSpan}" colspan="${cell.colSpan}" style="${style}">${officeCellParagraphs(cell).map(({ format, runs }) => `<p style="margin:0;${officeParagraphCss(format, 'px', Math.max(1, ...runs.map((run) => run.style.fontSizePt)))}">${richTextHtml(runs, '') || '<br/>'}</p>`).join('')}</td>`
+      return `<td data-office-table-cell="${escapeXml(cell.id)}" rowspan="${cell.rowSpan}" colspan="${cell.colSpan}" style="${style}">${officeCellParagraphs(cell).map(({ format, runs }) => `<p style="margin:0;${officeParagraphCss(format, 'px', Math.max(1, ...runs.map((run) => run.style.fontSizePt)))}">${numberMarkerHtml(format, runs, primitive.numberLabels?.[runs[0]?.paragraphStart?.id ?? cell.id])}${richTextHtml(runs, '') || '<br/>'}</p>`).join('')}</td>`
     }).join('')}</tr>`).join('')
     return `<table xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:100%;height:100%;border-collapse:collapse;table-layout:${table.layout === 'autofit' && !table.columnWidthsPt ? 'auto' : 'fixed'};font-family:Arial,sans-serif;font-size:10px;line-height:1.15;color:#0f172a"><colgroup>${columns}</colgroup><tbody>${body}</tbody></table>`
   }
@@ -556,7 +572,7 @@ export type OfficePreviewSvgOptions = {
 export function renderOfficePreviewSvg(page: OfficeDisplayPage, options: OfficePreviewSvgOptions = {}): string {
   const primitives = [...page.primitives].sort((left, right) => left.z - right.z).map((primitive) => {
     const common = `data-office-object="${escapeXml(primitive.id)}" x="${primitive.xPt}" y="${primitive.yPt}" width="${primitive.widthPt}" height="${primitive.heightPt}"`
-    if (primitive.kind === 'text') return `<foreignObject ${common}>${primitive.sourceKind === 'cell' ? spreadsheetCellHtml(primitive) : `<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:100%;height:100%;overflow:hidden;white-space:pre-wrap;font-family:Arial,sans-serif;font-size:12px;line-height:1.15;${officeParagraphCss(primitive, 'px', Math.max(1, ...(primitive.runs ?? []).map((run) => run.style.fontSizePt)))}">${richTextHtml(primitive.runs, primitive.text ?? '')}</div>`}</foreignObject>`
+    if (primitive.kind === 'text') return `<foreignObject ${common}>${primitive.sourceKind === 'cell' ? spreadsheetCellHtml(primitive) : `<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:100%;height:100%;overflow:hidden;white-space:pre-wrap;font-family:Arial,sans-serif;font-size:12px;line-height:1.15;${officeParagraphCss({ ...(primitive.paragraphFormat ?? primitive), spacingBeforePt: undefined, spacingAfterPt: undefined }, 'px', Math.max(1, ...(primitive.runs ?? []).map((run) => run.style.fontSizePt)))}">${numberMarkerHtml(primitive.paragraphFormat, primitive.runs, primitive.numberLabel)}${richTextHtml(primitive.runs, primitive.text ?? '')}</div>`}</foreignObject>`
     if (primitive.kind === 'table') return `<foreignObject ${common}>${renderTableHtml(primitive)}</foreignObject>`
     if (primitive.kind === 'image') {
       const url = primitive.resourceId ? options.resourceUrls?.[primitive.resourceId] : undefined
