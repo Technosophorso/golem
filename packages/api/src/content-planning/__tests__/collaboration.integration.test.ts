@@ -60,6 +60,22 @@ async function reviewFixture() {
   return f
 }
 describe('[COMP:feed/draft-review] real database review lifecycle', () => {
+  it('excludes playbook guidance above the assistant clearance even when every member can read it', async () => {
+    const f = await fixture(); await f.upgrade()
+    const rules = (await pool.query(`INSERT INTO assistant_playbook_rules(assistant_id,rule,status,created_by,decision_sensitivity) VALUES
+      ($1,'Use public examples.','active','owner','public'),
+      ($1,'Use internal examples.','active','owner','internal') RETURNING id,decision_sensitivity`, [f.actor.assistantId])).rows
+    await pool.query("UPDATE assistants SET clearance='public' WHERE id=$1", [f.actor.assistantId])
+
+    const context = await loadFeedReviewContext(f.actor)
+    const sourceIds = context.dimensions.memory.sources.map(item => item.id)
+    const publicRule = rules.find(rule => rule.decision_sensitivity === 'public')!
+    const internalRule = rules.find(rule => rule.decision_sensitivity === 'internal')!
+    expect(sourceIds).toContain(`playbook:${publicRule.id}`)
+    expect(sourceIds).not.toContain(`playbook:${internalRule.id}`)
+    expect(context.dimensions.memory.coverage.limits).toContain('private_or_bounded_sources_omitted')
+  })
+
   it('scenarios 16-19: freezes the explicit Goal/month, reads older full bodies, excludes private sources and persists five comments-only checks', async () => {
     const f = await reviewFixture(); const before = (await getFeedCollaboration(f.actor)).copy!
     const context = await loadFeedReviewContext(f.actor)
