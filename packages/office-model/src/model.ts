@@ -27,6 +27,7 @@ export const OfficeColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f
 export const OfficeTextStyleSchema = z
   .object({
     fontFamily: z.string().min(1).max(128),
+    eastAsianFontFamily: z.string().min(1).max(128).optional(),
     fontSizePt: z.number().min(1).max(144),
     bold: z.boolean().default(false),
     italic: z.boolean().default(false),
@@ -38,11 +39,23 @@ export const OfficeTextStyleSchema = z
   })
   .strict()
 
+export const OfficeParagraphFormatSchema = z.object({
+  alignment: z.enum(['start', 'center', 'end', 'justify']).optional(),
+  spacingBeforePt: z.number().min(0).max(1_000).optional(),
+  spacingAfterPt: z.number().min(0).max(1_000).optional(),
+  lineSpacingPt: z.number().positive().max(1_000).optional(),
+  lineSpacingRule: z.enum(['exact', 'atLeast']).optional(),
+  lineSpacingMultiple: z.number().positive().max(100).optional(),
+}).strict()
+export type OfficeParagraphFormat = z.infer<typeof OfficeParagraphFormatSchema>
+
 export const OfficeRichTextRunSchema = z
   .object({
     id: OfficeUuidSchema,
     text: z.string().max(100_000),
     style: OfficeTextStyleSchema,
+    // Cell paragraphs store text once, with a format marker on their first run.
+    paragraphStart: OfficeParagraphFormatSchema.extend({ id: OfficeUuidSchema }).optional(),
     href: z.string().url().refine((url) => /^(https?:|mailto:)/.test(url), {
       message: 'Only inert HTTP, HTTPS and mailto links are supported',
     }).optional(),
@@ -60,6 +73,8 @@ export const OfficeParagraphSchema = NodeBaseSchema.extend({
   spacingBeforePt: z.number().min(0).max(1_000).optional(),
   spacingAfterPt: z.number().min(0).max(1_000).optional(),
   lineSpacingPt: z.number().positive().max(1_000).optional(),
+  lineSpacingRule: z.enum(['exact', 'atLeast']).optional(),
+  lineSpacingMultiple: z.number().positive().max(100).optional(),
 }).strict()
 
 export const OfficeHeadingSchema = NodeBaseSchema.extend({
@@ -71,6 +86,8 @@ export const OfficeHeadingSchema = NodeBaseSchema.extend({
   spacingBeforePt: z.number().min(0).max(1_000).optional(),
   spacingAfterPt: z.number().min(0).max(1_000).optional(),
   lineSpacingPt: z.number().positive().max(1_000).optional(),
+  lineSpacingRule: z.enum(['exact', 'atLeast']).optional(),
+  lineSpacingMultiple: z.number().positive().max(100).optional(),
 }).strict()
 
 export const OfficeListSchema = NodeBaseSchema.extend({
@@ -118,6 +135,16 @@ export const OfficeTableCellSchema = z.object({
   wrapText: z.boolean().optional(),
 }).strict()
 export type OfficeTableCell = z.infer<typeof OfficeTableCellSchema>
+
+/** Legacy cells are one paragraph; markers preserve empty and differently styled paragraphs. */
+export function officeCellParagraphs(cell: Pick<OfficeTableCell, 'runs' | 'alignment'>): Array<{ format: OfficeParagraphFormat; runs: OfficeRichTextRun[] }> {
+  const paragraphs: Array<{ format: OfficeParagraphFormat; runs: OfficeRichTextRun[] }> = []
+  for (const run of cell.runs) {
+    if (!paragraphs.length || run.paragraphStart) paragraphs.push({ format: run.paragraphStart ?? { alignment: cell.alignment }, runs: [] })
+    paragraphs[paragraphs.length - 1].runs.push(run)
+  }
+  return paragraphs.length ? paragraphs : [{ format: { alignment: cell.alignment }, runs: [] }]
+}
 
 export const OfficeTableSchema = NodeBaseSchema.extend({
   kind: z.literal('table'),
