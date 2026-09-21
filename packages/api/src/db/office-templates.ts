@@ -151,9 +151,16 @@ export function createOfficeTemplateStore(db: OfficeDbQuery = defaultOfficeDbQue
 
     async transitionLifecycle(params: { userId: string; templateId: string; action: 'deprecate' | 'restore' | 'trash' | 'purge'; reason: string }): Promise<Record<string, unknown> | null> {
       const result = await db<Record<string, unknown>>(params.userId, `
-        WITH candidate AS (
+        WITH linked_draft AS MATERIALIZED (
+          SELECT a.* FROM office_artifacts a JOIN office_templates t ON t.draft_artifact_id=a.id
+           WHERE t.id=$1 AND a.workspace_id=t.workspace_id AND a.mode='template'
+           FOR UPDATE OF a
+        ), candidate AS (
           SELECT t.* FROM office_templates t
            WHERE t.id=$1 AND t.legal_hold=FALSE
+             AND (t.draft_artifact_id IS NULL OR EXISTS (
+               SELECT 1 FROM linked_draft a WHERE a.legal_hold=FALSE AND a.lifecycle_state <> 'purged'
+             ))
              AND (t.owner_user_id=$3 OR EXISTS (
                SELECT 1 FROM workspace_members wm WHERE wm.workspace_id=t.workspace_id
                  AND wm.user_id=$3 AND wm.role IN ('owner','admin')
@@ -175,6 +182,20 @@ export function createOfficeTemplateStore(db: OfficeDbQuery = defaultOfficeDbQue
             purge_at=CASE WHEN $2='trash' THEN now()+interval '60 days' WHEN $2='restore' THEN NULL ELSE t.purge_at END,
             updated_at=now()
           FROM candidate c WHERE t.id=c.id RETURNING t.*
+        ), draft_updated AS (
+          UPDATE office_artifacts a SET
+            lifecycle_state=CASE $2 WHEN 'restore' THEN 'active' ELSE t.lifecycle_state END,
+            trashed_at=t.trashed_at, retain_at=t.retain_at, purge_at=t.purge_at,
+            archived_at=NULL, updated_at=now()
+          FROM updated t WHERE a.id=t.draft_artifact_id AND a.workspace_id=t.workspace_id
+            AND a.mode='template' AND $2 IN ('trash','restore','purge')
+          RETURNING a.*
+        ), revoked AS (
+          UPDATE office_offline_packages p SET revoked_at=now(),complete=FALSE,updated_at=now()
+          FROM draft_updated a WHERE p.artifact_id=a.id AND a.lifecycle_state='purged' AND p.revoked_at IS NULL
+        ), draft_audit AS (
+          INSERT INTO office_audit_events(workspace_id,artifact_id,actor_user_id,event_type,artifact_version,reason)
+          SELECT workspace_id,id,$3,'office.lifecycle.'||$2,head_version,$4 FROM draft_updated
         ), audited AS (
           INSERT INTO office_audit_events(workspace_id,actor_user_id,event_type,reason,metadata)
           SELECT workspace_id,$3,'office.template.lifecycle.'||$2,$4,jsonb_build_object('templateId',id) FROM updated
