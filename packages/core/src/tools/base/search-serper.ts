@@ -16,6 +16,9 @@
 import type { SearchProvider, SearchResult } from './search-stack.js'
 import { retryAfterMs, SearchProviderError } from './_fetch-error.js'
 import { clampResultCount } from './search-stack.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { flatSearchCostUsd } from '../../billing/search-provider-rates.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 const SERPER_ENDPOINT = 'https://google.serper.dev/search'
 
@@ -29,21 +32,22 @@ type SerperResponse = {
   organic?: SerperOrganicResult[]
 }
 
-export const serperProvider: SearchProvider = {
+export function createSerperProvider(pool?: ExternalCredentialPool): SearchProvider {
+  return {
   name: 'serper',
 
-  available: () => Boolean(process.env.SERPER_API_KEY),
+  available: () => Boolean(pool || process.env.SERPER_API_KEY),
 
   async search(query, maxResults, signal): Promise<SearchResult[]> {
-    const token = process.env.SERPER_API_KEY
-    if (!token) return []
+    const lease = await resolveToolCredential(pool, 'serper', process.env.SERPER_API_KEY)
+    if (!lease) return []
 
     const res = await fetch(SERPER_ENDPOINT, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
-        'X-API-KEY': token,
+        'X-API-KEY': lease.secret,
       },
       body: JSON.stringify({
         q: query,
@@ -59,6 +63,7 @@ export const serperProvider: SearchProvider = {
         retryAfterMs: retryAfterMs(res.headers.get('retry-after')),
       })
     }
+    await recordToolSpend(lease, flatSearchCostUsd('serper'))
 
     const data = (await res.json()) as SerperResponse
     const raw = data.organic ?? []
@@ -71,4 +76,7 @@ export const serperProvider: SearchProvider = {
       .filter((r) => r.url && r.url.startsWith('http'))
       .slice(0, maxResults)
   },
+  }
 }
+
+export const serperProvider: SearchProvider = createSerperProvider()

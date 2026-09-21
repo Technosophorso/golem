@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { createEngineTools, type EnginesEnv } from '../tools.js'
 import { authorizeEnginesRequest, enginesMcpEnabled } from '../server.js'
+import type { ExternalCredentialPool } from '@use-brian/core'
 
 function fakeResponse(body: unknown, status = 200) {
   const raw = typeof body === 'string' ? body : JSON.stringify(body)
@@ -65,6 +66,10 @@ describe('[COMP:api/engines-mcp] AI Engines MCP', () => {
       // per-workspace `gsc` connector, docs/architecture/integrations/search-console.md):
       // the secret plus a non-credential engines key does not open the route.
       expect(enginesMcpEnabled({ ENGINES_MCP_SECRET: 's', ENGINES_DAILY_CALL_CAP: '5' })).toBe(false)
+      expect(enginesMcpEnabled(
+        { ENGINES_MCP_SECRET: 's' },
+        new Set(['engines-perplexity']),
+      )).toBe(true)
     })
 
     it('registers only the tools whose credential exists', () => {
@@ -74,6 +79,35 @@ describe('[COMP:api/engines-mcp] AI Engines MCP', () => {
         ENGINES_ANTHROPIC_API_KEY: 'ant-k',
       }).map((t) => t.name)
       expect(names).toEqual(['askPerplexity', 'askClaude'])
+    })
+
+    it('uses a managed engine credential and records its successful units', async () => {
+      const recordSpend = vi.fn(async (_costUsd: number) => {})
+      const pool: ExternalCredentialPool = {
+        resolve: vi.fn(async () => ({
+          credentialId: 'managed-engine',
+          provider: 'engines-perplexity',
+          secret: 'managed-pplx-key',
+          source: 'managed' as const,
+          recordSpend,
+        })),
+      }
+      const fetchMock = vi.fn().mockResolvedValue(perplexityResponse('answer'))
+      const [tool] = createEngineTools(
+        {},
+        fetchMock as unknown as typeof fetch,
+        pool,
+        new Set(['engines-perplexity']),
+      )
+
+      await tool.handler({ question: 'q' })
+
+      expect(pool.resolve).toHaveBeenCalledWith('engines-perplexity', undefined)
+      expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+        Authorization: 'Bearer managed-pplx-key',
+      })
+      expect(recordSpend).toHaveBeenCalledWith(expect.any(Number))
+      expect(recordSpend.mock.calls[0][0]).toBeGreaterThan(0)
     })
   })
 

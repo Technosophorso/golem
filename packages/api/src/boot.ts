@@ -33,9 +33,10 @@ import express, { type Express } from 'express'
 import { createTelegramApi } from '@use-brian/channels'
 import { isOpaqueDesktopBearerRequest } from './cors-policy.js'
 import {
-  vertexTransport, resolveVertexTokenSource, aiStudioTransport,
+  vertexTransport, resolveVertexTokenSource, aiStudioTransport, credentialPoolAiStudioTransport,
   createEmbedderForAdapter, type EmbedderAdapterConfig, type GoogleTransport, type MediaBackend,
   createGeminiProvider, createAnthropicProvider, createOpenAICompatProvider, createRoutingProvider,
+  wrapCredentialPoolProvider, type ExternalCredentialPool,
   distillConfigKey, DASHSCOPE_RENDER_WIDTH, DASHSCOPE_CHUNK_PAGES, PROVIDER_RENDER_WIDTH, PROVIDER_CHUNK_PAGES,
   type DocumentDistillPort, type DistillateCachePort,
   DASHSCOPE_INTL_BASE_URL, DASHSCOPE_INTL_LABEL, wrapProvider,
@@ -123,6 +124,7 @@ import {
   type GDriveFilesStore,
   type EntityRecord,
   type EngineHooks,
+  type EnginesEnv,
   createIntrospectionTools,
   createWorkspaceChatHandoffTool,
   createComputerTools,
@@ -940,6 +942,8 @@ export interface OpenApiPorts {
   checkCreditBudget?: CreditBudgetGate
   /** Edition-local DB usage recorder; default no-op for bespoke compositions. */
   usageStore?: UsageStore
+  /** Hosted priority pool for spend-bearing provider keys. Open default uses env directly. */
+  externalCredentialPool?: ExternalCredentialPool
   /**
    * Bulk-ingest surcharge hook (0.5-credit bulk-ingest item, priced +
    * ledgered platform-side, idempotent per episode). Threaded into every
@@ -1498,6 +1502,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // DashScope host: international (Singapore) by default; override to the
   // Beijing endpoint for mainland China. Shared by Qwen chat, embeddings, media.
   const dashscopeBaseUrl = env.DASHSCOPE_BASE_URL || DASHSCOPE_INTL_BASE_URL
+  const externalCredentialPool = ports.externalCredentialPool
   const vertexTx: GoogleTransport | undefined = env.VERTEX_PROJECT_ID
     ? vertexTransport({
         project: env.VERTEX_PROJECT_ID,
@@ -1505,7 +1510,41 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
         tokenSource: resolveVertexTokenSource(env.VERTEX_SERVICE_ACCOUNT_JSON),
       })
     : undefined
-  const geminiTransport = vertexTx ?? env.GEMINI_API_KEY
+  const bootGeminiCredential = externalCredentialPool
+    ? await externalCredentialPool.resolve('gemini', env.GEMINI_API_KEY)
+    : null
+  const bootAnthropicCredential = externalCredentialPool
+    ? await externalCredentialPool.resolve('anthropic', env.ANTHROPIC_API_KEY)
+    : null
+  const bootDashscopeCredential = externalCredentialPool
+    ? await externalCredentialPool.resolve('dashscope', env.DASHSCOPE_API_KEY)
+    : null
+  const engineCredentialFallbacks = [
+    ['engines-openai', process.env.ENGINES_OPENAI_API_KEY],
+    ['engines-gemini', process.env.ENGINES_GEMINI_API_KEY],
+    ['engines-perplexity', process.env.ENGINES_PERPLEXITY_API_KEY],
+    ['engines-anthropic', process.env.ENGINES_ANTHROPIC_API_KEY],
+  ] as const
+  const managedEngineProviders = new Set<string>()
+  if (externalCredentialPool) {
+    const engineLeases = await Promise.all(
+      engineCredentialFallbacks.map(([providerId, fallback]) =>
+        externalCredentialPool.resolve(providerId, fallback),
+      ),
+    )
+    engineLeases.forEach((lease, index) => {
+      if (lease?.source === 'managed') managedEngineProviders.add(engineCredentialFallbacks[index][0])
+    })
+  }
+  const hasGeminiCredential = Boolean(env.VERTEX_PROJECT_ID || bootGeminiCredential || env.GEMINI_API_KEY)
+  const hasAnthropicCredential = Boolean(bootAnthropicCredential || env.ANTHROPIC_API_KEY)
+  const hasDashscopeCredential = Boolean(bootDashscopeCredential || env.DASHSCOPE_API_KEY)
+  const geminiTransport: GoogleTransport | undefined = vertexTx
+    ?? (hasGeminiCredential
+      ? externalCredentialPool
+        ? credentialPoolAiStudioTransport(externalCredentialPool, env.GEMINI_API_KEY)
+        : aiStudioTransport(env.GEMINI_API_KEY)
+      : undefined)
 
   // One embedder for the whole process (was reconstructed at ten sites).
   // Embeddings default to Google (gemini-embedding-001, the registry's
@@ -1515,9 +1554,19 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // model_id and switching requires a full re-embed.
   const embedderConfig: EmbedderAdapterConfig = vertexTx
     ? { adapter: 'vertex', transport: vertexTx }
-    : env.GEMINI_API_KEY
-      ? { adapter: 'google-ai-studio', apiKey: env.GEMINI_API_KEY }
-      : { adapter: 'alicloud', apiKey: env.DASHSCOPE_API_KEY ?? '', baseUrl: dashscopeBaseUrl }
+    : geminiTransport
+      ? { adapter: 'google-ai-studio', transport: geminiTransport }
+      : {
+          adapter: 'alicloud',
+          apiKey: bootDashscopeCredential?.secret ?? env.DASHSCOPE_API_KEY ?? '',
+          baseUrl: dashscopeBaseUrl,
+          ...(externalCredentialPool
+            ? {
+                credentialPool: externalCredentialPool,
+                systemFallback: env.DASHSCOPE_API_KEY,
+              }
+            : {}),
+        }
   const sharedEmbedder = createEmbedderForAdapter(embedderConfig)
 
   // Media backend for file distillation + short-audio transcription. Google
@@ -1536,14 +1585,21 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // below) because it needs the routing provider that does not exist yet.
   const googleMediaBackend: MediaBackend | undefined = vertexTx
     ? { kind: 'google', transport: vertexTx }
-    : env.GEMINI_API_KEY
-      ? { kind: 'google', transport: aiStudioTransport(env.GEMINI_API_KEY) }
+    : geminiTransport
+      ? { kind: 'google', transport: geminiTransport }
       : undefined
-  const dashscopeMediaBackend: MediaBackend | undefined = env.DASHSCOPE_API_KEY
+  const dashscopeMediaKey = bootDashscopeCredential?.secret ?? env.DASHSCOPE_API_KEY
+  const dashscopeMediaBackend: MediaBackend | undefined = dashscopeMediaKey
     ? {
         kind: 'dashscope',
-        apiKey: env.DASHSCOPE_API_KEY,
+        apiKey: dashscopeMediaKey,
         baseUrl: dashscopeBaseUrl,
+        ...(externalCredentialPool
+          ? {
+              credentialPool: externalCredentialPool,
+              systemFallback: env.DASHSCOPE_API_KEY,
+            }
+          : {}),
         ...(env.DASHSCOPE_VISION_MODEL ? { visionModel: env.DASHSCOPE_VISION_MODEL } : {}),
         ...(env.DASHSCOPE_ASR_MODEL ? { asrModel: env.DASHSCOPE_ASR_MODEL } : {}),
         ...(env.DASHSCOPE_LONG_MODEL ? { longModel: env.DASHSCOPE_LONG_MODEL } : {}),
@@ -1773,29 +1829,57 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     normalizeOssPreferredProvider(env.USEBRIAN_PREFERRED_PROVIDER),
   )
   let codexProviderManager: CodexProviderManager | undefined
-  if (env.GEMINI_API_KEY || env.VERTEX_PROJECT_ID) {
-    providerInstances['gemini'] = wrapProvider(createGeminiProvider(geminiTransport))
+  if (hasGeminiCredential) {
+    const geminiProvider = vertexTx
+      ? createGeminiProvider(vertexTx)
+      : externalCredentialPool
+        ? wrapCredentialPoolProvider({
+            providerId: 'gemini',
+            pool: externalCredentialPool,
+            systemFallback: env.GEMINI_API_KEY,
+            create: (secret) => createGeminiProvider(secret),
+          })
+        : createGeminiProvider(geminiTransport)
+    providerInstances['gemini'] = wrapProvider(geminiProvider)
     configuredProviders.setStaticProvider('gemini', true)
   }
   if (env.FALLBACK_PROVIDER_ENABLED) {
-    if (env.ANTHROPIC_API_KEY) {
-      providerInstances['anthropic'] = wrapProvider(createAnthropicProvider({ apiKey: env.ANTHROPIC_API_KEY }))
+    if (hasAnthropicCredential) {
+      const anthropicProvider = externalCredentialPool
+        ? wrapCredentialPoolProvider({
+            providerId: 'anthropic',
+            pool: externalCredentialPool,
+            systemFallback: env.ANTHROPIC_API_KEY,
+            create: (secret) => createAnthropicProvider({ apiKey: secret }),
+          })
+        : createAnthropicProvider({ apiKey: env.ANTHROPIC_API_KEY! })
+      providerInstances['anthropic'] = wrapProvider(anthropicProvider)
       configuredProviders.setStaticProvider('anthropic', true)
     } else {
       console.warn('[provider] FALLBACK_PROVIDER_ENABLED=true but ANTHROPIC_API_KEY is empty — running without the Claude fallback.')
     }
   }
-  if (env.DASHSCOPE_API_KEY) {
+  if (hasDashscopeCredential) {
     const dashscopeProviderId = `openai-compat:${DASHSCOPE_INTL_LABEL}`
     providerInstances[dashscopeProviderId] = wrapProvider(
-      createOpenAICompatProvider({
-        apiKey: env.DASHSCOPE_API_KEY,
-        baseURL: dashscopeBaseUrl,
-        label: DASHSCOPE_INTL_LABEL,
-        // Curated DashScope chat rows are text-only. Inline images are
-        // distilled through the separate Qwen-VL media backend at dispatch.
-        supportsVision: false,
-      }),
+      externalCredentialPool
+        ? wrapCredentialPoolProvider({
+            providerId: 'dashscope',
+            pool: externalCredentialPool,
+            systemFallback: env.DASHSCOPE_API_KEY,
+            create: (secret) => createOpenAICompatProvider({
+              apiKey: secret,
+              baseURL: dashscopeBaseUrl,
+              label: DASHSCOPE_INTL_LABEL,
+              supportsVision: false,
+            }),
+          })
+        : createOpenAICompatProvider({
+            apiKey: env.DASHSCOPE_API_KEY!,
+            baseURL: dashscopeBaseUrl,
+            label: DASHSCOPE_INTL_LABEL,
+            supportsVision: false,
+          }),
     )
     configuredProviders.setStaticProvider(dashscopeProviderId, true)
   }
@@ -1941,7 +2025,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
 
   const voiceTranscription = {
     enabled: env.VOICE_TRANSCRIPTION_ENABLED ?? false,
-    apiKey: env.GEMINI_API_KEY ?? '',
+    apiKey: bootGeminiCredential?.secret ?? env.GEMINI_API_KEY ?? '',
     get backend() { return selectKeyedMediaBackend() ?? unavailableMediaBackend },
     model: env.VOICE_TRANSCRIPTION_MODEL,
   }
@@ -2335,7 +2419,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   let workerManager!: ReturnType<typeof createWorkerManager>
 
   function buildAllTools(): Map<string, Tool> {
-    const tools = createBaseTools()
+    const tools = createBaseTools(process.env as EnginesEnv, externalCredentialPool)
 
     // Google Maps is an env-gated first-party read capability, not a personal
     // Google connector. Core owns the typed tool contract; this API seam owns
@@ -4234,24 +4318,27 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // exists, else Gemini Flash, else DashScope through its OpenAI-compatible
   // endpoint. Qwen chat rows are text-only, so that last path uses the DOM /
   // accessibility state without screenshot vision.
-  const browserUseLlm = env.ANTHROPIC_API_KEY
+  const browserAnthropicKey = bootAnthropicCredential?.secret ?? env.ANTHROPIC_API_KEY
+  const browserGeminiKey = bootGeminiCredential?.secret ?? env.GEMINI_API_KEY
+  const browserDashscopeKey = bootDashscopeCredential?.secret ?? env.DASHSCOPE_API_KEY
+  const browserUseLlm = browserAnthropicKey
     ? {
         apiKeyEnvName: 'ANTHROPIC_API_KEY' as const,
-        apiKey: env.ANTHROPIC_API_KEY,
+        apiKey: browserAnthropicKey,
         model: env.BROWSER_USE_MODEL || 'claude-haiku-4-5-20251001',
       }
-    : env.GEMINI_API_KEY
+    : browserGeminiKey
       ? {
           apiKeyEnvName: 'GOOGLE_API_KEY' as const,
-          apiKey: env.GEMINI_API_KEY,
+          apiKey: browserGeminiKey,
           // The REAL Google API id (browser-use bypasses our provider layer,
           // so no alias resolution) — Flash 3, the cheap-leg tier.
           model: env.BROWSER_USE_MODEL || 'gemini-3-flash-preview',
         }
-      : env.DASHSCOPE_API_KEY
+      : browserDashscopeKey
         ? {
             apiKeyEnvName: 'OPENAI_API_KEY' as const,
-            apiKey: env.DASHSCOPE_API_KEY,
+            apiKey: browserDashscopeKey,
             baseUrl: dashscopeBaseUrl,
             model: env.BROWSER_USE_MODEL || 'qwen3.5-flash',
             useVision: false,
@@ -4260,7 +4347,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const sandboxProvider: SandboxProvider | null = env.E2B_API_KEY
     ? createE2bCloudProvider(
         createE2bRuntime({ apiKey: env.E2B_API_KEY, defaultTemplateId: env.E2B_TEMPLATE_ID }),
-        { browserUse: browserUseLlm },
+        // Hosted credential pools resolve the browser-use identity at the
+        // beginning of each exploration below. Do not retain the boot-time
+        // lease here: a disabled, expired, or exhausted key must not remain
+        // usable through a long-lived sandbox provider instance.
+        externalCredentialPool ? {} : { browserUse: browserUseLlm },
       )
     : null
   // The §4.9 meter: all three COGS lines record through the usage spine, and
@@ -4664,8 +4755,42 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     // Hosted custom fetches enforce public-only DNS/IP checks per request.
     // E2B cannot reuse that host-side transport, so do not bypass it by
     // handing a hosted endpoint directly to the sandbox process.
-    resolveLlm: customLlmNetworkPolicy === 'private-network'
-      ? async (workspaceId) => (await resolveBackgroundRuntime(workspaceId))?.browserUse ?? null
+    resolveLlm: customLlmNetworkPolicy === 'private-network' || externalCredentialPool
+      ? async (workspaceId) => {
+          if (customLlmNetworkPolicy === 'private-network') {
+            const custom = (await resolveBackgroundRuntime(workspaceId))?.browserUse ?? null
+            if (custom) return custom
+          }
+          if (!externalCredentialPool) return null
+
+          const anthropic = await externalCredentialPool.resolve('anthropic', env.ANTHROPIC_API_KEY)
+          if (anthropic) {
+            return {
+              apiKeyEnvName: 'ANTHROPIC_API_KEY' as const,
+              apiKey: anthropic.secret,
+              model: env.BROWSER_USE_MODEL || 'claude-haiku-4-5-20251001',
+            }
+          }
+          const gemini = await externalCredentialPool.resolve('gemini', env.GEMINI_API_KEY)
+          if (gemini) {
+            return {
+              apiKeyEnvName: 'GOOGLE_API_KEY' as const,
+              apiKey: gemini.secret,
+              model: env.BROWSER_USE_MODEL || 'gemini-3-flash-preview',
+            }
+          }
+          const dashscope = await externalCredentialPool.resolve('dashscope', env.DASHSCOPE_API_KEY)
+          if (dashscope) {
+            return {
+              apiKeyEnvName: 'OPENAI_API_KEY' as const,
+              apiKey: dashscope.secret,
+              baseUrl: dashscopeBaseUrl,
+              model: env.BROWSER_USE_MODEL || 'qwen3.5-flash',
+              useVision: false,
+            }
+          }
+          return null
+        }
       : undefined,
     onEvent: (evt, ctx) => {
       analytics.logEvent({
@@ -4750,7 +4875,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     : null
 
   const feedReviewContext = createFeedReviewContextLoader(ports.feedHistorySql)
-  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' }), { transport: vertexTx ?? (env.GEMINI_API_KEY ? aiStudioTransport(env.GEMINI_API_KEY) : undefined), resolveWorkspaceKey: resolveWorkspaceByoGeminiKey, files: filesApi ?? undefined, usageStore, codex: codexProviderManager?.images ?? ports.feedImage?.codex,
+  const feedGeneration = createFeedGenerationService(createFeedGenerationPort(createFeedEditorialModelResolver({ provider, configuredProviders, resolveWorkspaceCustomLlm, usageStore, checkCreditBudget: ports.checkCreditBudget, triggerKey: 'feed_generation' }), { transport: geminiTransport, resolveWorkspaceKey: resolveWorkspaceByoGeminiKey, files: filesApi ?? undefined, usageStore, codex: codexProviderManager?.images ?? ports.feedImage?.codex,
       config: ports.feedImage?.config, billing: ports.feedImage?.billing }), feedReviewContext)
   app.use('/api/chat', optionalAuth(env.JWT_SECRET), chatRoutes({
     feedGeneration,
@@ -5035,8 +5160,15 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // registered in a workspace as a custom connector. Dark by default: the
   // route exists only when ENGINES_MCP_SECRET plus at least one engine
   // credential are set (docs/architecture/integrations/engines-mcp.md).
-  if (enginesMcpEnabled()) {
-    app.use('/api/engines/mcp', enginesMcpRoutes())
+  if (enginesMcpEnabled(process.env as EnginesEnv, managedEngineProviders)) {
+    app.use(
+      '/api/engines/mcp',
+      enginesMcpRoutes(
+        process.env as EnginesEnv,
+        externalCredentialPool,
+        managedEngineProviders,
+      ),
+    )
   }
 
   app.use(oauthMetadataRoutes({ apiUrl: env.API_URL, webUrl: env.APP_URL }))
@@ -7766,17 +7898,17 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
         }
       },
     }))
-  } else if (env.GEMINI_API_KEY) {
-    googleRecordingTranscribers.push(geminiTranscriber({ apiKey: env.GEMINI_API_KEY }))
+  } else if (geminiTransport) {
+    googleRecordingTranscribers.push(geminiTranscriber({ transport: geminiTransport }))
   }
-  if (env.DASHSCOPE_API_KEY) {
+  if (dashscopeMediaKey) {
     dashscopeRecordingTranscribers.push(qwenAsrTranscriber({
-      apiKey: env.DASHSCOPE_API_KEY,
+      apiKey: dashscopeMediaKey,
       baseUrl: dashscopeBaseUrl,
       ...(env.DASHSCOPE_ASR_MODEL ? { model: env.DASHSCOPE_ASR_MODEL } : {}),
     }))
     dashscopeRecordingTranscribers.push(qwenFiletransTranscriber({
-      apiKey: env.DASHSCOPE_API_KEY,
+      apiKey: dashscopeMediaKey,
       baseUrl: dashscopeBaseUrl,
       ...(env.DASHSCOPE_FILETRANS_MODEL ? { model: env.DASHSCOPE_FILETRANS_MODEL } : {}),
     }))

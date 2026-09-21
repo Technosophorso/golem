@@ -65,7 +65,11 @@
  */
 
 import type { TokenUsage } from '../providers/types.js'
-import { aiStudioTransport, type GoogleTransport } from '../providers/google-transport.js'
+import {
+  aiStudioTransport,
+  authorizeGoogleRequest,
+  type GoogleTransport,
+} from '../providers/google-transport.js'
 
 const FILES_BASE = 'https://generativelanguage.googleapis.com'
 const DEFAULT_MODEL = 'gemini-2.5-flash'
@@ -543,12 +547,13 @@ async function generateWindow(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
+    const authorization = await authorizeGoogleRequest(transport)
     const res = await fetchWithTransientRetry(
       fetchFn,
       transport.endpoint(model, 'streamGenerateContent', { alt: 'sse' }),
       {
         method: 'POST',
-        headers: await transport.headers(),
+        headers: authorization.headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       },
@@ -556,7 +561,11 @@ async function generateWindow(
     if (!res.ok) {
       throw new Error(`Gemini transcription failed (HTTP ${res.status}): ${(await res.text().catch(() => '')).slice(0, 300)}`)
     }
-    return await consumeGeminiSSE(res)
+    const out = await consumeGeminiSSE(res)
+    if (out.usage && authorization.recordSpend) {
+      await authorization.recordSpend(model, out.usage).catch(() => {})
+    }
+    return out
   } finally {
     clearTimeout(timer)
   }
@@ -849,12 +858,13 @@ async function generateChunkWindow(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
+    const authorization = await authorizeGoogleRequest(transport)
     const res = await fetchWithTransientRetry(
       fetchFn,
       transport.endpoint(model, 'streamGenerateContent', { alt: 'sse' }),
       {
         method: 'POST',
-        headers: await transport.headers(),
+        headers: authorization.headers,
         body: JSON.stringify(body),
         signal: controller.signal,
       },
@@ -864,6 +874,9 @@ async function generateChunkWindow(
       throw new Error(`Gemini chunk transcription failed (HTTP ${res.status}): ${(await res.text().catch(() => '')).slice(0, 300)}`)
     }
     const out = await consumeGeminiSSE(res)
+    if (out.usage && authorization.recordSpend) {
+      await authorization.recordSpend(model, out.usage).catch(() => {})
+    }
     return { text: out.text, usage: out.usage }
   } finally {
     clearTimeout(timer)

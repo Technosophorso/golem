@@ -99,6 +99,7 @@ export {
 export {
   createEmbedderForAdapter,
   createVertexEmbedder,
+  createAiStudioEmbedder,
   createDashScopeEmbedder,
   VERTEX_EMBEDDING_MODEL_ID,
   DASHSCOPE_EMBEDDING_MODEL_ID,

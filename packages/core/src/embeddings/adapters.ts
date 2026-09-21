@@ -22,9 +22,13 @@
  *    embedding side of adapter switching.
  */
 
-import type { GoogleTransport } from '../providers/google-transport.js'
+import {
+  authorizeGoogleRequest,
+  type GoogleTransport,
+} from '../providers/google-transport.js'
 import type { Embedder } from './embedder.js'
 import { GEMINI_EMBEDDING_DIMENSIONS, GEMINI_EMBEDDING_MODEL_ID, createGeminiEmbedder } from './embedder.js'
+import type { ExternalCredentialPool } from '../providers/credential-pool.js'
 
 /**
  * Vertex serves the same embedding family as AI Studio (`gemini-embedding-001`),
@@ -53,9 +57,15 @@ function estimateCost(texts: string[]): number {
  * Which embedder an adapter uses. Mirrors `LLM_ADAPTER`.
  */
 export type EmbedderAdapterConfig =
-  | { adapter: 'google-ai-studio'; apiKey: string }
+  | { adapter: 'google-ai-studio'; apiKey?: string; transport?: GoogleTransport }
   | { adapter: 'vertex'; transport: GoogleTransport }
-  | { adapter: 'alicloud'; apiKey: string; baseUrl: string }
+  | {
+      adapter: 'alicloud'
+      apiKey: string
+      baseUrl: string
+      credentialPool?: ExternalCredentialPool
+      systemFallback?: string
+    }
 
 /**
  * Build the embedder for the active adapter.
@@ -73,10 +83,74 @@ export function createEmbedderForAdapter(
     case 'vertex':
       return createVertexEmbedder(config.transport, opts)
     case 'alicloud':
-      return createDashScopeEmbedder(config.apiKey, config.baseUrl, opts)
+      return config.credentialPool
+        ? createCredentialPoolDashScopeEmbedder(
+            config.credentialPool,
+            config.systemFallback,
+            config.baseUrl,
+            opts,
+          )
+        : createDashScopeEmbedder(config.apiKey, config.baseUrl, opts)
     case 'google-ai-studio':
     default:
-      return createGeminiEmbedder(config.apiKey, opts)
+      return config.transport
+        ? createAiStudioEmbedder(config.transport, opts)
+        : createGeminiEmbedder(config.apiKey ?? '', opts)
+  }
+}
+
+type AiStudioBatchEmbedResponse = {
+  embeddings?: Array<{ values?: number[] }>
+}
+
+/** AI Studio embedder over a live credential-resolving Google transport. */
+export function createAiStudioEmbedder(
+  transport: GoogleTransport,
+  opts: { signal?: AbortSignal } = {},
+): Embedder {
+  return {
+    dimensions: GEMINI_EMBEDDING_DIMENSIONS,
+    model_id: GEMINI_EMBEDDING_MODEL_ID,
+    estimateCost,
+    async embed(texts: string[]): Promise<number[][]> {
+      if (texts.length === 0) return []
+      const authorization = await authorizeGoogleRequest(transport)
+      const response = await fetch(transport.endpoint(GEMINI_EMBEDDING_MODEL_ID.replace('gemini:', ''), 'batchEmbedContents'), {
+        method: 'POST',
+        headers: authorization.headers,
+        body: JSON.stringify({
+          requests: texts.map((text) => ({
+            model: `models/${GEMINI_EMBEDDING_MODEL_ID.replace('gemini:', '')}`,
+            content: { parts: [{ text }] },
+            outputDimensionality: GEMINI_EMBEDDING_DIMENSIONS,
+          })),
+        }),
+        signal: opts.signal,
+      })
+      if (!response.ok) {
+        throw new Error(`Gemini embedding API error ${response.status}: ${await response.text()}`)
+      }
+      const json = (await response.json()) as AiStudioBatchEmbedResponse
+      const embeddings = json.embeddings ?? []
+      if (embeddings.length !== texts.length) {
+        throw new Error(`Gemini embedding API returned ${embeddings.length} vectors for ${texts.length} inputs`)
+      }
+      const vectors = embeddings.map((embedding, index) => {
+        const values = embedding.values
+        if (!values || values.length !== GEMINI_EMBEDDING_DIMENSIONS) {
+          throw new Error(
+            `Gemini embedding API returned vector of length ${values?.length ?? 0} ` +
+            `for input ${index}; expected ${GEMINI_EMBEDDING_DIMENSIONS}`,
+          )
+        }
+        return values
+      })
+      if (authorization.recordSpend) {
+        const inputTokens = texts.reduce((sum, text) => sum + Math.ceil(text.length / 4), 0)
+        await authorization.recordSpend(GEMINI_EMBEDDING_MODEL_ID, { inputTokens, outputTokens: 0 }).catch(() => {})
+      }
+      return vectors
+    },
   }
 }
 
@@ -209,6 +283,36 @@ export function createDashScopeEmbedder(
           }
           return d.embedding
         }))
+      }
+      return vectors
+    },
+  }
+}
+
+/** DashScope embedder whose credential is selected for each submitted batch. */
+function createCredentialPoolDashScopeEmbedder(
+  pool: ExternalCredentialPool,
+  systemFallback: string | undefined,
+  baseUrl: string,
+  opts: { signal?: AbortSignal } = {},
+): Embedder {
+  return {
+    dimensions: GEMINI_EMBEDDING_DIMENSIONS,
+    model_id: DASHSCOPE_EMBEDDING_MODEL_ID,
+    estimateCost,
+    async embed(texts: string[]): Promise<number[][]> {
+      if (texts.length === 0) return []
+      const lease = await pool.resolve('dashscope', systemFallback)
+      if (!lease) throw new Error('No eligible DashScope credential is configured')
+      const vectors = await createDashScopeEmbedder(lease.secret, baseUrl, opts).embed(texts)
+      const costUsd = estimateCost(texts)
+      if (costUsd > 0) {
+        await lease.recordSpend(costUsd).catch((error) => {
+          console.error(
+            '[provider-credentials] failed to record DashScope embedding spend',
+            error instanceof Error ? error.message : String(error),
+          )
+        })
       }
       return vectors
     },

@@ -13,6 +13,9 @@
 import type { SearchProvider, SearchResult } from './search-stack.js'
 import { retryAfterMs, SearchProviderError } from './_fetch-error.js'
 import { clampResultCount, stripHtmlTags } from './search-stack.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { flatSearchCostUsd } from '../../billing/search-provider-rates.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 const BAIDU_ENDPOINT = 'https://qianfan.baidubce.com/v2/ai_search/web_search'
 
@@ -32,10 +35,11 @@ type BaiduResponse = {
   message?: string
 }
 
-export const baiduProvider: SearchProvider = {
+export function createBaiduProvider(pool?: ExternalCredentialPool): SearchProvider {
+  return {
   name: 'baidu',
 
-  available: () => Boolean(process.env.BAIDU_SEARCH_API_KEY),
+  available: () => Boolean(pool || process.env.BAIDU_SEARCH_API_KEY),
 
   // Baidu documents a low default QPS. Keep exact-provider panels serial so
   // one panel does not create its own avoidable burst; 429s still use the
@@ -43,14 +47,14 @@ export const baiduProvider: SearchProvider = {
   panelConcurrency: 1,
 
   async search(query, maxResults, signal): Promise<SearchResult[]> {
-    const token = process.env.BAIDU_SEARCH_API_KEY
-    if (!token) return []
+    const lease = await resolveToolCredential(pool, 'baidu', process.env.BAIDU_SEARCH_API_KEY)
+    if (!lease) return []
 
     const res = await fetch(BAIDU_ENDPOINT, {
       method: 'POST',
       headers: {
         Accept: 'application/json',
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${lease.secret}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -69,6 +73,7 @@ export const baiduProvider: SearchProvider = {
         retryAfterMs: retryAfterMs(res.headers.get('retry-after')),
       })
     }
+    await recordToolSpend(lease, flatSearchCostUsd('baidu'))
 
     const data = (await res.json()) as BaiduResponse
     const errorCode = data.code === undefined ? '' : String(data.code).trim()
@@ -91,4 +96,7 @@ export const baiduProvider: SearchProvider = {
       .filter((result) => result.url.startsWith('http'))
       .slice(0, maxResults)
   },
+  }
 }
+
+export const baiduProvider: SearchProvider = createBaiduProvider()

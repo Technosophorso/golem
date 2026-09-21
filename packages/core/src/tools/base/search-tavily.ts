@@ -15,6 +15,9 @@
 import type { SearchProvider, SearchResult } from './search-stack.js'
 import { retryAfterMs, SearchProviderError } from './_fetch-error.js'
 import { clampResultCount } from './search-stack.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { flatSearchCostUsd } from '../../billing/search-provider-rates.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 const TAVILY_ENDPOINT = 'https://api.tavily.com/search'
 
@@ -28,14 +31,15 @@ type TavilyResponse = {
   results?: TavilyRawResult[]
 }
 
-export const tavilyProvider: SearchProvider = {
+export function createTavilyProvider(pool?: ExternalCredentialPool): SearchProvider {
+  return {
   name: 'tavily',
 
-  available: () => Boolean(process.env.TAVILY_API_KEY),
+  available: () => Boolean(pool || process.env.TAVILY_API_KEY),
 
   async search(query, maxResults, signal): Promise<SearchResult[]> {
-    const token = process.env.TAVILY_API_KEY
-    if (!token) return []
+    const lease = await resolveToolCredential(pool, 'tavily', process.env.TAVILY_API_KEY)
+    if (!lease) return []
 
     const res = await fetch(TAVILY_ENDPOINT, {
       method: 'POST',
@@ -44,7 +48,7 @@ export const tavilyProvider: SearchProvider = {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        api_key: token,
+        api_key: lease.secret,
         query,
         max_results: clampResultCount(maxResults),
         search_depth: 'basic',
@@ -61,6 +65,7 @@ export const tavilyProvider: SearchProvider = {
         retryAfterMs: retryAfterMs(res.headers.get('retry-after')),
       })
     }
+    await recordToolSpend(lease, flatSearchCostUsd('tavily'))
 
     const data = (await res.json()) as TavilyResponse
     const raw = data.results ?? []
@@ -73,4 +78,7 @@ export const tavilyProvider: SearchProvider = {
       .filter((r) => r.url && r.url.startsWith('http'))
       .slice(0, maxResults)
   },
+  }
 }
+
+export const tavilyProvider: SearchProvider = createTavilyProvider()

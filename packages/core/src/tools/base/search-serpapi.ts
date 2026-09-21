@@ -15,6 +15,9 @@
 import type { SearchProvider, SearchResult } from './search-stack.js'
 import { retryAfterMs, SearchProviderError } from './_fetch-error.js'
 import { clampResultCount } from './search-stack.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { flatSearchCostUsd } from '../../billing/search-provider-rates.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 const SERPAPI_ENDPOINT = 'https://serpapi.com/search.json'
 
@@ -32,20 +35,21 @@ type SerpApiResponse = {
   error?: string
 }
 
-export const serpApiProvider: SearchProvider = {
+export function createSerpApiProvider(pool?: ExternalCredentialPool): SearchProvider {
+  return {
   name: 'serpapi',
 
-  available: () => Boolean(process.env.SERPAPI_API_KEY),
+  available: () => Boolean(pool || process.env.SERPAPI_API_KEY),
 
   async search(query, maxResults, signal): Promise<SearchResult[]> {
-    const token = process.env.SERPAPI_API_KEY
-    if (!token) return []
+    const lease = await resolveToolCredential(pool, 'serpapi', process.env.SERPAPI_API_KEY)
+    if (!lease) return []
 
     const url = new URL(SERPAPI_ENDPOINT)
     url.searchParams.set('engine', 'google')
     url.searchParams.set('q', query)
     url.searchParams.set('num', String(clampResultCount(maxResults)))
-    url.searchParams.set('api_key', token)
+    url.searchParams.set('api_key', lease.secret)
 
     const res = await fetch(url, {
       headers: { Accept: 'application/json' },
@@ -59,6 +63,7 @@ export const serpApiProvider: SearchProvider = {
         retryAfterMs: retryAfterMs(res.headers.get('retry-after')),
       })
     }
+    await recordToolSpend(lease, flatSearchCostUsd('serpapi'))
 
     const data = (await res.json()) as SerpApiResponse
     // SerpAPI uses a top-level `error` for both failures and successful empty
@@ -86,4 +91,7 @@ export const serpApiProvider: SearchProvider = {
       .filter((r) => r.url && r.url.startsWith('http'))
       .slice(0, maxResults)
   },
+  }
 }
+
+export const serpApiProvider: SearchProvider = createSerpApiProvider()

@@ -23,6 +23,9 @@
  */
 
 import type { TokenSource } from './google-auth.js'
+import type { TokenUsage } from './types.js'
+import type { ExternalCredentialPool } from './credential-pool.js'
+import { calculateCost } from '../billing/cost-tracker.js'
 
 export const AI_STUDIO_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
 
@@ -45,6 +48,31 @@ export type GoogleTransport = {
   endpoint(modelId: string, method: string, query?: Record<string, string>): string
   /** Request headers including auth. Awaited per request; token sources cache. */
   headers(): Promise<Record<string, string>>
+  /**
+   * Bind authentication and accounting to one credential lease. Callers that
+   * meter spend use this instead of resolving headers and spend separately,
+   * so concurrent budget rollover cannot charge the next key for work the
+   * previous key authorized.
+   */
+  authorize?(): Promise<{
+    headers: Record<string, string>
+    recordSpend?(model: string, usage: TokenUsage): Promise<void>
+  }>
+  /** Optional platform-key budget accounting after a successful request. */
+  recordSpend?(model: string, usage: TokenUsage): Promise<void>
+}
+
+export async function authorizeGoogleRequest(transport: GoogleTransport): Promise<{
+  headers: Record<string, string>
+  recordSpend?(model: string, usage: TokenUsage): Promise<void>
+}> {
+  if (transport.authorize) return transport.authorize()
+  return {
+    headers: await transport.headers(),
+    ...(transport.recordSpend
+      ? { recordSpend: (model, usage) => transport.recordSpend!(model, usage) }
+      : {}),
+  }
 }
 
 function withQuery(url: string, query?: Record<string, string>): string {
@@ -75,6 +103,49 @@ export function aiStudioTransport(
     },
     async headers() {
       return { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey ?? '' }
+    },
+  }
+}
+
+/** AI Studio transport whose API key is resolved live for every request. */
+export function credentialPoolAiStudioTransport(
+  pool: ExternalCredentialPool,
+  systemFallback: string | undefined,
+  baseUrl: string = AI_STUDIO_BASE_URL,
+): GoogleTransport {
+  return {
+    kind: 'ai-studio',
+    endpoint(modelId, method, query) {
+      return withQuery(`${baseUrl}/models/${modelId}:${method}`, query)
+    },
+    async headers() {
+      const lease = await pool.resolve('gemini', systemFallback)
+      return { 'Content-Type': 'application/json', 'x-goog-api-key': lease?.secret ?? '' }
+    },
+    async authorize() {
+      const lease = await pool.resolve('gemini', systemFallback)
+      return {
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': lease?.secret ?? '',
+        },
+        ...(lease
+          ? {
+              async recordSpend(model: string, usage: TokenUsage) {
+                const cost = calculateCost(model, usage)
+                if (cost <= 0) return
+                try {
+                  await lease.recordSpend(cost)
+                } catch (error) {
+                  console.error(
+                    '[provider-credentials] failed to record Gemini transport spend',
+                    error instanceof Error ? error.message : String(error),
+                  )
+                }
+              },
+            }
+          : {}),
+      }
     },
   }
 }

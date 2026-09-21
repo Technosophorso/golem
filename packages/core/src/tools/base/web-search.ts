@@ -1,27 +1,19 @@
 import { z } from 'zod'
 import { buildTool } from '../types.js'
 import { createSearchStack } from './search-stack.js'
-import { braveProvider } from './search-brave.js'
-import { serperProvider } from './search-serper.js'
-import { serpApiProvider } from './search-serpapi.js'
-import { tavilyProvider } from './search-tavily.js'
-import { baiduProvider } from './search-baidu.js'
+import { braveProvider, createBraveProvider } from './search-brave.js'
+import { createSerperProvider } from './search-serper.js'
+import { createSerpApiProvider } from './search-serpapi.js'
+import { createTavilyProvider } from './search-tavily.js'
+import { createBaiduProvider } from './search-baidu.js'
 import { duckDuckGoProvider } from './search-ddg.js'
 import { encodeExternalCostMeta } from '../../billing/external-cost.js'
 import { flatSearchCostUsd } from '../../billing/search-provider-rates.js'
 import { NO_TOOL_TIMEOUT } from '../../engine/tool-executor.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
 
 const SEARCH_PROVIDER_NAMES = ['brave', 'serper', 'serpapi', 'tavily', 'baidu', 'duckduckgo'] as const
 type SearchProviderName = (typeof SEARCH_PROVIDER_NAMES)[number]
-
-const providersByName = {
-  brave: braveProvider,
-  serper: serperProvider,
-  serpapi: serpApiProvider,
-  tavily: tavilyProvider,
-  baidu: baiduProvider,
-  duckduckgo: duckDuckGoProvider,
-} satisfies Record<SearchProviderName, typeof braveProvider>
 
 const PANEL_CONCURRENCY = 4
 const SEARCH_REQUEST_TIMEOUT_MS = 15_000
@@ -128,8 +120,6 @@ function waitForRetry(ms: number, signal: AbortSignal): Promise<boolean> {
  *
  * See docs/architecture/integrations/search-and-fetch.md.
  */
-const searchStack = createSearchStack(SEARCH_PROVIDER_NAMES.map((name) => providersByName[name]))
-
 const webSearchInputSchema = z
   .object({
     query: z.string().min(1).optional().describe('One search query. Use `queries` for an exact-provider panel.'),
@@ -200,7 +190,18 @@ const webSearchInputSchema = z
     })
   })
 
-export const webSearchTool = buildTool({
+export function createWebSearchTool(pool?: ExternalCredentialPool) {
+  const providersByName = {
+    brave: createBraveProvider(pool),
+    serper: createSerperProvider(pool),
+    serpapi: createSerpApiProvider(pool),
+    tavily: createTavilyProvider(pool),
+    baidu: createBaiduProvider(pool),
+    duckduckgo: duckDuckGoProvider,
+  } satisfies Record<SearchProviderName, typeof braveProvider>
+  const searchStack = createSearchStack(SEARCH_PROVIDER_NAMES.map((name) => providersByName[name]))
+
+  return buildTool({
   name: 'webSearch',
   description:
     "Search the web for current information. A single `query` normally uses the provider fallback stack. For a repeatable search-index measurement, set an exact `provider`; for a fixed battery, send `queries` with that provider and receive one ordered status/result row per query. Exact-provider calls never fall through to another index. Set `resultMode: measurement` to omit snippets and receive compact rank/domain rows plus optional `trackDomains` summaries; transient timeouts, 429s, and 5xx responses get at most three total attempts. Full results contain ranked title, URL, and snippet fields. The result URL and snippet are themselves usable: when the goal is to FIND or CONFIRM a page (a person's profile, a company site, an official link), the matching result URL IS the answer - report that URL and cite its snippet; you do NOT need to read the page first. Call `urlReader` only when you need content from inside a page body (prices, dates, statistics, article text) - read the 1-3 most relevant URLs ALL IN THE SAME RESPONSE so they execute in parallel (do not wait for one to finish before calling the next). Some pages (social-network profiles like LinkedIn, and other login-gated sites) cannot be read without a signed-in session; for those, give the user the result URL plus its snippet rather than reporting that nothing was found. When the results contain specific numbers (prices, dates, statistics), use the EXACT values from the results - never substitute your own knowledge. Always cite the URLs you used.",
@@ -450,4 +451,7 @@ export const webSearchTool = buildTool({
 
     return { data: { query: input.query!, results }, meta }
   },
-})
+  })
+}
+
+export const webSearchTool = createWebSearchTool()

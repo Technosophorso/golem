@@ -19,6 +19,7 @@ import { Router } from 'express'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js'
 import { createEngineTools, type EnginesEnv } from './tools.js'
+import type { ExternalCredentialPool } from '@use-brian/core'
 
 /** Constant-time bearer check (hash both sides so length never leaks). */
 export function authorizeEnginesRequest(
@@ -33,12 +34,16 @@ export function authorizeEnginesRequest(
   return timingSafeEqual(a, b)
 }
 
-export function enginesMcpRoutes(env: EnginesEnv = process.env as EnginesEnv): Router {
+export function enginesMcpRoutes(
+  env: EnginesEnv = process.env as EnginesEnv,
+  credentialPool?: ExternalCredentialPool,
+  managedProviders: ReadonlySet<string> = new Set(),
+): Router {
   const router = Router()
   const secret = env.ENGINES_MCP_SECRET ?? ''
   // Tools are built once per boot — env is process-lifetime config, and the
   // daily call counter must be shared across requests to mean anything.
-  const tools = createEngineTools(env)
+  const tools = createEngineTools(env, fetch, credentialPool, managedProviders)
 
   router.post('/', async (req, res) => {
     if (!authorizeEnginesRequest(req.headers.authorization, secret)) {
@@ -82,12 +87,16 @@ export function enginesMcpRoutes(env: EnginesEnv = process.env as EnginesEnv): R
 }
 
 /** Boot gate: mount only when the secret AND at least one engine credential exist. */
-export function enginesMcpEnabled(env: EnginesEnv = process.env as EnginesEnv): boolean {
+export function enginesMcpEnabled(
+  env: EnginesEnv = process.env as EnginesEnv,
+  managedProviders: ReadonlySet<string> = new Set(),
+): boolean {
   return Boolean(
     env.ENGINES_MCP_SECRET &&
       (env.ENGINES_OPENAI_API_KEY ||
         env.ENGINES_GEMINI_API_KEY ||
         env.ENGINES_PERPLEXITY_API_KEY ||
-        env.ENGINES_ANTHROPIC_API_KEY),
+        env.ENGINES_ANTHROPIC_API_KEY ||
+        managedProviders.size > 0),
   )
 }

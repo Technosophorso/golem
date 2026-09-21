@@ -1,7 +1,7 @@
 /** Gemini native images over the deployment's existing transport. [COMP:core/gemini-image] */
-import { FEED_IMAGE_CAPABILITY } from '@use-brian/shared'
+import { FEED_IMAGE_CAPABILITY, feedImageCost } from '@use-brian/shared'
 import sharp from 'sharp'
-import type { GoogleTransport } from './google-transport.js'
+import { authorizeGoogleRequest, type GoogleTransport } from './google-transport.js'
 export type GeneratedImageReceipt = {
   image?: { data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' };
   error?: 'image_provider_rejected' | 'image_refused' | 'image_missing' | 'image_malformed';
@@ -33,7 +33,8 @@ export function parseGeminiImageReceipt(raw: unknown): GeminiImageReceipt {
 export function createGeminiImageProvider(transport: GoogleTransport | undefined, fetcher: typeof fetch = fetch) {
   return { async generate(input: { model: string; prompt: string; aspectRatio?: string; signal: AbortSignal }): Promise<GeminiImageReceipt> {
     if (!transport) throw new Error('image_generation_unavailable')
-    const headers = await transport.headers()
+    const authorization = await authorizeGoogleRequest(transport)
+    const headers = authorization.headers
     if (transport.kind === 'ai-studio' && !headers['x-goog-api-key']) throw new Error('image_generation_unavailable')
     const response = await fetcher(transport.endpoint(input.model, 'generateContent'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal: input.signal, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input.prompt }] }], generationConfig: { candidateCount: 1, responseModalities: ['IMAGE'], maxOutputTokens: FEED_IMAGE_CAPABILITY.outputTokens, responseFormat: { image: { imageSize: FEED_IMAGE_CAPABILITY.size, aspectRatio: input.aspectRatio ?? '1:1' } }, thinkingConfig: { thinkingLevel: 'LOW', includeThoughts: false } } }) })
     if (!response.ok) { await response.body?.cancel(); return { error: 'image_provider_rejected', status: response.status, usage: { inputTokens: 0, outputTokens: 0, measured: false } } }
@@ -45,6 +46,19 @@ export function createGeminiImageProvider(transport: GoogleTransport | undefined
     if (receipt.image) {
       try { await sharp(Buffer.from(receipt.image.data, 'base64'), { failOn: 'error', limitInputPixels: FEED_IMAGE_CAPABILITY.maxImagePixels }).raw().toBuffer() }
       catch { const { image: _image, ...retained } = receipt; return { ...retained, error: 'image_malformed' } }
+    }
+    if (authorization.recordSpend) {
+      const costUsd = feedImageCost(
+        FEED_IMAGE_CAPABILITY.rates,
+        receipt.usage.inputTokens,
+        receipt.usage.outputTokens,
+        receipt.usage.imageTokens,
+      )
+      await authorization.recordSpend(input.model, {
+        inputTokens: receipt.usage.inputTokens,
+        outputTokens: receipt.usage.outputTokens,
+        calculatedCostUsd: costUsd,
+      }).catch(() => {})
     }
     return receipt
   } }
