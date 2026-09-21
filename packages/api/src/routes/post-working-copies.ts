@@ -10,7 +10,7 @@ const inputSchema = z.object({
   revision: z.number().int().min(0).max(2_000_000_000),
   mutationId: uuid,
   baseTitle: z.string().max(240).optional(),
-  create: z.object({ platform: z.enum(['instagram', 'threads', 'twitter', 'xhs', 'linkedin']) }).optional(),
+  create: z.object({ platform: z.enum(['instagram', 'threads', 'twitter', 'xhs', 'linkedin', 'email']) }).optional(),
   content: z.object({
     title: z.string().max(200), privateBrief: z.string().max(20_000),
     text: z.string().max(100_000), textEdited: z.boolean().optional(), postFormat: z.enum(['post', 'thread', 'article']),

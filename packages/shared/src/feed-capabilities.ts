@@ -12,5 +12,5 @@ export function feedImageCost(rates: FeedImageRates, inputTokens: number, output
   return (Math.max(0, inputTokens) * rates.inputPerMillion + image * rates.imagePerMillion + Math.max(0, outputTokens - image) * rates.textPerMillion) / 1_000_000
 }
 /** Existing Feed destination ceilings, shared by UI and canonical publication. */
-export const FEED_MEDIA_CAPS: Readonly<Record<string, number>> = { threads: 10, twitter: 4, instagram: 10, xhs: 9, linkedin: 20 }
-export const FEED_TEXT_CAPS: Readonly<Record<string, number>> = { twitter: 280, threads: 500, instagram: 2200, xhs: 1000, linkedin: 3000 }
+export const FEED_MEDIA_CAPS: Readonly<Record<string, number>> = { threads: 10, twitter: 4, instagram: 10, xhs: 9, linkedin: 20, email: 20 }
+export const FEED_TEXT_CAPS: Readonly<Record<string, number>> = { twitter: 280, threads: 500, instagram: 2200, xhs: 1000, linkedin: 3000, email: 100_000 }

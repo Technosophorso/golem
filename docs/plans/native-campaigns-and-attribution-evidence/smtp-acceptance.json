@@ -1,0 +1,10 @@
+{
+  "status": "passed",
+  "messages": 2,
+  "separateRecipientEnvelopes": true,
+  "dkimSigned": true,
+  "oneClickHeaders": true,
+  "clickRedirect": "https://destination.example/offer?utm_source=newsletter&utm_medium=email&utm_campaign=fixture&utm_content=email_body&brian_link=[link-id]",
+  "clickToConversion": true,
+  "unsupportedProviderMetricsRemainUnavailable": true
+}

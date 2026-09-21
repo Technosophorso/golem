@@ -15,7 +15,53 @@ export type CrmPrivacyCoverageEntry = {
   orderBy:string
   reason:string
 }
+
+const campaignPrivacyEntry = (
+  domain: string,
+  columns: readonly string[],
+  subjectWhere: string | null,
+  excludedColumns: readonly string[] = [],
+  subjectRedactions: Record<string, string> = {},
+  orderBy = 't.id',
+): CrmPrivacyCoverageEntry => ({
+  domain, columns, excludedColumns, workspaceWhere: 'true', subjectWhere,
+  subjectRedactions, transforms: {}, orderBy,
+  reason: subjectWhere
+    ? 'Native campaign evidence is exported with explicit subject attribution and private replay material removed.'
+    : 'Workspace campaign configuration or aggregate evidence has no safe single-subject projection.',
+})
+
+const CAMPAIGN_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
+  campaignPrivacyEntry('campaigns', ['id','workspace_id','owner_user_id','name','objective','state','timezone','primary_conversion_kind','starts_at','ends_at','version','created_at','updated_at','archived_at'], null),
+  campaignPrivacyEntry('campaign_placements', ['id','workspace_id','campaign_id','session_id','channel','placement_kind','placement_key','sending_account_ref','approved_revision','publication_reference','published_at','dispatch_id','created_by','created_at','updated_at'], null),
+  campaignPrivacyEntry('campaign_links', ['id','workspace_id','campaign_id','placement_id','public_id','destination_url','destination_hash','utm_snapshot','created_by','enabled','created_at','updated_at','disabled_at'], null, ['destination_hash']),
+  campaignPrivacyEntry('campaign_sites', ['id','workspace_id','public_id','name','allowed_origins','conversion_definitions','storage_mode','cookie_domain','site_group_key','raw_retention_days','aggregate_retention_months','enabled','version','created_by','created_at','updated_at'], null),
+  campaignPrivacyEntry('campaign_site_credentials', ['id','workspace_id','site_id','key_prefix','secret_hash','grants','created_by','created_at','revoked_at'], null, ['secret_hash']),
+  campaignPrivacyEntry('campaign_events', ['id','workspace_id','site_id','event_id','request_fingerprint','event_type','evidence_level','link_id','session_key','visitor_key','occurred_at','received_at','page_path','referrer_origin','utm_snapshot','metadata','is_test','bot_class','classification_version','expires_at'],
+    `t.session_key IN(SELECT l.session_key FROM campaign_subject_links l WHERE l.workspace_id=$1 AND l.contact_id=$2 AND l.session_key IS NOT NULL)`,
+    ['request_fingerprint'], { request_fingerprint: 'NULL' }),
+  campaignPrivacyEntry('campaign_subject_links', ['id','workspace_id','site_id','session_key','contact_id','application_subject_kind','application_subject_id','source','purpose_key','evidence','linked_at','erased_at'], 't.contact_id=$2'),
+  campaignPrivacyEntry('campaign_conversions', ['id','workspace_id','site_id','conversion_kind','external_outcome_id','request_fingerprint','occurred_at','evidence_level','subject_link_id','contact_id','deal_id','attribution_snapshot','value_minor','currency','metadata','is_test','created_at'],
+    't.contact_id=$2 OR t.subject_link_id IN(SELECT id FROM campaign_subject_links WHERE workspace_id=$1 AND contact_id=$2)',
+    ['request_fingerprint'], { request_fingerprint: 'NULL' }),
+  campaignPrivacyEntry('campaign_conversion_outbox', ['id','workspace_id','site_id','outcome_kind','external_outcome_id','payload','payload_hash','state','attempts','available_at','lease_token','lease_expires_at','last_error','created_at','updated_at'],
+    `t.payload->>'contactId'=$2::text`, ['payload_hash','lease_token'], { payload_hash: 'NULL', lease_token: 'NULL' }),
+  campaignPrivacyEntry('campaign_email_dispatches', ['id','workspace_id','campaign_id','placement_id','approved_revision','sender_ref','reply_to','purpose_key','segment_id','segment_version','audience_snapshot','content_snapshot','tracking_options','authority_snapshot','request_fingerprint','state','scheduled_at','approved_by','approved_at','state_changed_at','started_at','completed_at','created_at','updated_at'], null,
+    ['request_fingerprint','authority_snapshot']),
+  campaignPrivacyEntry('campaign_email_recipients', ['id','workspace_id','dispatch_id','contact_id','email_address','address_hash','personalization_snapshot','eligibility_snapshot','delivery_id','state','exclusion_reason','admitted_at','completed_at','created_at','updated_at'], 't.contact_id=$2', ['address_hash'], { address_hash: 'NULL' }),
+  campaignPrivacyEntry('campaign_email_jobs', ['id','workspace_id','dispatch_id','recipient_id','state','attempts','available_at','lease_token','lease_expires_at','last_error','created_at','updated_at'],
+    'EXISTS(SELECT 1 FROM campaign_email_recipients r WHERE r.workspace_id=$1 AND r.id=t.recipient_id AND r.contact_id=$2)', ['lease_token'], { lease_token: 'NULL' }),
+  campaignPrivacyEntry('campaign_unsubscribe_tokens', ['id','workspace_id','recipient_id','purpose_key','token_hash','all_marketing','expires_at','used_at','revoked_at','created_at'],
+    'EXISTS(SELECT 1 FROM campaign_email_recipients r WHERE r.workspace_id=$1 AND r.id=t.recipient_id AND r.contact_id=$2)', ['token_hash'], { token_hash: 'NULL' }),
+  campaignPrivacyEntry('campaign_email_link_tokens', ['id','workspace_id','recipient_id','link_id','token_hash','expires_at','revoked_at','created_at'],
+    'EXISTS(SELECT 1 FROM campaign_email_recipients r WHERE r.workspace_id=$1 AND r.id=t.recipient_id AND r.contact_id=$2)', ['token_hash'], { token_hash: 'NULL' }),
+  campaignPrivacyEntry('campaign_daily_metrics', ['id','workspace_id','metric_date','campaign_id','placement_id','link_id','site_id','conversion_kind','attribution_model','is_test','raw_redirect_requests','filtered_redirect_requests','page_views','sessions','visitors','verified_conversions','leads','deals','email_accepted','updated_at'], null),
+  campaignPrivacyEntry('campaign_command_receipts', ['workspace_id','idempotency_key','request_fingerprint','actor_kind','actor_reference','result','created_at'],
+    `t.result->>'contactId'=$2::text`, ['idempotency_key','request_fingerprint'], { idempotency_key: 'NULL', request_fingerprint: 'NULL' }, 't.idempotency_key'),
+]
+
 export const CRM_PRIVACY_COVERAGE: readonly CrmPrivacyCoverageEntry[] = [
+  ...CAMPAIGN_PRIVACY_COVERAGE,
   {
     domain:'crm_erasure_journal_targets',columns:['table_name','key_columns','capture_inserts'],
     excludedColumns:['table_name','key_columns','capture_inserts'],workspaceWhere:'false',workspacePredicate:'false',

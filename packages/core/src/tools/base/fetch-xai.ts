@@ -21,6 +21,9 @@ import {
   postXaiResponses,
   XAI_X_URL_QUOTE_MODEL,
 } from '../../providers/xai.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { calculateCost } from '../../billing/cost-tracker.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 const X_HOSTS = new Set([
   'x.com',
@@ -67,17 +70,18 @@ export function parseStatusUrl(url: string): ParsedStatus | undefined {
   return { handle, postId }
 }
 
-export const xaiFetchProvider: FetchProvider = {
+export function createXaiFetchProvider(pool?: ExternalCredentialPool): FetchProvider {
+  return {
   name: 'xai',
 
   canHandle: (url) => {
-    if (!process.env.XAI_API_KEY) return false
+    if (!pool && !process.env.XAI_API_KEY) return false
     return isXHost(url)
   },
 
   async fetch(url, signal): Promise<FetchResult | null> {
-    const apiKey = process.env.XAI_API_KEY
-    if (!apiKey) return null
+    const lease = await resolveToolCredential(pool, 'xai', process.env.XAI_API_KEY)
+    if (!lease) return null
 
     const parsed = parseStatusUrl(url)
     const query = parsed
@@ -91,7 +95,7 @@ export const xaiFetchProvider: FetchProvider = {
 
     const model = XAI_X_URL_QUOTE_MODEL
     const data = await postXaiResponses({
-      apiKey,
+      apiKey: lease.secret,
       model,
       inputText: query,
       tools: [xSearchTool],
@@ -104,6 +108,7 @@ export const xaiFetchProvider: FetchProvider = {
     if (!text) return null
 
     const usage = extractXaiUsage(data)
+    await recordToolSpend(lease, calculateCost(model, usage))
     return {
       url,
       title: parsed ? `X post by @${parsed.handle}` : undefined,
@@ -119,4 +124,7 @@ export const xaiFetchProvider: FetchProvider = {
       },
     }
   },
+  }
 }
+
+export const xaiFetchProvider: FetchProvider = createXaiFetchProvider()

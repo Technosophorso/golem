@@ -1,5 +1,6 @@
 /** Feed's portable composition and command boundary. [COMP:feed/composition-model] */
 import { z } from 'zod'
+import { campaignEmailMetadataSchema } from './campaigns.js'
 
 export const FEED_COMPOSITION_VERSION = 1 as const
 export const FEED_CONTENT_LIMIT = 100_000
@@ -123,6 +124,7 @@ export const feedCommandSchema = z.discriminatedUnion('kind', [
     title: z.string().max(200).optional(), privateBrief: z.string().max(20_000).optional(),
     postFormat: z.enum(['post', 'thread', 'article']).optional(),
     article: z.object({ sourceUrl: z.string().max(2048), title: z.string().max(2000), description: z.string().max(20_000) }).strict().optional() }).strict(),
+  z.object({ kind: z.literal('email'), metadata: campaignEmailMetadataSchema }).strict(),
 ])
 export type FeedCommand = z.infer<typeof feedCommandSchema>
 export const feedCommandRequestSchema = z.object({ mutationId: feedIdSchema, expectedRevision: revision, commands: z.array(feedCommandSchema).min(1).max(100) }).strict()

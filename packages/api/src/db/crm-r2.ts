@@ -951,11 +951,11 @@ export async function listCrmRecordRelationships(
       listRelatedKind(
         ctx,
         'deal',
-        (index) => `e.attributes->>'contact_id' = $${index}
+        (index) => `e.attributes->>'contact_id' = $${index}::text
           OR EXISTS (
             SELECT 1 FROM crm_deal_contacts dc
              WHERE dc.workspace_id = e.workspace_id
-               AND dc.deal_id = e.id AND dc.contact_id = $${index}
+               AND dc.deal_id = e.id AND dc.contact_id = $${index}::uuid
           )`,
         [record.id],
       ),
@@ -974,11 +974,11 @@ export async function listCrmRecordRelationships(
     const deals = await listRelatedKind(
       ctx,
       'deal',
-      (index) => `e.attributes->>'company_id' = $${index}
-        OR ($${index + 1}::text[] <> '{}'::text[] AND EXISTS (
+      (index) => `e.attributes->>'company_id' = $${index}::text
+        OR (cardinality($${index + 1}::uuid[]) > 0 AND EXISTS (
           SELECT 1 FROM crm_deal_contacts dc
            WHERE dc.workspace_id = e.workspace_id AND dc.deal_id = e.id
-             AND dc.contact_id = ANY($${index + 1}::text[])
+             AND dc.contact_id = ANY($${index + 1}::uuid[])
         ))`,
       [record.id, visibleContactIds],
     )
@@ -995,11 +995,11 @@ export async function listCrmRecordRelationships(
     listRelatedKind(
       ctx,
       'person',
-      (index) => `($${index}::text IS NOT NULL AND e.id = $${index})
+      (index) => `($${index}::uuid IS NOT NULL AND e.id = $${index}::uuid)
         OR EXISTS (
           SELECT 1 FROM crm_deal_contacts dc
            WHERE dc.workspace_id = e.workspace_id
-             AND dc.deal_id = $${index + 1} AND dc.contact_id = e.id
+             AND dc.deal_id = $${index + 1}::uuid AND dc.contact_id = e.id
         )`,
       [contactId, record.id],
     ),

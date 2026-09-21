@@ -39,7 +39,12 @@
  */
 
 import type { LLMProvider, TokenUsage } from '../providers/types.js'
-import type { GoogleTransport } from '../providers/google-transport.js'
+import type { ExternalCredentialPool, ExternalCredentialLease } from '../providers/credential-pool.js'
+import { calculateCost } from '../billing/cost-tracker.js'
+import {
+  authorizeGoogleRequest,
+  type GoogleTransport,
+} from '../providers/google-transport.js'
 import {
   DASHSCOPE_CHUNK_PAGES,
   DASHSCOPE_RENDER_WIDTH,
@@ -61,6 +66,8 @@ export type MediaBackend =
       kind: 'dashscope'
       apiKey: string
       baseUrl: string
+      credentialPool?: ExternalCredentialPool
+      systemFallback?: string
       /** Model id overrides — a deployment's Model Studio catalog varies by
        *  region and over time, so the built-in defaults (`qwen-vl-max` /
        *  `qwen3-asr-flash` / `qwen-long`) are not guaranteed to exist on every
@@ -206,9 +213,10 @@ async function googleGenerate(
   errorLabel: string,
   signal: AbortSignal,
 ): Promise<MediaResult> {
+  const authorization = await authorizeGoogleRequest(transport)
   const response = await fetchFn(transport.endpoint(model, 'generateContent'), {
     method: 'POST',
-    headers: await transport.headers(),
+    headers: authorization.headers,
     body: JSON.stringify({
       contents: [{ role: 'user', parts }],
       generationConfig: { temperature: 0, maxOutputTokens },
@@ -229,9 +237,13 @@ async function googleGenerate(
     .join('')
     .trim()
 
+  const usage = extractGoogleUsage(payload.usageMetadata)
+  if (usage && authorization.recordSpend) {
+    await authorization.recordSpend(model, usage).catch(() => {})
+  }
   return {
     text,
-    usage: extractGoogleUsage(payload.usageMetadata),
+    usage,
     model,
     truncated: payload.candidates?.[0]?.finishReason === 'MAX_TOKENS',
   }
@@ -703,7 +715,12 @@ export async function runMediaUnderstanding(
   backend: MediaBackend,
   req: MediaRequest,
 ): Promise<MediaResult> {
-  if (backend.kind === 'dashscope') return runDashScope(backend, req)
+  if (backend.kind === 'dashscope') {
+    const resolved = await resolveDashScopeBackend(backend)
+    const result = await runDashScope(resolved.backend, req)
+    await recordDashScopeMediaSpend(resolved.lease, result)
+    return result
+  }
   if (backend.kind === 'provider') return runProviderBacked(backend, req)
   return runGoogle(backend.transport, req)
 }
@@ -739,12 +756,16 @@ export async function runFrameBatchUnderstanding(
 ): Promise<MediaResult> {
   if (req.frames.length === 0) throw new Error(`${req.errorLabel}: empty frame batch`)
   const fetchFn = req.fetchFn ?? fetch
-  const caller: VisionCaller =
-    backend.kind === 'dashscope'
-      ? dashScopeVisionCaller(fetchFn, backend, req.errorLabel)
-      : backend.kind === 'provider'
-        ? providerVisionCaller(backend.provider, backend.model)
-        : googleVisionCaller(fetchFn, backend.transport, req.model, req.errorLabel)
+  let resolvedDashScope: Awaited<ReturnType<typeof resolveDashScopeBackend>> | undefined
+  let caller: VisionCaller
+  if (backend.kind === 'dashscope') {
+    resolvedDashScope = await resolveDashScopeBackend(backend)
+    caller = dashScopeVisionCaller(fetchFn, resolvedDashScope.backend, req.errorLabel)
+  } else if (backend.kind === 'provider') {
+    caller = providerVisionCaller(backend.provider, backend.model)
+  } else {
+    caller = googleVisionCaller(fetchFn, backend.transport, req.model, req.errorLabel)
+  }
   const result = await caller({
     images: req.frames.map((frame, i) => ({ pageNumber: i + 1, buffer: frame.buffer, mime: frame.mime })),
     prompt: req.prompt,
@@ -752,10 +773,43 @@ export async function runFrameBatchUnderstanding(
     timeoutMs: req.timeoutMs,
     ...(req.signal ? { signal: req.signal } : {}),
   })
-  return {
+  const mediaResult: MediaResult = {
     text: result.text,
     usage: result.usage,
     model: result.model,
     ...(result.truncated !== undefined ? { truncated: result.truncated } : {}),
   }
+  await recordDashScopeMediaSpend(resolvedDashScope?.lease, mediaResult)
+  return mediaResult
+}
+
+async function resolveDashScopeBackend(
+  backend: Extract<MediaBackend, { kind: 'dashscope' }>,
+): Promise<{
+  backend: Extract<MediaBackend, { kind: 'dashscope' }>
+  lease?: ExternalCredentialLease
+}> {
+  if (!backend.credentialPool) return { backend }
+  const lease = await backend.credentialPool.resolve('dashscope', backend.systemFallback)
+  if (!lease) throw new Error('No eligible DashScope credential is configured')
+  return { backend: { ...backend, apiKey: lease.secret }, lease }
+}
+
+async function recordDashScopeMediaSpend(
+  lease: ExternalCredentialLease | undefined,
+  result: MediaResult,
+): Promise<void> {
+  if (!lease) return
+  const costUsd = result.usageByModel?.length
+    ? result.usageByModel.reduce((sum, item) => sum + calculateCost(item.model, item.usage), 0)
+    : result.usage
+      ? calculateCost(result.model, result.usage)
+      : 0
+  if (costUsd <= 0) return
+  await lease.recordSpend(costUsd).catch((error) => {
+    console.error(
+      '[provider-credentials] failed to record DashScope media spend',
+      error instanceof Error ? error.message : String(error),
+    )
+  })
 }

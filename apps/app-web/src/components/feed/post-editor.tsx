@@ -106,7 +106,7 @@ import { useIsOffline } from "@/lib/offline/use-offline-sync";
 import { feedCachedJson } from "@/lib/offline/feed-cache";
 import {
   FEED_LOCAL_CHANGED, blankFeedContent, createLocalFeedPost, loadFeedWorkingCopy,
-  patchFeedWorkingCopy, readLocalFeedPost, forkLocalFeedPost, ensureFeedComposition,
+  patchFeedWorkingCopy, readLocalFeedPost, forkLocalFeedPost, ensureFeedComposition, retryFeedWorkingCopy,
   readFeedNewPostForm, writeFeedNewPostForm,
   type FeedWorkingContent, type LocalFeedPost,
 } from "@/lib/offline/feed-offline";
@@ -709,6 +709,17 @@ function PostPane({
     finally { setBusy(false); }
   }
 
+  async function retrySync() {
+    if (offline || readOnly || localSaving > 0) return;
+    setLocalSaving(count => count + 1); setError(null);
+    try {
+      await retryFeedWorkingCopy(assistantId, sessionId!);
+      setLocalPost(await readLocalFeedPost(assistantId, sessionId!));
+      collaboration.refresh();
+    } catch { setLocalSaveError(true); }
+    finally { setLocalSaving(count => count - 1); }
+  }
+
   async function saveAsNewPost() {
     if (!localPost || !workspace.canDraft) return;
     try {
@@ -1012,7 +1023,8 @@ function PostPane({
                             event.currentTarget.blur();
                           }
                         }}
-                        className="h-9 md:h-7 min-w-0 w-full truncate rounded-md border border-transparent bg-transparent px-1 text-[16px] md:text-[15px] font-semibold outline-none transition-colors hover:border-border/70 focus:border-border focus:bg-background disabled:opacity-60"
+                        style={{ fieldSizing: "content" } as React.CSSProperties}
+                        className="h-9 md:h-7 min-w-0 max-w-[calc(100%_-_1.125rem)] w-auto truncate rounded-md border border-transparent bg-transparent px-1 text-[16px] md:text-[15px] font-semibold outline-none transition-colors hover:border-border/70 focus:border-border focus:bg-background disabled:opacity-60"
                       />
                       <Pencil className="size-3 shrink-0 text-muted-foreground/70" aria-hidden />
                     </div>
@@ -1118,6 +1130,7 @@ function PostPane({
             </header>
 
             {missingSlots.length ? <div role="status" className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"><span>{tg.draftSlots}</span>{missingSlots.map((id, index) => <button key={id} className="min-h-11 rounded-md px-2 text-xs underline decoration-dotted underline-offset-4 hover:bg-muted" onClick={() => { setViewMode('edit'); requestAnimationFrame(() => { const target = document.querySelector<HTMLElement>(`[data-placeholder-id="${id}"]`); target?.scrollIntoView({ block: 'center' }); target?.querySelector<HTMLInputElement>('input')?.focus(); }); }}>{tg.openSlot} {index + 1}</button>)}</div> : null}
+            {localPost?.error && !readOnly && workspace.canDraft ? <Button type="button" variant="outline" disabled={offline || localSaving > 0} onClick={() => void retrySync()}>{te.retrySync}</Button> : null}
             {(localPost?.error || (readOnly && localPost?.dirty)) && workspace.canDraft ? <Button type="button" variant="outline" onClick={() => void saveAsNewPost()}>{te.saveAsNewPost}</Button> : null}
 
             {error ? (

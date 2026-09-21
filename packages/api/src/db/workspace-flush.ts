@@ -57,6 +57,23 @@ import { retainWorkspaceAddressSuppression } from '../crm-operations/suppression
  *     `connector_actions.episode_id` is nulled first (see flushWorkspaceData).
  */
 export const WORKSPACE_FLUSH_TABLES = [
+  // Native campaigns: leased work and scoped tokens before immutable snapshots
+  // and their parent campaign rows. Registered sites/credentials are preserved
+  // configuration below.
+  'campaign_email_jobs',
+  'campaign_unsubscribe_tokens',
+  'campaign_email_link_tokens',
+  'campaign_email_recipients',
+  'campaign_email_dispatches',
+  'campaign_conversion_outbox',
+  'campaign_conversions',
+  'campaign_subject_links',
+  'campaign_events',
+  'campaign_daily_metrics',
+  'campaign_links',
+  'campaign_placements',
+  'campaign_command_receipts',
+  'campaigns',
   // Automation + approvals
   'pending_approvals',
   // Human decision learning (provenance first, then domain hard state, event,
@@ -211,6 +228,8 @@ export const WORKSPACE_FLUSH_PRESERVED_TABLES = [
   'crm_managed_mailbox_policies',
   'crm_mailbox_integration_grants',
   'crm_delivery_receipts',
+  'campaign_sites',
+  'campaign_site_credentials',
   'crm_integration_credentials',
   'crm_integration_credential_grants',
   'workspace_knowledge_sources',

@@ -20,6 +20,7 @@
  */
 
 import type { FeedPlatform } from "@/lib/feed-nav";
+import { Mail } from "lucide-react";
 
 export function PlatformIcon({
   platform,
@@ -29,6 +30,8 @@ export function PlatformIcon({
   className?: string;
 }) {
   switch (platform) {
+    case "email":
+      return <Mail aria-hidden data-platform-icon="email" className={className} />;
     case "instagram":
       return (
         <svg

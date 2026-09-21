@@ -1,0 +1,40 @@
+DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com;
+ q=dns/txt; s=fixture; bh=YwOuju/njHzPYGKveyVUXoU/DQvA26OnwtQvchsgaT4=;
+ h=from:to:subject:date:message-id:list-unsubscribe:list-unsubscribe-post;
+ b=s8CqeU1zSn+27j3+arhPwG0zDhtCtDN1v1D0dadIYtsbVyxxiEk44TxdPnlX5gRfx9OPb+2EY
+ ZLpPn6Vg3K+wSSVM/9Wf7OILtzpWhymti0RMne5o38emo4CTewtrRzV7Wa28k2nfK5CLeSyYfP1
+ tGi0VIyaXjh9uiw7s3PHBcM=
+List-Unsubscribe:
+ <http://127.0.0.1:4400/c/unsubscribe/[opaque-unsubscribe-token]>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+From: sender@example.com
+To: recipient@example.com
+Subject: Hello Person2
+Message-ID: <sanitized-fixture@example.com>
+Date: [sanitized fixture time]
+MIME-Version: 1.0
+Content-Type: multipart/alternative;
+ boundary="--_NmP-2de829df50559a8b-Part_1"
+
+----_NmP-2de829df50559a8b-Part_1
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+A fixture update
+
+Read the update at http://127.0.0.=
+1:4400/e/[opaque-click-token]
+
+Unsubscribe: http://127.0.0.1:4400/c/unsubscribe/[opaque-unsubscribe-token]
+----_NmP-2de829df50559a8b-Part_1
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+<!doctype html><html><head><meta charset=3D"utf-8"><meta name=3D"viewport" =
+content=3D"width=3Ddevice-width,initial-scale=3D1"></head><body><span =
+data-brian-preheader style=3D"display:none!important;max-height:0;max-width=
+:0;opacity:0;overflow:hidden;mso-hide:all">A fixture =
+update</span><main><section><p>Read the update at http://127.0.0.=
+1:4400/e/[opaque-click-token]</p></section></main><p=
+><a href=3D"http://127.0.0.1:4400/c/unsubscribe/[opaque-unsubscribe-token]">Unsubscribe</a></p></body></html>
+----_NmP-2de829df50559a8b-Part_1--

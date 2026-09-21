@@ -283,6 +283,7 @@ async function executeSubmission(
     ...(command.attachments?.length ? { attachments: command.attachments } : {}),
     externalIdentity: command.externalIdentity ?? null,
     submittedAt: command.submittedAt ?? null,
+    campaignAttribution: command.campaignAttribution ?? null,
   })
   const claim = await tx.claimIdempotency({
     actorScope: scope,
@@ -443,6 +444,16 @@ async function executeSubmission(
     },
     occurredAt: submittedAt,
   }))
+  if (command.campaignAttribution?.siteId) {
+    await tx.enqueueCampaignConversion({
+      sitePublicId: command.campaignAttribution.siteId,
+      externalOutcomeId: submissionId,
+      occurredAt: submittedAt,
+      contactId: resolvedContactId,
+      attribution: command.campaignAttribution,
+      test: false,
+    })
+  }
   await tx.commitIdempotency({ claimId: claim.claimId, submissionId, contactId: resolvedContactId, followUpTaskId })
 
   return result(command.kind, { submissionId, contactId: resolvedContactId, followUpTaskId }, {

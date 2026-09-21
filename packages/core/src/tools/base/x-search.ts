@@ -10,6 +10,9 @@ import {
   XAI_X_URL_QUOTE_MODEL,
 } from '../../providers/xai.js'
 import { isXHost, parseStatusUrl } from './fetch-xai.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { calculateCost } from '../../billing/cost-tracker.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 /**
  * Grok-powered X (Twitter) post search.
@@ -92,7 +95,8 @@ export function __resetXSearchCache(): void {
   cache.clear()
 }
 
-export const xSearchTool = buildTool({
+export function createXSearchTool(pool?: ExternalCredentialPool) {
+  return buildTool({
   name: 'xSearch',
   description:
     "Read or search X (formerly Twitter) posts via Grok. Use when the user shares an X post link, or asks about tweets, X accounts, or news that broke on X. Pass a single `/status/` permalink as `query` to read that post's text verbatim; pass a natural-language query to search across X. The returned `content` IS the post (or Grok's synthesized answer) the user asked about: present it, and never reply that you are unable to fetch the post when this tool returned content. Optional filters: allowedHandles / excludedHandles (no @ prefix), fromDate / toDate (YYYY-MM-DD). Always cite the returned URLs.",
@@ -102,8 +106,8 @@ export const xSearchTool = buildTool({
   timeoutMs: REQUEST_TIMEOUT_MS + 2_000,
 
   async execute(input, context) {
-    const apiKey = process.env.XAI_API_KEY
-    if (!apiKey) {
+    const lease = await resolveToolCredential(pool, 'xai', process.env.XAI_API_KEY)
+    if (!lease) {
       return {
         data: 'xSearch cannot run on this deployment: XAI_API_KEY is not configured, so there is no Grok credential to search X with. Nothing about the query is wrong and retrying will not help — answer from webSearch instead (or tell the user X search is not enabled here).',
         isError: true,
@@ -146,7 +150,7 @@ export const xSearchTool = buildTool({
     const startedAt = Date.now()
     try {
       const data = await postXaiResponses({
-        apiKey,
+        apiKey: lease.secret,
         model,
         inputText,
         tools: [toolOptions],
@@ -155,6 +159,7 @@ export const xSearchTool = buildTool({
       })
       const { content, citations } = extractXaiResponseText(data)
       const usage = extractXaiUsage(data)
+      await recordToolSpend(lease, calculateCost(model, usage))
       const payload = sanitizeDeep({
         query: input.query,
         provider: 'xai',
@@ -195,4 +200,7 @@ export const xSearchTool = buildTool({
       return { data: `xSearch could not search X for \`${input.query}\`: ${message}. ${verdict}`, isError: true }
     }
   },
-})
+  })
+}
+
+export const xSearchTool = createXSearchTool()

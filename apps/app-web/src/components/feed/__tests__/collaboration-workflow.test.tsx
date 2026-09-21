@@ -26,7 +26,7 @@ import { FeedReview, type FeedReviewActions } from '../feed-review';
 let host: HTMLDivElement; let root: Root;
 const viewProps = vi.spyOn(EditorView.prototype, 'setProps');
 function editorView(node: HTMLElement): EditorView { return (viewProps.mock.contexts as EditorView[]).find(view => view.dom === node)!; }
-beforeEach(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
+beforeEach(() => { (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true; state.edition = 'oss'; host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
 afterEach(() => { act(() => root.unmount()); host.remove(); vi.clearAllMocks(); });
 const text = en.feedCollaboration;
 const composition = () => importLegacyFeed({ text: 'First paragraph.\n\nThe same phrase.\n\nThe same phrase.', postFormat: 'post', threadSegments: [], media: [] });
@@ -410,7 +410,7 @@ const generationSlot = (): FeedPlaceholderAttrs => ({ id: crypto.randomUUID(), k
 describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
   it('keeps a saved marker compact while drafting; opening and closing its options never starts generation', async () => {
     const slot = generationSlot(); const onEdit = vi.fn(); const onContinue = vi.fn();
-    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={generationControls()} onEdit={onEdit} onSelect={vi.fn()} onContinue={onContinue} onAction={vi.fn()} />));
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={generationControls()} onEdit={onEdit} onSelect={vi.fn()} onContinue={onContinue} />));
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(host.textContent).not.toContain(en.feedGeneration.generate);
     const field = host.querySelector<HTMLInputElement>('input')!;
@@ -426,6 +426,18 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
     expect(host.querySelector('[data-feed-slot]')).toBeTruthy();
     expect(state.http).not.toHaveBeenCalled();
+  });
+  it('blurs the draft behind the modal and dismisses only when the backdrop is clicked', async () => {
+    const slot = generationSlot();
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={generationControls()} onEdit={vi.fn()} onSelect={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
+    const backdrop = document.querySelector<HTMLElement>('[data-feed-generation-backdrop]')!;
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(backdrop.className).toContain('backdrop-blur-sm');
+    await act(async () => dialog.click());
+    expect(document.querySelector('[role="dialog"]')).toBe(dialog);
+    await act(async () => backdrop.click());
+    await vi.waitFor(() => expect(document.querySelector('[role="dialog"]')).toBeNull());
   });
   it.each(['text', 'image'] as const)('lets /%s plus a brief mark a gap and continue typing after it without any generation request', kind => {
     const doc = importLegacyFeed({ text: `Opening paragraph.\n\n/${kind} Explain the framework`, postFormat: 'post', threadSegments: [], media: [] });
@@ -512,7 +524,7 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
   });
   it('scenarios 4 and 10: manual fill works offline, advances typed history, and never calls a model', async () => {
     const slot = generationSlot(); const onEdit = vi.fn(); const controls = { ...generationControls(), offline: true };
-    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={controls} onEdit={onEdit} onSelect={vi.fn()} onAction={vi.fn()} />));
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={controls} onEdit={onEdit} onSelect={vi.fn()} />));
     await click(en.feedGeneration.openDetails);
     expect(button(en.feedGeneration.generate).disabled).toBe(true);
     const field = document.querySelector<HTMLTextAreaElement>(`textarea[aria-label="${en.feedGeneration.manualText}"]`)!;
@@ -525,7 +537,7 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();
     const estimate: FeedGenerationEstimate = { id: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), revision: 2, segmentId, slot, count: 1, model: 'fixture-model', tier: 'standard', price: { currency: 'USD', maximumUsd: 0.012, rateVersion: 'fixture', billing: 'included' }, inputCharacters: 500, maxTokens: 1000, sources: [], omissions: ['source_unavailable'], confirmationRequired: true };
     state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ estimate }) });
-    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} onAction={vi.fn()} />));
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} />));
     await click(en.feedGeneration.openDetails);
     expect(state.http).not.toHaveBeenCalled();
     await click(en.feedGeneration.generate);
@@ -544,7 +556,7 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' }; const controls = generationControls(); const segmentId = crypto.randomUUID();
     const estimate: FeedGenerationEstimate = { id: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), revision: 2, segmentId, slot, count: 1, model: 'gpt-image-2', tier: 'image', price: { currency: 'USD', maximumUsd: null, rateVersion: 'fixture', billing: 'subscription' }, inputCharacters: 500, maxTokens: 4096, sources: [], omissions: [], confirmationRequired: true };
     state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ estimate }) });
-    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} onAction={vi.fn()} />));
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} />));
     await click(en.feedGeneration.openDetails);
     expect(button(en.feedGeneration.imageProvider).textContent).toContain(en.feedGeneration.imageGemini);
     await click(en.feedGeneration.imageProvider);
@@ -559,6 +571,38 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     await click(en.feedGeneration.imageProvider); await choose(en.feedGeneration.imageGemini);
     expect(document.querySelector(`[aria-label="${en.feedGeneration.estimateTitle}"]`)).toBeNull();
     expect(state.http).toHaveBeenCalledTimes(1);
+  });
+  it('keeps local image choices clear while a draft sync gates files and generation', async () => {
+    const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' };
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={{ ...generationControls(), pending: true }} onEdit={vi.fn()} onSelect={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
+    expect(document.body.textContent).toContain(en.feedGeneration.imageInstructions);
+    expect(document.body.textContent).toContain(en.feedGeneration.savingDraft);
+    expect(document.body.textContent).not.toContain(en.feedCollaboration.syncFirst);
+    expect(button(en.feedGeneration.generate).disabled).toBe(true);
+    expect(button(en.feedGeneration.uploadReference).disabled).toBe(true);
+    expect(button(en.feedGeneration.chooseReference).disabled).toBe(true);
+    expect(button(en.feedGeneration.imageProvider).disabled).toBe(false);
+    expect([...document.querySelectorAll('button')].filter(node => node.textContent === en.feedGeneration.chooseFile)).toHaveLength(0);
+    expect([...document.querySelectorAll('button')].some(node => [en.feedCollaboration.comment, en.feedCollaboration.suggest, en.feedCollaboration.askBrian].includes(node.textContent ?? ''))).toBe(false);
+  });
+  it('uploads an image as a generation reference after the draft is synced', async () => {
+    const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' }; const onEdit = vi.fn(); const fileId = crypto.randomUUID();
+    state.upload.mockResolvedValue({ media: [{ fileId, mimeType: 'image/png' }], errors: [] });
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={generationControls()} onEdit={onEdit} onSelect={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
+    const upload = document.querySelector<HTMLInputElement>(`input[aria-label="${en.feedGeneration.uploadReference}"]`)!;
+    Object.defineProperty(upload, 'files', { configurable: true, value: [new File(['image'], 'reference.png', { type: 'image/png' })] });
+    await act(async () => upload.dispatchEvent(new Event('change', { bubbles: true })));
+    await vi.waitFor(() => expect(onEdit).toHaveBeenCalledWith([expect.objectContaining({ replacement: [expect.objectContaining({ attrs: expect.objectContaining({ references: [{ fileId }] }) })] })]));
+  });
+  it('shows a configured hosted image provider as information instead of a disabled picker', async () => {
+    state.edition = 'hosted'; const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' };
+    act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={generationControls()} onEdit={vi.fn()} onSelect={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
+    const provider = document.querySelector<HTMLElement>(`[aria-label="${en.feedGeneration.imageProvider}"]`)!;
+    expect(provider.tagName).toBe('DIV');
+    expect(provider.textContent).toBe(en.feedGeneration.imageGemini);
   });
   it('scenarios 5 and 8: stale candidates remain visible with Keep for later and cannot overwrite a changed slot', async () => {
     const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();

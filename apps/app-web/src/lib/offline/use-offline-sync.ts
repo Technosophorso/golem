@@ -44,6 +44,8 @@ export interface OfflineSyncState {
   offline: boolean;
   /** Count of writes queued for replay. */
   pending: number;
+  /** Feed drafts waiting for explicit recovery rather than automatic replay. */
+  paused: number;
 }
 
 /** SSR and the first client render must share the same optimistic value. */
@@ -102,6 +104,7 @@ export function useOfflineSync(): OfflineSyncState {
   const [pending, setPending] = useState(0);
   const [localPending, setLocalPending] = useState(0);
   const [feedPending, setFeedPending] = useState(0);
+  const [feedPaused, setFeedPaused] = useState(0);
   const collabUp = useSyncExternalStore(
     subscribeCollabConnected,
     getCollabConnected,
@@ -165,7 +168,10 @@ export function useOfflineSync(): OfflineSyncState {
     let idle: ReturnType<typeof setTimeout>;
     const count = async () => {
       const posts = await readLocalFeedPosts();
-      if (!cancelled) setFeedPending(posts.filter(p => p.dirty).length);
+      if (!cancelled) {
+        setFeedPending(posts.filter(p => p.dirty).length);
+        setFeedPaused(posts.filter(p => p.dirty && p.error).length);
+      }
     };
     const replay = async () => { await flushFeedWorkingCopies(); await count(); };
     const onChange = () => {
@@ -186,5 +192,6 @@ export function useOfflineSync(): OfflineSyncState {
     connectivity,
     offline: isEffectivelyOffline(connectivity),
     pending: pending + localPending + feedPending,
+    paused: feedPaused,
   };
 }

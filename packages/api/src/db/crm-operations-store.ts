@@ -115,6 +115,14 @@ export type CrmOperationsTransaction = {
     contactId: string
     followUpTaskId: string | null
   }): Promise<void>
+  enqueueCampaignConversion(params: {
+    sitePublicId: string
+    externalOutcomeId: string
+    occurredAt: string
+    contactId: string
+    attribution: Record<string, unknown>
+    test: boolean
+  }): Promise<void>
   resolveExternalIdentity(provider: string, subject: string): Promise<string | null>
   findContactByEmail(email: string): Promise<string | null>
   resolveAttributionUser(preferredUserId?: string | null): Promise<string | null>
@@ -398,6 +406,45 @@ function createTransaction(client: PoolClient, context: CrmOperationsContext): C
         [workspaceId, params.claimId, params.submissionId, params.contactId, params.followUpTaskId],
       )
       if (result.rowCount !== 1) throw new Error('crm idempotency claim was not pending')
+    },
+
+    async enqueueCampaignConversion(params) {
+      const site = await client.query<{ id: string }>(
+        `SELECT id FROM campaign_sites
+          WHERE workspace_id=$1 AND public_id=$2 AND enabled=true FOR SHARE`,
+        [workspaceId, params.sitePublicId],
+      )
+      if (!site.rows[0]) {
+        throw new CrmOperationsError('not_found', 'The campaign site is unavailable.')
+      }
+      const payload = {
+        version: 1,
+        siteId: params.sitePublicId,
+        conversionKind: 'enquiry_submitted',
+        externalOutcomeId: params.externalOutcomeId,
+        occurredAt: params.occurredAt,
+        attribution: params.attribution,
+        contactId: params.contactId,
+        test: params.test,
+      }
+      const payloadHash = crmOperationsSha256(payload)
+      const inserted = await client.query<{ payloadHash: string }>(
+        `INSERT INTO campaign_conversion_outbox
+           (workspace_id,site_id,outcome_kind,external_outcome_id,payload,payload_hash)
+         VALUES($1,$2,'enquiry_submitted',$3,$4::jsonb,$5)
+         ON CONFLICT(workspace_id,site_id,outcome_kind,external_outcome_id) DO NOTHING
+         RETURNING payload_hash AS "payloadHash"`,
+        [workspaceId, site.rows[0].id, params.externalOutcomeId, JSON.stringify(payload), payloadHash],
+      )
+      if (inserted.rows[0]) return
+      const existing = await client.query<{ payloadHash: string }>(
+        `SELECT payload_hash AS "payloadHash" FROM campaign_conversion_outbox
+          WHERE workspace_id=$1 AND site_id=$2 AND outcome_kind='enquiry_submitted' AND external_outcome_id=$3`,
+        [workspaceId, site.rows[0].id, params.externalOutcomeId],
+      )
+      if (existing.rows[0]?.payloadHash !== payloadHash) {
+        throw new CrmOperationsError('idempotency_conflict', 'Campaign conversion projection identity was reused with changed evidence.')
+      }
     },
 
     async resolveExternalIdentity(provider, subject) {

@@ -44,6 +44,7 @@ const PLATFORM_MEDIA_CAP: Record<FeedPlatform, number> = {
   instagram: 10,
   xhs: 9,
   linkedin: 20,
+  email: 20,
 };
 
 export function mediaCapFor(platform: FeedPlatform): number {

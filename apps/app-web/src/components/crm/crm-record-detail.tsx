@@ -77,6 +77,7 @@ import { CrmCustomFields } from "./crm-custom-fields";
 import { CrmParticipants } from "./crm-participants";
 import { CrmContactCompliance } from "./operations/contact-compliance";
 import { CrmContactLifecycle } from "./operations/contact-lifecycle";
+import { CrmCampaignAttribution } from "./crm-campaign-attribution";
 
 export type CrmRecordRef =
   | { kind: "deal"; row: CrmDealRow }
@@ -316,6 +317,7 @@ export function CrmRecordDetail({
 
         {record.kind === "contact" && (
           <>
+            <CrmCampaignAttribution workspaceId={workspaceId} contactId={record.row.id} />
             <CrmContactCompliance workspaceId={workspaceId} contactId={record.row.id} />
             <CrmContactLifecycle
               workspaceId={workspaceId}

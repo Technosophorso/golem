@@ -25,6 +25,9 @@ import {
   EngineInputError,
   EngineBudgetError,
   ASK_INPUT_SHAPE,
+  flatEngineCostUsd,
+  type ExternalCredentialPool,
+  type ExternalCredentialLease,
   type AskArgs,
   type EnginesEnv,
 } from '@use-brian/core'
@@ -61,6 +64,8 @@ function toolError(toolName: string, err: unknown): CallToolResult {
 export function createEngineTools(
   env: EnginesEnv,
   fetchImpl: typeof fetch = fetch,
+  credentialPool?: ExternalCredentialPool,
+  managedProviders: ReadonlySet<string> = new Set(),
 ): EngineTool[] {
   const tools: EngineTool[] = []
 
@@ -93,14 +98,58 @@ export function createEngineTools(
     return null
   }
 
-  for (const asker of createEngineAskers(env, fetchImpl)) {
+  const credentialByEngine = {
+    openai: { provider: 'engines-openai', envKey: 'ENGINES_OPENAI_API_KEY' },
+    gemini: { provider: 'engines-gemini', envKey: 'ENGINES_GEMINI_API_KEY' },
+    perplexity: { provider: 'engines-perplexity', envKey: 'ENGINES_PERPLEXITY_API_KEY' },
+    claude: { provider: 'engines-anthropic', envKey: 'ENGINES_ANTHROPIC_API_KEY' },
+  } as const
+  const rosterEnv: EnginesEnv = credentialPool
+    ? Object.fromEntries(
+        Object.entries(env).concat(
+          Object.values(credentialByEngine)
+            .filter(({ provider, envKey }) => managedProviders.has(provider) && !env[envKey])
+            .map(({ envKey }) => [envKey, '__managed__']),
+        ),
+      ) as EnginesEnv
+    : env
+
+  for (const asker of createEngineAskers(rosterEnv, fetchImpl)) {
     tools.push({
       name: asker.name,
       description: asker.description,
       inputSchema: { ...ASK_INPUT_SHAPE },
       handler: async (args) => {
         try {
-          const run = await asker.run(args as AskArgs, takeCallBudget)
+          let activeAsker = asker
+          let lease: ExternalCredentialLease | null = null
+          if (credentialPool) {
+            const credential = credentialByEngine[asker.engine]
+            lease = await credentialPool.resolve(
+              credential.provider,
+              env[credential.envKey],
+            )
+            if (!lease) {
+              return text(
+                `${asker.name} failed: no eligible ${asker.engine} engine credential is configured`,
+                true,
+              )
+            }
+            activeAsker = createEngineAskers(
+              { ...env, [credential.envKey]: lease.secret },
+              fetchImpl,
+            ).find((candidate) => candidate.name === asker.name)!
+          }
+          const run = await activeAsker.run(args as AskArgs, takeCallBudget)
+          if (lease && run.successfulUnits > 0) {
+            const costUsd = flatEngineCostUsd(asker.engine) * run.successfulUnits
+            await lease.recordSpend(costUsd).catch((error) => {
+              console.error(
+                `[provider-credentials] failed to record ${asker.engine} engine MCP spend`,
+                error instanceof Error ? error.message : String(error),
+              )
+            })
+          }
           return text(JSON.stringify(run.payload, null, 2), run.allFailed)
         } catch (err) {
           return toolError(asker.name, err)

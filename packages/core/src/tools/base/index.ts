@@ -1,12 +1,13 @@
 import type { Tool } from '../types.js'
 import type { EnginesEnv } from '../../engines/ask-engines.js'
-import { urlReaderTool } from './url-reader.js'
-import { webSearchTool } from './web-search.js'
-import { xSearchTool } from './x-search.js'
+import { urlReaderTool, createUrlReaderTool } from './url-reader.js'
+import { webSearchTool, createWebSearchTool } from './web-search.js'
+import { xSearchTool, createXSearchTool } from './x-search.js'
 import { askQuestionTool } from './ask-question.js'
 import { createTaskTool, updateTaskTool, _getSessionTasksSize } from './tasks.js'
 import { getTimeTool } from './get-time.js'
 import { createEngineBaseTools } from './ask-engines.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
 
 export {
   urlReaderTool,
@@ -16,6 +17,9 @@ export {
   updateTaskTool,
   getTimeTool,
   createEngineBaseTools,
+  createUrlReaderTool,
+  createWebSearchTool,
+  createXSearchTool,
   _getSessionTasksSize,
 }
 
@@ -38,21 +42,24 @@ export {
  * `process.env`, exactly as `xSearch` does. See
  * docs/architecture/integrations/engines-mcp.md.
  */
-export function createBaseTools(enginesEnv: EnginesEnv = process.env as EnginesEnv): Map<string, Tool> {
+export function createBaseTools(
+  enginesEnv: EnginesEnv = process.env as EnginesEnv,
+  credentialPool?: ExternalCredentialPool,
+): Map<string, Tool> {
   const tools: Tool[] = [
-    webSearchTool,
-    urlReaderTool,
+    credentialPool ? createWebSearchTool(credentialPool) : webSearchTool,
+    credentialPool ? createUrlReaderTool(credentialPool) : urlReaderTool,
     askQuestionTool,
     createTaskTool,
     updateTaskTool,
     getTimeTool,
   ]
 
-  if (process.env.XAI_API_KEY) {
-    tools.push(xSearchTool)
+  if (credentialPool || process.env.XAI_API_KEY) {
+    tools.push(credentialPool ? createXSearchTool(credentialPool) : xSearchTool)
   }
 
-  tools.push(...createEngineBaseTools(enginesEnv))
+  tools.push(...createEngineBaseTools(enginesEnv, undefined, credentialPool))
 
   return new Map(tools.map((t) => [t.name, t]))
 }

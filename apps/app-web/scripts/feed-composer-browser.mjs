@@ -47,6 +47,11 @@ try {
       const textarea = document.querySelector('textarea');
       const composer = textarea.parentElement.parentElement;
       const rect = composer.getBoundingClientRect();
+      const footer = composer.lastElementChild;
+      const controlCenters = [...footer.children].map(element => {
+        const box = element.getBoundingClientRect();
+        return box.top + box.height / 2;
+      });
       const buttons = [...composer.querySelectorAll('button')].map(button => {
         const box = button.getBoundingClientRect();
         const inset = box.width && box.height && box.left >= rect.left && box.right <= rect.right + 0.5 && box.top >= rect.top && box.bottom <= rect.bottom + 0.5;
@@ -55,10 +60,12 @@ try {
           right: box.right, inside: Boolean(inset), reachable: center === button || button.contains(center) };
       });
       return { composer: { width: rect.width, right: rect.right }, buttons, send: dict.feedPage.tuningChat.send, stop: dict.feedPage.tuningChat.stop,
-        queue: dict.chat.queue.send, overflow: document.documentElement.scrollWidth > innerWidth };
+        queue: dict.chat.queue.send, overflow: document.documentElement.scrollWidth > innerWidth,
+        controlsShareRow: controlCenters.length < 2 || Math.max(...controlCenters) - Math.min(...controlCenters) < 1 };
     });
     const failures = row.buttons.filter(button => !button.inside || !button.reachable).map(button => `clipped/unreachable ${button.label}`);
     if (row.overflow) failures.push('document overflow');
+    if (!phone && !streaming && !row.controlsShareRow) failures.push('idle controls wrapped to a second row');
     if (phone) for (const label of [streaming ? row.queue : row.send, ...(streaming ? [row.stop] : [])]) {
       const action = row.buttons.find(button => button.label === label);
       if (!action || action.width < 44 || action.height < 44) failures.push(`touch target ${label}`);

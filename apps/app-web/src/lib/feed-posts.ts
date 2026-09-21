@@ -51,7 +51,7 @@ export function parseQueueFilter(value: string | null): PostQueueFilter {
  * scoped to one platform.
  */
 export function displayPostTitle(title: string): string {
-  return title.replace(/^\[(instagram|threads|twitter|xhs|linkedin)\]\s*/i, "");
+  return title.replace(/^\[(instagram|threads|twitter|xhs|linkedin|email)\]\s*/i, "");
 }
 
 export type PostQueueItem = {

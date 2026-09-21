@@ -152,6 +152,12 @@ describe("[COMP:app-web/feed-post-editor] proposal replay", () => {
     expect(postEditorSource).toContain("notifyFeedPostsChanged()");
   });
 
+  it("keeps the edit pencil attached to the visible working title", () => {
+    expect(postEditorSource).toContain('style={{ fieldSizing: "content" } as React.CSSProperties}');
+    expect(postEditorSource).toContain("max-w-[calc(100%_-_1.125rem)] w-auto");
+    expect(postEditorSource).not.toContain("min-w-0 w-full truncate");
+  });
+
   it("renders portable formatting in Preview and the rich clipboard source", () => {
     expect(postEditorSource).toContain("<ReactMarkdown");
     expect(postEditorSource).toContain('"text/html": new Blob');

@@ -9,6 +9,8 @@ import {
 } from '../../engines/ask-engines.js'
 import { encodeExternalCostMeta } from '../../billing/external-cost.js'
 import { flatEngineCostUsd, engineCostModel } from '../../billing/engine-provider-rates.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 /**
  * In-process engine observation tools — `askOpenAI`, `askGemini`,
@@ -98,10 +100,27 @@ function describeAllFailed(toolName: string, payload: AskPayload): string {
 export function createEngineBaseTools(
   env: EnginesEnv = process.env as EnginesEnv,
   fetchImpl?: typeof fetch,
+  credentialPool?: ExternalCredentialPool,
 ): Tool[] {
   const tools: Tool[] = []
 
-  for (const asker of createEngineAskers(env, fetchImpl)) {
+  const credentialByEngine = {
+    openai: { provider: 'engines-openai', envKey: 'ENGINES_OPENAI_API_KEY' },
+    gemini: { provider: 'engines-gemini', envKey: 'ENGINES_GEMINI_API_KEY' },
+    perplexity: { provider: 'engines-perplexity', envKey: 'ENGINES_PERPLEXITY_API_KEY' },
+    claude: { provider: 'engines-anthropic', envKey: 'ENGINES_ANTHROPIC_API_KEY' },
+  } as const
+  const rosterEnv: EnginesEnv = credentialPool
+    ? {
+        ...env,
+        ENGINES_OPENAI_API_KEY: env.ENGINES_OPENAI_API_KEY ?? '__managed__',
+        ENGINES_GEMINI_API_KEY: env.ENGINES_GEMINI_API_KEY ?? '__managed__',
+        ENGINES_PERPLEXITY_API_KEY: env.ENGINES_PERPLEXITY_API_KEY ?? '__managed__',
+        ENGINES_ANTHROPIC_API_KEY: env.ENGINES_ANTHROPIC_API_KEY ?? '__managed__',
+      }
+    : env
+
+  for (const asker of createEngineAskers(rosterEnv, fetchImpl)) {
     tools.push(
       buildTool({
         name: asker.name,
@@ -114,8 +133,33 @@ export function createEngineBaseTools(
         async execute(input) {
           let run
           try {
+            let activeAsker = asker
+            let lease
+            if (credentialPool) {
+              const credential = credentialByEngine[asker.engine]
+              lease = await resolveToolCredential(
+                credentialPool,
+                credential.provider,
+                env[credential.envKey],
+              )
+              if (!lease) {
+                return {
+                  data: `\`${asker.name}\` cannot run because no eligible ${asker.engine} engine credential is configured. Retrying will not help until an operator adds or enables a key.`,
+                  isError: true,
+                }
+              }
+              const resolvedEnv = { ...env, [credential.envKey]: lease.secret }
+              activeAsker = createEngineAskers(resolvedEnv, fetchImpl)
+                .find((candidate) => candidate.name === asker.name)!
+            }
             // No budget hook: the ceiling belongs to the HTTP surface only.
-            run = await asker.run(input)
+            run = await activeAsker.run(input)
+            if (lease && run.successfulUnits > 0) {
+              await recordToolSpend(
+                lease,
+                flatEngineCostUsd(asker.engine) * run.successfulUnits,
+              )
+            }
           } catch (err) {
             // A caller-input refusal is the model's to fix, and cost nothing.
             if (err instanceof EngineInputError) {

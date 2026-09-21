@@ -12,6 +12,9 @@
 import type { SearchProvider, SearchResult } from './search-stack.js'
 import { retryAfterMs, SearchProviderError } from './_fetch-error.js'
 import { clampResultCount, stripHtmlTags } from './search-stack.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
+import { flatSearchCostUsd } from '../../billing/search-provider-rates.js'
+import { recordToolSpend, resolveToolCredential } from './provider-credential.js'
 
 const BRAVE_ENDPOINT = 'https://api.search.brave.com/res/v1/web/search'
 
@@ -27,14 +30,15 @@ type BraveResponse = {
   }
 }
 
-export const braveProvider: SearchProvider = {
+export function createBraveProvider(pool?: ExternalCredentialPool): SearchProvider {
+  return {
   name: 'brave',
 
-  available: () => Boolean(process.env.BRAVE_SEARCH_API_KEY),
+  available: () => Boolean(pool || process.env.BRAVE_SEARCH_API_KEY),
 
   async search(query, maxResults, signal): Promise<SearchResult[]> {
-    const token = process.env.BRAVE_SEARCH_API_KEY
-    if (!token) return []
+    const lease = await resolveToolCredential(pool, 'brave', process.env.BRAVE_SEARCH_API_KEY)
+    if (!lease) return []
 
     const url = new URL(BRAVE_ENDPOINT)
     url.searchParams.set('q', query)
@@ -44,7 +48,7 @@ export const braveProvider: SearchProvider = {
       method: 'GET',
       headers: {
         Accept: 'application/json',
-        'X-Subscription-Token': token,
+        'X-Subscription-Token': lease.secret,
       },
       signal,
     })
@@ -56,6 +60,7 @@ export const braveProvider: SearchProvider = {
         retryAfterMs: retryAfterMs(res.headers.get('retry-after')),
       })
     }
+    await recordToolSpend(lease, flatSearchCostUsd('brave'))
 
     const data = (await res.json()) as BraveResponse
     const raw = data.web?.results ?? []
@@ -68,4 +73,7 @@ export const braveProvider: SearchProvider = {
       .filter((r) => r.url && r.url.startsWith('http'))
       .slice(0, maxResults)
   },
+  }
 }
+
+export const braveProvider: SearchProvider = createBraveProvider()

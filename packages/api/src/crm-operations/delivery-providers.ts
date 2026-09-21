@@ -6,7 +6,7 @@ import { decryptCredentials } from '../db/credential-crypto.js'
 import { normalizeStoredCredentials } from '../db/connector-store.js'
 import { getConnectorConfig } from '../connector-config.js'
 import { refreshGoogleAccessToken, sendGmailMessage, unpackGoogleRefreshCredential } from '../google/client.js'
-import { sendComposedMessage } from '../mailbox/smtp.js'
+import { composeMailboxMessage, sendComposedMessage } from '../mailbox/smtp.js'
 import { createMailboxApi } from '../mailbox/mailbox-api.js'
 import type { EmailInboxProvider } from '../agentmail/provider.js'
 import { crmMailboxAccountHash } from './delivery-scope.js'
@@ -27,6 +27,9 @@ function providerReceipt(value:unknown, messageKey:string, threadKey:string): Re
 export function createCrmDeliveryProvider(options:{
   encryptionKey:Buffer|null
   emailProvider:()=>EmailInboxProvider|null
+  campaignMail?: {
+    dkim?: { domainName: string; keySelector: string; privateKey: string }
+  }
 }):PrepareCrmDelivery {
   return async (admission,command) => {
     // Read and decrypt one pinned ciphertext; a separate credentials lookup
@@ -53,6 +56,29 @@ export function createCrmDeliveryProvider(options:{
       case 'imap': {
         if(credentials?.type!=='imap') throw unavailable()
         let clientMessageId:string|null=null
+        if (command.campaignMail) {
+          if (command.campaignMail.oneClick && !options.campaignMail?.dkim) {
+            throw new CrmOperationsError('conflict', 'One-click unsubscribe requires a configured DKIM signer.', { reason: 'campaign_dkim_unavailable' })
+          }
+          return {
+            send: async scope => {
+              const composed = await composeMailboxMessage({
+                from: credentials.email,
+                to: [...command.to],
+                subject: command.subject,
+                body: command.body,
+                rendered: { text: command.campaignMail!.text, html: command.campaignMail!.html },
+                ...(command.campaignMail!.replyTo ? { replyTo: command.campaignMail!.replyTo } : {}),
+                listUnsubscribeUrl: command.campaignMail!.unsubscribeUrl,
+                oneClick: command.campaignMail!.oneClick,
+                ...(options.campaignMail?.dkim ? { dkim: options.campaignMail.dkim } : {}),
+              })
+              clientMessageId = composed.messageId
+              await sendComposedMessage(credentials, composed, scope, { crmPurposeKey: command.purposeKey })
+            },
+            receipt:()=>({clientMessageId,evidence:'smtp_accepted'}),
+          }
+        }
         return {
           send:scope=>createMailboxApi({
             cacheKey:admission.connectorInstanceId,deliveryContext:scope,getSettings:async()=>credentials,

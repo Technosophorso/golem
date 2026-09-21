@@ -21,6 +21,7 @@
  */
 
 import type { useT } from "@/lib/i18n/client";
+import { CAMPAIGN_CHANNELS } from "@use-brian/shared/campaigns";
 
 export type FeedSectionKey =
   keyof ReturnType<typeof useT>["feedPage"]["sections"];
@@ -31,7 +32,7 @@ type FeedGroupKey = keyof ReturnType<typeof useT>["feedPage"]["groups"];
  * URL segment is the platform id. Mirrors the backend's
  * `FEED_TARGET_PLATFORMS` (`packages/api-platform/src/db/feed-store.ts`).
  */
-export const FEED_PLATFORMS = ["instagram", "threads", "twitter", "xhs", "linkedin"] as const;
+export const FEED_PLATFORMS = CAMPAIGN_CHANNELS;
 export type FeedPlatform = (typeof FEED_PLATFORMS)[number];
 
 /**
@@ -102,6 +103,7 @@ export const FEED_GROUPS: readonly FeedGroup[] = [
     sections: [
       { key: "voice", segment: "voice" },
       { key: "plan", segment: "" },
+      { key: "campaigns", segment: "campaigns" },
     ],
   },
   {

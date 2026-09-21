@@ -605,252 +605,256 @@ export function WorkspaceChrome({
     return () => window.removeEventListener("keydown", onKey);
   }, [router, workspaceId, homeHref]);
 
+  const hasSyncNotice = offlineState.offline || offlineState.pending > 0;
+  const syncTitle = offlineState.paused > 0 ? t.offlineSyncPausedTitle
+    : offlineState.offline ? t.offlineBannerTitle
+    : offlineState.pending > 0 ? t.offlineSyncPendingTitle : t.offlineStatusOnline;
+  const syncDescription = offlineState.paused > 0
+    ? format(t.offlineSyncPausedBody, { count: offlineState.paused })
+    : offlineState.pending > 0
+    ? format(offlineState.offline ? t.offlineBannerPending : t.offlineSyncPendingBody, { count: offlineState.pending })
+    : offlineState.offline ? t.offlineBannerBody : "";
+
   return (
     <WorkspaceFileDropBoundary
       workspaceId={workspaceId}
       assistantId={chatAssistantId}
       offline={offlineState.offline}
-      className="relative flex h-full w-full overflow-hidden"
+      className="relative flex h-full w-full flex-col overflow-hidden"
     >
-      {(offlineState.offline || offlineState.pending > 0) && (
-        <div
-          role="status"
-          aria-live="polite"
-          className="pointer-events-none fixed bottom-[calc(0.75rem+env(safe-area-inset-bottom))] left-1/2 z-[70] flex max-w-[min(34rem,calc(100vw-1.5rem))] -translate-x-1/2 items-start gap-2.5 rounded-xl border border-amber-300/60 bg-amber-50/95 px-3.5 py-2.5 text-amber-950 shadow-lg backdrop-blur dark:border-amber-700/60 dark:bg-amber-950/95 dark:text-amber-100"
-        >
-          <span
-            aria-hidden
-            className="mt-1.5 size-2 shrink-0 rounded-full bg-amber-500"
+      <div data-workspace-surfaces className="relative flex min-h-0 w-full flex-1 overflow-hidden">
+        {/* Backdrop — mobile only, dismisses the drawer on tap. */}
+        {sidebarOpen && (
+          <button
+            type="button"
+            aria-label={t.sidebarCloseAria}
+            onClick={() => setSidebarOpen(false)}
+            className="fixed inset-0 z-30 bg-foreground/30 backdrop-blur-[1px] md:hidden"
           />
-          <span className="min-w-0">
-            <strong className="block text-xs font-semibold">
-              {offlineState.offline ? t.offlineBannerTitle : t.offlineSyncPendingTitle}
-            </strong>
-            <span className="block text-[11px] leading-relaxed opacity-80">
-              {offlineState.pending > 0
-                ? format(offlineState.offline ? t.offlineBannerPending : t.offlineSyncPendingBody, {
-                    count: offlineState.pending,
-                  })
-                : t.offlineBannerBody}
-            </span>
-          </span>
+        )}
+        {/* Sidebar — drawer-style on mobile, normal flex child on md+. */}
+        <div
+          className={[
+            "z-40 h-full shrink-0 ease-out",
+            // Tailwind v4 maps translate utilities to the CSS `translate` property,
+            // so the mobile drawer slide is `translate` (not `transform`). The
+            // `translate` transition is SCOPED OFF desktop (`md:transition-[width]`
+            // drops it): a transition declared on `translate` primes a transform
+            // paint node on this wrapper even while `translate` is `none`, and ANY
+            // transform on a `[data-doc-chrome]` drag-region ancestor voids the OS
+            // window-drag — the other half of the `md:translate-none` fix below.
+            // On desktop only `width` animates (the collapse); the drawer slide is
+            // mobile-only, so nothing translate-related touches the drag ancestor there.
+            "transition-[translate,width] duration-200 md:transition-[width]",
+            "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:w-[80vw] max-md:max-w-[280px] max-md:shadow-xl",
+            sidebarOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full",
+            // Desktop: clip the fixed-width inner aside to 0 when collapsed
+            // (overflow-hidden keeps its content from reflowing mid-animation).
+            // `md:translate-none`, NOT `md:translate-x-0`: in the Electron desktop
+            // shell the sidebar's title-bar zone (workspace switcher + icon toolbar)
+            // is an OS window-drag handle (`-webkit-app-region: drag`, see globals.css
+            // `.is-canvas-desktop`). Chromium disables that drag for the whole subtree
+            // if ANY ancestor carries a non-`none` transform — and `translate-x-0`
+            // emits `translate: 0 0` (a transform node), which silently killed dragging
+            // the window by that whitespace. `translate-none` clears it. No ancestor of
+            // a `[data-doc-chrome]` drag region may set transform/translate/scale/rotate.
+            "md:translate-none md:static md:overflow-hidden",
+            sidebarCollapsed ? "md:w-0" : "md:w-64",
+          ].join(" ")}
+        >
+          <DocSidebar
+            workspaceId={workspaceId}
+            saved={saved}
+            drafts={drafts}
+            teamspaces={teamspaces}
+            draftPruneByid={draftPruneByid}
+            activeId={activeId}
+            busyNewDraft={busyNewDraft}
+            onSelect={(id) => {
+              navigateToView(id);
+              setSidebarOpen(false);
+              // Opening a page gets the Inbox flyout out of the way.
+              setInboxOpen(false);
+            }}
+            onNewDraft={handleNewDraft}
+            onAddChild={handleAddChild}
+            onSave={handleSave}
+            onUnsave={handleUnsave}
+            onRename={handleRename}
+            onDuplicate={handleDuplicate}
+            onDelete={handleDelete}
+            onMove={handleMove}
+            // Dialogs launched from the drawer close it (M7) - same as Settings.
+            onNewTeamspace={() => {
+              setCreateTeamspaceOpen(true);
+              setSidebarOpen(false);
+            }}
+            onTeamspaceSettings={(id, tab) => {
+              setTeamspaceModal({ id, tab });
+              setSidebarOpen(false);
+            }}
+            onLeaveTeamspace={handleLeaveTeamspace}
+            onDeleteTeamspace={handleDeleteTeamspace}
+            inboxOpen={inboxOpen}
+            onToggleInbox={() => {
+              setInboxOpen(!inboxOpen);
+              // On mobile the Inbox row lives inside the open sidebar drawer;
+              // close it so the flyout isn't stacked behind it.
+              setSidebarOpen(false);
+            }}
+            activeSurface={activeSurface}
+            activeOperatorApp={activeOperatorApp}
+            suggestedOpen={suggestedOpen}
+            studioNudge={studioNudge}
+            onDismissStudioNudge={onDismissStudioNudge}
+            homeHref={homeHref}
+            homeApps={homeApps}
+            customApps={customApps}
+          />
         </div>
-      )}
-      {/* Backdrop — mobile only, dismisses the drawer on tap. */}
-      {sidebarOpen && (
-        <button
-          type="button"
-          aria-label={t.sidebarCloseAria}
-          onClick={() => setSidebarOpen(false)}
-          className="fixed inset-0 z-30 bg-foreground/30 backdrop-blur-[1px] md:hidden"
-        />
-      )}
-      {/* Sidebar — drawer-style on mobile, normal flex child on md+. */}
-      <div
-        className={[
-          "z-40 h-full shrink-0 ease-out",
-          // Tailwind v4 maps translate utilities to the CSS `translate` property,
-          // so the mobile drawer slide is `translate` (not `transform`). The
-          // `translate` transition is SCOPED OFF desktop (`md:transition-[width]`
-          // drops it): a transition declared on `translate` primes a transform
-          // paint node on this wrapper even while `translate` is `none`, and ANY
-          // transform on a `[data-doc-chrome]` drag-region ancestor voids the OS
-          // window-drag — the other half of the `md:translate-none` fix below.
-          // On desktop only `width` animates (the collapse); the drawer slide is
-          // mobile-only, so nothing translate-related touches the drag ancestor there.
-          "transition-[translate,width] duration-200 md:transition-[width]",
-          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:w-[80vw] max-md:max-w-[280px] max-md:shadow-xl",
-          sidebarOpen ? "max-md:translate-x-0" : "max-md:-translate-x-full",
-          // Desktop: clip the fixed-width inner aside to 0 when collapsed
-          // (overflow-hidden keeps its content from reflowing mid-animation).
-          // `md:translate-none`, NOT `md:translate-x-0`: in the Electron desktop
-          // shell the sidebar's title-bar zone (workspace switcher + icon toolbar)
-          // is an OS window-drag handle (`-webkit-app-region: drag`, see globals.css
-          // `.is-canvas-desktop`). Chromium disables that drag for the whole subtree
-          // if ANY ancestor carries a non-`none` transform — and `translate-x-0`
-          // emits `translate: 0 0` (a transform node), which silently killed dragging
-          // the window by that whitespace. `translate-none` clears it. No ancestor of
-          // a `[data-doc-chrome]` drag region may set transform/translate/scale/rotate.
-          "md:translate-none md:static md:overflow-hidden",
-          sidebarCollapsed ? "md:w-0" : "md:w-64",
-        ].join(" ")}
-      >
-        <DocSidebar
+
+        {/* Inbox flyout — anchored to the right edge of the left bar; overlays the
+            surface, never a standalone route. A row click soft-navigates to the
+            doc page surface (page mention) or the Chat surface (room mention,
+            T-H7 — positioned at latest; scroll-to-message is deferred) and
+            closes the panel. */}
+        <InboxPanel
+          open={inboxOpen}
           workspaceId={workspaceId}
-          saved={saved}
-          drafts={drafts}
-          teamspaces={teamspaces}
-          draftPruneByid={draftPruneByid}
-          activeId={activeId}
-          busyNewDraft={busyNewDraft}
-          onSelect={(id) => {
-            navigateToView(id);
-            setSidebarOpen(false);
-            // Opening a page gets the Inbox flyout out of the way.
+          sidebarCollapsed={sidebarCollapsed}
+          onClose={() => setInboxOpen(false)}
+          onOpenPage={(pageId) => {
+            navigateToView(pageId);
             setInboxOpen(false);
           }}
-          onNewDraft={handleNewDraft}
-          onAddChild={handleAddChild}
-          onSave={handleSave}
-          onUnsave={handleUnsave}
-          onRename={handleRename}
-          onDuplicate={handleDuplicate}
-          onDelete={handleDelete}
-          onMove={handleMove}
-          // Dialogs launched from the drawer close it (M7) - same as Settings.
-          onNewTeamspace={() => {
-            setCreateTeamspaceOpen(true);
-            setSidebarOpen(false);
+          onOpenRoom={(sessionId) => {
+            routeProgress.start();
+            router.push(`/w/${workspaceId}/chat?s=${encodeURIComponent(sessionId)}`);
+            setInboxOpen(false);
           }}
-          onTeamspaceSettings={(id, tab) => {
-            setTeamspaceModal({ id, tab });
-            setSidebarOpen(false);
-          }}
-          onLeaveTeamspace={handleLeaveTeamspace}
-          onDeleteTeamspace={handleDeleteTeamspace}
-          inboxOpen={inboxOpen}
-          onToggleInbox={() => {
-            setInboxOpen(!inboxOpen);
-            // On mobile the Inbox row lives inside the open sidebar drawer;
-            // close it so the flyout isn't stacked behind it.
-            setSidebarOpen(false);
-          }}
-          activeSurface={activeSurface}
-          activeOperatorApp={activeOperatorApp}
-          suggestedOpen={suggestedOpen}
-          studioNudge={studioNudge}
-          onDismissStudioNudge={onDismissStudioNudge}
-          homeHref={homeHref}
-          homeApps={homeApps}
-          customApps={customApps}
         />
-      </div>
 
-      {/* Inbox flyout — anchored to the right edge of the left bar; overlays the
-          surface, never a standalone route. A row click soft-navigates to the
-          doc page surface (page mention) or the Chat surface (room mention,
-          T-H7 — positioned at latest; scroll-to-message is deferred) and
-          closes the panel. */}
-      <InboxPanel
-        open={inboxOpen}
-        workspaceId={workspaceId}
-        sidebarCollapsed={sidebarCollapsed}
-        onClose={() => setInboxOpen(false)}
-        onOpenPage={(pageId) => {
-          navigateToView(pageId);
-          setInboxOpen(false);
-        }}
-        onOpenRoom={(sessionId) => {
-          routeProgress.start();
-          router.push(`/w/${workspaceId}/chat?s=${encodeURIComponent(sessionId)}`);
-          setInboxOpen(false);
-        }}
-      />
-
-      {/* Mobile-only floating hamburger — top-left, opens the drawer. Always
-          available so the user has a way back to the sidebar regardless of
-          surface. */}
-      <button
-        type="button"
-        aria-label={t.sidebarOpenAria}
-        onClick={() => setSidebarOpen(true)}
-        // data-doc-mobile-menu: in the desktop shell a narrow window drops to
-        // this mobile layout, so globals.css nudges this below the traffic lights.
-        data-doc-mobile-menu
-        // 44px (responsive contract M3): this is the first tap of every admin
-        // flow on a phone. `left-1 top-0` keeps the whole target inside the
-        // `h-11` topbar row and the `w-12` spacer every surface reserves for
-        // it (doc.md → "Mobile hamburger clearance").
-        className="fixed left-1 top-0 z-20 inline-flex size-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 md:hidden"
-      >
-        <svg
-          width="18"
-          height="18"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden
+        {/* Mobile-only floating hamburger — top-left, opens the drawer. Always
+            available so the user has a way back to the sidebar regardless of
+            surface. */}
+        <button
+          type="button"
+          aria-label={t.sidebarOpenAria}
+          onClick={() => setSidebarOpen(true)}
+          // data-doc-mobile-menu: in the desktop shell a narrow window drops to
+          // this mobile layout, so globals.css nudges this below the traffic lights.
+          data-doc-mobile-menu
+          // 44px (responsive contract M3): this is the first tap of every admin
+          // flow on a phone. `left-1 top-0` keeps the whole target inside the
+          // `h-11` topbar row and the `w-12` spacer every surface reserves for
+          // it (doc.md → "Mobile hamburger clearance").
+          className="fixed left-1 top-0 z-20 inline-flex size-11 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 md:hidden"
         >
-          <line x1="3" y1="6" x2="21" y2="6" />
-          <line x1="3" y1="12" x2="21" y2="12" />
-          <line x1="3" y1="18" x2="21" y2="18" />
-        </svg>
-      </button>
+          <svg
+            width="18"
+            height="18"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <line x1="3" y1="12" x2="21" y2="12" />
+            <line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+        </button>
 
-      {/* The surface — the doc page shell on `/p`, or a folded-in surface
-          (Brain / Studio / Workflow / …) on its own route. Each owns its inner
-          chrome; the sidebar (which hosts the Home operator app-bar) is
-          shared here.
+        {/* The surface — the doc page shell on `/p`, or a folded-in surface
+            (Brain / Studio / Workflow / …) on its own route. Each owns its inner
+            chrome; the sidebar (which hosts the Home operator app-bar) is
+            shared here.
 
-          `SurfaceTransition` is a plain wrapper that plays the on-brand enter
-          animation when the SURFACE changes (not on `/p/<pageId>` swaps, which
-          the shell handles in place). It never keys/remounts `children`, so the
-          doc shell and its Yjs socket survive every switch. */}
-      <ActiveOperatorAppContext.Provider value={activeOperatorApp}>
-        <SurfaceTransition className="relative flex h-full min-w-0 flex-1 flex-col">
-          {children}
-        </SurfaceTransition>
-      </ActiveOperatorAppContext.Provider>
+            `SurfaceTransition` is a plain wrapper that plays the on-brand enter
+            animation when the SURFACE changes (not on `/p/<pageId>` swaps, which
+            the shell handles in place). It never keys/remounts `children`, so the
+            doc shell and its Yjs socket survive every switch. */}
+        <ActiveOperatorAppContext.Provider value={activeOperatorApp}>
+          <SurfaceTransition className="relative flex h-full min-w-0 flex-1 flex-col">
+            {children}
+          </SurfaceTransition>
+        </ActiveOperatorAppContext.Provider>
 
-      {/* The ONE assistant chat dock — mounted once for EVERY surface so a
-          turn keeps streaming across tab switches and the conversation is
-          unified. Desktop: bottom-right floating dock (lg+). Mobile: a FAB →
-          drawer (< lg). While an embedded chat holds the suppression lock
-          (skill editor / creator doc stage) the dock HIDES via `display:none`
-          but stays MOUNTED, so an in-flight stream is not aborted. Renders
-          only once the primary assistant resolves. */}
-      {/* Teamspace dialogs — portaled; state above, intents from the sidebar. */}
-      <TeamspaceCreateDialog
-        workspaceId={workspaceId}
-        open={createTeamspaceOpen}
-        onOpenChange={setCreateTeamspaceOpen}
-        onCreated={() => reloadSidebar()}
-      />
-      {modalTeamspace && (
-        <TeamspaceSettingsModal
+        {/* The ONE assistant chat dock — mounted once for EVERY surface so a
+            turn keeps streaming across tab switches and the conversation is
+            unified. Desktop: bottom-right floating dock (lg+). Mobile: a FAB →
+            drawer (< lg). While an embedded chat holds the suppression lock
+            (skill editor / creator doc stage) the dock HIDES via `display:none`
+            but stays MOUNTED, so an in-flight stream is not aborted. Renders
+            only once the primary assistant resolves. */}
+        {/* Teamspace dialogs — portaled; state above, intents from the sidebar. */}
+        <TeamspaceCreateDialog
           workspaceId={workspaceId}
-          teamspace={modalTeamspace}
-          initialTab={teamspaceModal?.tab ?? "general"}
-          open
-          onOpenChange={(next) => {
-            if (!next) setTeamspaceModal(null);
-          }}
-          onChanged={reloadSidebar}
+          open={createTeamspaceOpen}
+          onOpenChange={setCreateTeamspaceOpen}
+          onCreated={() => reloadSidebar()}
         />
-      )}
+        {modalTeamspace && (
+          <TeamspaceSettingsModal
+            workspaceId={workspaceId}
+            teamspace={modalTeamspace}
+            initialTab={teamspaceModal?.tab ?? "general"}
+            open
+            onOpenChange={(next) => {
+              if (!next) setTeamspaceModal(null);
+            }}
+            onChanged={reloadSidebar}
+          />
+        )}
 
-      {chatAssistantId && (
-        <div className={cn(dockSuppressed && "hidden")} aria-hidden={dockSuppressed}>
-          <div className="hidden lg:block">
-            <FloatingChat
+        {chatAssistantId && (
+          <div className={cn(dockSuppressed && "hidden")} aria-hidden={dockSuppressed}>
+            <div className="hidden lg:block">
+              <FloatingChat
+                workspaceId={workspaceId}
+                assistantId={chatAssistantId}
+                mode="floating"
+                origin="doc"
+                seedRequest={seed?.target === "desktop" ? seed : undefined}
+                othersRun={docOthersRun}
+                messageBrianRequest={
+                  messageBrianRequest?.target === "desktop" ? messageBrianRequest.nonce : undefined
+                }
+                onMessageBrianRevealed={acknowledgeDesktopMessageBrian}
+              />
+            </div>
+            <MobileChatDrawer
               workspaceId={workspaceId}
               assistantId={chatAssistantId}
-              mode="floating"
-              origin="doc"
-              seedRequest={seed?.target === "desktop" ? seed : undefined}
+              className="lg:hidden"
+              seed={seed?.target === "mobile" ? seed : undefined}
               othersRun={docOthersRun}
               messageBrianRequest={
-                messageBrianRequest?.target === "desktop" ? messageBrianRequest.nonce : undefined
+                messageBrianRequest?.target === "mobile" ? messageBrianRequest.nonce : undefined
               }
               onMessageBrianRevealed={acknowledgeDesktopMessageBrian}
             />
           </div>
-          <MobileChatDrawer
-            workspaceId={workspaceId}
-            assistantId={chatAssistantId}
-            className="lg:hidden"
-            seed={seed?.target === "mobile" ? seed : undefined}
-            othersRun={docOthersRun}
-            messageBrianRequest={
-              messageBrianRequest?.target === "mobile" ? messageBrianRequest.nonce : undefined
-            }
-            onMessageBrianRevealed={acknowledgeDesktopMessageBrian}
-          />
-        </div>
-      )}
+        )}
+      </div>
+      {/* Reserved app chrome: sync changes never cover or resize the editor. */}
+      <div
+        data-workspace-sync-status
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+        title={syncDescription || syncTitle}
+        className={cn(
+          "flex h-[calc(1.75rem+env(safe-area-inset-bottom))] shrink-0 items-center gap-2 border-t border-sidebar-border bg-sidebar py-0 pl-3 pr-20 pb-[env(safe-area-inset-bottom)] text-[11px]",
+          hasSyncNotice ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground",
+        )}
+      >
+        <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", hasSyncNotice ? "bg-amber-500" : "bg-muted-foreground/50")} />
+        <span className="shrink-0 font-medium">{syncTitle}</span>
+        {syncDescription ? <span className="sr-only min-w-0 opacity-80 md:not-sr-only md:truncate">{syncDescription}</span> : null}
+      </div>
     </WorkspaceFileDropBoundary>
   );
 }

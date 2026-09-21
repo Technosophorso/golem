@@ -28,6 +28,7 @@ export const CONTENT_PLANNING_PLATFORMS = [
   'twitter',
   'xhs',
   'linkedin',
+  'email',
 ] as const
 
 export type ContentPlanningPlatform = (typeof CONTENT_PLANNING_PLATFORMS)[number]
@@ -107,6 +108,7 @@ const TITLE_PREFIX: Record<ContentPlanningPlatform, string> = {
   twitter: '[twitter]',
   xhs: '[xhs]',
   linkedin: '[linkedin]',
+  email: '[email]',
 }
 
 const SEED_BODY_RE =
@@ -161,7 +163,7 @@ export function defaultContentDraftTitle(
 }
 
 const DEFAULT_TITLE_RE =
-  /^\[(instagram|threads|twitter|xhs)\] (New draft|New Chat|Reply to @\S+|Inspired by @\S+|From \S+)$/
+  /^\[(instagram|threads|twitter|xhs|linkedin|email)\] (New draft|New Chat|Reply to @\S+|Inspired by @\S+|From \S+)$/
 
 export function isDefaultContentDraftTitle(
   title: string | null | undefined,

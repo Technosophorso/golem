@@ -12,13 +12,15 @@ export { createOpenAICompatProvider, DASHSCOPE_INTL_BASE_URL, DASHSCOPE_INTL_LAB
 export type { OpenAICompatProviderOptions } from './openai-compat.js'
 export * from './codex-app-server/index.js'
 export { createRoutingProvider } from './routing.js'
+export { wrapCredentialPoolProvider } from './credential-pool.js'
+export type { ExternalCredentialLease, ExternalCredentialPool } from './credential-pool.js'
 export {
   wrapDocumentAdaptation,
   type DocumentDistillPort,
   type DistillateCachePort,
 } from './document-adaptation.js'
 export type { RoutingProviderOptions } from './routing.js'
-export { aiStudioTransport, vertexTransport, AI_STUDIO_BASE_URL } from './google-transport.js'
+export { aiStudioTransport, credentialPoolAiStudioTransport, vertexTransport, AI_STUDIO_BASE_URL } from './google-transport.js'
 export type { GoogleTransport, VertexTransportOptions } from './google-transport.js'
 export { resolveVertexTokenSource, metadataTokenSource, serviceAccountTokenSource, cachedTokenSource } from './google-auth.js'
 export type { TokenSource } from './google-auth.js'

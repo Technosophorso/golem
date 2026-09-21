@@ -8,7 +8,7 @@
 
 **You make the calls. It does the rest.**
 
-[usebrian.ai](https://usebrian.ai) · [Docs](https://usebrian.ai/docs) · [Hosted app](https://app.usebrian.ai) · [Services](https://studio.usebrian.ai)
+[usebrian.ai](https://usebrian.ai) · [Docs](https://usebrian.ai/docs) · [Campaign integration](./docs/campaigns.md) · [Hosted app](https://app.usebrian.ai) · [Services](https://studio.usebrian.ai)
 
 [![CI](https://github.com/use-brian/use-brian/actions/workflows/ci.yml/badge.svg)](https://github.com/use-brian/use-brian/actions/workflows/ci.yml)
 [![GitHub stars](https://img.shields.io/github/stars/use-brian/use-brian)](https://github.com/use-brian/use-brian/stargazers)

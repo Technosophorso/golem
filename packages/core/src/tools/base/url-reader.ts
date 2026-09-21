@@ -5,9 +5,10 @@ import { readabilityProvider } from './fetch-readability.js'
 import { jinaProvider } from './fetch-jina.js'
 import { rawFetchProvider } from './fetch-raw.js'
 import { xApiFetchProvider } from './fetch-x-api.js'
-import { xaiFetchProvider } from './fetch-xai.js'
+import { xaiFetchProvider, createXaiFetchProvider } from './fetch-xai.js'
 import { isAuthWalledUrl, authWalledGuidance } from './auth-walled-hosts.js'
 import { encodeExternalCostMeta } from '../../billing/external-cost.js'
+import type { ExternalCredentialPool } from '../../providers/credential-pool.js'
 
 /**
  * URL reader tool — reads a web page and returns its extracted readable
@@ -31,12 +32,11 @@ import { encodeExternalCostMeta } from '../../billing/external-cost.js'
 
 const DEFAULT_MAX_CHARS = 5000
 
-const fetchStack = createFetchStack({
-  providers: [xApiFetchProvider, xaiFetchProvider, readabilityProvider, jinaProvider, rawFetchProvider],
-  maxChars: DEFAULT_MAX_CHARS,
-})
+export function createUrlReaderTool(pool?: ExternalCredentialPool) {
+  const providers = [xApiFetchProvider, pool ? createXaiFetchProvider(pool) : xaiFetchProvider, readabilityProvider, jinaProvider, rawFetchProvider]
+  const fetchStack = createFetchStack({ providers, maxChars: DEFAULT_MAX_CHARS })
 
-export const urlReaderTool = buildTool({
+  return buildTool({
   name: 'urlReader',
   description:
     'Read the main readable content of a web page by URL. Returns the extracted text, page title, and which extractor produced it. Use after `webSearch` to get full content for the URLs the model wants to cite. Login-gated pages (social-network profiles like LinkedIn and similar sites that require a signed-in session) cannot be read this way; for those, surface the `webSearch` result URL and its snippet directly instead of reporting a failure.',
@@ -74,7 +74,7 @@ export const urlReaderTool = buildTool({
     const needsCustomStack = (input.maxChars && input.maxChars !== DEFAULT_MAX_CHARS) || context.cacheStore
     const stack = needsCustomStack
       ? createFetchStack({
-          providers: [xApiFetchProvider, xaiFetchProvider, readabilityProvider, jinaProvider, rawFetchProvider],
+          providers,
           maxChars: input.maxChars ?? DEFAULT_MAX_CHARS,
           cacheStore: context.cacheStore,
           sessionId: context.sessionId,
@@ -111,4 +111,7 @@ export const urlReaderTool = buildTool({
       return { data, isError: true }
     }
   },
-})
+  })
+}
+
+export const urlReaderTool = createUrlReaderTool()

@@ -125,14 +125,19 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
       await assertSameReference(client, 'feed_comment_threads', actor.sessionId, reasonThreadId)
       await assertApplication(client, actor, scope, applicationId)
       const source = requireFeedComposition(content); const existing = await threads(client, actor.sessionId)
-      const applied = applyFeedEdits(source.composition, edits, existing.map(t => t.anchor))
-      if (!inverse) {
-        const previousSlots = new Map(walkFeed(source.composition).filter(item => item.node.type === 'generationPlaceholder').map(item => [item.node.attrs.id, item.node]))
-        for (const { node } of walkFeed(applied.composition)) {
+      // Validate each transition, not the net counter change: offline autosave
+      // coalesces several keystrokes into one ordered, preimage-checked command.
+      const previousSlots = new Map(walkFeed(source.composition).filter(item => item.node.type === 'generationPlaceholder').map(item => [item.node.attrs.id, item.node]))
+      const applied = applyFeedEdits(source.composition, edits, existing.map(t => t.anchor), inverse ? undefined : (_before, after) => {
+        for (const { node } of walkFeed(after)) {
+          if (node.type !== 'generationPlaceholder') continue
           const before = previousSlots.get(node.attrs.id)
-          if (before?.type === 'generationPlaceholder' && node.type === 'generationPlaceholder' && canonicalFeedValue(before.attrs) !== canonicalFeedValue(node.attrs) && node.attrs.briefRevision !== before.attrs.briefRevision + 1) throw new FeedCollaborationError(409, 'placeholder_brief_revision_conflict')
+          if (before?.type === 'generationPlaceholder' && canonicalFeedValue(before.attrs) !== canonicalFeedValue(node.attrs) && node.attrs.briefRevision !== before.attrs.briefRevision + 1) throw new FeedCollaborationError(409, 'placeholder_brief_revision_conflict')
+          // Retain deleted IDs until this command ends so a remove/reinsert
+          // cannot bypass the same slot's counter validation.
+          previousSlots.set(node.attrs.id, structuredClone(node))
         }
-      }
+      })
       content = { ...source, composition: applied.composition }
       for (let i = 0; i < existing.length; i++) if (canonicalFeedValue(existing[i]!.anchor) !== canonicalFeedValue(applied.anchors[i])) await client.query('UPDATE feed_comment_threads SET anchor=$3,updated_at=now() WHERE session_id=$1 AND id=$2', [actor.sessionId, existing[i]!.id, JSON.stringify(applied.anchors[i])])
       await recordRevision(edits, applied.inverse, true, reasonThreadId, applicationId)
@@ -212,11 +217,16 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
         // Context changes are revisioned so a review's frozen goal/month cannot
         // silently describe a different current context. Undo of copy is separate.
         await recordRevision([], [], false)
+      } else if (command.kind === 'email') {
+        content = { ...structured, email: command.metadata }
+        // Email envelope metadata and body share one monotonically increasing
+        // history. There is no separately editable HTML or campaign copy.
+        await recordRevision([], [], false)
       }
     }
     receipt.revision = currentRevision; receipt.sequence = sequence
     await client.query('UPDATE feed_post_working_copies SET revision=$2,mutation_id=$3,content=$4,discussion_sequence=$5,updated_at=now() WHERE session_id=$1', [actor.sessionId, currentRevision, input.mutationId, JSON.stringify(content), sequence])
-    if (content.title !== copy.content.title) await client.query("UPDATE sessions SET title=(CASE WHEN split_part(title,' ',1) IN ('[instagram]','[threads]','[twitter]','[xhs]','[linkedin]') THEN split_part(title,' ',1) ELSE '[threads]' END)||' '||$2,title_manually_set=true WHERE id=$1", [actor.sessionId, content.title])
+    if (content.title !== copy.content.title) await client.query("UPDATE sessions SET title=(CASE WHEN split_part(title,' ',1) IN ('[instagram]','[threads]','[twitter]','[xhs]','[linkedin]','[email]') THEN split_part(title,' ',1) ELSE '[threads]' END)||' '||$2,title_manually_set=true WHERE id=$1", [actor.sessionId, content.title])
     await client.query(`INSERT INTO feed_collaboration_mutations(session_id,mutation_id,workspace_id,assistant_id,actor_user_id,actor_kind,fingerprint,command_kind,receipt) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, [actor.sessionId, input.mutationId, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, fingerprint, input.commands.map(c => c.kind).join(','), JSON.stringify(receipt)])
     return receipt
   }
