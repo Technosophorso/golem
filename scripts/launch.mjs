@@ -44,6 +44,7 @@ import { randomBytes } from 'node:crypto'
 import { createRequire } from 'node:module'
 import { createInterface } from 'node:readline/promises'
 import { resolveMessageStoreLaunch } from './message-store-launch.mjs'
+import { bridgeEnv } from './bridge-env.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG_DIR = join(homedir(), '.usebrian')
@@ -260,16 +261,6 @@ const browserRelayReservation = useLocalBrowserRelay ? await reserveAvailablePor
 const browserRelayPort = browserRelayReservation?.port
 const messageStoreLaunch = resolveMessageStoreLaunch({ root: ROOT, env: process.env })
 
-// A bridge's URL reaches the api only when something will actually answer on
-// it: an external deployment named it, or this launcher is about to start the
-// local one. Under USEBRIAN_CORE_ONLY neither holds, and exporting a loopback
-// URL nothing listens on would turn an honest "not configured" into a connect
-// timeout on first use.
-function bridgeEnv(name, useLocal, port, secret) {
-  const url = process.env[`${name}_URL`] || (useLocal ? `http://127.0.0.1:${port}` : null)
-  return url ? { [`${name}_URL`]: url, [`${name}_SECRET`]: secret } : {}
-}
-
 const env = {
   ...process.env,
   NODE_ENV: 'development',
@@ -291,11 +282,13 @@ const env = {
   DOC_SYNC_URL: `ws://127.0.0.1:${PORTS.docSync}`,
   // Encrypts connector credentials at rest (see generation note above).
   CHANNEL_CREDENTIAL_KEY: channelCredentialKey,
-  ...bridgeEnv('DISCORD_CONNECTOR', useLocalDiscordConnector, PORTS.discordConnector, discordConnectorSecret),
-  ...bridgeEnv('WA_CONNECTOR', useLocalWaConnector, PORTS.waConnector, waConnectorSecret),
-  ...bridgeEnv('WECHAT_CONNECTOR', useLocalWechatConnector, PORTS.wechatConnector, wechatConnectorSecret),
-  ...bridgeEnv('FEISHU_CONNECTOR', useLocalFeishuConnector, PORTS.feishuConnector, feishuConnectorSecret),
-  ...bridgeEnv('BROWSER_RELAY', useLocalBrowserRelay, browserRelayPort, browserRelaySecret),
+  // Each bridge's URL + secret, exported only when something will answer on it
+  // (bridge-env.mjs holds the rule and its tests).
+  ...bridgeEnv('DISCORD_CONNECTOR', { useLocal: useLocalDiscordConnector, port: PORTS.discordConnector, secret: discordConnectorSecret }),
+  ...bridgeEnv('WA_CONNECTOR', { useLocal: useLocalWaConnector, port: PORTS.waConnector, secret: waConnectorSecret }),
+  ...bridgeEnv('WECHAT_CONNECTOR', { useLocal: useLocalWechatConnector, port: PORTS.wechatConnector, secret: wechatConnectorSecret }),
+  ...bridgeEnv('FEISHU_CONNECTOR', { useLocal: useLocalFeishuConnector, port: PORTS.feishuConnector, secret: feishuConnectorSecret }),
+  ...bridgeEnv('BROWSER_RELAY', { useLocal: useLocalBrowserRelay, port: browserRelayPort, secret: browserRelaySecret }),
   BROWSER_VAULT_ENCRYPTION_KEY: browserVaultEncryptionKey,
   BROWSER_CREDENTIAL_ENCRYPTION_KEY: browserCredentialEncryptionKey,
   ...(messageStoreLaunch.enabled
