@@ -183,11 +183,13 @@ describe("[COMP:app-web/surface-content-cache] hydration through the surface cac
     );
   });
 
-  it("evicts both tiers on an authoritative denial and never falls back to the copy", async () => {
+  it.each([401, 403, 404])("evicts both tiers on %s without retrying its own denial", async (status) => {
     await writeSurfaceContentCache({ viewerId: "u1", workspaceId: "w1" }, "tasks", key, ["stale-copy"]);
-    const fetch = vi.fn(async () => {
-      throw Object.assign(new Error("Forbidden"), { status: 403 });
-    });
+    const denial = Object.assign(new Error("Access denied"), { status });
+    // A regression must fail a bounded assertion, not exhaust the worker heap.
+    const fetch = vi.fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(denial)
+      .mockImplementation(() => new Promise(() => {}));
 
     await render(key, fetch);
     await settle();
@@ -196,6 +198,28 @@ describe("[COMP:app-web/surface-content-cache] hydration through the surface cac
     expect(storage.has("surface-content:v1:u1:w1:tasks")).toBe(false);
     expect(readSurfaceCache<string[]>(key).data).toBeUndefined();
     expect(text()).toBe("error");
+    expect(readSurfaceCache(key).error).toBe(denial);
+    await settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    // Explicit invalidation is still a retry, not a permanent poisoned key.
+    fetch.mockResolvedValue(["restored"]);
+    await act(async () => { invalidateSurfaceCache(key); });
+    await settle();
+    expect(text()).toBe("restored");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("records a cold-load denial once without a disk copy", async () => {
+    const denial = Object.assign(new Error("Forbidden"), { status: 403 });
+    const fetch = vi.fn<() => Promise<string[]>>()
+      .mockRejectedValueOnce(denial)
+      .mockImplementation(() => new Promise(() => {}));
+    await render(key, fetch);
+    await settle();
+    expect(text()).toBe("error");
+    expect(readSurfaceCache(key).error).toBe(denial);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("leaves a warm memory entry alone (the disk copy is only for a cold load)", async () => {

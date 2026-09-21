@@ -9,7 +9,7 @@
  * its chrome paints from the home's list row before the snapshot resolves,
  * and the row + snapshot are two parallel keys, never a waterfall.
  */
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/lib/i18n/client";
@@ -18,14 +18,17 @@ import type { Dictionary } from "@/lib/i18n/dictionaries";
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const navigation = vi.hoisted(() => ({ search: "" }));
+const navigation = vi.hoisted(() => ({ search: "", pathname: "/office/templates/template-1", replace: vi.fn() }));
 const api = vi.hoisted(() => ({
+  listOfficeTemplates: vi.fn(),
+  transitionOfficeTemplateLifecycle: vi.fn(),
   listOfficeArtifacts: vi.fn<() => Promise<unknown>>(),
   getOfficeArtifact: vi.fn<() => Promise<unknown>>(),
   getOfficeSnapshot: vi.fn<() => Promise<unknown>>(),
 }));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ back: vi.fn(), forward: vi.fn(), push: vi.fn(), prefetch: vi.fn(), replace: vi.fn() }),
+  useRouter: () => ({ back: vi.fn(), forward: vi.fn(), push: vi.fn(), prefetch: vi.fn(), replace: navigation.replace }),
+  usePathname: () => navigation.pathname,
   useSearchParams: () => new URLSearchParams(navigation.search),
 }));
 vi.mock("next/link", () => ({ default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a> }));
@@ -35,6 +38,8 @@ vi.mock("@/lib/office/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/office/api")>();
   return {
     ...actual,
+    listOfficeTemplates: api.listOfficeTemplates,
+    transitionOfficeTemplateLifecycle: api.transitionOfficeTemplateLifecycle,
     listOfficeArtifacts: (...args: unknown[]) => api.listOfficeArtifacts(...(args as [])),
     getOfficeArtifact: (...args: unknown[]) => api.getOfficeArtifact(...(args as [])),
     getOfficeSnapshot: (...args: unknown[]) => api.getOfficeSnapshot(...(args as [])),
@@ -62,10 +67,11 @@ vi.mock("@/lib/office/offline", () => ({
   loadOfflinePackage: vi.fn(async () => null), removeOfflineJournalEntry: vi.fn(), removeOfflinePackage: vi.fn(async () => undefined),
 }));
 
+import { OfficeTemplateLibrary } from "../template-library";
 import { OfficeHome } from "../office-home";
 import { OfficeEditorShell } from "../office-editor-shell";
 import { invalidateSurfaceCache, loadSurfaceCache, markSurfaceCacheStale, readSurfaceCache, resetSurfaceCache } from "@/lib/surface-cache";
-import { invalidateOfficeList, officeArtifactCacheKey, officeListCacheKey, officeSnapshotCacheKey } from "@/lib/surface-prefetch";
+import { invalidateOfficeList, officeTemplateListCacheKey, officeArtifactCacheKey, officeListCacheKey, officeSnapshotCacheKey } from "@/lib/surface-prefetch";
 import { officeArtifactFromListCache, useOfficeCacheRevalidation } from "@/lib/office/surface-cache";
 import type { OfficeArtifact } from "@/lib/office/api";
 
@@ -86,6 +92,8 @@ function render(node: React.ReactNode) {
 beforeEach(() => {
   resetSurfaceCache();
   navigation.search = "";
+  navigation.pathname = "/office/templates/template-1";
+  navigation.replace.mockClear();
   api.listOfficeArtifacts.mockReset();
   api.getOfficeArtifact.mockReset();
   api.getOfficeSnapshot.mockReset();
@@ -227,5 +235,163 @@ describe("[COMP:app-web/office-surface-cache] helpers", () => {
     act(() => { document.dispatchEvent(new Event("visibilitychange")); });
     expect(readSurfaceCache(key).updatedAt).toBe(0);
     expect(readSurfaceCache(key).data).toEqual([ROW]);
+  });
+});
+
+
+describe("[COMP:app-web/office-surface-cache] template lifecycle", () => {
+  const template = { id: "template-1", name: "Sample template", family: "document", description: "Example", lifecycleState: "draft", draftArtifactId: ARTIFACT, currentVersionId: null };
+  const button = (label: string) => Array.from(container.querySelectorAll("button")).find((node) => node.textContent === label)!;
+  beforeEach(() => {
+    api.listOfficeTemplates.mockReset().mockResolvedValue([template]);
+    api.transitionOfficeTemplateLifecycle.mockReset();
+  });
+
+  it("refreshes Trash controls and removes a permanently deleted card without remounting", async () => {
+    render(<OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} />);
+    await act(async () => { await settle(); });
+    api.transitionOfficeTemplateLifecycle.mockResolvedValue({ ...template, lifecycleState: "trash" });
+    api.listOfficeTemplates.mockResolvedValue([{ ...template, lifecycleState: "trash" }]);
+    await act(async () => { button(en.office.moveToTrash).click(); await settle(); });
+    expect(button(en.office.moveToTrash)).toBeUndefined();
+    expect(button(en.office.restore)).toBeDefined();
+    const input = container.querySelector("input")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, template.name);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    api.listOfficeTemplates.mockResolvedValue([]);
+    await act(async () => { button(en.office.deletePermanently).click(); await settle(); });
+    expect(container.querySelector("[data-office-template-card]")).toBeNull();
+    expect(container.textContent).toContain(en.office.noTemplates);
+    expect(navigation.replace).toHaveBeenCalledWith(`/w/${WORKSPACE}/office/templates`);
+  });
+
+  it("disables duplicate actions while pending and retains the row on rejection", async () => {
+    render(<OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} />);
+    await act(async () => { await settle(); });
+    let reject!: (error: Error) => void;
+    api.transitionOfficeTemplateLifecycle.mockImplementation(() => new Promise((_, fail) => { reject = fail; }));
+    act(() => { button(en.office.moveToTrash).click(); button(en.office.moveToTrash).click(); });
+    expect(button(en.office.moveToTrash).disabled).toBe(true);
+    expect(api.transitionOfficeTemplateLifecycle).toHaveBeenCalledTimes(1);
+    await act(async () => { reject(new Error("blocked")); await settle(); });
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(en.office.lifecycleFailed);
+    expect(container.querySelector("[data-office-template-card]")).not.toBeNull();
+    expect(button(en.office.moveToTrash).disabled).toBe(false);
+  });
+
+  it("revalidates foreground changes and restores a trashed template", async () => {
+    render(<OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} />);
+    await act(async () => { await settle(); });
+    api.listOfficeTemplates.mockResolvedValue([{ ...template, lifecycleState: "trash" }]);
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")); await settle(); });
+    expect(button(en.office.restore)).toBeDefined();
+    api.transitionOfficeTemplateLifecycle.mockResolvedValue(template);
+    api.listOfficeTemplates.mockResolvedValue([template]);
+    await act(async () => { button(en.office.restore).click(); await settle(); });
+    expect(button(en.office.moveToTrash)).toBeDefined();
+    expect(button(en.office.restore)).toBeUndefined();
+  });
+
+  it.each(["unmount", "pathname", "search", "workspace", "template", "return"])("late purge after %s invalidates the original cache without navigating", async (change) => {
+    api.listOfficeTemplates.mockResolvedValue([{ ...template, lifecycleState: "trash" }]);
+    render(<StrictMode><OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} /></StrictMode>);
+    await act(async () => { await settle(); });
+    let complete!: (row: unknown) => void;
+    api.transitionOfficeTemplateLifecycle.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    const input = container.querySelector("input")!;
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, template.name);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    act(() => { button(en.office.deletePermanently).click(); });
+    expect(api.transitionOfficeTemplateLifecycle).toHaveBeenCalledTimes(1);
+    if (change === "unmount") render(<div>Other surface</div>);
+    else {
+      if (change === "pathname" || change === "return") navigation.pathname = "/other";
+      if (change === "search") navigation.search = "intent=use";
+      render(<StrictMode><OfficeTemplateLibrary
+        workspaceId={change === "workspace" ? "other-workspace" : WORKSPACE}
+        templateId={change === "template" ? "other-template" : template.id}
+      /></StrictMode>);
+    }
+    await act(async () => { await settle(); });
+    if (change === "return") {
+      navigation.pathname = "/office/templates/template-1";
+      render(<StrictMode><OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} /></StrictMode>);
+    }
+    expect(readSurfaceCache(officeTemplateListCacheKey(WORKSPACE)).data).toBeDefined();
+    api.listOfficeTemplates.mockResolvedValue([]);
+    await act(async () => { complete({}); await settle(); });
+    expect(navigation.replace).not.toHaveBeenCalled();
+    // Unmounted keys are dropped; still-mounted keys refetch the new empty list.
+    expect(readSurfaceCache(officeTemplateListCacheKey(WORKSPACE)).data ?? []).toEqual([]);
+  });
+
+  it("an old failure cannot overwrite a new route's pending mutation", async () => {
+    render(<OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} />);
+    await act(async () => { await settle(); });
+    let rejectOld!: (error: Error) => void;
+    api.transitionOfficeTemplateLifecycle.mockImplementationOnce(() => new Promise((_, reject) => { rejectOld = reject; }));
+    act(() => { button(en.office.moveToTrash).click(); });
+    const next = { ...template, id: "other-template" };
+    api.listOfficeTemplates.mockResolvedValue([next]);
+    render(<OfficeTemplateLibrary workspaceId="other-workspace" templateId={next.id} />);
+    await act(async () => { await settle(); });
+    api.transitionOfficeTemplateLifecycle.mockImplementation(pending);
+    act(() => { button(en.office.moveToTrash).click(); });
+    expect(api.transitionOfficeTemplateLifecycle).toHaveBeenCalledTimes(2);
+    await act(async () => { rejectOld(new Error("old failure")); await settle(); });
+    expect(container.querySelector("[role=alert]")).toBeNull();
+    expect(button(en.office.moveToTrash).disabled).toBe(true);
+  });
+
+  it.each(["initial", "post-mutation"])("recovers from a %s list failure using Retry without remounting", async (phase) => {
+    if (phase === "initial") api.listOfficeTemplates.mockRejectedValue(new Error("offline"));
+    render(<OfficeTemplateLibrary workspaceId={WORKSPACE} templateId={template.id} />);
+    await act(async () => { await settle(); });
+    if (phase === "post-mutation") {
+      api.transitionOfficeTemplateLifecycle.mockResolvedValue({});
+      api.listOfficeTemplates.mockRejectedValue(new Error("offline"));
+      await act(async () => { button(en.office.moveToTrash).click(); await settle(); });
+    }
+    expect(container.querySelector("[role=alert]")?.textContent).toBe(en.office.loadFailed);
+    let complete!: (rows: unknown[]) => void;
+    api.listOfficeTemplates.mockImplementation(() => new Promise((resolve) => { complete = resolve; }));
+    act(() => { button(en.chat.retry).click(); });
+    expect(button(en.chat.retry).disabled).toBe(true);
+    await act(async () => { complete([{ ...template, lifecycleState: "trash" }]); await settle(); });
+    expect(container.querySelector("[role=alert]")).toBeNull();
+    expect(button(en.chat.retry)).toBeUndefined();
+    expect(button(en.office.restore)).toBeDefined();
+    expect(container.querySelector("[data-office-template-card]")).not.toBeNull();
+  });
+
+  it("an obsolete request cannot clear the replacement's in-flight lock", async () => {
+    const key = "office-templates:race:viewer";
+    let rejectOld!: (error: Error) => void;
+    let resolveNew!: (rows: string[]) => void;
+    const old = loadSurfaceCache(key, () => new Promise<string[]>((_, reject) => { rejectOld = reject; }));
+    invalidateSurfaceCache(key);
+    const replacement = loadSurfaceCache(key, () => new Promise<string[]>((resolve) => { resolveNew = resolve; }));
+    rejectOld(new Error("obsolete"));
+    await old;
+    expect(readSurfaceCache(key).error).toBeUndefined();
+    expect(loadSurfaceCache(key, async () => ["unexpected"])).toBe(replacement);
+    resolveNew([]);
+    await replacement;
+    expect(readSurfaceCache(key).data).toEqual([]);
+  });
+
+  it("discards a pre-mutation read even if it finishes after the replacement request", async () => {
+    const key = "office-templates:race:viewer";
+    let resolveOld!: (rows: string[]) => void;
+    const old = loadSurfaceCache(key, () => new Promise<string[]>((resolve) => { resolveOld = resolve; }));
+    invalidateSurfaceCache(key);
+    await loadSurfaceCache(key, async () => []);
+    resolveOld(["deleted"]);
+    await old;
+    expect(readSurfaceCache(key).data).toEqual([]);
   });
 });

@@ -571,6 +571,11 @@ export function sidebarTreeCacheKey(workspaceId: string): string {
 /** The lifecycle views Office home lists; each is its own cached list. */
 export type OfficeListView = "active" | "archived" | "trash" | "retained";
 
+/** Permission-filtered template registry, memory-only like Office files. */
+export function officeTemplateListCacheKey(workspaceId: string): string {
+  return `office-templates:${workspaceId}${viewerSuffix()}`;
+}
+
 /**
  * Cache key for one Office home list (`listOfficeArtifacts(workspaceId, view)`).
  *
