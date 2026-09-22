@@ -2676,7 +2676,11 @@ export function FloatingChat({
                 break;
               }
               const msg =
-                typeof payload.error === "string" ? payload.error : t.error;
+                typeof payload.message === "string"
+                  ? payload.message
+                  : typeof payload.error === "string"
+                    ? payload.error
+                    : t.error;
               setError(msg);
               break;
             }

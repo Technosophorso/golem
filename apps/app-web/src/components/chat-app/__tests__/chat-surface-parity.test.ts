@@ -15,6 +15,14 @@ const source = readFileSync(
   fileURLToPath(new URL("../chat-surface.tsx", import.meta.url)),
   "utf8",
 );
+const floatingChatSource = readFileSync(
+  fileURLToPath(new URL("../../chrome/floating-chat.tsx", import.meta.url)),
+  "utf8",
+);
+const feedTuningChatSource = readFileSync(
+  fileURLToPath(new URL("../../feed/tuning-chat-panel.tsx", import.meta.url)),
+  "utf8",
+);
 const workspaceChromeSource = readFileSync(
   fileURLToPath(new URL("../../doc/workspace-chrome.tsx", import.meta.url)),
   "utf8",
@@ -69,6 +77,16 @@ describe("[COMP:app-web/chat-parity] Chat surface parity", () => {
     expect(source).toContain("components={CHAT_MARKDOWN_COMPONENTS}");
     expect(source).toContain("retryAssistantMessage");
     expect(source).toContain("retryUserMessage");
+  });
+
+  it.each([
+    ["full-page Chat", source],
+    ["universal workspace dock", floatingChatSource],
+    ["Feed assistant dock", feedTuningChatSource],
+  ])("surfaces server SSE error messages in %s", (_name, hostSource) => {
+    expect(hostSource).toMatch(
+      /typeof payload\.message === "string"\s*\? payload\.message\s*:\s*typeof payload\.error === "string"\s*\? payload\.error/,
+    );
   });
 
   it("restores current-turn tool confirmations and resolves them durably", () => {
