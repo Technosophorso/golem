@@ -223,3 +223,23 @@ export async function exportAssociationOperationalRoster(workspaceId:string,even
   }while(cursor);
   return lines.join("\r\n")+"\r\n";
 }
+
+export type MembershipLocale = "en"|"zh-Hant"|"zh-Hans";
+export type MembershipSite = "oasa"|"sea";
+export type MembershipCopy = { name:string;summary:string;audience:string;badge:string;description:string;eligibility:string;benefits:string[];actionLabel:string;billingLabel:string;documents:{label:string;href:string}[] };
+export type WebsiteMembershipPlan = { key:string;planId?:string;currency:"HKD";feeMinor:number;billingPeriod:"one_time"|"annual"|"lifetime"|"manual";activeFrom:string|null;activeTo:string|null;
+  availability:"public"|"invitation"|"enquiry"|"closed";application:{type:"application"|"enquiry";proposerRequired:boolean;codeOfConduct:true;reviewPipeline?:"charter-review"};
+  sites:MembershipSite[];group:string;order:number;i18n:Record<MembershipLocale,MembershipCopy>;overrides:Partial<Record<MembershipSite,Partial<Record<MembershipLocale,Partial<MembershipCopy>>>>>;promotionId:string|null };
+export type MembershipPageCopy = {title:string;intro:string;groups:{id:string;title:string;intro:string}[];sections:{id:string;title:string;image?:{src:string;alt:string};paragraphs:string[];bullets:string[];documents:{label:string;href:string}[]}[];newsletter?:{name:string;summary:string;benefits:string[];actionLabel:string}};
+export type MembershipCatalogueDocument = {schemaVersion:1;plans:WebsiteMembershipPlan[];pages:Record<MembershipSite,Record<MembershipLocale,MembershipPageCopy>>};
+export type MembershipCatalogueDraft = { version:number;document:MembershipCatalogueDocument|null;publishedRevision:number;
+  published:MembershipCatalogueDocument|null;issues:string[];observations:Record<string,{revision:number;observedAt:string}> };
+export async function getMembershipCatalogueDraft(workspaceId:string):Promise<MembershipCatalogueDraft> {
+  return (await request<{catalogue:MembershipCatalogueDraft}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/membership-catalogue/draft`)).catalogue;
+}
+export function saveMembershipCatalogueDraft(workspaceId:string,expectedVersion:number,document:MembershipCatalogueDocument) {
+  return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/membership-catalogue/draft`,{expectedVersion,document});
+}
+export function publishMembershipCatalogue(workspaceId:string,expectedVersion:number) {
+  return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/membership-catalogue/publish`,{expectedVersion});
+}

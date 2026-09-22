@@ -26,7 +26,7 @@ function fixture() {
 describe('[COMP:crm/association-tools] canonical native Association adapters', () => {
   it('publishes bounded object schemas without module or provider mutation tools', () => {
     const { tools } = fixture()
-    expect(Object.keys(tools)).toHaveLength(14)
+    expect(Object.keys(tools)).toHaveLength(17)
     for (const tool of Object.values(tools)) expect('shape' in tool.inputSchema).toBe(true)
     expect(Object.keys(tools).filter(name => /enable|disable|reconcile|bind.*provider|mark.*paid/i.test(name))).toEqual([])
     expect(tools.confirmFreeAssociationOrder.requiresConfirmation).toBe(true)

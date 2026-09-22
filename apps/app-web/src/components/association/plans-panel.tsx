@@ -1,4 +1,8 @@
 "use client";
+import { useCachedResource } from "@/lib/surface-cache";
+import { associationPageCacheKey } from "@/lib/surface-prefetch";
+import { getMembershipCatalogueDraft } from "@/lib/api/association";
+import { MembershipPublishingPanel } from "./membership-publishing";
 
 /** Membership plan catalogue: cards and the plan editor. [COMP:app-web/association] */
 import { useState } from "react";
@@ -14,7 +18,7 @@ import { EmptyState, InlineNotice, PageHeader, StatusPill } from "./ui";
 
 function planCurrencies(plans:readonly {currency:string}[]|undefined):string[] { return [...new Set((plans ?? []).map(plan=>plan.currency).filter(Boolean))]; }
 
-export function AssociationPlansPanel({workspaceId,initialNew=false}:{workspaceId:string;initialNew?:boolean}) {
+function LegacyAssociationPlansPanel({workspaceId,initialNew=false}:{workspaceId:string;initialNew?:boolean}) {
   const t=useT().associationPage,u=t.ux,m=t.manage,plans=useAssociationPage(workspaceId,"plans"),module=useAssociationModule(workspaceId);
   const [editing,setEditing]=useState<AssociationPlan|"new"|null>(initialNew?"new":null),[saved,setSaved]=useState(false);
   const configure=!!module.data?.canManage&&!module.error;
@@ -33,4 +37,13 @@ export function AssociationPlansPanel({workspaceId,initialNew=false}:{workspaceI
         <Button type="button" className="mt-auto min-h-11 self-start md:min-h-8" size="sm" variant="outline" disabled={!configure||!!plans.error} onClick={()=>{setSaved(false);setEditing(plan);}}>{m.edit}</Button>
       </article>)}</div></AssociationListState>
   </section>;
+}
+
+export function AssociationPlansPanel({workspaceId,initialNew=false}:{workspaceId:string;initialNew?:boolean}) {
+  const t=useT().associationPage;
+  const module=useAssociationModule(workspaceId);
+  const catalogue=useCachedResource(module.data?.canManage?associationPageCacheKey(workspaceId,"membership-catalogue"):null,()=>getMembershipCatalogueDraft(workspaceId));
+  const [website,setWebsite]=useState(false);
+  if(website||catalogue.data?.document)return <MembershipPublishingPanel workspaceId={workspaceId}/>;
+  return <div className="space-y-5"><Button variant="outline" className="min-h-11" onClick={()=>setWebsite(true)}>{t.publishing.title}</Button><LegacyAssociationPlansPanel workspaceId={workspaceId} initialNew={initialNew}/></div>;
 }

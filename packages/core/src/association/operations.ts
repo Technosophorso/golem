@@ -23,6 +23,8 @@ import {
   type AssociationSourceOrderImportInput,
 } from './domain.js'
 
+import { MembershipDraftSaveSchema, MembershipPublishSchema, MembershipSiteSchema } from './membership-catalogue.js'
+
 const Id = z.string().uuid()
 export const AssociationContextSchema = z.object({
   workspaceId: Id,
@@ -34,6 +36,11 @@ export const AssociationContextSchema = z.object({
 export type AssociationContext = z.infer<typeof AssociationContextSchema>
 
 export const AssociationCommandSchema = z.union([
+  z.object({ kind: z.literal('membership_catalogue_draft') }).strict(),
+  MembershipDraftSaveSchema.extend({ kind: z.literal('save_membership_catalogue') }),
+  MembershipPublishSchema.extend({ kind: z.literal('publish_membership_catalogue') }),
+  z.object({ kind: z.literal('published_membership_catalogue'), site: MembershipSiteSchema }).strict(),
+  z.object({ kind: z.literal('observe_membership_catalogue'), site: MembershipSiteSchema, revision: z.number().int().positive() }).strict(),
   z.object({ kind: z.literal('module_status') }).strict(),
   z.object({ kind: z.literal('module_action'), action: z.enum(WORKSPACE_MODULE_ACTIONS), expectedVersion: z.number().int().nonnegative() }).strict(),
   z.object({ kind: z.literal('list_tickets'), eventId: Id }).strict(),
@@ -115,4 +122,4 @@ export interface AssociationSourceMembershipImportPort {
     input: AssociationSourceMembershipImportInput,
   ): Promise<{ record: Record<string, unknown>; created: boolean; duplicate: boolean }>
 }
-export const ASSOCIATION_READ_COMMANDS = ['module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_order_notifications', 'list_membership_rescues', 'list_sponsorship_allocations', 'list_sponsorship_invitations'] as const
+export const ASSOCIATION_READ_COMMANDS = ['membership_catalogue_draft', 'published_membership_catalogue', 'observe_membership_catalogue', 'module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_order_notifications', 'list_membership_rescues', 'list_sponsorship_allocations', 'list_sponsorship_invitations'] as const
