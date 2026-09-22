@@ -1,6 +1,6 @@
 import type { Editor } from "@tiptap/core";
 
-export type DocumentHeaderImage = {
+type DocumentHeaderImage = {
   resourceId: string;
   altText: string;
   decorative: boolean;

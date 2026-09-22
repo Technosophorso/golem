@@ -56,7 +56,11 @@ async function start() {
   expect(api.phase.kind).toBe("latched");
 }
 async function stop() { await act(async () => api.stop()); }
-const queued: MeetingCaptureOutcome = { outcome: "queued", message: "Recording queued" };
+const queued: MeetingCaptureOutcome = {
+  outcome: "queued",
+  recordingId: "recording-1",
+  message: "Recording queued",
+};
 
 describe("[COMP:app-web/dock-recorder] non-blocking saves", () => {
   beforeEach(() => {
@@ -110,6 +114,27 @@ describe("[COMP:app-web/dock-recorder] non-blocking saves", () => {
     act(() => api.pause());
     expect(c.pause).toHaveBeenCalledTimes(1);
     expect(a.pause).not.toHaveBeenCalled();
+  });
+
+  it("keeps a queued transcription tracker visible when another capture starts", async () => {
+    makeEngine();
+    makeEngine();
+    await render();
+    await start();
+    await stop();
+    expect(api.notice).toEqual({
+      kind: "queued",
+      recordingId: "recording-1",
+      text: "Recording queued",
+    });
+
+    await start();
+    expect(api.phase.kind).toBe("latched");
+    expect(api.notice).toEqual({
+      kind: "queued",
+      recordingId: "recording-1",
+      text: "Recording queued",
+    });
   });
 
   it.each(["cancelled", "failed", "throw"])("retains a %s save, hides pending recovery and continues the queue", async (outcome) => {

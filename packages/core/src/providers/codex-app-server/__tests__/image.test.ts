@@ -5,15 +5,19 @@ import { CodexRpcPeer } from '../rpc.js'
 import { generateCodexImage, inspectCodexImage } from '../image.js'
 
 const snapshot = { model: 'gpt-image-2', orchestratorModel: 'gpt-test', identity: 'test' }
-async function fixture(options: { status?: string; data?: string; empty?: boolean; beforeAck?: boolean; wrongThread?: boolean; hold?: boolean } = {}) {
+async function fixture(options: { status?: string; data?: string; empty?: boolean; beforeAck?: boolean; wrongThread?: boolean; hold?: boolean; startImage?: boolean; turnBeforeImage?: boolean; omitResult?: boolean } = {}) {
   const input = new PassThrough(); const output = new PassThrough(); const calls: Array<{ method: string; params: any }> = []
   const png = (await sharp({ create: { width: 2, height: 2, channels: 3, background: 'white' } }).png().toBuffer()).toString('base64')
   const send = (message: unknown) => input.write(JSON.stringify(message) + '\n')
   const completed = () => {
     if (options.hold) return
     if (options.wrongThread) send({ method: 'item/completed', params: { threadId: 'other', turnId: 'turn', item: { type: 'imageGeneration', id: 'foreign', status: 'completed', result: png } } })
+    if (options.startImage) send({ method: 'item/started', params: { threadId: 'thread', turnId: 'turn', item: { type: 'imageGeneration', id: 'image', status: 'inProgress' } } })
     if (options.empty) send({ method: 'turn/completed', params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } } })
-    else send({ method: 'item/completed', params: { threadId: 'thread', turnId: 'turn', item: { type: 'imageGeneration', id: 'image', status: options.status ?? 'completed', result: options.data ?? png, savedPath: '/etc/never-read-this' } } })
+    else {
+      if (options.turnBeforeImage) send({ method: 'turn/completed', params: { threadId: 'thread', turn: { id: 'turn', status: 'completed' } } })
+      send({ method: 'item/completed', params: { threadId: 'thread', turnId: 'turn', item: { type: 'imageGeneration', id: 'image', status: options.status ?? 'completed', ...(!options.omitResult ? { result: options.data ?? png } : {}), savedPath: '/etc/never-read-this' } } })
+    }
   }
   output.on('data', chunk => {
     for (const line of String(chunk).trim().split('\n')) {
@@ -24,33 +28,67 @@ async function fixture(options: { status?: string; data?: string; empty?: boolea
     }
   })
   const rpc = new CodexRpcPeer({ input, output })
-  return { rpc, cwd: '/tmp/empty-fixture', calls, png }
+  return { rpc, cwd: '/tmp/empty-fixture', calls, png, diagnostics: () => ({ stderrBytes: 17, stderrTruncated: false }) }
 }
 describe('[COMP:core/codex-image] explicit image receipt bridge', () => {
   it.each([false, true])('accepts a decoded image and interrupts further calls (completion before ack: %s)', async beforeAck => {
-    const f = await fixture({ beforeAck, wrongThread: true })
+    const f = await fixture({ beforeAck, wrongThread: true, startImage: true })
     try {
       const receipt = await generateCodexImage(f, snapshot, 'One simple diagram', AbortSignal.timeout(3000))
       expect(receipt.image).toEqual({ data: f.png, mimeType: 'image/png' })
       expect(receipt.responseId).toBe('image')
       expect(receipt.usage.measured).toBe(false)
+      expect(receipt.providerDiagnostics).toEqual({ provider: 'openai-codex', events: [
+        { method: 'item/started', itemType: 'imageGeneration', status: 'inProgress' },
+        { method: 'item/completed', itemType: 'imageGeneration', status: 'completed' },
+      ], process: { stderrBytes: 17, stderrTruncated: false } })
+      const diagnosticJson = JSON.stringify(receipt.providerDiagnostics)
+      expect(diagnosticJson).not.toContain('One simple diagram')
+      expect(diagnosticJson).not.toContain(f.png.slice(0, 24))
+      expect(diagnosticJson).not.toContain('/etc/never-read-this')
       const thread = f.calls.find(c => c.method === 'thread/start')?.params
       expect(thread).toMatchObject({ environments: [], dynamicTools: [], sandbox: 'read-only', ephemeral: true })
       expect(thread?.baseInstructions).toContain('tools.image_gen__imagegen')
       expect(thread?.baseInstructions).toContain('generatedImage(result)')
+      expect(thread?.baseInstructions).toContain('// @exec: {"yield_time_ms": 120000}')
+      expect(thread?.baseInstructions).toContain('call wait with that same cell_id and yield_time_ms 120000')
+      expect(thread?.baseInstructions).toContain('Never call tools.image_gen__imagegen more than once')
       expect(thread?.baseInstructions).not.toContain('image_gen.imagegen')
       expect(f.calls.filter(c => c.method === 'turn/start')).toHaveLength(1)
       expect(f.calls.some(c => c.method === 'turn/interrupt')).toBe(true)
     } finally { f.rpc.close() }
   })
   it.each([
-    [{ empty: true }, 'image_missing'], [{ status: 'failed' }, 'image_provider_rejected'],
+    [{ empty: true }, 'image_tool_not_invoked'], [{ status: 'failed', omitResult: true }, 'image_provider_rejected'],
     [{ data: 'not-base64' }, 'image_malformed'], [{ data: Buffer.from('a narrative with a path').toString('base64') }, 'image_malformed'],
     [{ data: 'iVBORw0KGgo=' }, 'image_malformed'],
   ] as const)('fails honestly for %j', async (options, expected) => {
     const f = await fixture(options)
     try { expect(await generateCodexImage(f, snapshot, 'A diagram', AbortSignal.timeout(3000))).toMatchObject({ error: expected }); }
     finally { f.rpc.close() }
+  })
+  it('keeps a started image eligible when turn completion arrives first', async () => {
+    const f = await fixture({ startImage: true, turnBeforeImage: true })
+    try {
+      const receipt = await generateCodexImage(f, snapshot, 'A diagram', AbortSignal.timeout(3000))
+      expect(receipt.image).toEqual({ data: f.png, mimeType: 'image/png' })
+      expect(receipt.providerDiagnostics?.events).toEqual([
+        { method: 'item/started', itemType: 'imageGeneration', status: 'inProgress' },
+        { method: 'turn/completed', status: 'completed' },
+        { method: 'item/completed', itemType: 'imageGeneration', status: 'completed' },
+      ])
+    } finally { f.rpc.close() }
+  })
+  it('classifies a started image that reaches the generation deadline', async () => {
+    const f = await fixture({ startImage: true, empty: true })
+    try {
+      const receipt = await generateCodexImage(f, snapshot, 'A diagram', AbortSignal.timeout(30))
+      expect(receipt).toMatchObject({ error: 'image_tool_incomplete', providerDiagnostics: { provider: 'openai-codex', events: [
+        { method: 'item/started', itemType: 'imageGeneration', status: 'inProgress' },
+        { method: 'turn/completed', status: 'completed' },
+      ] } })
+      expect(f.calls.filter(c => c.method === 'turn/interrupt')).toHaveLength(1)
+    } finally { f.rpc.close() }
   })
   it('aborts a waiting image turn and never retries it', async () => {
     const f = await fixture({ hold: true }); const controller = new AbortController()

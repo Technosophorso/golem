@@ -4,11 +4,11 @@
  * Cold-start setup checklist — the home half of the lifecycle-aware Studio
  * prominence (docs/architecture/features/doc.md §4). The companion to
  * the sidebar's Studio "Set up" nudge: where the nudge lives in the persistent
- * chrome, this renders ON the doc `/p` home landing (above the chatter) and
+ * chrome, this renders beside the composer on the blank Page and Suggested landings and
  * walks a new workspace through the first three setup moves, each a deep link
  * into Studio.
  *
- * Cold start ONLY. The parent (`EmptyPageLanding`) mounts this only while the
+ * Cold start ONLY. The landing mounts this only while the
  * workspace has zero connected connectors — the same `studioSetupIncomplete`
  * signal the sidebar nudge reads, fetched once in `DocSidebarDataProvider`
  * (no second connectors fetch). Once a connector connects, that signal flips
@@ -95,9 +95,9 @@ export function SetupChecklist({ workspaceId }: { workspaceId: string }) {
   return (
     <section
       aria-label={t.ariaLabel}
-      className="animate-pop-in relative rounded-2xl border border-border bg-card/60 p-4 shadow-sm sm:p-5"
+      className="animate-pop-in relative"
     >
-      <div className="flex items-start justify-between gap-3 px-1">
+      <div className="flex items-start justify-between gap-2 px-1">
         <div className="min-w-0">
           <h2 className="text-sm font-semibold text-foreground">{t.title}</h2>
           <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
@@ -108,35 +108,35 @@ export function SetupChecklist({ workspaceId }: { workspaceId: string }) {
           type="button"
           aria-label={t.dismissAriaLabel}
           onClick={onDismiss}
-          className="-mr-1 -mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-foreground"
+          className="-mr-2 -mt-2 flex size-11 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-muted/60 hover:text-foreground"
         >
           <X className="size-4" aria-hidden />
         </button>
       </div>
 
-      <ul className="mt-3 flex flex-col gap-1.5">
+      <ul className="mt-4 flex flex-col gap-3">
         {steps.map(({ key, icon: Icon, title, desc, href }) => (
           <li key={key}>
             <Link
               href={href}
               className={cn(
-                "press group flex items-center gap-3 rounded-xl border border-transparent px-2.5 py-2.5 text-left",
-                "transition-colors hover:border-border hover:bg-muted/50",
+                "press group flex items-start gap-3 rounded-2xl border border-border/80 bg-card p-4 text-left",
+                "transition-colors hover:border-primary/30 hover:bg-muted/40",
               )}
             >
               <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/15">
                 <Icon className="size-[18px]" aria-hidden />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-medium text-foreground">
+                <span className="block text-sm font-medium text-foreground">
                   {title}
                 </span>
-                <span className="block truncate text-xs text-muted-foreground">
+                <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
                   {desc}
                 </span>
               </span>
               <ArrowUpRight
-                className="size-4 shrink-0 text-transparent transition-colors group-hover:text-muted-foreground"
+                className="mt-0.5 size-3.5 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-primary"
                 aria-hidden
               />
             </Link>

@@ -25,14 +25,29 @@ describe('[COMP:core/codex-image] pinned image runtime', () => {
       if (req.method === 'GET') { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ models: [] })); return }
       const chunks: Buffer[] = []; req.on('data', chunk => chunks.push(chunk)); req.on('end', () => {
         const body = JSON.parse(Buffer.concat(chunks).toString()); requests.push({ path: req.url!, body })
-        if (req.url?.includes('/images/generations')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ created: 1, data: [{ b64_json: png }] })); return }
-        if (req.url?.includes('/responses') && requests.filter(r => r.path.includes('/responses')).length === 1) {
-          const item = { type: 'custom_tool_call', id: 'call-item', call_id: 'image-call', name: 'exec', input: "const result = await tools.image_gen__imagegen({ prompt: 'One simple diagram' }); generatedImage(result);" }
+        if (req.url?.includes('/images/generations')) {
+          setTimeout(() => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ created: 1, data: [{ b64_json: png }] })) }, 1500)
+          return
+        }
+        const responseNumber = requests.filter(r => r.path.includes('/responses')).length
+        if (req.url?.includes('/responses') && responseNumber <= 2) {
+          const cellId = JSON.stringify(body).match(/Script running with cell ID ([A-Za-z0-9_-]+)/)?.[1]
+          const item = responseNumber === 1
+            ? { type: 'custom_tool_call', id: 'call-item', call_id: 'image-call', name: 'exec', input: "// @exec: {\"yield_time_ms\": 25}\nconst result = await tools.image_gen__imagegen({ prompt: 'One simple diagram' }); generatedImage(result);" }
+            : { type: 'custom_tool_call', id: 'wait-item', call_id: 'wait-call', name: 'wait', input: JSON.stringify({ cell_id: cellId ?? 'missing-cell', yield_time_ms: 5000 }) }
           res.writeHead(200, { 'content-type': 'text/event-stream' })
           for (const event of [
-            { type: 'response.created', response: { id: 'response-fixture' } },
+            { type: 'response.created', response: { id: `response-fixture-${responseNumber}` } },
             { type: 'response.output_item.done', item },
-            { type: 'response.completed', response: { id: 'response-fixture', output: [item], usage: { input_tokens: 5, output_tokens: 5 } } },
+            { type: 'response.completed', response: { id: `response-fixture-${responseNumber}`, output: [item], usage: { input_tokens: 5, output_tokens: 5 } } },
+          ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
+          res.end(); return
+        }
+        if (req.url?.includes('/responses')) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          for (const event of [
+            { type: 'response.created', response: { id: `response-fixture-${responseNumber}` } },
+            { type: 'response.completed', response: { id: `response-fixture-${responseNumber}`, output: [], usage: { input_tokens: 5, output_tokens: 0 } } },
           ]) res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`)
           res.end(); return
         }
@@ -48,7 +63,7 @@ describe('[COMP:core/codex-image] pinned image runtime', () => {
       '-c', 'model_providers.brian_mock.wire_api="responses"', '-c', 'model_providers.brian_mock.requires_openai_auth=true',
       '--listen', 'stdio://'], { cwd, env: buildCodexEnvironment(home, { PATH: process.env.PATH, RUST_LOG: 'error' }), stdio: ['pipe', 'pipe', 'pipe'] })
     let stderr = ''; child.stderr.on('data', chunk => { stderr = (stderr + chunk).slice(-4000) })
-    const rpc = new CodexRpcPeer({ input: child.stdout, output: child.stdin, requestTimeoutMs: 5000, maxFrameBytes: 64 * 1024 * 1024 })
+    const rpc = new CodexRpcPeer({ input: child.stdout, output: child.stdin, requestTimeoutMs: 15000, maxFrameBytes: 64 * 1024 * 1024 })
     try {
       await rpc.request('initialize', { clientInfo: { name: 'brian_image_fixture', version: '0.0.1' }, capabilities: { experimentalApi: true } }, InitializeResponseSchema)
       await rpc.notify('initialized', {})
@@ -63,6 +78,9 @@ describe('[COMP:core/codex-image] pinned image runtime', () => {
       expect(Array.from(description.matchAll(/^### `([^`]+)`$/gm), (match: any) => match[1])).toEqual(['image_gen__imagegen'])
       expect(receipt.image, JSON.stringify({ receipt, paths: requests.map(r => r.path), stderr })).toEqual({ data: png, mimeType: 'image/png' })
       expect(requests.filter(r => r.path.includes('/images/generations'))).toHaveLength(1)
+      const responseRequests = requests.filter(r => r.path.includes('/responses'))
+      expect(responseRequests.length).toBeGreaterThanOrEqual(2)
+      expect(JSON.stringify(responseRequests[1]?.body)).toContain('Script running with cell ID')
       expect(requests.find(r => r.path.includes('/images/generations'))?.body.model).toBe('gpt-image-2')
     } finally {
       rpc.close(); child.stdin.end(); child.kill('SIGTERM'); server.closeAllConnections(); server.close()

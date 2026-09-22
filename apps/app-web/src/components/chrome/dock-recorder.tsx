@@ -34,11 +34,13 @@ import { Tooltip } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
+import { RecordingUploadStatus } from "@/components/recordings/recording-upload-status";
 import { captureLabelLane, formatElapsed } from "@/lib/recorder/recorder-gesture";
 import type { DockRecorderApi, RecorderCaptureSource } from "@/lib/recorder/use-dock-recorder";
 import { useGlobalDockRecorder } from "@/lib/recorder/dock-recorder-bridge";
 import { desktopBridge } from "@/lib/desktop-auth-source";
 import type { SpoolSessionMeta } from "@/lib/recorder/recorder-spool";
+import { useRecordingSummary } from "@/lib/recordings/use-recording-summary";
 
 /** The record-dot glyph — deliberately not a microphone. */
 function RecordDot({ className }: { className?: string }) {
@@ -573,6 +575,77 @@ export function DockRecorderStrip({ rec, className }: { rec: DockRecorderApi; cl
 }
 
 /**
+ * The 202 response is only a queue hand-off. Follow the returned recording id
+ * until the worker reaches a terminal state. The backend exposes discrete
+ * states, not a trustworthy percentage or ETA, so queued/processing use an
+ * indeterminate bar rather than fabricating progress.
+ */
+function QueuedRecordingNotice({
+  workspaceId,
+  recordingId,
+  initialText,
+  onDismiss,
+}: {
+  workspaceId: string;
+  recordingId: string;
+  initialText: string;
+  onDismiss: () => void;
+}) {
+  const dict = useT();
+  const t = dict.recorder;
+  const { summary } = useRecordingSummary(workspaceId, recordingId, {
+    trackProcessing: true,
+  });
+  const status = summary?.status ?? "queued";
+  const inFlight =
+    status === "awaiting_upload" || status === "queued" || status === "processing";
+  const failed = status === "failed";
+  let text = t.transcriptionQueued;
+  if (status === "processing") text = t.transcriptionProcessing;
+  else if (status === "processed") text = t.transcriptionReady;
+  else if (failed) text = t.transcriptionFailed;
+  const detail = initialText === dict.recordings.queued ? null : initialText;
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn(
+        "rounded-md border px-2.5 py-1.5 text-xs",
+        failed
+          ? "border-destructive/30 bg-destructive/10 text-destructive"
+          : "border-border bg-background/95 text-muted-foreground",
+      )}
+    >
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1">
+          {text}
+          {detail ? <span className="mt-0.5 block">{detail}</span> : null}
+        </span>
+        <button
+          type="button"
+          aria-label={t.dismiss}
+          onClick={onDismiss}
+          className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <X className="size-3.5" aria-hidden />
+        </button>
+      </div>
+      {inFlight ? (
+        <div
+          className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-muted"
+          role="progressbar"
+          aria-label={text}
+          aria-valuetext={text}
+        >
+          <div className="h-full w-1/2 animate-pulse rounded-full bg-primary" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * Transient notices: first-use mic hint, the "kept on this device"
  * reassurance (a long capture whose cost-confirm was closed — informational,
  * NOT error-styled: the audio is safe and will surface as recovery), the
@@ -585,11 +658,13 @@ export function DockRecorderStrip({ rec, className }: { rec: DockRecorderApi; cl
 export function DockRecorderNotice({ rec, className }: { rec: DockRecorderApi; className?: string }) {
   const t = useT().recorder;
   const notice = rec.notice;
-  if (!notice && !rec.savingCount) return null;
+  const activeSave =
+    rec.saveProgress && rec.saveProgress.status !== "idle" ? rec.saveProgress : null;
+  const pendingCount = Math.max(0, rec.savingCount - (activeSave ? 1 : 0));
+  if (!notice && !activeSave && pendingCount === 0) return null;
   const informational =
     notice?.kind === "micHint" ||
     notice?.kind === "kept" ||
-    notice?.kind === "queued" ||
     notice?.kind === "autoStopped" ||
     notice?.kind === "pauseStopped";
   const text =
@@ -614,12 +689,28 @@ export function DockRecorderNotice({ rec, className }: { rec: DockRecorderApi; c
                       : t.captureFailed;
   return (
     <div className={cn("space-y-1.5", className)}>
-      {rec.savingCount > 0 && (
+      {activeSave ? (
+        <div className="rounded-md border border-border bg-background/95 px-2.5 py-1.5">
+          <RecordingUploadStatus
+            status={activeSave.status}
+            uploadProgress={activeSave.uploadProgress}
+            message={activeSave.message}
+          />
+        </div>
+      ) : null}
+      {pendingCount > 0 && (
         <div role="status" className="rounded-md border border-border bg-background/95 px-2.5 py-1.5 text-xs text-muted-foreground">
-          {t.savingBackground.replace("{count}", String(rec.savingCount))}
+          {t.savingBackground.replace("{count}", String(pendingCount))}
         </div>
       )}
-      {notice && (
+      {notice?.kind === "queued" ? (
+        <QueuedRecordingNotice
+          workspaceId={rec.workspaceId}
+          recordingId={notice.recordingId}
+          initialText={notice.text}
+          onDismiss={rec.clearNotices}
+        />
+      ) : notice ? (
         <div
           role="status"
           className={cn(
@@ -639,7 +730,7 @@ export function DockRecorderNotice({ rec, className }: { rec: DockRecorderApi; c
             <X className="size-3.5" aria-hidden />
           </button>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

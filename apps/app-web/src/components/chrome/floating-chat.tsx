@@ -2676,7 +2676,11 @@ export function FloatingChat({
                 break;
               }
               const msg =
-                typeof payload.error === "string" ? payload.error : t.error;
+                typeof payload.message === "string"
+                  ? payload.message
+                  : typeof payload.error === "string"
+                    ? payload.error
+                    : t.error;
               setError(msg);
               break;
             }
@@ -2913,6 +2917,11 @@ export function FloatingChat({
     workspaceId,
     assistantId: activeAssistantId,
     captureNamePrefix: tRecorder.captureName,
+    saveProgress: {
+      status: captureUpload.status,
+      uploadProgress: captureUpload.uploadProgress,
+      message: captureUpload.message,
+    },
     getSessionId: () =>
       getDockRecorderSessionId(() => sessionIdRef.current ?? undefined),
     sendVoiceClip: (fileId: string) =>
@@ -2934,7 +2943,13 @@ export function FloatingChat({
       // upload hook's inline line below the composer only ever shows
       // expanded, so it would either be invisible or say it twice.
       captureUpload.dismiss();
-      return outcome;
+      return outcome.outcome === "queued"
+        ? {
+            outcome: "queued",
+            recordingId: outcome.recording.recordingId,
+            message: outcome.message,
+          }
+        : outcome;
     },
   });
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, type ReactNode } from "react";
+import { act, type ComponentProps, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedDock } from "@/lib/api/home-dock";
@@ -11,6 +11,7 @@ const nav = vi.hoisted(() => ({ push: vi.fn() }));
 const sidebar = vi.hoisted(() => ({
   dock: null as ResolvedDock | null,
   dockLoading: true,
+  studioSetupIncomplete: false,
   reloadDock: vi.fn(),
   setDock: vi.fn(),
 }));
@@ -20,53 +21,15 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("next/link", () => ({
-  default: ({ children, href }: { children: ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
+  default: ({ children, ...props }: ComponentProps<"a">) => (
+    <a {...props}>{children}</a>
   ),
 }));
 
-vi.mock("@/lib/i18n/client", () => ({
-  useLocale: () => "en",
-  useT: () => ({
-    docPage: {
-      suggested: {
-        greetingMorning: "Good morning",
-        greetingAfternoon: "Good afternoon",
-        greetingEvening: "Good evening",
-        subtitle: "Curated by your assistant",
-        refresh: "Refresh",
-        refreshing: "Refreshing",
-        buildPlaceholder: "Ask anything",
-        needsYou: "Needs you",
-        approvalsTitle: "Approvals waiting",
-        approvalsCaption: "Grouped by what happens next",
-        approvalsCta: "Open approvals",
-        approvalGroups: {
-          externalActionsTitle: "Actions to approve",
-          externalActionsCaption: "Emails and tool calls",
-          contentReviewTitle: "Content to review",
-          contentReviewCaption: "Posts and replies",
-          systemImprovementsTitle: "Improvements to apply",
-          systemImprovementsCaption: "Skills and workflows",
-          questionsAndAccessTitle: "Questions and access",
-          questionsAndAccessCaption: "Questions and email senders",
-        },
-        yourBrain: "Your brain",
-        entries: "entries",
-        quietWeek: "Quiet this week",
-        comingUp: "Coming up",
-        noScheduledTitle: "No scheduled runs",
-        noScheduledBody: "Scheduled workflows show here.",
-        buildWorkflow: "Build a workflow",
-      },
-    },
-    chat: {
-      switchAssistant: "Switch assistant",
-      switchAssistantTitle: "Talk to",
-      send: "Send",
-    },
-  }),
-}));
+vi.mock("@/lib/i18n/client", async () => {
+  const { en: dict } = await import("@/lib/i18n/dictionaries/en");
+  return { useLocale: () => "en", useT: () => dict };
+});
 
 vi.mock("@/components/assistant-avatar", () => ({
   AssistantAvatar: ({ name }: { name: string }) => (
@@ -118,6 +81,7 @@ vi.mock("../doc-sidebar-data", () => ({
   useSidebarData: () => ({
     dock: sidebar.dock,
     dockLoading: sidebar.dockLoading,
+    studioSetupIncomplete: sidebar.studioSetupIncomplete,
     reloadDock: sidebar.reloadDock,
     setDock: sidebar.setDock,
   }),
@@ -133,6 +97,8 @@ beforeEach(() => {
   nav.push.mockReset();
   sidebar.dock = null;
   sidebar.dockLoading = true;
+  sidebar.studioSetupIncomplete = false;
+  window.localStorage.clear();
   sidebar.reloadDock.mockReset();
   sidebar.setDock.mockReset();
   window.sessionStorage.clear();
@@ -167,13 +133,13 @@ describe("[COMP:app-web/home-suggested] Personal-chat launcher", () => {
     expect(researcher).toBeTruthy();
     act(() => researcher?.click());
 
-    const input = container.querySelector<HTMLInputElement>(
-      'input[placeholder="Ask anything"]',
+    const input = container.querySelector<HTMLTextAreaElement>(
+      'textarea[placeholder="Ask anything"]',
     );
     expect(input).toBeTruthy();
     await act(async () => {
       if (!input) return;
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
         input,
         "  Compare this week's pipeline  ",
       );
@@ -193,6 +159,45 @@ describe("[COMP:app-web/home-suggested] Personal-chat launcher", () => {
       assistantId: "assistant-specialist",
       text: "Compare this week's pipeline",
     });
+  });
+
+  it("leads an empty workspace with editable chat starters and optional setup", async () => {
+    sidebar.dockLoading = false;
+    sidebar.studioSetupIncomplete = true;
+    sidebar.dock = {
+      source: "default", generatedAt: null, note: null, needsYou: [],
+      pickUp: [], comingUp: [],
+      brain: { entryCount: 0, growth7d: 0, sparkline: [], hasConnector: false },
+    };
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => root?.render(
+      <SuggestedView workspaceId="workspace-1" assistantId="assistant-primary" />,
+    ));
+    expect(container.querySelector("h1")?.textContent).toBe("What would you like to work on?");
+    expect(container.textContent).not.toContain("No scheduled runs");
+    expect(container.textContent).not.toContain("Your brain");
+    expect(container.querySelectorAll("aside a")).toHaveLength(3);
+    expect(container.querySelector("aside a")?.getAttribute("href")).toBe("/w/workspace-1/studio/connectors");
+
+    const starter = [...container.querySelectorAll("button")].find(b => b.textContent === "Help me plan my week")!;
+    act(() => starter.click());
+    const input = container.querySelector("textarea")!;
+    expect(input.value).toBe("Help me plan my week");
+    expect(document.activeElement).toBe(input);
+    expect(nav.push).not.toHaveBeenCalled();
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", shiftKey: true, bubbles: true })));
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", isComposing: true, bubbles: true })));
+    expect(nav.push).not.toHaveBeenCalled();
+
+    act(() => container?.querySelector<HTMLButtonElement>('[aria-label="Dismiss the setup checklist"]')?.click());
+    expect(container.querySelector("aside section")).toBeNull();
+    expect(window.localStorage.getItem("doc:studio-checklist-dismissed:workspace-1")).toBe("1");
+    expect(input.value).toBe("Help me plan my week");
+    act(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(takeChatHandoff("workspace-1", Date.now())).toMatchObject({ text: "Help me plan my week", assistantId: "assistant-primary" });
+    expect(nav.push).toHaveBeenCalledWith("/w/workspace-1/chat?v=personal&assistant=assistant-primary");
   });
 
   it("renders pending approvals as four live groups and opens the queue", async () => {

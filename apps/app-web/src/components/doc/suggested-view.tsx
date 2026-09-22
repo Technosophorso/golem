@@ -63,6 +63,7 @@ import {
 import { type PanelId, docEntryPath, panelTabEntry } from "@/lib/doc-page-url";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { useSidebarData } from "./doc-sidebar-data";
+import { SetupChecklist } from "./setup-checklist";
 
 type AccentKey = "review" | "approve" | "resume" | "workflow" | "alert" | "runs";
 
@@ -123,7 +124,7 @@ export function SuggestedView({
   const t = copy.docPage.suggested;
   const tChat = copy.chat;
   const router = useRouter();
-  const { dock, dockLoading: loading, reloadDock, setDock } = useSidebarData();
+  const { dock, dockLoading: loading, reloadDock, setDock, studioSetupIncomplete } = useSidebarData();
   const [assistants, setAssistants] = useState<WorkspaceAssistantSummary[]>([]);
   const [selectedAssistantId, setSelectedAssistantId] = useState<string | null>(
     assistantId ?? null,
@@ -132,6 +133,7 @@ export function SuggestedView({
   const [refreshing, setRefreshing] = useState(false);
   const [noteDismissed, setNoteDismissed] = useState(false);
   const [q, setQ] = useState("");
+  const promptRef = useRef<HTMLTextAreaElement>(null);
   const [mounted, setMounted] = useState(false);
 
   // Server and hydration share empty labels; only the browser knows local time.
@@ -231,6 +233,149 @@ export function SuggestedView({
     assistants.find((row) => row.id === selectedAssistantId) ??
     (assistant?.id === selectedAssistantId ? assistant : null);
 
+  const emptyWorkspace =
+    !loading && !!dock && mainEmpty && comingUp.length === 0 && brain?.entryCount === 0;
+  const chatLauncher = (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        startPersonalChat();
+      }}
+      className={cn(
+        "mt-5 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-card p-3 shadow-sm transition-[border-color,box-shadow] focus-within:border-ring [&_:focus-visible]:shadow-none",
+        emptyWorkspace && "mt-7 p-4 text-left shadow-md shadow-black/[0.03]",
+      )}
+    >
+      <textarea
+        ref={promptRef}
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        aria-label={t.buildPlaceholder}
+        placeholder={t.buildPlaceholder}
+        rows={emptyWorkspace ? 3 : 1}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+            event.preventDefault();
+            startPersonalChat();
+          }
+        }}
+        className={cn(
+          "min-w-0 resize-none bg-transparent text-[16px] leading-relaxed text-foreground outline-none focus-visible:shadow-none placeholder:text-muted-foreground",
+          emptyWorkspace ? "w-full basis-full pb-3" : "order-1 flex-1 md:text-sm",
+        )}
+      />
+      {selectedAssistant ? (
+        assistants.length > 1 ? (
+          <Popover
+            open={assistantPickerOpen}
+            onOpenChange={setAssistantPickerOpen}
+          >
+            <PopoverTrigger
+              type="button"
+              aria-label={tChat.switchAssistant}
+              className="flex min-w-0 max-w-44 shrink-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <AssistantAvatar
+                id={selectedAssistant.id}
+                name={selectedAssistant.name}
+                iconSeed={selectedAssistant.iconSeed ?? undefined}
+                size="xs"
+              />
+              <span className="truncate">{selectedAssistant.name}</span>
+              <ChevronDown className="size-3.5 shrink-0" aria-hidden />
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-60 gap-0.5 p-1">
+              <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                {tChat.switchAssistantTitle}
+              </p>
+              {assistants.map((row) => (
+                <button
+                  key={row.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedAssistantId(row.id);
+                    setAssistantPickerOpen(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+                    row.id === selectedAssistant.id
+                      ? "bg-muted text-foreground"
+                      : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                  )}
+                >
+                  <AssistantAvatar
+                    id={row.id}
+                    name={row.name}
+                    iconSeed={row.iconSeed ?? undefined}
+                    size="sm"
+                  />
+                  <span className="min-w-0 flex-1 truncate">{row.name}</span>
+                  {row.id === selectedAssistant.id ? (
+                    <Check className="size-4 shrink-0 text-primary" aria-hidden />
+                  ) : null}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <span className="flex min-w-0 max-w-44 shrink-0 items-center gap-1.5 px-1.5 py-1 text-xs font-medium text-muted-foreground">
+            <AssistantAvatar
+              id={selectedAssistant.id}
+              name={selectedAssistant.name}
+              iconSeed={selectedAssistant.iconSeed ?? undefined}
+              size="xs"
+            />
+            <span className="truncate">{selectedAssistant.name}</span>
+          </span>
+        )
+      ) : (
+        <Sparkles
+          className="mx-1 size-[17px] shrink-0 text-muted-foreground/60"
+          aria-hidden
+        />
+      )}
+
+      <button
+        type="submit"
+        disabled={!q.trim() || !selectedAssistantId}
+        aria-label={tChat.send}
+        className="order-2 ml-auto inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-action text-action-foreground transition-colors hover:bg-action/90 disabled:bg-foreground/10 disabled:text-muted-foreground"
+      >
+        <ArrowUp className="size-4" aria-hidden />
+      </button>
+    </form>
+  );
+
+  if (emptyWorkspace) {
+    return (
+      <div className="@container mx-auto w-full max-w-[1240px] px-5 py-10 md:px-8 md:py-16">
+        <div className="grid grid-cols-1 items-start gap-10 @min-[960px]:has-[aside>section]:grid-cols-[minmax(0,1fr)_288px] @min-[960px]:gap-12">
+          <section className="mx-auto w-full min-w-0 max-w-2xl py-6 text-center @min-[960px]:py-16">
+            <span className="mb-5 inline-flex size-12 items-center justify-center rounded-2xl border border-border bg-muted/40 text-muted-foreground">
+              <Sparkles className="size-6" aria-hidden />
+            </span>
+            <h1 className="text-3xl font-semibold tracking-tight text-foreground md:text-[34px]">{t.emptyTitle}</h1>
+            <p className="mx-auto mt-3 max-w-md text-sm leading-relaxed text-muted-foreground">{t.emptySubtitle}</p>
+            {chatLauncher}
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              {t.chatStarters.map((starter) => (
+                <button key={starter} type="button" onClick={() => {
+                  setQ(starter);
+                  promptRef.current?.focus();
+                }} className="min-h-11 rounded-full border border-border bg-card px-3.5 py-2 text-xs text-muted-foreground transition-colors hover:border-primary/30 hover:bg-muted/50 hover:text-foreground">
+                  {starter}
+                </button>
+              ))}
+            </div>
+          </section>
+          <aside className="mx-auto w-full max-w-2xl empty:hidden">
+            {studioSetupIncomplete === true ? <SetupChecklist workspaceId={workspaceId} /> : null}
+          </aside>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto w-full max-w-[1240px] px-8 pb-12 pt-11 lg:px-12">
       {/* Header */}
@@ -257,102 +402,7 @@ export function SuggestedView({
 
       {/* Fresh Personal-chat launcher. The prompt handoff is one-shot and the
           Chat app re-validates the assistant before it auto-sends. */}
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          startPersonalChat();
-        }}
-        className="mt-5 flex items-center gap-2 rounded-xl border border-border bg-card px-2.5 py-2 shadow-sm transition-[border-color,box-shadow] focus-within:border-ring [&_:focus-visible]:shadow-none"
-      >
-        {selectedAssistant ? (
-          assistants.length > 1 ? (
-            <Popover
-              open={assistantPickerOpen}
-              onOpenChange={setAssistantPickerOpen}
-            >
-              <PopoverTrigger
-                type="button"
-                aria-label={tChat.switchAssistant}
-                className="flex min-w-0 max-w-44 shrink-0 items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <AssistantAvatar
-                  id={selectedAssistant.id}
-                  name={selectedAssistant.name}
-                  iconSeed={selectedAssistant.iconSeed ?? undefined}
-                  size="xs"
-                />
-                <span className="truncate">{selectedAssistant.name}</span>
-                <ChevronDown className="size-3.5 shrink-0" aria-hidden />
-              </PopoverTrigger>
-              <PopoverContent align="start" className="w-60 gap-0.5 p-1">
-                <p className="px-2 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-                  {tChat.switchAssistantTitle}
-                </p>
-                {assistants.map((row) => (
-                  <button
-                    key={row.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedAssistantId(row.id);
-                      setAssistantPickerOpen(false);
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
-                      row.id === selectedAssistant.id
-                        ? "bg-muted text-foreground"
-                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
-                    )}
-                  >
-                    <AssistantAvatar
-                      id={row.id}
-                      name={row.name}
-                      iconSeed={row.iconSeed ?? undefined}
-                      size="sm"
-                    />
-                    <span className="min-w-0 flex-1 truncate">{row.name}</span>
-                    {row.id === selectedAssistant.id ? (
-                      <Check className="size-4 shrink-0 text-primary" aria-hidden />
-                    ) : null}
-                  </button>
-                ))}
-              </PopoverContent>
-            </Popover>
-          ) : (
-            <span className="flex min-w-0 max-w-44 shrink-0 items-center gap-1.5 px-1.5 py-1 text-xs font-medium text-muted-foreground">
-              <AssistantAvatar
-                id={selectedAssistant.id}
-                name={selectedAssistant.name}
-                iconSeed={selectedAssistant.iconSeed ?? undefined}
-                size="xs"
-              />
-              <span className="truncate">{selectedAssistant.name}</span>
-            </span>
-          )
-        ) : (
-          <Sparkles
-            className="mx-1 size-[17px] shrink-0 text-muted-foreground/60"
-            aria-hidden
-          />
-        )}
-        <input
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder={t.buildPlaceholder}
-          /* The wrapping bar draws the focus ring (focus-within); the inner
-             input opts out of the global :focus-visible box-shadow —
-             `outline-none` alone never silences it (globals.css → ":focus-visible").
-             16px on a phone (iOS zooms a smaller field on focus, M4). */
-          className="min-w-0 flex-1 bg-transparent text-[16px] text-foreground outline-none focus-visible:shadow-none placeholder:text-muted-foreground md:text-sm"
-        />
-        <button
-          type="submit"
-          disabled={!q.trim() || !selectedAssistantId}
-          aria-label={tChat.send}
-          className="inline-flex size-11 shrink-0 items-center justify-center rounded-full bg-action text-action-foreground transition-colors hover:bg-action/90 disabled:bg-foreground/10 disabled:text-muted-foreground md:size-7"
-        >
-          <ArrowUp className="size-4" aria-hidden />
-        </button>
-      </form>
+      {chatLauncher}
 
       {/* Drop files to add to the brain — store raw bytes + decompose content. */}
       <SuggestedFileDrop workspaceId={workspaceId} assistantId={assistantId} />
@@ -456,6 +506,7 @@ export function SuggestedView({
 
           {/* ── RAIL ── */}
           <aside>
+            {studioSetupIncomplete === true ? <div className="mb-7"><SetupChecklist workspaceId={workspaceId} /></div> : null}
             {brain && (
               <>
                 <GroupLabel>{t.yourBrain}</GroupLabel>

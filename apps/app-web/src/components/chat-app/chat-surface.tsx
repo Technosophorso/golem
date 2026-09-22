@@ -2795,7 +2795,11 @@ export function ChatSurface({ workspaceId }: { workspaceId: string }) {
               break;
             }
             const message =
-              typeof payload.error === "string" ? payload.error : t.errorGeneric;
+              typeof payload.message === "string"
+                ? payload.message
+                : typeof payload.error === "string"
+                  ? payload.error
+                  : t.errorGeneric;
             setError(message);
             break;
           }

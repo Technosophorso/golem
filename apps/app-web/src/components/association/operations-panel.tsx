@@ -10,11 +10,12 @@ import { AssociationPrivacyPanel } from "./privacy-panel";
 import { AssociationMailboxPanel } from "./mailbox-panel";
 import { AssociationCredentialsPanel } from "./credentials-panel";
 import { AssociationSponsorships } from "./sponsorships";
+import { ProgrammePublishingPanel } from "./programme-publishing";
 import { AssociationListState,useAssociationAction,useAssociationPage } from "./operator-controls";
 import { EmptyState, InlineNotice, PageHeader, ResponsiveTable, Segmented, StatusPill, associationDate } from "./ui";
 
-type SettingsTab="general"|"sponsorship"|"sync"|"activity"|"keys"|"mailboxes"|"privacy";
-const TABS:SettingsTab[]=["general","sponsorship","sync","activity","keys","mailboxes","privacy"];
+type SettingsTab="general"|"website"|"sponsorship"|"sync"|"activity"|"keys"|"mailboxes"|"privacy";
+const TABS:SettingsTab[]=["general","website","sponsorship","sync","activity","keys","mailboxes","privacy"];
 
 function PaymentSync({workspaceId,canManage}:{workspaceId:string;canManage:boolean}) {
   const t=useT().associationPage,u=t.ux,m=t.manage,receipts=useAssociationPage(workspaceId,"receipts"),retry=useAssociationAction(workspaceId);
@@ -52,13 +53,14 @@ export function AssociationOperationsPanel({workspaceId,initialTab}:{workspaceId
   const t=useT().associationPage,u=t.ux;
   const canManage=!!module.data?.canManage&&!module.error;
   const [tab,setTab]=useState<SettingsTab>(TABS.includes(initialTab as SettingsTab)?initialTab as SettingsTab:"general");
-  const labels:Record<SettingsTab,string>={general:u.general,sponsorship:u.sponsorship,sync:u.syncIssues,activity:u.activityLog,keys:t.admin.keys,mailboxes:t.admin.mailboxes,privacy:t.privacy.title};
+  const labels:Record<SettingsTab,string>={general:u.general,website:t.programmes.tab,sponsorship:u.sponsorship,sync:u.syncIssues,activity:u.activityLog,keys:t.admin.keys,mailboxes:t.admin.mailboxes,privacy:t.privacy.title};
   const available=TABS.filter(id=>canManage||["general","sync","activity"].includes(id));
   const current=available.includes(tab)?tab:"general";
   return <section className="space-y-5" data-association-settings>
     <PageHeader title={u.settings} description={u.settingsHelp}><Segmented label={u.goTo} value={current} onChange={setTab} options={available.map(id=>({value:id,label:labels[id]}))}/></PageHeader>
     {module.data&&!canManage&&current==="general"?<InlineNotice tone="neutral">{t.ownerOnly}</InlineNotice>:null}
     {current==="general"?<AssociationModuleControls workspaceId={workspaceId}/>:null}
+    {current==="website"?<ProgrammePublishingPanel workspaceId={workspaceId}/>:null}
     {current==="sponsorship"?<AssociationSponsorships workspaceId={workspaceId} canManage={canManage}/>:null}
     {current==="sync"?<PaymentSync workspaceId={workspaceId} canManage={canManage}/>:null}
     {current==="activity"?<ActivityLog workspaceId={workspaceId}/>:null}

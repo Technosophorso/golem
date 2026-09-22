@@ -3,6 +3,7 @@ import request from 'supertest'
 import { describe, expect, it, vi } from 'vitest'
 import type { GcsFilesClient } from '../../files/gcs-client.js'
 import { openRecordingsRoutes } from '../recordings.js'
+import { InvalidRecordingBlueprintError } from '../../recordings/resolve-blueprint.js'
 
 function makeApp(overrides: Record<string, unknown> = {}) {
   const storage: GcsFilesClient = {
@@ -93,6 +94,16 @@ function makeApp(overrides: Record<string, unknown> = {}) {
 }
 
 describe('[COMP:recordings/open-routes] OSS recordings routes', () => {
+  it('returns an actionable 400 when the queue refuses a blueprint without marking the recording queued', async () => {
+    const enqueueJob = vi.fn().mockRejectedValue(new InvalidRecordingBlueprintError('Use the installed blueprint UUID.'))
+    const { app, deps } = makeApp({ enqueueJob })
+    const response = await request(app).post('/api/recordings/rec-1/process').send({ blueprintSlug: 'meeting-notes' })
+    expect(response.status).toBe(400)
+    expect(response.body).toEqual({ error: 'invalid_blueprint', detail: 'Use the installed blueprint UUID.' })
+    expect(deps.updateRecording).not.toHaveBeenCalled()
+    expect(deps.mergeEpisodeSourceRef).not.toHaveBeenCalled()
+  })
+
   it('lists recordings with filters and the app-web projection', async () => {
     const { app, deps } = makeApp()
     const response = await request(app).get(

@@ -122,9 +122,11 @@ function workspace(profiles: FeedProfile[]): FeedWorkspaceValue {
 
 function renderDock(profiles: FeedProfile[]): string {
   recorderRef.current = {
+    workspaceId: "ws-1",
     phase: { kind: "idle" },
     active: false,
     savingCount: 0,
+    saveProgress: null,
     elapsedMs: () => 0,
     notice: null,
     clearNotices: vi.fn(),

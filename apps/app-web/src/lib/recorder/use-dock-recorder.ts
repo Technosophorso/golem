@@ -64,6 +64,7 @@ import {
 import { desktopBridge } from "@/lib/desktop-auth-source";
 import type { LiveRecordingPage } from "@/lib/api/recordings";
 import type { LiveWindow } from "@/lib/recordings/use-live-recording-page";
+import type { RecordingUploadStatus } from "@/lib/recordings/use-recording-upload";
 
 /**
  * Ask the browser to protect this origin's storage from eviction — the
@@ -256,7 +257,7 @@ export type RecorderNotice =
         | "failed"
         | "voiceFailed";
     }
-  | { kind: "queued"; text: string }
+  | { kind: "queued"; text: string; recordingId: string }
   | { kind: "handOffFailed"; text: string };
 
 /**
@@ -265,7 +266,7 @@ export type RecorderNotice =
  * releases the spool copy (`handOffVerdict`).
  */
 export type MeetingCaptureOutcome =
-  | { outcome: "queued"; message: string }
+  | { outcome: "queued"; message: string; recordingId: string }
   | { outcome: "cancelled" }
   | { outcome: "failed"; message: string };
 
@@ -280,7 +281,14 @@ export function handOffVerdict(result: MeetingCaptureOutcome): {
 } {
   switch (result.outcome) {
     case "queued":
-      return { notice: { kind: "queued", text: result.message }, safeToDrop: true };
+      return {
+        notice: {
+          kind: "queued",
+          text: result.message,
+          recordingId: result.recordingId,
+        },
+        safeToDrop: true,
+      };
     case "cancelled":
       return { notice: { kind: "kept" }, safeToDrop: false };
     case "failed":
@@ -304,11 +312,18 @@ export type PreparedCaptureSource = {
 };
 
 export type DockRecorderApi = {
+  workspaceId: string;
   phase: RecorderPhase;
   /** True whenever the recorder owns the pill (anything but idle). */
   active: boolean;
   /** Upload/confirm jobs are independent of the active capture and chat. */
   savingCount: number;
+  /** The active serial save's visible transport/pre-flight state. */
+  saveProgress: {
+    status: RecordingUploadStatus;
+    uploadProgress: number;
+    message: string;
+  } | null;
   /**
    * Recorder clock ACCESSOR, not state — the strip polls it into its own
    * local tick so a 2-hour capture re-renders the little strip, never the
@@ -355,6 +370,12 @@ export function useDockRecorder(opts: {
   assistantId: string;
   /** Localized capture-name prefix ("Recording") for the file name. */
   captureNamePrefix: string;
+  /** Reactive state from the recorder's private, non-blocking upload lane. */
+  saveProgress?: {
+    status: RecordingUploadStatus;
+    uploadProgress: number;
+    message: string;
+  };
   /** Short-lane hand-off: upload as a voice clip + auto-send the turn. Return false to surface the send error. */
   sendVoiceClip: (fileId: string) => Promise<boolean>;
   /** Session id accessor for the voice-clip cache upload (best-effort). */
@@ -378,7 +399,7 @@ export function useDockRecorder(opts: {
   /** Sequential provisional-window upload. */
   streamLiveWindow?: (window: LiveWindow, page: LiveRecordingPage) => Promise<void>;
 }): DockRecorderApi {
-  const { enabled, workspaceId, assistantId, captureNamePrefix, sendVoiceClip, getSessionId, onMeetingCapture, prepareLivePage, prepareCaptureSource, streamLiveWindow } =
+  const { enabled, workspaceId, assistantId, captureNamePrefix, saveProgress, sendVoiceClip, getSessionId, onMeetingCapture, prepareLivePage, prepareCaptureSource, streamLiveWindow } =
     opts;
   const [phase, setPhase] = useState<RecorderPhase>(IDLE);
   const [notice, setNotice] = useState<RecorderNotice | null>(null);
@@ -992,7 +1013,10 @@ export function useDockRecorder(opts: {
 
   const onPressStart = useCallback(() => {
     if (!enabled) return;
-    setNotice(null);
+    // A queued recording continues processing independently of the next
+    // capture. Keep its tracker mounted until it is dismissed or replaced by
+    // the next hand-off; starting again should only clear transient notices.
+    setNotice((current) => current?.kind === "queued" ? current : null);
     if (phaseRef.current.kind === "idle") {
       pressStartedAtRef.current = Date.now();
       // Live transcription is meeting intent, so it always latches and never
@@ -1076,9 +1100,11 @@ export function useDockRecorder(opts: {
   );
 
   return {
+    workspaceId,
     phase,
     active: phase.kind !== "idle",
     savingCount,
+    saveProgress: saveProgress ?? null,
     elapsedMs: useCallback(() => engineRef.current?.elapsedMs() ?? 0, []),
     notice,
     clearNotices: useCallback(() => setNotice(null), []),
