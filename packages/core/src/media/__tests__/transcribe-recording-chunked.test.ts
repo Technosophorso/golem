@@ -8,7 +8,7 @@ import {
 /**
  * [COMP:media/transcribe-recording] — chunked mode. Chunks transcribe
  * INDEPENDENTLY (no continuation conditioning), timestamps are chunk-local and
- * offset by the chunk's known start, thinking is disabled on 2.5-family
+ * offset by the chunk's known start, thinking is disabled only on 2.5-family
  * models, and coverage derives from chunks completed — not model stamps.
  */
 
@@ -77,7 +77,7 @@ describe('[COMP:media/transcribe-recording] lenient line parsing', () => {
 })
 
 describe('[COMP:media/transcribe-recording] transcribeRecordingChunks', () => {
-  it('transcribes chunks independently, offsets chunk-local stamps, and disables 2.5 thinking', async () => {
+  it('transcribes chunks independently and offsets chunk-local stamps', async () => {
     const { fetchFn, generateBodies } = chunkFetch({
       0: '[0:05] Speaker 1: 今日開會\n[1:30] Speaker 2: 明白\n[3:00] Speaker 1: 跟住\n[4:30] Speaker 2: 係\n[6:00] Speaker 1: 好\n[7:30] Speaker 2: 明\n[9:00] Speaker 1: 完\n[9:50] Speaker 2: ok',
       1: '[0:30] Speaker 2: 跟住\n[2:00] Speaker 1: 再講\n[3:30] Speaker 2: 仲有\n[4:55] Speaker 1： wrap up',
@@ -103,14 +103,27 @@ describe('[COMP:media/transcribe-recording] transcribeRecordingChunks', () => {
     expect(res.truncated).toBe(false)
     expect(res.usages).toHaveLength(2)
 
-    // Verbatim-Cantonese guidance + thinking disabled on the 2.5 default.
+    // Verbatim-Cantonese guidance; default is now a non-2.5 model, so no
+    // thinkingConfig override is needed.
     for (const body of generateBodies) {
       const prompt = (body as { contents: Array<{ parts: Array<{ text?: string }> }> }).contents[0].parts[0].text!
       expect(prompt).toContain('粵文')
       expect(prompt).not.toMatch(/continue|already produced/i)
       const cfg = (body as { generationConfig: { thinkingConfig?: { thinkingBudget?: number } } }).generationConfig
-      expect(cfg.thinkingConfig).toEqual({ thinkingBudget: 0 })
+      expect(cfg.thinkingConfig).toBeUndefined()
     }
+  })
+
+  it('disables thinkingConfig for 2.5 models', async () => {
+    const { fetchFn, generateBodies } = chunkFetch({ 0: '[0:01] Speaker 1: hi' })
+
+    await transcribeRecordingChunks(
+      { apiKey: 'k', buffer: Buffer.from(''), mime: 'audio/aac', durationMs: 600_000, model: 'gemini-2.5-flash', fetchFn, retryBackoffMs: 0 },
+      [CHUNKS[0]],
+    )
+
+    const cfg = (generateBodies[0] as { generationConfig: { thinkingConfig?: { thinkingBudget?: number } } }).generationConfig
+    expect(cfg.thinkingConfig).toEqual({ thinkingBudget: 0 })
   })
 
   it('omits thinkingConfig for non-2.5 models', async () => {

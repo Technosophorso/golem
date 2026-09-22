@@ -56,6 +56,16 @@ function integration(): AssociationContext {
 }
 
 describe('[COMP:crm/association-service] Canonical authority and adapters', () => {
+  it('restricts catalogue drafts and publication to configuration authority', async () => {
+    const f=fixture();
+    for(const context of [member,{...member,authority:{...member.authority,canConfigure:true}},integration()]) {
+      await expect(f.service.execute(context,command({kind:'membership_catalogue_draft'}))).rejects.toMatchObject({code:'not_authorized'});
+      await expect(f.service.execute(context,command({kind:'publish_membership_catalogue',expectedVersion:1}))).rejects.toBeDefined();
+      await expect(f.service.execute(context,command({kind:'programme_catalogue_draft'}))).rejects.toMatchObject({code:'not_authorized'});
+      await expect(f.service.execute(context,command({kind:'publish_programme_catalogue',expectedVersion:1}))).rejects.toBeDefined();
+    }
+  })
+
   it('keeps source membership assertions inside the matching owner/admin import job', async () => {
     const f = fixture(), jobId = randomUUID()
     const input = AssociationSourceMembershipImportSchema.parse({

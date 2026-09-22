@@ -45,7 +45,7 @@ describeIf('[COMP:media/transcribe-live] transcribeAudio (integration)', () => {
       { apiKey: process.env.GEMINI_API_KEY!, timeoutMs: 30_000 },
     ).catch((err: Error) => {
       // Silence can legitimately produce "missing text" — treat as pass.
-      if (err.message.includes('missing text')) return { text: '', usage: null, model: 'gemini-2.5-flash' }
+      if (err.message.includes('missing text')) return { text: '', usage: null, model: 'gemini-3.6-flash' }
       throw err
     })
     expect(typeof result.text).toBe('string')

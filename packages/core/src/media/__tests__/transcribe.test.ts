@@ -27,9 +27,9 @@ describe('[COMP:media/transcribe] transcribeAudio', () => {
     )
 
     expect(result.text).toBe('hello world')
-    expect(result.model).toBe('gemini-2.5-flash')
+    expect(result.model).toBe('gemini-3.6-flash')
     expect(result.usage).toBeNull()
-    expect(captured.url).toContain('/models/gemini-2.5-flash:generateContent')
+    expect(captured.url).toContain('/models/gemini-3.6-flash:generateContent')
     const headers = captured.init?.headers as Record<string, string>
     expect(headers['x-goog-api-key']).toBe('test-key')
     expect(headers['Content-Type']).toBe('application/json')

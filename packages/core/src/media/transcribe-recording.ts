@@ -72,7 +72,7 @@ import {
 } from '../providers/google-transport.js'
 
 const FILES_BASE = 'https://generativelanguage.googleapis.com'
-const DEFAULT_MODEL = 'gemini-2.5-flash'
+const DEFAULT_MODEL = 'gemini-3.6-flash'
 const DEFAULT_MAX_OUTPUT_TOKENS = 32_768
 // Bounds one window's whole SSE stream (first byte arrives in seconds; a full
 // 32k-token window can legitimately stream for >5 min at model speed).
@@ -407,7 +407,8 @@ async function withUploadedAudio<T>(
   const uploaded = opts.uploadAudio
     ? await opts.uploadAudio(file)
     : await uploadAudioToGeminiFiles({
-        apiKey: opts.apiKey ?? '',
+        apiKey: opts.apiKey,
+        transport: opts.transport,
         buffer: file.buffer,
         mime: file.mime,
         displayName: file.displayName,
@@ -434,7 +435,8 @@ async function withUploadedAudio<T>(
  */
 export async function uploadAudioToGeminiFiles(
   opts: {
-    apiKey: string
+    apiKey?: string
+    transport?: GoogleTransport
     buffer: Buffer
     mime: string
     displayName?: string
@@ -442,6 +444,16 @@ export async function uploadAudioToGeminiFiles(
     retryBackoffMs?: number
   },
 ): Promise<{ fileUri: string; name: string }> {
+  const transport = opts.transport ?? aiStudioTransport(opts.apiKey)
+  if (transport.kind !== 'ai-studio') {
+    throw new Error('Vertex recording transcription requires an external audio uploader (GCS_FILES_BUCKET); Vertex has no Gemini Files API.')
+  }
+  // Keep upload and polling on the same credential even if the managed pool
+  // rotates keys while Gemini processes the file.
+  const { headers: authHeaders } = await authorizeGoogleRequest(transport)
+  if (!new Headers(authHeaders).get('x-goog-api-key')?.trim()) {
+    throw new Error('Gemini Files API requires an AI Studio API key; configure GEMINI_API_KEY or a managed Gemini credential.')
+  }
   const fetchFn = opts.fetchFn ?? fetch
   const backoffMs = opts.retryBackoffMs ?? TRANSIENT_FETCH_BACKOFF_MS
   const numBytes = opts.buffer.length
@@ -450,7 +462,7 @@ export async function uploadAudioToGeminiFiles(
   const startRes = await fetchWithTransientRetry(fetchFn, `${FILES_BASE}/upload/v1beta/files`, {
     method: 'POST',
     headers: {
-      'x-goog-api-key': opts.apiKey,
+      ...authHeaders,
       'X-Goog-Upload-Protocol': 'resumable',
       'X-Goog-Upload-Command': 'start',
       'X-Goog-Upload-Header-Content-Length': String(numBytes),
@@ -491,7 +503,7 @@ export async function uploadAudioToGeminiFiles(
     if (polls++ >= FILE_ACTIVE_MAX_POLLS) throw new Error('Gemini File API: file did not become ACTIVE in time')
     await new Promise((r) => setTimeout(r, FILE_ACTIVE_POLL_MS))
     const pollRes = await fetchWithTransientRetry(fetchFn, `${FILES_BASE}/v1beta/${file.name}`, {
-      headers: { 'x-goog-api-key': opts.apiKey },
+      headers: authHeaders,
     }, backoffMs)
     if (!pollRes.ok) throw new Error(`Gemini File API poll failed (HTTP ${pollRes.status})`)
     file = (await pollRes.json()) as GeminiFile
