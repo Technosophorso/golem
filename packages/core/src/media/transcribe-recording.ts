@@ -72,7 +72,7 @@ import {
 } from '../providers/google-transport.js'
 
 const FILES_BASE = 'https://generativelanguage.googleapis.com'
-const DEFAULT_MODEL = 'gemini-2.5-flash'
+const DEFAULT_MODEL = 'gemini-3.6-flash'
 const DEFAULT_MAX_OUTPUT_TOKENS = 32_768
 // Bounds one window's whole SSE stream (first byte arrives in seconds; a full
 // 32k-token window can legitimately stream for >5 min at model speed).

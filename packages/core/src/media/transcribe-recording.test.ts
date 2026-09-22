@@ -358,7 +358,7 @@ describe('[COMP:media/transcribe-recording] transcribeRecording', () => {
 
     expect(res.truncated).toBe(false)
     expect(uploadAudio).toHaveBeenCalledWith(expect.objectContaining({ mime: 'audio/aac' }))
-    expect(requests[0].url).toBe('https://vertex.example/gemini-2.5-flash:streamGenerateContent?alt=sse')
+    expect(requests[0].url).toBe('https://vertex.example/gemini-3.6-flash:streamGenerateContent?alt=sse')
     expect(requests[0].init?.headers).toEqual(expect.objectContaining({ Authorization: 'Bearer vertex-token' }))
     const body = JSON.parse(String(requests[0].init?.body)) as {
       contents: Array<{ parts: Array<{ file_data?: { file_uri: string } }> }>
