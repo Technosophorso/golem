@@ -5220,6 +5220,10 @@ export const en = {
       countMany: "{count} blueprints",
       newBlueprint: "New blueprint",
       newBlueprintTitle: "Untitled blueprint",
+      starterInstall: "Install {name}",
+      starterInstalling: "Installing…",
+      starterHint: "Adds an editable copy to this workspace. Your existing blueprints and recording default stay unchanged.",
+      starterInstallFailed: "Could not install the blueprint. Try again.",
       emptyTitle: "No blueprints yet",
       emptyBody:
         "A blueprint is a page that knows how to fill itself: sections plus an instruction for each, so a recording, the brain, or a research run becomes a finished brief. Make one to capture the same shaped output every time.",
