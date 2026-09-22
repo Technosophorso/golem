@@ -21,6 +21,7 @@ import { resolveWorkspaceViewpoint } from '../db/workspace-viewpoint.js'
 import type { FilesClientResolver } from '../files/files-api.js'
 import { buildStorageKey, buildStorageUri } from '../files/gcs-client.js'
 import { probeRecordingDuration } from '../recordings/ffmpeg.js'
+import { InvalidRecordingBlueprintError } from '../recordings/resolve-blueprint.js'
 
 const MAX_RECORDING_DURATION_MS = 180 * 60 * 1000
 export const TRANSCRIPT_PAGE = 200
@@ -367,14 +368,20 @@ export function openRecordingsRoutes(deps: RouteDeps): Router {
     }
     if (durationMs > MAX_RECORDING_DURATION_MS) return void res.status(413).json({ error: 'too_long' })
 
-    const { jobId } = await deps.enqueueJob({
-      recordingId: episode.id,
-      workspaceId: episode.workspaceId,
-      actingUserId: episode.createdByUserId,
-      blueprintSlug:
-        typeof blueprintSlug === 'string' && blueprintSlug.trim() ? blueprintSlug.trim() : null,
-      parentPageId: destinationPageId,
-    })
+    let jobId: string | null
+    try {
+      ;({ jobId } = await deps.enqueueJob({
+        recordingId: episode.id,
+        workspaceId: episode.workspaceId,
+        actingUserId: episode.createdByUserId,
+        blueprintSlug:
+          typeof blueprintSlug === 'string' && blueprintSlug.trim() ? blueprintSlug.trim() : null,
+        parentPageId: destinationPageId,
+      }))
+    } catch (error) {
+      if (!(error instanceof InvalidRecordingBlueprintError)) throw error
+      return void res.status(400).json({ error: 'invalid_blueprint', detail: error.message })
+    }
     await (deps.updateRecording ?? updateRecording)(episode.id, { status: 'queued', durationMs })
     await (deps.mergeEpisodeSourceRef ?? mergeEpisodeSourceRef)(episode.createdByUserId, episode.id, { status: 'queued' })
     res.status(202).json({ recordingId: episode.id, status: 'queued', jobId })

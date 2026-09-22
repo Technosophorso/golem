@@ -27,6 +27,7 @@ vi.mock('../../recordings/recording-search-tool.js', () => ({
 
 import { createRecordingSynthesizer, type RecordingSynthesizerDeps } from '../recording-synthesizer.js'
 
+const TEMPLATE_ID = '00000000-0000-4000-8000-000000000009'
 const ARGS = {
   recordingId: 'rec-1',
   workspaceId: 'ws-1',
@@ -163,7 +164,8 @@ describe('[COMP:api/recording-synthesizer] createRecordingSynthesizer', () => {
     loadBuiltinSkillsMock.mockReturnValue([]) // no builtin / no workspace skill
     const pageTemplateStore = {
       getById: vi.fn().mockResolvedValue({
-        id: 'tmpl-1',
+        id: TEMPLATE_ID,
+        workspaceId: 'ws-1',
         name: 'QBR',
         // The real store normalizes stored JSONB to the typed v2 contract on
         // read — the mock hands back what `getById` actually returns.
@@ -185,12 +187,34 @@ describe('[COMP:api/recording-synthesizer] createRecordingSynthesizer', () => {
     await createRecordingSynthesizer(
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       deps({ pageTemplateStore: pageTemplateStore as any }),
-    )({ ...ARGS, blueprintSlug: 'tmpl-1' })
-    expect(pageTemplateStore.getById).toHaveBeenCalledWith('u-1', 'tmpl-1')
+    )({ ...ARGS, blueprintSlug: TEMPLATE_ID })
+    expect(pageTemplateStore.getById).toHaveBeenCalledWith('u-1', TEMPLATE_ID)
     const bp = synthesizeMock.mock.calls[0][1]
-    expect(bp).toMatchObject({ kind: 'document', slug: 'tmpl-1', title: 'QBR' })
+    expect(bp).toMatchObject({ kind: 'document', slug: TEMPLATE_ID, title: 'QBR' })
     expect(bp.body).toContain('### 1. Account health')
     // The typed contract rides on the blueprint so the engine runs record-first.
     expect(bp.spec.fields[0].key).toBe('account-health')
+  })
+
+  it('resolves an already queued starter name without passing text to getById', async () => {
+    const pageTemplateStore = {
+      getById: vi.fn(() => { throw new Error('invalid input syntax for type uuid') }),
+      list: vi.fn().mockResolvedValue([{
+        id: TEMPLATE_ID, workspaceId: 'ws-1', name: 'Meeting notes',
+        extraction: { fields: [], capture: [] },
+      }]),
+    }
+    const result = await createRecordingSynthesizer(deps({ pageTemplateStore: pageTemplateStore as never }))({ ...ARGS, blueprintSlug: 'meeting-notes' })
+    expect(result).toEqual({ pageId: 'page-1' })
+    expect(pageTemplateStore.getById).not.toHaveBeenCalled()
+    expect(synthesizeMock.mock.calls[0][1]).toMatchObject({ kind: 'document', slug: TEMPLATE_ID })
+  })
+
+  it('does not synthesize an old name selection that is no longer installed', async () => {
+    const pageTemplateStore = { getById: vi.fn(), list: vi.fn().mockResolvedValue([]) }
+    const result = await createRecordingSynthesizer(deps({ pageTemplateStore: pageTemplateStore as never }))({ ...ARGS, blueprintSlug: 'meeting-notes' })
+    expect(result).toBeNull()
+    expect(pageTemplateStore.getById).not.toHaveBeenCalled()
+    expect(synthesizeMock).not.toHaveBeenCalled()
   })
 })

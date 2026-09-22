@@ -41,6 +41,7 @@ import {
 import { extractionToBlueprintBody } from './blueprint-from-template.js'
 import type { BlueprintRecordStore } from '../db/blueprint-records-store.js'
 import type { PageTemplateStore } from '../db/page-templates-store.js'
+import { InvalidRecordingBlueprintError, resolveRecordingBlueprint } from '../recordings/resolve-blueprint.js'
 
 export type RecordingSynthesizerDeps = {
   provider: LLMProvider
@@ -192,7 +193,16 @@ export function createRecordingSynthesizer(deps: RecordingSynthesizerDeps): Reco
     // A page template carrying an `extraction` spec is a "document" blueprint:
     // rendered to a recipe body and run by the SAME engine. The slug is its id.
     if (!blueprint && deps.pageTemplateStore) {
-      const tmpl = await deps.pageTemplateStore.getById(args.userId, args.blueprintSlug)
+      // New jobs carry UUIDs; old jobs may still carry an installed name.
+      // Never send arbitrary model-authored text to a PostgreSQL UUID lookup.
+      const tmpl = await resolveRecordingBlueprint(deps.pageTemplateStore, {
+        userId: args.userId,
+        workspaceId: args.workspaceId,
+        selection: args.blueprintSlug,
+      }).catch((error: unknown) => {
+        if (!(error instanceof InvalidRecordingBlueprintError)) throw error
+        return null
+      })
       if (tmpl?.extraction) {
         blueprint = {
           kind: 'document',
