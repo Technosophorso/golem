@@ -1210,6 +1210,18 @@ export const zh: Dictionary = {
     goToWorkspace: "前往工作空間",
     networkError: "網路錯誤",
     noWorkspace: "找不到與你帳號相關聯的工作空間。",
+    back: "返回",
+    replaceTitle: "要取代目前的方案嗎？",
+    replaceConfirm: "取代方案",
+    replaceCancel: "保留目前方案",
+    replaceDescriptionDated:
+      "你目前的方案是 {currentPlan}，有效期限至 {currentDate}。此代碼提供 {incomingPlan}，有效期限至 {incomingDate}。取代後，你目前的優惠方案將換成新方案。",
+    replaceDescriptionPermanent:
+      "你目前的方案是 {currentPlan}，有效期限至 {currentDate}。此代碼提供沒有到期日的 {incomingPlan}。取代後，你目前的優惠方案將換成新方案。",
+    notLongerDated:
+      "你目前的方案是 {plan}，有效期限至 {date}。此代碼的效期並未更長，因此無法取代。",
+    notLongerPermanent: "你目前的方案是 {plan}，沒有到期日，因此此代碼無法取代它。",
+    replaced: "你先前的優惠方案已被取代。",
   },
   desktopSignedIn: {
     title: "已登入",

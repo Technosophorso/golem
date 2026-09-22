@@ -1223,6 +1223,18 @@ export const en = {
     goToWorkspace: "Go to your workspace",
     networkError: "Network error",
     noWorkspace: "No workspace found for your account.",
+    back: "Back",
+    replaceTitle: "Replace your current plan?",
+    replaceConfirm: "Replace plan",
+    replaceCancel: "Keep current plan",
+    replaceDescriptionDated:
+      "Your current plan is {currentPlan}, active until {currentDate}. This code grants {incomingPlan}, active until {incomingDate}. Replacing swaps your current promo plan for the new one.",
+    replaceDescriptionPermanent:
+      "Your current plan is {currentPlan}, active until {currentDate}. This code grants {incomingPlan} with no end date. Replacing swaps your current promo plan for the new one.",
+    notLongerDated:
+      "Your current plan is {plan}, active until {date}. This code doesn't run longer, so it can't replace it.",
+    notLongerPermanent: "Your current plan is {plan} with no end date, so this code can't replace it.",
+    replaced: "Your previous promo plan was replaced.",
   },
   // The branded tab the desktop app's loopback sign-in lands on once it has the
   // code (replaces the bare 127.0.0.1 callback page). See app/desktop/signed-in.

@@ -1220,6 +1220,18 @@ export const zhCN: Dictionary = {
     goToWorkspace: "前往工作空间",
     networkError: "网络错误",
     noWorkspace: "找不到与你账号相关联的工作空间。",
+    back: "返回",
+    replaceTitle: "要替换当前方案吗？",
+    replaceConfirm: "替换方案",
+    replaceCancel: "保留当前方案",
+    replaceDescriptionDated:
+      "你当前的方案是 {currentPlan}，有效期至 {currentDate}。此代码提供 {incomingPlan}，有效期至 {incomingDate}。替换后，你当前的优惠方案将换成新方案。",
+    replaceDescriptionPermanent:
+      "你当前的方案是 {currentPlan}，有效期至 {currentDate}。此代码提供没有到期日的 {incomingPlan}。替换后，你当前的优惠方案将换成新方案。",
+    notLongerDated:
+      "你当前的方案是 {plan}，有效期至 {date}。此代码的时长并未更长，因此无法替换。",
+    notLongerPermanent: "你当前的方案是 {plan}，没有到期日，因此此代码无法替换它。",
+    replaced: "你之前的优惠方案已被替换。",
   },
   desktopSignedIn: {
     title: "已登录",
