@@ -1,4 +1,6 @@
 // @vitest-environment jsdom
+import { nineLevelNumberingFixture } from '../../../../../../packages/core/src/office/__tests__/docx-numbering-fixture';
+import { importOfficeDocument } from '../../../../../../packages/core/src/office/docx';
 import * as Y from 'yjs';
 import { describe, expect, it } from 'vitest';
 import { Editor } from '@tiptap/core';
@@ -18,6 +20,20 @@ function setup() {
 }
 
 describe('[COMP:app-web/office-document-editor] Inline fidelity', () => {
+  it('imports nine-level native XML through canonical/Yjs into visible derived markers', async () => {
+    const result = await importOfficeDocument(await nineLevelNumberingFixture(), { artifactId: uid(700), workspaceId: uid(701), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Synthetic numbered sections' });
+    expect(result.ok).toBe(true);
+    if (result.snapshot?.family !== 'document') throw new Error('document');
+    const doc = snapshotToYDoc(result.snapshot);
+    const editor = new Editor({ extensions: [...officeDocumentEditorExtensions(), Collaboration.configure({ fragment: getDocumentFragment(doc) })] });
+    expect([...editor.view.dom.querySelectorAll('[data-office-number-marker]')].map(m => m.textContent)).toEqual(['I)', 'II)', 'A)', 'B)', 'C)', 'D)']);
+    expect(editor.view.dom.querySelector('td [data-office-number-marker]')?.textContent).toBe('B)');
+    expect(yDocToSnapshot(doc)).toEqual(result.snapshot);
+    expect(editor.view.dom.querySelector('p')?.style.getPropertyValue('--office-run-line-height')).toBe('0');
+    expect(editor.view.dom.querySelector<HTMLElement>('td p')?.style.getPropertyValue('--office-run-line-height')).toBe('0');
+    editor.destroy(); doc.destroy();
+  });
+
   it('projects styled Roman markers and scaled wrapping segments without changing editable or collaborative text', () => {
     const { snapshot, doc, editor } = setup();
     const peer = new Y.Doc();

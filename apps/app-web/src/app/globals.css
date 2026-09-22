@@ -3048,8 +3048,8 @@ button.doc-comment-card:hover {
 }
 .office-document-section {
   box-sizing: border-box;
-  display: grid;
-  grid-template-rows: minmax(2rem, auto) 1fr minmax(2rem, auto);
+  position: relative;
+  display: block;
   width: var(--office-page-width, 612pt);
   min-height: var(--office-page-height, 792pt);
   padding: var(--office-margin-top, 72pt) var(--office-margin-right, 72pt) var(--office-margin-bottom, 72pt) var(--office-margin-left, 72pt);
@@ -3060,16 +3060,26 @@ button.doc-comment-card:hover {
 }
 .office-document-header,
 .office-document-footer {
+  position: absolute;
+  left: var(--office-margin-left, 72pt);
+  right: var(--office-margin-right, 72pt);
   min-height: 1.5rem;
   color: var(--muted-foreground);
   outline-offset: 3px;
 }
+.office-document-footer { bottom: 0; height: var(--office-margin-bottom, 72pt); }
+/* Header projections must stay inside the top margin even when the source
+   image or editable header text is taller than that band. */
 .office-document-header {
+  min-height: min(1.5rem, var(--office-margin-top, 72pt));
+  max-height: var(--office-margin-top, 72pt);
+  overflow: hidden;
+  bottom: calc(100% - var(--office-margin-top, 72pt));
   background-position: left top;
   background-repeat: no-repeat;
 }
 .office-document-header[data-office-header-image="true"] {
-  min-height: max(1.5rem, var(--office-header-image-height));
+  min-height: min(var(--office-margin-top, 72pt), max(1.5rem, var(--office-header-image-height)));
   padding-inline-start: calc(var(--office-header-image-width) + 8pt);
   background-size: var(--office-header-image-width) var(--office-header-image-height);
 }
@@ -3086,8 +3096,9 @@ button.doc-comment-card:hover {
   color: var(--muted-foreground);
 }
 .office-document-section { counter-increment: office-page; }
-.office-document-body { min-width: 0; }
-.office-document-body > * + * { margin-top: 0.65rem; }
+/* Contain paragraph margins so DOM gaps and printable-body metrics agree. */
+.office-document-body { min-width: 0; display: flow-root; }
+.office-document-body > * { margin-block: 0; }
 .office-document-page-start {
   position: relative;
   margin-top: calc(var(--office-margin-bottom, 72pt) + 1.5rem + var(--office-margin-top, 72pt)) !important;
@@ -3120,6 +3131,12 @@ button.doc-comment-card:hover {
     min-height: auto;
     padding: 1.25rem 1rem;
   }
+  .office-document-header, .office-document-footer {
+    position: static;
+    height: auto;
+    min-height: 0;
+  }
+  .office-document-header { max-height: none; overflow: visible; }
   .office-document-page-start {
     margin-top: 3.25rem !important;
   }

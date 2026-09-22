@@ -1,4 +1,4 @@
-/** Visual-only page starts derived from the deterministic Office paginator. [COMP:app-web/office-document-editor] */
+/** Visual-only page starts measured from unpaginated editor DOM. [COMP:app-web/office-document-editor] */
 import { Extension } from "@tiptap/core";
 import type { Editor } from "@tiptap/react";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
@@ -74,19 +74,33 @@ function pageStartIdsFromEditorDom(root: HTMLElement): Set<string> {
     const pageHeight = cssLengthPx(style.getPropertyValue("--office-page-height"), 792 * 4 / 3);
     const topMargin = cssLengthPx(style.getPropertyValue("--office-margin-top"), 72 * 4 / 3);
     const bottomMargin = cssLengthPx(style.getPropertyValue("--office-margin-bottom"), 72 * 4 / 3);
-    const bodyHeight = Math.max(1, pageHeight - topMargin - bottomMargin);
-    const blocks = [...(section.querySelector<HTMLElement>(".office-document-body")?.children ?? [])]
-      .filter((child): child is HTMLElement => child instanceof HTMLElement)
-      .map((child) => ({
-        id: child.id,
-        heightPx: child.getBoundingClientRect().height,
-        spacingBeforePx: Number.parseFloat(window.getComputedStyle(child).marginTop) || 0,
-        breakAfter: child.classList.contains("office-document-page-break") || child.classList.contains("office-document-section-break"),
-      }))
-      .filter((block) => block.id.length > 0);
+    const borderHeight = (Number.parseFloat(style.borderTopWidth) || 0) + (Number.parseFloat(style.borderBottomWidth) || 0);
+    const bodyHeight = Math.max(1, pageHeight - topMargin - bottomMargin - borderHeight);
+    const blocks = measureDocumentPaginationBlocks(section.querySelector<HTMLElement>(".office-document-body"));
     for (const id of documentPageStartIds(blocks, bodyHeight)) starts.add(id);
   }
   return starts;
+}
+
+// Read adjacent border-box positions, not a sum of CSS margins: vertical
+// margins may collapse and a previous block's margin-bottom may own the gap.
+// The caller removes page decorations first, so gutters never feed back in.
+export function measureDocumentPaginationBlocks(body: HTMLElement | null): DocumentPaginationBlock[] {
+  let previousBottom: number | undefined;
+  return [...(body?.children ?? [])]
+    .filter((child): child is HTMLElement => child instanceof HTMLElement)
+    .map((child) => {
+      const rect = child.getBoundingClientRect();
+      const spacingBeforePx = previousBottom === undefined ? 0 : Math.max(0, rect.top - previousBottom);
+      previousBottom = rect.bottom;
+      return {
+        id: child.id,
+        heightPx: rect.height,
+        spacingBeforePx,
+        breakAfter: child.classList.contains("office-document-page-break") || child.classList.contains("office-document-section-break"),
+      };
+    })
+    .filter(block => block.id.length > 0);
 }
 
 function cssLengthPx(value: string, fallback: number): number {

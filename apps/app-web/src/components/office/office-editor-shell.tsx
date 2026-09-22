@@ -334,7 +334,7 @@ function OfficeArtifactShell({ workspaceId, artifactId }: { workspaceId: string;
   }
   // Nothing known yet (no cached row, no list row, no package): a
   // geometry-matched skeleton under the bare topbar, never a sentence (N4).
-  if (artifact === undefined) return <div className="flex min-h-0 flex-1 flex-col" data-office-shell-state="loading" aria-busy="true"><OfficeTopbar workspaceId={workspaceId} breadcrumbs={[]} /><OfficeEditorSkeleton /></div>;
+  if (artifact === undefined) return <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-office-shell-state="loading" aria-busy="true"><OfficeTopbar workspaceId={workspaceId} breadcrumbs={[]} /><OfficeEditorSkeleton /></div>;
   if (artifact === null) return <div className="flex flex-1 flex-col" data-office-shell-state="failed"><OfficeTopbar workspaceId={workspaceId} breadcrumbs={[{ label: t.editorFailed }]} /><p className="m-auto text-sm text-destructive">{t.editorFailed}</p></div>;
   const Icon = artifact.family === "document" ? FileText : artifact.family === "presentation" ? Presentation : FileSpreadsheet;
   if (templateDraftFailed) return <div className="flex flex-1 flex-col" data-office-shell-state="failed"><OfficeTopbar workspaceId={workspaceId} breadcrumbs={[{ label: artifact.title }]} /><p className="m-auto text-sm text-destructive">{t.editorFailed}</p></div>;
@@ -413,7 +413,7 @@ function OfficeArtifactShell({ workspaceId, artifactId }: { workspaceId: string;
   const canSuggest = artifact.family === "document" && artifact.role === "edit" && artifact.lifecycleState === "active";
   const toggleSuggestMode = () => { const next = !suggestMode; setSuggestMode(next); if (next) { setPanel("suggestions"); setPanelOpen(true); } };
   return (
-    <div className="flex min-h-0 flex-1 flex-col" data-office-shell-state="ready">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col" data-office-shell-state="ready">
       {/* Below `md` the right cluster folds Suggest + undo / redo into one
           menu (report B row 12): with Reclassify, the family icon and presence
           beside them the desktop cluster is wider than a 360px bar. */}
@@ -423,8 +423,8 @@ function OfficeArtifactShell({ workspaceId, artifactId }: { workspaceId: string;
       <p className="line-clamp-2 border-b px-3 py-1.5 text-xs font-medium md:hidden" data-office-title-line="true">{artifact.title}</p>
       {offlineCopyAt ? <div className="border-b bg-amber-50 px-4 py-2 text-xs text-amber-950">{reconnectStatus === "needs_attention" ? t.offlineNeedsAttention : t.offlineCopy.replace("{time}", new Date(offlineCopyAt).toLocaleString())}</div> : null}
       {artifact.mode === "template" ? <div className="flex items-center justify-between gap-3 border-b bg-amber-50 px-4 py-2 text-xs font-medium text-amber-950"><span>{t.templateMode}</span>{templateId ? <button type="button" title={templateRoutingBlocked ? t.routingSaveBeforePublish : t.templateAdmit} disabled={templateCompileState === "queued" || !live || templateRoutingBlocked} className="rounded bg-amber-950 px-3 py-1.5 text-amber-50 disabled:opacity-50" onClick={() => void publishTemplate()}>{templateRoutingBlocked ? t.routingSaveBeforePublish : templateCompileState === "queued" ? t.templateCompiling : templateCompileState === "failed" ? t.templateCompileFailed : t.templateAdmit}</button> : null}</div> : null}
-      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        <main ref={editorRootRef} className="flex min-h-0 flex-1 overflow-hidden bg-muted/30">{editor}</main>
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col lg:flex-row">
+        <main ref={editorRootRef} className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-muted/30">{editor}</main>
         {/* Below `lg` the panel stacks LAST in this column, and below `sm` the
             document toolbar is a `fixed inset-x-2 bottom-2` bar over it - so
             without reserved space the collapsed 40px strip (the ONLY way to
