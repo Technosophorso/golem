@@ -8,13 +8,16 @@
  * `claimNextRecordingJob` (`FOR UPDATE SKIP LOCKED`), then `markRecordingJobDone`
  * / `markRecordingJobFailed` (with bounded retry).
  *
- * System-only: all access is via the owner pool (`query()`, RLS-open). The route
- * does its own membership check before enqueue; the worker has no user context.
+ * Queue access uses the owner pool (`query()`, RLS-open). Blueprint resolution
+ * before enqueue uses the acting user's RLS scope and the recording workspace.
+ * The route does its own membership check; the worker has no user context.
  *
  * [COMP:recordings/recording-jobs-store]
  */
 
 import { query } from './client.js'
+import { createDbPageTemplateStore } from './page-templates-store.js'
+import { resolveRecordingBlueprint } from '../recordings/resolve-blueprint.js'
 
 export type RecordingJobStatus = 'pending' | 'processing' | 'done' | 'failed'
 
@@ -65,6 +68,16 @@ export async function enqueueRecordingJob(input: {
   /** Destination page for the brief (migration 353). Omit → workspace root. */
   parentPageId?: string | null
 }): Promise<{ enqueued: boolean; jobId: string | null }> {
+  // Every caller (chat, channels, HTTP) shares this boundary. Reject a bad
+  // blueprint before the expensive worker transcribes, not afterwards in SQL.
+  const selection = input.blueprintSlug?.trim()
+  const blueprintId = selection
+    ? (await resolveRecordingBlueprint(createDbPageTemplateStore(), {
+        userId: input.actingUserId,
+        workspaceId: input.workspaceId,
+        selection,
+      })).id
+    : null
   const { rows } = await query<{ id: string }>(
     `INSERT INTO recording_jobs (recording_id, workspace_id, acting_user_id, blueprint_slug, parent_page_id)
      VALUES ($1, $2, $3, $4, $5)
@@ -74,7 +87,7 @@ export async function enqueueRecordingJob(input: {
       input.recordingId,
       input.workspaceId,
       input.actingUserId,
-      input.blueprintSlug ?? null,
+      blueprintId,
       input.parentPageId ?? null,
     ],
   )

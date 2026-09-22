@@ -4,6 +4,9 @@ vi.mock('../client.js', () => ({
   query: vi.fn(),
 }))
 
+const templateMocks = vi.hoisted(() => ({ getById: vi.fn(), list: vi.fn() }))
+vi.mock('../page-templates-store.js', () => ({ createDbPageTemplateStore: () => templateMocks }))
+
 import {
   enqueueRecordingJob,
   claimNextRecordingJob,
@@ -17,6 +20,8 @@ const mockQuery = vi.mocked(query)
 
 beforeEach(() => {
   vi.clearAllMocks()
+  templateMocks.list.mockReset().mockResolvedValue([])
+  templateMocks.getById.mockReset().mockResolvedValue(null)
 })
 
 describe('[COMP:recordings/recording-jobs-store] recording job queue', () => {
@@ -30,6 +35,29 @@ describe('[COMP:recordings/recording-jobs-store] recording job queue', () => {
     mockQuery.mockResolvedValueOnce({ rows: [] } as never)
     const res = await enqueueRecordingJob({ recordingId: 'rec-1', workspaceId: 'ws-1', actingUserId: 'u-1' })
     expect(res).toEqual({ enqueued: false, jobId: null })
+  })
+
+  it('resolves a starter name to the installed UUID before persisting a job', async () => {
+    const id = '00000000-0000-4000-8000-000000000009'
+    templateMocks.list.mockResolvedValue([{ id, workspaceId: 'ws-1', name: 'Meeting notes', extraction: { fields: [], capture: [] } }])
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'job-1' }] } as never)
+    await enqueueRecordingJob({ recordingId: 'rec-1', workspaceId: 'ws-1', actingUserId: 'u-1', blueprintSlug: 'meeting-notes' })
+    expect(templateMocks.list).toHaveBeenCalledWith('u-1', 'ws-1')
+    expect(templateMocks.getById).not.toHaveBeenCalled()
+    expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('INSERT INTO recording_jobs'), ['rec-1', 'ws-1', 'u-1', id, null])
+  })
+
+  it('refuses a missing blueprint before any job insert', async () => {
+    await expect(enqueueRecordingJob({ recordingId: 'rec-1', workspaceId: 'ws-1', actingUserId: 'u-1', blueprintSlug: 'meeting-notes' })).rejects.toThrow(/listBlueprints/)
+    expect(mockQuery).not.toHaveBeenCalled()
+  })
+
+  it('keeps ingest-only independent of blueprint lookups', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'job-1' }] } as never)
+    await enqueueRecordingJob({ recordingId: 'rec-1', workspaceId: 'ws-1', actingUserId: 'u-1', blueprintSlug: '   ' })
+    expect(templateMocks.list).not.toHaveBeenCalled()
+    expect(templateMocks.getById).not.toHaveBeenCalled()
+    expect(mockQuery).toHaveBeenCalledWith(expect.any(String), ['rec-1', 'ws-1', 'u-1', null, null])
   })
 
   it('claim returns the mapped job or null when the queue is empty', async () => {
