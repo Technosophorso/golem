@@ -23,7 +23,7 @@ export type TranscribeOptions = {
   apiKey?: string
   /** Explicit adapter backend; takes precedence over `apiKey`. */
   backend?: MediaBackend
-  /** Gemini model id. Default: `gemini-2.5-flash` (ignored by DashScope, which picks Qwen-ASR). */
+  /** Gemini model id. Default: `gemini-3.6-flash` (ignored by DashScope, which picks Qwen-ASR). */
   model?: string
   /** Instruction to the model. Default: a terse verbatim-transcript directive. */
   prompt?: string
@@ -47,7 +47,7 @@ export type TranscribeResult = {
   audioSeconds?: number
 }
 
-const DEFAULT_MODEL = 'gemini-2.5-flash'
+const DEFAULT_MODEL = 'gemini-3.6-flash'
 const DEFAULT_PROMPT =
   'Transcribe the attached audio verbatim. Output ONLY the transcript text — no commentary, no timestamps, no speaker labels. If the audio is silent or unintelligible, output an empty string.'
 const DEFAULT_TIMEOUT_MS = 30_000
