@@ -7,6 +7,7 @@ import {
   hasTranscriptHole,
   transcribeRecording,
   transcribeRecordingChunks,
+  uploadAudioToGeminiFiles,
   type TranscribedUtterance,
 } from './transcribe-recording.js'
 
@@ -143,6 +144,72 @@ describe('[COMP:media/transcribe-recording] stripDegenerateUtterances', () => {
   })
 })
 
+describe('[COMP:media/transcribe-recording] uploadAudioToGeminiFiles authentication', () => {
+  it('retains the authorized managed credential for start and polling', async () => {
+    vi.useFakeTimers()
+    try {
+      const headers = vi.fn(async () => ({ 'x-goog-api-key': 'different-key' }))
+      const authorize = vi.fn(async () => ({ headers: { 'x-goog-api-key': 'leased-key' } }))
+      const file = { uri: 'files/rec123', name: 'files/rec123' }
+      const fetchFn = vi.fn<typeof fetch>()
+        .mockResolvedValueOnce(new Response('{}', {
+          headers: { 'x-goog-upload-url': 'https://upload.example/session1' },
+        }))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ file: { ...file, state: 'PROCESSING' } })))
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ...file, state: 'ACTIVE' })))
+
+      const pending = uploadAudioToGeminiFiles({
+        apiKey: 'stale-fallback-key',
+        transport: { kind: 'ai-studio', endpoint: () => '', headers, authorize },
+        buffer: Buffer.from('audio'),
+        mime: 'audio/aac',
+        fetchFn,
+      })
+      await vi.runAllTimersAsync()
+      await expect(pending).resolves.toEqual({ fileUri: file.uri, name: file.name })
+      expect(authorize).toHaveBeenCalledOnce()
+      expect(headers).not.toHaveBeenCalled()
+      expect(fetchFn.mock.calls[0][1]?.headers).toEqual(expect.objectContaining({ 'x-goog-api-key': 'leased-key' }))
+      expect(fetchFn.mock.calls[2][1]?.headers).toEqual(expect.objectContaining({ 'x-goog-api-key': 'leased-key' }))
+      // The resumable URL is already authorized; don't forward credentials to it.
+      expect(new Headers(fetchFn.mock.calls[1][1]?.headers).has('x-goog-api-key')).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('preserves direct API key authentication', async () => {
+    const fetchFn = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response('{}', {
+        headers: { 'x-goog-upload-url': 'https://upload.example/session1' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        file: { uri: 'files/rec123', name: 'files/rec123', state: 'ACTIVE' },
+      })))
+    await uploadAudioToGeminiFiles({ apiKey: 'direct-key', buffer: Buffer.from('audio'), mime: 'audio/aac', fetchFn })
+    expect(fetchFn.mock.calls[0][1]?.headers).toEqual(expect.objectContaining({ 'x-goog-api-key': 'direct-key' }))
+  })
+
+  it('rejects missing credentials before sending an anonymous request', async () => {
+    const fetchFn = vi.fn<typeof fetch>()
+    await expect(uploadAudioToGeminiFiles({
+      buffer: Buffer.from('audio'), mime: 'audio/aac', fetchFn,
+    })).rejects.toThrow('configure GEMINI_API_KEY')
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  it('rejects Vertex without an external uploader before sending a Files API request', async () => {
+    const fetchFn = vi.fn<typeof fetch>()
+    const headers = vi.fn(async () => ({ Authorization: 'Bearer token' }))
+    await expect(transcribeRecording({
+      transport: { kind: 'vertex', endpoint: () => '', headers },
+      buffer: Buffer.from('audio'), mime: 'audio/aac', durationMs: 120_000, fetchFn,
+    })).rejects.toThrow('GCS_FILES_BUCKET')
+    expect(headers).not.toHaveBeenCalled()
+    expect(fetchFn).not.toHaveBeenCalled()
+  })
+})
+
 describe('[COMP:media/transcribe-recording] transcribeRecording', () => {
   function makeMockFetch(windowTexts: Array<{ text: string; finishReason: string }>) {
     let gen = 0
@@ -230,6 +297,31 @@ describe('[COMP:media/transcribe-recording] transcribeRecording', () => {
     ])
     // final endMs clamped to the known duration
     expect(res.utterances[res.utterances.length - 1].endMs).toBe(120_000)
+  })
+
+  it('authenticates Files API uploads with the AI Studio transport when no apiKey is passed', async () => {
+    const mock = makeMockFetch([{
+      text: '[0:01:58] Speaker 1: Finished.',
+      finishReason: 'STOP',
+    }])
+    const fetchFn = vi.fn(mock.fetchFn)
+    const res = await transcribeRecording({
+      transport: {
+        kind: 'ai-studio',
+        endpoint: (model, method) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:${method}`,
+        headers: async () => ({ 'x-goog-api-key': 'transport-key' }),
+      },
+      buffer: Buffer.from('audio'),
+      mime: 'audio/aac',
+      durationMs: 120_000,
+      fetchFn,
+    })
+
+    expect(res.truncated).toBe(false)
+    expect(fetchFn.mock.calls[0][1]?.headers).toEqual(expect.objectContaining({
+      'x-goog-api-key': 'transport-key',
+      'X-Goog-Upload-Command': 'start',
+    }))
   })
 
   it('uses an injected Vertex transport and external file URI, then cleans up', async () => {
