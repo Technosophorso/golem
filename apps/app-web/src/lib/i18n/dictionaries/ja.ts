@@ -10378,7 +10378,7 @@ export const ja: Dictionary = {
     liveFinalizeFree:
       "このライブ会議ページを確定しますか? 録音全体を処理してこのページにリンクし、別のブリーフは作成しません。録音クレジットは請求されません。",
     liveLinkFailed:
-      "録音はキューに追加されましたが、会議ページにリンクできませんでした。録音ボードから手動でリンクできます。",
+      "会議ページにリンクできませんでした。録音ボードから手動でリンクできます。",
     liveAssembledNote:
       "完全な録音のアップロードが完了しなかったため、ライブ配信のウィンドウからこの録音を組み立てました。30秒の継ぎ目に小さな欠落が生じる場合があります。",
     voiceMessage: "ボイスメッセージ",
@@ -10386,6 +10386,10 @@ export const ja: Dictionary = {
     micAndComputerAudio: "マイク + コンピューター音声",
     finishing: "保存中...",
     savingBackground: "バックグラウンドで録音・録画を保存中（{count}件）。チャットや次の録音・録画を続けられます。",
+    transcriptionQueued: "文字起こしを待機しています...",
+    transcriptionProcessing: "文字起こししてブレインに保存しています...",
+    transcriptionReady: "録音の処理が完了しました。",
+    transcriptionFailed: "文字起こしに失敗しました。録音画面から再試行してください。",
     pause: "一時停止",
     resume: "再開",
     stop: "停止",

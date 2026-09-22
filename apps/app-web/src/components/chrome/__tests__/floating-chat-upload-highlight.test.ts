@@ -23,6 +23,9 @@ describe("[COMP:web/recording-upload] floating composer upload progress", () => 
     const handOff = source.slice(source.indexOf("onMeetingCapture: async"), source.indexOf("// Feed replaces this dock"));
     expect(handOff).toContain("await captureUpload.run(file,");
     expect(handOff).toContain("captureUpload.dismiss()");
+    expect(source).toContain("status: captureUpload.status");
+    expect(source).toContain("uploadProgress: captureUpload.uploadProgress");
+    expect(handOff).toContain("recordingId: outcome.recording.recordingId");
     expect(handOff).not.toContain("await rec.run(");
     expect(source).not.toContain("captureUpload.busy");
   });

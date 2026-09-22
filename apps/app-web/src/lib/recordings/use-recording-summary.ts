@@ -14,7 +14,11 @@ import {
 
 const STATUS_POLL_MS = 10_000;
 
-export function useRecordingSummary(workspaceId: string, recordingId: string) {
+export function useRecordingSummary(
+  workspaceId: string,
+  recordingId: string,
+  options?: { trackProcessing?: boolean },
+) {
   const key = recordingDetailCacheKey(workspaceId, recordingId);
   const resource = useCachedResource<RecordingSummary>(
     key,
@@ -25,11 +29,16 @@ export function useRecordingSummary(workspaceId: string, recordingId: string) {
     const summary = resource.data;
     const inFlight =
       summary?.status === "queued" || summary?.status === "processing" ||
-      (summary?.status === "awaiting_upload" && (summary.durationMs ?? 0) <= 0);
-    if (!inFlight) return;
+      (summary?.status === "awaiting_upload" &&
+        (options?.trackProcessing === true || (summary.durationMs ?? 0) <= 0));
+    const retryColdFailure =
+      options?.trackProcessing === true &&
+      summary === undefined &&
+      resource.error !== undefined;
+    if (!inFlight && !retryColdFailure) return;
     const timer = setTimeout(() => void resource.refresh(), STATUS_POLL_MS);
     return () => clearTimeout(timer);
-  }, [resource.data, resource.attemptedAt, resource.refresh]);
+  }, [options?.trackProcessing, resource.data, resource.error, resource.attemptedAt, resource.refresh]);
 
   useEffect(() => {
     const onParticipantsUpdated = (event: Event) => {

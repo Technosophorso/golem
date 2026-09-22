@@ -115,8 +115,16 @@ describe("[COMP:app-web/dock-recorder] Recorder transition machine", () => {
 
 describe("[COMP:app-web/dock-recorder] Long-lane hand-off verdict", () => {
   it("a queued 202 releases the spool and confirms with the flow's own line", () => {
-    expect(handOffVerdict({ outcome: "queued", message: "Recording uploaded." })).toEqual({
-      notice: { kind: "queued", text: "Recording uploaded." },
+    expect(handOffVerdict({
+      outcome: "queued",
+      recordingId: "recording-1",
+      message: "Recording uploaded.",
+    })).toEqual({
+      notice: {
+        kind: "queued",
+        recordingId: "recording-1",
+        text: "Recording uploaded.",
+      },
       safeToDrop: true,
     });
   });
