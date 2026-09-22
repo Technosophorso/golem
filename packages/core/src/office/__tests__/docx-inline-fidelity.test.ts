@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { applyDocumentCommand, documentRangePreimageHash, documentNumberedParagraphs, officeNumberingCounter, snapshotToYDoc, yDocToSnapshot, type DocumentSnapshot } from '@use-brian/office-model'
 import { layoutOfficeArtifact, renderOfficePreviewSvg } from '@use-brian/office-renderer'
 import { exportOfficeDocument, importOfficeDocument } from '../docx/index.js'
+import { nineLevelNumberingFixture } from './docx-numbering-fixture.js'
 import { id } from './fixtures.js'
 
 const context = { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Synthetic inline fidelity' }
@@ -29,6 +30,18 @@ function labels(snapshot: DocumentSnapshot) {
 
 // Entire fixture is generated from generic labels; no uploaded document content.
 describe('[COMP:office/docx-engine] Bounded inline fidelity', () => {
+  it('admits level zero from nine declared levels and keeps unused unsupported levels inert', async () => {
+    const result = await importOfficeDocument(await nineLevelNumberingFixture(), context)
+    expect(result.diagnostics.some(d => d.code === 'docx.formatting.numbering')).toBe(false)
+    if (result.snapshot?.family !== 'document') throw new Error('document')
+    expect(labels(result.snapshot)).toEqual(['I)', 'II)', 'A)', 'B)', 'C)', 'D)'])
+    const zip = await JSZip.loadAsync((await exportOfficeDocument(result.snapshot)).bytes)
+    zip.remove('customXml/brian-office.json')
+    expect(labels(await imported(await zip.generateAsync({ type: 'uint8array' })))).toEqual(['I)', 'II)', 'A)', 'B)', 'C)', 'D)'])
+    const unsupported = await importOfficeDocument(await nineLevelNumberingFixture(1), context)
+    expect(unsupported.diagnostics.some(d => d.code === 'docx.formatting.numbering')).toBe(true)
+  })
+
   it('normalizes 13 legacy boxes plus four allowlisted symbols without executing fields, and exports native text', async () => {
     const field = (index: number) => `<w:r><w:fldChar w:fldCharType="begin"><w:ffData><w:checkBox><w:sizeAuto/><w:default w:val="0"/>${index === 0 ? '<w:checked/>' : ''}</w:checkBox></w:ffData></w:fldChar></w:r><w:r><w:instrText> FORMCHECKBOX </w:instrText></w:r><w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>cached field result</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>`
     const symbols = '<w:r><w:sym w:font="Wingdings 2" w:char="F0A3"/></w:r>'.repeat(4)
