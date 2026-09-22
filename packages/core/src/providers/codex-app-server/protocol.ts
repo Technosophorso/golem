@@ -351,10 +351,16 @@ export type DynamicToolCallResponse = z.infer<typeof DynamicToolCallResponseSche
 export const ModelProviderCapabilitiesResponseSchema = z.object({
   imageGeneration: z.boolean(), namespaceTools: z.boolean(), webSearch: z.boolean(),
 })
+export const ItemLifecycleNotificationSchema = z.object({
+  threadId: z.string().min(1).max(256), turnId: z.string().min(1).max(256),
+  item: z.object({ type: z.string().min(1).max(64), id: z.string().min(1).max(256),
+    status: z.string().max(64).optional(),
+  }).passthrough(),
+}).passthrough()
 export const ImageCompletedNotificationSchema = z.object({
   threadId: z.string().min(1).max(256), turnId: z.string().min(1).max(256),
   item: z.object({ type: z.literal('imageGeneration'), id: z.string().min(1).max(256),
-    status: z.string().max(64), result: z.string().max(28 * 1024 * 1024),
+    status: z.string().max(64), result: z.string().max(28 * 1024 * 1024).optional(),
     revisedPrompt: z.string().nullable().optional(), savedPath: z.string().nullable().optional(),
-  }),
-})
+  }).passthrough(),
+}).passthrough()

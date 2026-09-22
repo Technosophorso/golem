@@ -4,9 +4,14 @@ import sharp from 'sharp'
 import { authorizeGoogleRequest, type GoogleTransport } from './google-transport.js'
 export type GeneratedImageReceipt = {
   image?: { data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' };
-  error?: 'image_provider_rejected' | 'image_refused' | 'image_missing' | 'image_malformed';
+  error?: 'image_provider_rejected' | 'image_refused' | 'image_missing' | 'image_malformed' | 'image_tool_not_invoked' | 'image_tool_incomplete';
   status?: number; responseId?: string;
   providerError?: { code?: string; message?: string; fields?: string[] };
+  providerDiagnostics?: {
+    provider: 'openai-codex';
+    events: Array<{ method: 'item/started' | 'item/completed' | 'turn/completed'; itemType?: string; status?: string }>;
+    process?: { stderrBytes: number; stderrTruncated: boolean };
+  };
   usage: { inputTokens: number; outputTokens: number; imageTokens?: number; measured: boolean };
 }
 export type GeminiImageReceipt = GeneratedImageReceipt
