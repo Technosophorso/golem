@@ -4888,6 +4888,10 @@ export const zh: Dictionary = {
       countMany: "{count} 個藍圖",
       newBlueprint: "新增藍圖",
       newBlueprintTitle: "未命名藍圖",
+      starterInstall: "安裝{name}",
+      starterInstalling: "安裝中…",
+      starterHint: "在此工作區新增可編輯的副本。現有藍圖及錄音預設設定不會變更。",
+      starterInstallFailed: "無法安裝藍圖，請再試一次。",
       emptyTitle: "尚無藍圖",
       emptyBody:
         "藍圖是一份知道如何填滿自己的頁面：包含各個區段及其指示，讓錄音、大腦或研究結果變成完成的簡報。建立一個，讓每次都產出相同結構的成果。",

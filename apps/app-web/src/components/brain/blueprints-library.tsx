@@ -6,8 +6,10 @@
  * Blueprints and skills are sibling specs (one is structural, one procedural),
  * so this reuses the `SkillsLibrary` pattern: a QUIET LIST of full-width
  * borderless rows (`border-b`, `hover:bg-muted/40`, no card borders, no primary
- * blue). Each row carries a blueprint glyph, the name + description, a quiet
- * section-count meta, and a "Blueprint" badge; clicking the row body opens the
+ * blue). An explicit starter install creates an editable workspace copy without
+ * processing a recording or changing the workspace default. Each row carries a
+ * blueprint glyph, the name + description, a quiet section-count meta, and a
+ * "Blueprint" badge; clicking the row body opens the
  * blueprint DETAIL EDITOR (`/brain/blueprints/[templateId]`,
  * `[COMP:web/blueprint-detail]`) where the contract is viewed + edited; a
  * trailing Delete asks through `confirmDialog` (NEVER `window.confirm`). A
@@ -17,8 +19,8 @@
  * A BLUEPRINT is a workspace page template carrying an `extraction` spec; the
  * list API returns every template, so the filter (`filterBlueprints`) keeps only
  * the ones with a spec. The pure filter + the section-count helper live in
- * `lib/blueprints.ts` so they're unit-tested (app-web has no component-render
- * test setup).
+ * `lib/blueprints.ts` so they're unit-tested; the install flow also has jsdom
+ * component coverage.
  *
  * Spec: docs/architecture/brain/structural-synthesis.md -> "The blueprint
  * object" ("Blueprints are managed in a Brain -> Blueprints library").
@@ -26,22 +28,25 @@
  * [COMP:web/blueprints-library]
  */
 
-import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, ExternalLink, FileStack, Plus, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, Download, ExternalLink, FileStack, Loader2, Sparkles, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/utils";
 import { useT, format } from "@/lib/i18n/client";
-import type { CustomPageTemplateSummary } from "@use-brian/doc-model";
+import { MEETING_NOTES_STARTER, type CustomPageTemplateSummary } from "@use-brian/doc-model";
 import {
   blueprintSectionCount,
   filterBlueprints,
+  starterInstallInput,
 } from "@/lib/blueprints";
 import {
+  createCustomPageTemplate,
   listBlueprintRecords,
   openBlueprintRecordPage,
   type BlueprintRecordSummary,
 } from "@/lib/api/views";
 import { docPagePath } from "@/lib/doc-page-url";
+import { requestBrainRefresh } from "@/lib/brain-events";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { Button } from "@/components/ui/button";
 import { useGenerateFromBrain } from "@/components/brain/use-generate-from-brain";
@@ -70,6 +75,44 @@ export function BlueprintsLibrary({
 }: Props) {
   const t = useT();
   const copy = t.brainPage.blueprints;
+  const router = useRouter();
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState(false);
+  const installPending = useRef(false);
+  const mounted = useRef(false);
+  // The parent keys this library by workspace. A late response may refresh its
+  // original workspace, but must not navigate away from the user's new surface.
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+
+  async function installMeetingNotes() {
+    if (readOnly || installPending.current) return;
+    installPending.current = true;
+    setInstalling(true);
+    setInstallError(false);
+    try {
+      const created = await createCustomPageTemplate(
+        workspaceId,
+        starterInstallInput(MEETING_NOTES_STARTER, {
+          name: t.recordings.starterName,
+          description: t.recordings.starterDescription,
+        }),
+      );
+      requestBrainRefresh(workspaceId);
+      if (mounted.current) {
+        router.push(`/w/${workspaceId}/brain/blueprints/${created.id}`);
+      }
+    } catch {
+      if (mounted.current) setInstallError(true);
+    } finally {
+      installPending.current = false;
+      if (mounted.current) setInstalling(false);
+    }
+  }
 
   // Generate-from-brain: estimate the credit cost, confirm with the subject,
   // fill the blueprint, then open the produced page. Shared with the detail
@@ -94,6 +137,37 @@ export function BlueprintsLibrary({
     <div className="flex-1 min-h-0 overflow-y-auto bg-background">
       {/* pb-28 clears the fixed chat dock floated over the surface bottom-right. */}
       <div className="flex flex-col pb-28">
+        {/* Installation is independent of the roster and search: existing
+            blueprints must never hide the path to a fresh starter copy. */}
+        <div className="border-b border-border px-4 py-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">{t.recordings.starterName}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t.recordings.starterDescription}</p>
+              <p className="mt-1 text-xs text-muted-foreground">{copy.starterHint}</p>
+            </div>
+            <Button
+              variant="outline"
+              className="min-h-11 shrink-0 self-start sm:self-auto"
+              disabled={readOnly || installing}
+              onClick={() => void installMeetingNotes()}
+            >
+              {installing ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Download className="size-4" aria-hidden />
+              )}
+              {installing
+                ? copy.starterInstalling
+                : format(copy.starterInstall, { name: t.recordings.starterName })}
+            </Button>
+          </div>
+          {installError && (
+            <p role="alert" className="mt-2 text-sm text-destructive">
+              {copy.starterInstallFailed}
+            </p>
+          )}
+        </div>
         {blueprints === null ? (
           <div className="py-16 text-center text-sm text-muted-foreground">
             …

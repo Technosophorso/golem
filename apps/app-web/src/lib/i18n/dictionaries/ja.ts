@@ -4928,6 +4928,10 @@ export const ja: Dictionary = {
       countMany: "{count} 件のブループリント",
       newBlueprint: "新しいブループリント",
       newBlueprintTitle: "無題のブループリント",
+      starterInstall: "{name}をインストール",
+      starterInstalling: "インストール中…",
+      starterHint: "このワークスペースに編集可能なコピーを追加します。既存のブループリントと録音の既定設定は変更されません。",
+      starterInstallFailed: "ブループリントをインストールできませんでした。もう一度お試しください。",
       emptyTitle: "ブループリントはまだありません",
       emptyBody:
         "ブループリントは自分の埋め方を知っているページです。各セクションとその指示があるので、録音・ブレイン・リサーチが整ったブリーフになります。毎回同じ形の成果物を残すために作成しましょう。",
