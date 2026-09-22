@@ -2558,18 +2558,25 @@ function authorizeCloudflareAccess(
 const downloadPolicySessions = new WeakSet<ReturnType<typeof targetSession>>();
 function installSessionPolicies(): void {
   const policyCfg = cfg;
-    // Chromium-level media (mic) permission: grant to the app's own origin
-    // only, so the dock recorder's `getUserMedia` never shows a browser-style
-    // permission prompt inside the shell (macOS OS-level consent is separate
-    // — `askForMediaAccess` in `summonAndRecord`). Everything else keeps
-    // Electron's default-allow, unchanged from the no-handler behavior.
+    // Chromium-level media (mic) permission: use the same capture-origin policy
+    // as display media. A packaged renderer requests from its full file:/// URL,
+    // not policyCfg.appOrigin, so it is trusted only while that bundle is active.
+    // macOS OS-level consent remains separate (`askForMediaAccess` in
+    // `summonAndRecord`). Everything else keeps Electron's default-allow,
+    // unchanged from the no-handler behavior.
     targetSession().setPermissionRequestHandler((_wc, permission, callback, details) => {
       if (gatewayWindow && !gatewayWindow.isDestroyed() && _wc.id === gatewayWindow.webContents.id) {
         callback(false);
         return;
       }
       if (permission === "media") {
-        callback(details.requestingUrl?.startsWith(policyCfg.appOrigin) ?? false);
+        callback(
+          isTrustedCaptureOrigin(
+            details.requestingUrl ?? "",
+            policyCfg.appOrigin,
+            bundledAvailable(),
+          ),
+        );
         return;
       }
       callback(true);
