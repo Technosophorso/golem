@@ -24,6 +24,7 @@ import {
 } from './domain.js'
 
 import { MembershipDraftSaveSchema, MembershipPublishSchema, MembershipSiteSchema } from './membership-catalogue.js'
+import { ProgrammeDraftSaveSchema, ProgrammePublishSchema } from './programme-catalogue.js'
 
 const Id = z.string().uuid()
 export const AssociationContextSchema = z.object({
@@ -41,6 +42,11 @@ export const AssociationCommandSchema = z.union([
   MembershipPublishSchema.extend({ kind: z.literal('publish_membership_catalogue') }),
   z.object({ kind: z.literal('published_membership_catalogue'), site: MembershipSiteSchema }).strict(),
   z.object({ kind: z.literal('observe_membership_catalogue'), site: MembershipSiteSchema, revision: z.number().int().positive() }).strict(),
+  z.object({ kind: z.literal('programme_catalogue_draft') }).strict(),
+  ProgrammeDraftSaveSchema.extend({ kind: z.literal('save_programme_catalogue') }),
+  ProgrammePublishSchema.extend({ kind: z.literal('publish_programme_catalogue') }),
+  z.object({ kind: z.literal('published_programme_catalogue'), site: MembershipSiteSchema }).strict(),
+  z.object({ kind: z.literal('observe_programme_catalogue'), site: MembershipSiteSchema, revision: z.number().int().positive() }).strict(),
   z.object({ kind: z.literal('module_status') }).strict(),
   z.object({ kind: z.literal('module_action'), action: z.enum(WORKSPACE_MODULE_ACTIONS), expectedVersion: z.number().int().nonnegative() }).strict(),
   z.object({ kind: z.literal('list_tickets'), eventId: Id }).strict(),
@@ -122,4 +128,4 @@ export interface AssociationSourceMembershipImportPort {
     input: AssociationSourceMembershipImportInput,
   ): Promise<{ record: Record<string, unknown>; created: boolean; duplicate: boolean }>
 }
-export const ASSOCIATION_READ_COMMANDS = ['membership_catalogue_draft', 'published_membership_catalogue', 'observe_membership_catalogue', 'module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_order_notifications', 'list_membership_rescues', 'list_sponsorship_allocations', 'list_sponsorship_invitations'] as const
+export const ASSOCIATION_READ_COMMANDS = ['membership_catalogue_draft', 'published_membership_catalogue', 'observe_membership_catalogue', 'programme_catalogue_draft', 'published_programme_catalogue', 'observe_programme_catalogue', 'module_status', 'list_tickets', 'list_promotions', 'get_order', 'list_orders', 'module_blockers', 'list_registrations', 'list_operational_roster', 'list_waitlist', 'list_provider_receipts', 'list_order_notifications', 'list_membership_rescues', 'list_sponsorship_allocations', 'list_sponsorship_invitations'] as const

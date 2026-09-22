@@ -144,3 +144,4 @@ export { ProviderInboxEnvelopeSchema, ProviderEntitlementEventSchema, ProviderRe
 export { AssociationWaitlistOfferInputSchema, associationWaitlistDefinition, associationWaitlistReferences, type AssociationWaitlistOfferInput } from './association/waitlist.js'
 
 export * from './association/membership-catalogue.js'
+export * from './association/programme-catalogue.js'
