@@ -243,3 +243,29 @@ export function saveMembershipCatalogueDraft(workspaceId:string,expectedVersion:
 export function publishMembershipCatalogue(workspaceId:string,expectedVersion:number) {
   return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/membership-catalogue/publish`,{expectedVersion});
 }
+
+export type ProgrammeAudience = "corporates"|"schools"|"students";
+export type ProgrammeGallery = "spacebiz-dialogues"|"young-marco-polo"|"internship"|"space-exchange-tour"|"newspace-101"|"annual-conference";
+export const PROGRAMME_AUDIENCES:readonly ProgrammeAudience[] = ["corporates","schools","students"];
+export const PROGRAMME_GALLERIES:readonly ProgrammeGallery[] = ["spacebiz-dialogues","young-marco-polo","internship","space-exchange-tour","newspace-101","annual-conference"];
+export type ProgrammeSubsection = { id:string;heading:string;paragraphs:string[];bullets:string[];numbered:string[];quote?:{text:string;cite:string} };
+export type ProgrammeSection = ProgrammeSubsection & { subsections:ProgrammeSubsection[] };
+export type ProgrammeCopy = { name:string;tagline:string;kicker:string;summary:string;audienceBlurbs:Partial<Record<ProgrammeAudience,string>>;sections:ProgrammeSection[];
+  facts:{value:string;label:string}[];steps:{title:string;items:{title:string;text:string}[]}|null;feeUnit:string;feeNotes:string[];
+  eligibility:{label:string;value:string}[];contacts:{label:string;name?:string;email:string}[];links:{label:string;href:string}[];
+  cta:{heading:string;text:string;href:string;label:string;secondary?:{label:string;href:string}}|null };
+export type WebsiteProgramme = { slug:string;audiences:ProgrammeAudience[];order:number;sites:MembershipSite[];status:"live"|"coming-soon"|"retired";
+  fee:{currency:"HKD";amountMinor:number}|null;gallery:ProgrammeGallery|null;cover:string|null;href:string|null;
+  i18n:{en:ProgrammeCopy;"zh-Hant"?:ProgrammeCopy;"zh-Hans"?:ProgrammeCopy} };
+export type ProgrammeCatalogueDocument = { schemaVersion:1;audiences:Record<ProgrammeAudience,{gallery:ProgrammeGallery;order:string[]}>;programmes:WebsiteProgramme[] };
+export type ProgrammeCatalogueDraft = { version:number;document:ProgrammeCatalogueDocument|null;publishedRevision:number;
+  published:ProgrammeCatalogueDocument|null;issues:string[];observations:Record<string,{revision:number;observedAt:string}> };
+export async function getProgrammeCatalogueDraft(workspaceId:string):Promise<ProgrammeCatalogueDraft> {
+  return (await request<{catalogue:ProgrammeCatalogueDraft}>(`/api/crm/${encodeURIComponent(workspaceId)}/association/programme-catalogue/draft`)).catalogue;
+}
+export function saveProgrammeCatalogueDraft(workspaceId:string,expectedVersion:number,document:ProgrammeCatalogueDocument) {
+  return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/programme-catalogue/draft`,{expectedVersion,document});
+}
+export function publishProgrammeCatalogue(workspaceId:string,expectedVersion:number) {
+  return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/programme-catalogue/publish`,{expectedVersion});
+}

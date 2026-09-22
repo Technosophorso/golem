@@ -1,4 +1,5 @@
 import { MembershipDraftSaveSchema, MembershipPublishSchema } from './membership-catalogue.js'
+import { ProgrammeDraftSaveSchema, ProgrammePublishSchema } from './programme-catalogue.js'
 /** Native adapters to the canonical commerce service. [COMP:crm/association-tools] */
 import { z } from 'zod'
 import { WorkspaceModuleError } from '@use-brian/shared'
@@ -54,10 +55,12 @@ export function createAssociationTools(service: AssociationServicePort) {
     })
     return tool
   }
-  function catalogueTool<Input extends z.ZodType>(name: string, description: string, schema: Input, kind: 'membership_catalogue_draft' | 'save_membership_catalogue' | 'publish_membership_catalogue') {
+  type CatalogueKind = 'membership_catalogue_draft' | 'save_membership_catalogue' | 'publish_membership_catalogue' | 'programme_catalogue_draft' | 'save_programme_catalogue' | 'publish_programme_catalogue'
+  function catalogueTool<Input extends z.ZodType>(name: string, description: string, schema: Input, kind: CatalogueKind) {
+    const readOnly = kind === 'membership_catalogue_draft' || kind === 'programme_catalogue_draft'
     const tool = buildTool({ name, description, inputSchema: schema, requiresCapability: 'configure',
-      homeAppToolSet: { app: 'association' as const, set: kind === 'membership_catalogue_draft' ? 'read' as const : 'write' as const },
-      isReadOnly: kind === 'membership_catalogue_draft', requiresConfirmation: kind === 'publish_membership_catalogue',
+      homeAppToolSet: { app: 'association' as const, set: readOnly ? 'read' as const : 'write' as const },
+      isReadOnly: readOnly, requiresConfirmation: kind === 'publish_membership_catalogue' || kind === 'publish_programme_catalogue',
       async execute(input, context) {
         const missing = missingToolCapability(tool, context.activeCapabilities)
         if (missing) return { isError: true, data: { error: 'not_authorized', requiredCapability: missing } }
@@ -68,7 +71,7 @@ export function createAssociationTools(service: AssociationServicePort) {
             AssociationCommandSchema.parse({ ...schema.parse(input), kind })) }
         } catch (error) {
           return { isError: true, data: { error: error instanceof AssociationError || error instanceof CrmOperationsError ? error.code : 'invalid_input',
-            message: error instanceof Error ? error.message : 'Membership catalogue operation failed.' } }
+            message: error instanceof Error ? error.message : 'Catalogue operation failed.' } }
         }
       },
     })
@@ -78,6 +81,9 @@ export function createAssociationTools(service: AssociationServicePort) {
     previewMembershipCatalogue: catalogueTool('previewMembershipCatalogue', 'Read the current membership draft, published version, validation issues and website synchronization status. Show the admin the exact before/after changes for both sites and all affected languages before requesting publication.', z.object({}).strict(), 'membership_catalogue_draft'),
     saveMembershipCatalogueDraft: catalogueTool('saveMembershipCatalogueDraft', 'Save a complete membership catalogue draft using the expected version from previewMembershipCatalogue. Preserve unrelated plans, locales and page sections. This does not publish or change live prices. Read and preview again after saving.', MembershipDraftSaveSchema, 'save_membership_catalogue'),
     publishMembershipCatalogue: catalogueTool('publishMembershipCatalogue', 'Publish the exact draft version the admin has reviewed and confirmed. Updates website content and new-purchase prices, never existing subscriptions. Report pending website synchronization until both website readers acknowledge this revision.', MembershipPublishSchema, 'publish_membership_catalogue'),
+    previewProgrammeCatalogue: catalogueTool('previewProgrammeCatalogue', 'Read the current website programme draft, published version, validation issues and website synchronization status. Show the admin the exact before/after changes for every affected programme and language before requesting publication.', z.object({}).strict(), 'programme_catalogue_draft'),
+    saveProgrammeCatalogueDraft: catalogueTool('saveProgrammeCatalogueDraft', 'Save a complete website programme catalogue draft using the expected version from previewProgrammeCatalogue. Preserve unrelated programmes, locales and sections; never invent translations. This does not publish and changes no membership or ticket prices. Read and preview again after saving.', ProgrammeDraftSaveSchema, 'save_programme_catalogue'),
+    publishProgrammeCatalogue: catalogueTool('publishProgrammeCatalogue', 'Publish the exact programme draft version the admin has reviewed and confirmed. Updates website programme pages only; no fee, order or subscription record changes. Report pending website synchronization until the website reader acknowledges this revision.', ProgrammePublishSchema, 'publish_programme_catalogue'),
     getAssociationModuleStatus: command('getAssociationModuleStatus',
       'Read workspace Association module state and version. Module enablement is a human owner/admin action.',
       z.object({}).strict(), true, false, () => ({ kind: 'module_status' })),
