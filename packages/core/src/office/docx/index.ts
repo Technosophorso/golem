@@ -474,10 +474,14 @@ function parseWordNumbering(xml: string, seed: string): WordNumbering {
   for (const match of xml.matchAll(/<w:num\b[^>]*w:numId="(\d+)"[^>]*>([\s\S]*?)<\/w:num>/g)) {
     const abstract = abstracts.get(xmlValue(match[2], 'w:abstractNumId') ?? '') ?? ''
     const levels = [...abstract.matchAll(/<w:lvl\b[^>]*w:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvl>/g)]
-    const overrides = [...match[2].matchAll(/<w:lvlOverride\b[^>]*w:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvlOverride>/g)]
-    if (overrides.length > 1 || overrides.some(m => m[1] !== '0' || /<w:lvl\b/.test(m[2]))) continue
-    if (levels.length !== 1 || levels[0][1] !== '0' || /<w:numStyleLink\b|<w:styleLink\b|<w:lvlRestart\b|<w:isLgl\b/.test(match[2] + abstract)) continue
-    const level = levels[0][2]
+    const overrides = [...match[2].matchAll(/<w:lvlOverride\b[^>]*w:ilvl="(\d+)"[^>]*>([\s\S]*?)<\/w:lvlOverride>/g)].filter(m => m[1] === '0')
+    if (overrides.length > 1 || overrides.some(m => /<w:lvl\b/.test(m[2]))) continue
+    // Word commonly declares nine levels even for a flat list. Only level
+    // zero is projected; unused levels must not veto its admission.
+    const roots = levels.filter(m => m[1] === '0')
+    if (roots.length !== 1 || /<w:numStyleLink\b|<w:styleLink\b/.test(abstract)) continue
+    const level = roots[0][2]
+    if (/<w:lvlRestart\b|<w:isLgl\b/.test(level)) continue
     const parsed = OfficeNumberingSchema.safeParse({ listId: stableOfficeUuid(`${seed}:numbering:${match[1]}`), format: xmlValue(level, 'w:numFmt'), start: Number(xmlValue(overrides[0]?.[2] ?? '', 'w:startOverride') ?? xmlValue(level, 'w:start') ?? 1), pattern: decodeXmlText(xmlValue(level, 'w:lvlText') ?? '%1.') })
     if (parsed.success) result.set(match[1], { definition: parsed.data, properties: level })
   }

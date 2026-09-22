@@ -443,6 +443,7 @@ function richTextHtml(runs: readonly OfficeRichTextRun[] | undefined, fallback: 
       `color:${run.style.color}`,
       `font-family:${escapeXml(JSON.stringify(run.style.fontFamily))}${run.style.eastAsianFontFamily ? `,${escapeXml(JSON.stringify(run.style.eastAsianFontFamily))}` : ''}`,
       `font-size:${run.style.fontSizePt}px`,
+      'line-height:var(--office-run-line-height,inherit)',
       `font-style:${run.style.italic ? 'italic' : 'normal'}`,
       `font-weight:${run.style.bold ? '700' : '400'}`,
       decorations ? `text-decoration:${decorations}` : '',
@@ -480,7 +481,8 @@ function documentCellBorder(table: OfficeTable, cell: OfficeTableCell, placement
 /** CSS units are pt in the editor and px inside the point-space preview SVG. */
 export function officeParagraphCss(format: OfficeParagraphFormat, unit = 'px', maxRunFontSizePt = 12): string {
   const line = format.lineSpacingMultiple !== undefined ? String(format.lineSpacingMultiple) : format.lineSpacingPt !== undefined ? format.lineSpacingRule === 'atLeast' ? `${Math.max(maxRunFontSizePt * 1.15, format.lineSpacingPt)}${unit}` : `${format.lineSpacingPt}${unit}` : undefined
-  return [format.indentLeftPt !== undefined ? `padding-left:${format.indentLeftPt}${unit}` : '', format.numbering ? 'position:relative' : format.hangingPt !== undefined ? `text-indent:${-format.hangingPt}${unit}` : '', format.alignment ? `text-align:${cssAlignment(format.alignment)}` : '', format.spacingBeforePt !== undefined ? `margin-top:${format.spacingBeforePt}${unit}` : '', format.spacingAfterPt !== undefined ? `margin-bottom:${format.spacingAfterPt}${unit}` : '', line ? `line-height:${line}` : ''].filter(Boolean).join(';')
+  const exact = format.lineSpacingPt !== undefined && format.lineSpacingMultiple === undefined && format.lineSpacingRule !== 'atLeast'
+  return [exact ? '--office-run-line-height:0' : '', format.indentLeftPt !== undefined ? `padding-left:${format.indentLeftPt}${unit}` : '', format.numbering ? 'position:relative' : format.hangingPt !== undefined ? `text-indent:${-format.hangingPt}${unit}` : '', format.alignment ? `text-align:${cssAlignment(format.alignment)}` : '', format.spacingBeforePt !== undefined ? `margin-top:${format.spacingBeforePt}${unit}` : '', format.spacingAfterPt !== undefined ? `margin-bottom:${format.spacingAfterPt}${unit}` : '', line ? `line-height:${line}` : ''].filter(Boolean).join(';')
 }
 
 export function officeDocumentCellStyles(table: OfficeTable, unit = 'px'): ReadonlyMap<string, string> {
