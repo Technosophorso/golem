@@ -18,7 +18,9 @@ if (params.has('long')) {
 }
 const noop = () => {};
 const recorder: DockRecorderApi = {
+  workspaceId: 'fictional-workspace',
   phase: { kind: 'idle' }, active: false, savingCount: 0, elapsedMs: () => 0,
+  saveProgress: null,
   notice: null, clearNotices: noop, onPressStart: noop, onPressEnd: noop,
   stop: noop, discard: noop, pause: noop, resume: noop, level: () => 0,
   computerAudioAvailable: false, includeComputerAudio: false, setIncludeComputerAudio: noop,
