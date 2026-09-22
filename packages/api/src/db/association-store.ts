@@ -587,7 +587,14 @@ async function getSourceMembershipRecord(
 }
 
 
-export async function saveCrmEntitlementPlanRecord(client: PoolClient, workspaceId: string, input: PlanInput): Promise<MutationResult> {
+export async function saveCrmEntitlementPlanRecord(client: PoolClient, workspaceId: string, input: PlanInput, publishing = false): Promise<MutationResult> {
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended('membership-catalogue:'||$1,0))", [workspaceId])
+  if (!publishing) {
+    const managed = await client.query(`SELECT 1 FROM association_membership_catalogues c
+      JOIN association_membership_catalogue_revisions r ON r.workspace_id=c.workspace_id AND r.revision=c.published_revision
+      WHERE c.workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(r.document->'plans') p WHERE p->>'key'=$2)`, [workspaceId, input.key])
+    if (managed.rows.length) throw new AssociationError('conflict', 'Edit this website plan in the membership catalogue, then preview and publish it.')
+  }
   const before = await client.query<{ id: string }>(
     `SELECT id FROM association_membership_plans WHERE workspace_id = $1 AND plan_key = $2`,
     [workspaceId, input.key],
@@ -2150,7 +2157,10 @@ export function createAssociationStore(
           billing_period: 'monthly' | 'annual'; provider: string | null; provider_plan_id: string | null;
         }>(`SELECT id,plan_key,name,currency,fee_minor::text,billing_period,provider,provider_plan_id
           FROM association_membership_plans WHERE workspace_id=$1 AND id=$2 AND published
-            AND billing_period IN('monthly','annual') AND provider IS NOT NULL AND provider_plan_id IS NOT NULL
+            AND billing_period IN('monthly','annual') AND ((provider IS NOT NULL AND provider_plan_id IS NOT NULL)
+              OR EXISTS (SELECT 1 FROM association_membership_catalogues c
+                JOIN association_membership_catalogue_revisions r ON r.workspace_id=c.workspace_id AND r.revision=c.published_revision
+                WHERE c.workspace_id=$1 AND EXISTS(SELECT 1 FROM jsonb_array_elements(r.document->'plans') p WHERE p->>'planId'=$2::text)))
             AND (active_from IS NULL OR active_from<=$3::timestamptz)
             AND (active_to IS NULL OR active_to>$3::timestamptz) FOR SHARE`,
         [workspaceId, input.planId, admittedAt])).rows[0]

@@ -20,8 +20,8 @@
  * second code path minting specs a human could not have authored.
  *
  * NOT auto-seeded on workspace creation: an unowned default nobody edits is how
- * you get 400 identical dead templates. Install is offered at the one moment the
- * user has demonstrated intent — the recording upload confirm.
+ * you get 400 identical dead templates. Install is offered explicitly in
+ * Brain -> Blueprints and in the recording processing confirm's empty picker.
  *
  * [COMP:doc/starter-blueprints]
  */

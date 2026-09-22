@@ -1268,6 +1268,7 @@ function BrainPageInner() {
              the editor; row delete confirms through the on-brand dialog. */
           activeId ? (
             <BlueprintsLibrary
+              key={activeId}
               workspaceId={activeId}
               blueprints={blueprints}
               search={search}

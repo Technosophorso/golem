@@ -757,6 +757,8 @@ export interface OpenApiEnv {
   // Voice transcription reuses GEMINI_API_KEY; these toggle/model it.
   VOICE_TRANSCRIPTION_ENABLED?: boolean
   VOICE_TRANSCRIPTION_MODEL?: string
+  /** Optional long-recording override; defaults to VOICE_TRANSCRIPTION_MODEL. */
+  RECORDING_TRANSCRIPTION_MODEL?: string
   // Optional outage-only Claude fallback.
   FALLBACK_PROVIDER_ENABLED?: boolean
   ANTHROPIC_API_KEY?: string
@@ -7854,9 +7856,11 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // with that explicit prerequisite error instead of remaining pending forever.
   const googleRecordingTranscribers: RecordingTranscriber[] = []
   const dashscopeRecordingTranscribers: RecordingTranscriber[] = []
+  const recordingTranscriptionModel = env.RECORDING_TRANSCRIPTION_MODEL ?? env.VOICE_TRANSCRIPTION_MODEL
   if (vertexTx && env.GCS_FILES_BUCKET && filesBlobClient) {
     googleRecordingTranscribers.push(geminiTranscriber({
       transport: vertexTx,
+      ...(recordingTranscriptionModel ? { model: recordingTranscriptionModel } : {}),
       uploadAudio: async ({ buffer, mime }) => {
         const key = `recording-transcription/${randomUUID()}`
         await filesBlobClient.writeBlob(key, buffer, {
@@ -7870,7 +7874,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       },
     }))
   } else if (geminiTransport) {
-    googleRecordingTranscribers.push(geminiTranscriber({ transport: geminiTransport }))
+    googleRecordingTranscribers.push(geminiTranscriber({
+      transport: geminiTransport,
+      ...(recordingTranscriptionModel ? { model: recordingTranscriptionModel } : {}),
+    }))
   }
   if (dashscopeMediaKey) {
     dashscopeRecordingTranscribers.push(qwenAsrTranscriber({

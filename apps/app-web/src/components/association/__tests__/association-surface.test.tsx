@@ -2,13 +2,14 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-const api = vi.hoisted(() => ({ get: vi.fn(), change: vi.fn(), confirm: vi.fn(), orders: vi.fn(), order: vi.fn(), orderChange: vi.fn() }));
+const api = vi.hoisted(() => ({ get: vi.fn(), change: vi.fn(), confirm: vi.fn(), orders: vi.fn(), order: vi.fn(), orderChange: vi.fn(), list: vi.fn(), lookup: vi.fn() }));
 vi.mock("@/lib/api/association", async importOriginal => ({
   ...await importOriginal<typeof import("@/lib/api/association")>(), getAssociationModuleSnapshot: api.get, changeAssociationModule: api.change,
-  listAssociationOrders: api.orders, getAssociationOrder: api.order, changeAssociationOrder: api.orderChange,
+  listAssociationPage: api.list, listAssociationOrders: api.orders, getAssociationOrder: api.order, changeAssociationOrder: api.orderChange,
 }));
-vi.mock("@/lib/surface-prefetch", () => ({ associationModuleCacheKey: (workspaceId: string) => `association-module:${workspaceId}:viewer`,
+vi.mock("@/lib/surface-prefetch", () => ({ associationPageCacheKey: (w: string, r: string, q = {}) => `crm:${w}:viewer:${r}:${JSON.stringify(q)}`, associationModuleCacheKey: (workspaceId: string) => `association-module:${workspaceId}:viewer`,
   associationOrdersCacheKey: (workspaceId: string, cursor: string | null) => `association-orders:${workspaceId}:viewer:${cursor ?? "first"}` }));
+vi.mock("@/lib/api/crm", () => ({ fetchCrmLookup: api.lookup }));
 vi.mock("@/components/ui/confirm-dialog", () => ({ confirmDialog: api.confirm }));
 import { AssociationApiError, type AssociationOrder } from "@/lib/api/association";
 import { AssociationModuleControls } from "../module-controls";
@@ -28,6 +29,7 @@ async function click(label: string) {
 }
 beforeEach(() => {
   resetSurfaceCache(); vi.resetAllMocks();
+  api.list.mockResolvedValue({items:[],nextCursor:null});api.lookup.mockResolvedValue([]);
   api.get.mockResolvedValue({ module: moduleRow(), canManage: true });
   api.confirm.mockResolvedValue(true);
   api.change.mockResolvedValue({ module: moduleRow("enabled", 2), changed: true, pendingOrders: 0 });
@@ -105,12 +107,12 @@ describe("[COMP:app-web/association] Order history and recovery", () => {
       ? { orders: [orderRow("order-next")], nextCursor: null }
       : { orders: Array.from({ length: 50 }, (_, i) => orderRow(`order-${i}`)), nextCursor: "next-cursor" });
     await renderOrders();
-    expect(host.querySelectorAll("article")).toHaveLength(50);
+    expect(host.querySelectorAll("[data-order-row]")).toHaveLength(50);
     await click(t.next);
     expect(api.orders).toHaveBeenLastCalledWith("w1", "next-cursor", {});
-    expect(host.querySelectorAll("article")).toHaveLength(1);
+    expect(host.querySelectorAll("[data-order-row]")).toHaveLength(1);
     await click(t.previous);
-    expect(host.querySelectorAll("article")).toHaveLength(50);
+    expect(host.querySelectorAll("[data-order-row]")).toHaveLength(50);
   });
   it("uses the same order identity for reviewed cancellation and refreshes canonical state", async () => {
     api.orders.mockResolvedValue({ orders: [orderRow()], nextCursor: null });

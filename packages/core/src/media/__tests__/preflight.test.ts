@@ -65,14 +65,14 @@ describe('[COMP:media/preflight] transcribeFirstAudio', () => {
   })
 
   it('transcribes the first audio attachment and flips alreadyTranscribed', async () => {
-    mockedTranscribe.mockResolvedValue({ text: 'hello world', usage: { inputTokens: 10, outputTokens: 2 }, model: 'gemini-2.5-flash' })
+    mockedTranscribe.mockResolvedValue({ text: 'hello world', usage: { inputTokens: 10, outputTokens: 2 }, model: 'gemini-3.6-flash' })
     const attachments: MediaAttachment[] = [
       { buffer: Buffer.from('a'), mime: 'audio/ogg', index: 0 },
       { buffer: Buffer.from('b'), mime: 'audio/webm', index: 1 },
     ]
     const result = await transcribeFirstAudio(attachments, baseOptions)
     expect(result?.text).toBe('hello world')
-    expect(result?.model).toBe('gemini-2.5-flash')
+    expect(result?.model).toBe('gemini-3.6-flash')
     expect(result?.usage).toEqual({ inputTokens: 10, outputTokens: 2 })
     expect(mockedTranscribe).toHaveBeenCalledTimes(1)
     expect(attachments[0].alreadyTranscribed).toBe(true)
@@ -89,7 +89,7 @@ describe('[COMP:media/preflight] transcribeFirstAudio', () => {
   })
 
   it('passes apiKey / model / timeoutMs / fetchFn through to transcribeAudio', async () => {
-    mockedTranscribe.mockResolvedValue({ text: 'ok', usage: null, model: 'gemini-2.5-flash' })
+    mockedTranscribe.mockResolvedValue({ text: 'ok', usage: null, model: 'gemini-3.6-flash' })
     const customFetch = vi.fn() as unknown as typeof fetch
     await transcribeFirstAudio(
       [{ buffer: Buffer.from('x'), mime: 'audio/ogg', index: 0 }],
@@ -106,7 +106,7 @@ describe('[COMP:media/preflight] transcribeFirstAudio', () => {
     // channel's value is the only source. Without this the token-billed path
     // records NULL forever and can never be priced per audio hour — the whole
     // reason `usage_tracking.audio_seconds` exists.
-    mockedTranscribe.mockResolvedValue({ text: 'ok', usage: null, model: 'gemini-2.5-flash' })
+    mockedTranscribe.mockResolvedValue({ text: 'ok', usage: null, model: 'gemini-3.6-flash' })
     const result = await transcribeFirstAudio(
       [{ buffer: Buffer.from('x'), mime: 'audio/ogg', index: 0, durationSeconds: 12 }],
       baseOptions,
@@ -118,7 +118,7 @@ describe('[COMP:media/preflight] transcribeFirstAudio', () => {
     // A raw web upload carries no duration. Absent must stay absent: recorded
     // as NULL it reads "unknown rate", but a 0 would read "free transcription
     // of zero-length audio" and deflate every rate averaged over the window.
-    mockedTranscribe.mockResolvedValue({ text: 'ok', usage: null, model: 'gemini-2.5-flash' })
+    mockedTranscribe.mockResolvedValue({ text: 'ok', usage: null, model: 'gemini-3.6-flash' })
     const result = await transcribeFirstAudio(
       [{ buffer: Buffer.from('x'), mime: 'audio/ogg', index: 0 }],
       baseOptions,

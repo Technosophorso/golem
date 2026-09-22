@@ -150,9 +150,9 @@ export function recordingBlueprintToSlug(
 //
 // A workspace with zero blueprints cannot synthesize anything: the picker has
 // only "ingest only", so a recording lands as brain rows with no brief page —
-// hence no citations and no player. Offering the starter at the live-capture
-// confirm is the one moment the user has demonstrated intent; auto-seeding it at
-// workspace creation is how you get 400 identical dead templates nobody edits.
+// hence no citations and no player. Offer the starter explicitly in the
+// recording confirm and Brain -> Blueprints, rather than auto-seeding it at
+// workspace creation into hundreds of identical dead templates nobody edits.
 
 /** True when the workspace has nothing the synthesis engine could fill. */
 export function hasNoBlueprints(templates: CustomPageTemplateSummary[]): boolean {

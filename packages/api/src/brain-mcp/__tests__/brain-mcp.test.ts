@@ -338,7 +338,7 @@ describe('[COMP:api/brain-mcp] buildBrainTools — scope gating', () => {
     const appRead = new Set(['association', 'home_app:association:read'])
     expect(buildBrainTools({ ...base, scope: 'read', agentActiveCapabilities: appRead }).filter(tool => tool.name.includes('Association')).map(tool => tool.name))
       .toEqual(['getAssociationModuleStatus', 'listAssociationTickets'])
-    const all = new Set([...appRead, 'home_app:association:write', 'crm', 'home_app:crm:read', 'home_app:crm:write'])
+    const all = new Set([...appRead, 'configure', 'home_app:association:write', 'crm', 'home_app:crm:read', 'home_app:crm:write'])
     const names = buildBrainTools({ ...base, scope: 'read', agentActiveCapabilities: all }).map(tool => tool.name)
     for (const tool of Object.values(associationTools)) expect(names.includes(tool.name)).toBe(tool.isReadOnly)
     expect(buildBrainTools({ ...base, scope: 'read_write', agentActiveCapabilities: all }).filter(tool => tool.name.includes('Association'))).toHaveLength(14)

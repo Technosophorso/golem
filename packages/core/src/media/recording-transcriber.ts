@@ -141,7 +141,7 @@ export function geminiTranscriber(opts: {
     ...(opts.fetchFn ? { fetchFn: opts.fetchFn } : {}),
   })
   return {
-    name: opts.model ?? 'gemini-2.5-flash',
+    name: opts.model ?? 'gemini-3.6-flash',
     async transcribe(req) {
       if (req.getChunks && req.durationMs > GEMINI_CHUNKED_MIN_DURATION_MS) {
         try {

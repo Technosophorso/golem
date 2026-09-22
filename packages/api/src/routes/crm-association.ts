@@ -52,6 +52,11 @@ export function crmAssociationRoutes(options: { service: AssociationServicePort;
       } catch (error) { associationErrorResponse(error, res) }
     })
   }
+  route('get', '/membership-catalogue/draft', () => ({ kind: 'membership_catalogue_draft' }), 'catalogue')
+  route('post', '/membership-catalogue/draft', req => ({ ...req.body, kind: 'save_membership_catalogue' }), 'catalogue')
+  route('post', '/membership-catalogue/publish', req => ({ ...req.body, kind: 'publish_membership_catalogue' }), 'catalogue')
+  route('get', '/membership-catalogue/:site', req => ({ kind: 'published_membership_catalogue', site: req.params.site }), 'catalogue')
+  route('post', '/membership-catalogue/:site/observed', req => ({ ...req.body, kind: 'observe_membership_catalogue', site: req.params.site }), 'catalogue')
   route('get', '/module', () => ({ kind: 'module_status' }), 'module')
   route('get', '/module-blockers', (req) => ({ ...req.query, kind: 'module_blockers' }), 'orders')
   route('get', '/events/:eventId/tickets', (req) => ({ kind: 'list_tickets', eventId: req.params.eventId }), 'tickets')
