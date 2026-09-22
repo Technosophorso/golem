@@ -107,12 +107,12 @@ describe("[COMP:app-web/association] Order history and recovery", () => {
       ? { orders: [orderRow("order-next")], nextCursor: null }
       : { orders: Array.from({ length: 50 }, (_, i) => orderRow(`order-${i}`)), nextCursor: "next-cursor" });
     await renderOrders();
-    expect(host.querySelectorAll("article")).toHaveLength(50);
+    expect(host.querySelectorAll("[data-order-row]")).toHaveLength(50);
     await click(t.next);
     expect(api.orders).toHaveBeenLastCalledWith("w1", "next-cursor", {});
-    expect(host.querySelectorAll("article")).toHaveLength(1);
+    expect(host.querySelectorAll("[data-order-row]")).toHaveLength(1);
     await click(t.previous);
-    expect(host.querySelectorAll("article")).toHaveLength(50);
+    expect(host.querySelectorAll("[data-order-row]")).toHaveLength(50);
   });
   it("uses the same order identity for reviewed cancellation and refreshes canonical state", async () => {
     api.orders.mockResolvedValue({ orders: [orderRow()], nextCursor: null });

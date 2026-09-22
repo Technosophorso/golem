@@ -1,66 +1,92 @@
 "use client";
 
-/** Native workspace Association surface. [COMP:app-web/association] */
+/** Native workspace Association surface: task-led staff console shell. [COMP:app-web/association] */
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { ArrowUpRight, CalendarDays, CreditCard, Home, ListChecks, Settings2, ShieldCheck, Tag, Users, WalletCards, type LucideIcon } from "lucide-react";
+import { ArrowUpRight, Banknote, CalendarDays, ChevronDown, CreditCard, Home, ListChecks, Settings2, Tag, Users, WalletCards, type LucideIcon } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n/client";
 import { OperatorTopbar } from "@/components/operator/operator-topbar";
-import { AssociationModuleControls } from "./module-controls";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { AssociationOverview } from "./overview";
 import { AssociationEventsPanel } from "./events-panel";
-import { AssociationMembershipsPanel } from "./memberships-panel";
+import { AssociationMembersPanel } from "./members-panel";
+import { AssociationPlansPanel } from "./plans-panel";
+import { AssociationPaymentsPanel } from "./payments-panel";
 import { AssociationWaitlistPanel } from "./waitlist-panel";
 import { AssociationOperationsPanel } from "./operations-panel";
 import { AssociationOrdersPanel } from "./orders-panel";
 import { AssociationPromotionsPanel } from "./promotions-panel";
 
+const ASSOCIATION_SECTIONS = ["overview", "memberships", "plans", "events", "promotions", "orders", "waitlist", "payments", "settings"] as const;
+export type AssociationSection = (typeof ASSOCIATION_SECTIONS)[number];
+
+/** Old links keep working: `operations` opens Settings, `memberships&view=…` opens plans or offline payments. */
+export function resolveAssociationSection(search: URLSearchParams | null): AssociationSection {
+  const raw = search?.get("section") ?? "overview", view = search?.get("view");
+  if (raw === "memberships" && view === "plans") return "plans";
+  if (raw === "memberships" && view === "payments") return "payments";
+  if (raw === "operations") return "settings";
+  return (ASSOCIATION_SECTIONS as readonly string[]).includes(raw) ? raw as AssociationSection : "overview";
+}
+export function associationHref(workspaceId: string, section: AssociationSection, params: Record<string, string> = {}): string {
+  const query = new URLSearchParams({ section, ...params });
+  return `/w/${workspaceId}/association?${query}`;
+}
+
 export function AssociationSurface({ workspaceId }: { workspaceId: string }) {
   const t = useT().associationPage, u = t.ux;
   const search = useSearchParams();
-  const items: { id: string; label: string; description: string; icon: LucideIcon }[] = [
-    { id: "overview", label: t.overview, description: u.intro, icon: Home },
-    { id: "memberships", label: u.members, description: u.membersHelp, icon: Users },
-    { id: "events", label: t.manage.events, description: u.eventsHelp, icon: CalendarDays },
-    { id: "promotions", label: t.manage.promotions, description: u.promotionsHelp, icon: Tag },
-    { id: "orders", label: t.orders, description: u.ordersHelp, icon: CreditCard },
-    { id: "waitlist", label: t.manage.waitlist, description: u.waitlistHelp, icon: ListChecks },
-    { id: "operations", label: t.manage.operations, description: u.operationsHelp, icon: ShieldCheck },
-    { id: "settings", label: u.settings, description: u.settingsHelp, icon: Settings2 },
+  const items: { id: AssociationSection; label: string; icon: LucideIcon; group: "daily" | "admin" }[] = [
+    { id: "overview", label: u.home, icon: Home, group: "daily" },
+    { id: "memberships", label: u.members, icon: Users, group: "daily" },
+    { id: "plans", label: t.manage.plans, icon: WalletCards, group: "daily" },
+    { id: "events", label: u.eventsNav, icon: CalendarDays, group: "daily" },
+    { id: "promotions", label: u.promoCodes, icon: Tag, group: "daily" },
+    { id: "orders", label: t.orders, icon: CreditCard, group: "daily" },
+    { id: "waitlist", label: t.manage.waitlist, icon: ListChecks, group: "daily" },
+    { id: "payments", label: u.offlinePayments, icon: Banknote, group: "daily" },
+    { id: "settings", label: u.settings, icon: Settings2, group: "admin" },
   ];
-  const current = items.find(item => item.id === search?.get("section")) ?? items[0]!;
-  const section = current.id;
-  const href = (id: string) => `/w/${workspaceId}/association?section=${id}`;
-  const tasks = [items[1]!, { id: "memberships&view=plans", label: t.manage.plans, description: u.plansHelp, icon: WalletCards }, ...items.slice(2, 6)];
+  const section = resolveAssociationSection(search);
+  const current = items.find(item => item.id === section) ?? items[0]!;
+  const href = (id: AssociationSection) => associationHref(workspaceId, id);
+  const eventId = search?.get("eventId") ?? "", wantsNew = search?.get("new") === "1";
+  const groups: { id: "daily" | "admin"; label: string }[] = [{ id: "daily", label: u.dailyWork }, { id: "admin", label: u.administration }];
+  const CurrentIcon = current.icon;
   return <div className="flex h-full min-h-0 min-w-0 flex-col" data-association-surface>
-    <OperatorTopbar app="association" right={<Link className="inline-flex min-h-11 items-center gap-2 px-3 text-sm text-primary" href={`/w/${workspaceId}/crm`}>{t.openCrm}<ArrowUpRight aria-hidden className="size-4" /></Link>} />
-    <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      <nav className="shrink-0 border-b border-border bg-muted/20 p-2 lg:w-56 lg:overflow-y-auto lg:border-r lg:border-b-0 lg:p-4" aria-label={t.name}>
-        <div className="flex gap-1 overflow-x-auto lg:flex-col lg:overflow-visible">
-          {items.map(({ id, label, icon: Icon }, index) => <div key={id} className="shrink-0 lg:shrink">
-            {(index === 0 || index === 6) && <p className="mb-2 mt-4 hidden px-3 text-xs font-medium uppercase tracking-wider text-muted-foreground lg:block">{index === 0 ? u.dailyWork : u.administration}</p>}
-            <Link href={href(id)} aria-current={section === id ? "page" : undefined} className={`flex min-h-11 items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-ring ${section === id ? "bg-primary/10 font-semibold text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}><Icon aria-hidden className="size-4 shrink-0" />{label}</Link>
+    <OperatorTopbar app="association"
+      center={<DropdownMenu>
+        <DropdownMenuTrigger aria-label={u.goTo} className="inline-flex h-11 max-w-48 items-center gap-1.5 rounded-md bg-sidebar-accent/60 px-2 text-[12.5px] text-sidebar-accent-foreground sm:h-7 lg:hidden">
+          <CurrentIcon aria-hidden className="size-3.5 shrink-0" /><span className="truncate">{current.label}</span><ChevronDown aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          {groups.map((group, index) => <div key={group.id}>{index > 0 ? <DropdownMenuSeparator /> : null}
+            {items.filter(item => item.group === group.id).map(item => <DropdownMenuItem key={item.id} className="min-h-11 sm:min-h-0" render={<Link href={href(item.id)} />}><item.icon aria-hidden className="size-3.5" /><span className="min-w-28 flex-1">{item.label}</span></DropdownMenuItem>)}
           </div>)}
-        </div>
+        </DropdownMenuContent>
+      </DropdownMenu>}
+      right={<Link className="inline-flex min-h-11 items-center gap-1.5 px-2 text-sm text-primary md:min-h-8" href={`/w/${workspaceId}/crm`}>{t.openCrm}<ArrowUpRight aria-hidden className="size-4" /></Link>} />
+    <div className="flex min-h-0 flex-1">
+      <nav className="hidden w-56 shrink-0 overflow-y-auto border-r border-border bg-muted/20 p-3 lg:block" aria-label={t.name}>
+        {groups.map(group => <div key={group.id} className="mb-4">
+          <p className="mt-2 mb-1.5 px-3 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase">{group.label}</p>
+          {items.filter(item => item.group === group.id).map(({ id, label, icon: Icon }) => <Link key={id} href={href(id)} aria-current={section === id ? "page" : undefined}
+            className={cn("flex min-h-9 items-center gap-2.5 rounded-lg px-3 py-1.5 text-sm transition-colors focus-visible:outline-2 focus-visible:outline-ring", section === id ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground")}>
+            <Icon aria-hidden className="size-4 shrink-0" />{label}</Link>)}
+        </div>)}
       </nav>
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-muted/10 p-4 md:p-8">
-        <div className="mx-auto max-w-6xl space-y-7">
-          <header className="space-y-2"><p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">{t.name}</p><h1 className="text-2xl font-semibold tracking-tight md:text-3xl">{section === "overview" ? u.workspace : current.label}</h1><p className="max-w-2xl text-sm leading-6 text-muted-foreground">{current.description}</p></header>
-          {section === "overview" && <>
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{tasks.map(({ id, label, description, icon: Icon }) => <Link key={id} href={href(id)} className="group flex min-h-48 flex-col rounded-2xl border border-border bg-background p-5 transition-colors hover:border-primary/50 hover:bg-accent/20 focus-visible:outline-2 focus-visible:outline-ring">
-              <div className="mb-6 flex items-center justify-between"><span className="rounded-xl bg-primary/10 p-3 text-primary"><Icon aria-hidden className="size-5" /></span><ArrowUpRight aria-hidden className="size-4 text-muted-foreground group-hover:text-primary" /></div>
-              <h2 className="text-base font-semibold">{label}</h2><p className="mt-2 text-sm leading-6 text-muted-foreground">{description}</p>
-            </Link>)}</div>
-            <Link href={`/w/${workspaceId}/crm`} className="flex min-h-11 items-center justify-between gap-4 rounded-2xl border border-border bg-background p-5 focus-visible:outline-2 focus-visible:outline-ring"><div><h2 className="font-semibold">{u.contacts}</h2><p className="mt-1 text-sm text-muted-foreground">{u.contactsHelp}</p></div><ArrowUpRight aria-hidden className="size-5 shrink-0" /></Link>
-          </>}
-          {section !== "overview" && <div className="min-w-0 rounded-2xl border border-border bg-background p-4 md:p-6">
-            {section === "settings" && <AssociationModuleControls workspaceId={workspaceId} />}
-            {section === "memberships" && <AssociationMembershipsPanel key={`${workspaceId}:${search?.get("view") ?? ""}`} workspaceId={workspaceId} initialView={search?.get("view") === "plans" ? "plans" : "members"} />}
-            {section === "events" && <AssociationEventsPanel key={workspaceId} workspaceId={workspaceId} />}
-            {section === "promotions" && <AssociationPromotionsPanel key={workspaceId} workspaceId={workspaceId} />}
-            {section === "orders" && <AssociationOrdersPanel key={`${workspaceId}:${search?.get("eventId") ?? ""}`} workspaceId={workspaceId} initialEventId={search?.get("eventId") ?? ""} />}
-            {section === "waitlist" && <AssociationWaitlistPanel key={workspaceId} workspaceId={workspaceId} />}
-            {section === "operations" && <AssociationOperationsPanel key={workspaceId} workspaceId={workspaceId} />}
-          </div>}
+      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-muted/10 px-4 py-5 md:px-8 md:py-7">
+        <div className="mx-auto max-w-6xl space-y-6">
+          {section === "overview" && <AssociationOverview workspaceId={workspaceId} />}
+          {section === "memberships" && <AssociationMembersPanel key={`${workspaceId}:${wantsNew}`} workspaceId={workspaceId} initialNew={wantsNew} />}
+          {section === "plans" && <AssociationPlansPanel key={`${workspaceId}:${wantsNew}`} workspaceId={workspaceId} initialNew={wantsNew} />}
+          {section === "events" && <AssociationEventsPanel key={`${workspaceId}:${eventId}:${wantsNew}`} workspaceId={workspaceId} initialEventId={eventId} initialNew={wantsNew} />}
+          {section === "promotions" && <AssociationPromotionsPanel key={`${workspaceId}:${wantsNew}`} workspaceId={workspaceId} initialNew={wantsNew} />}
+          {section === "orders" && <AssociationOrdersPanel key={`${workspaceId}:${eventId}`} workspaceId={workspaceId} initialEventId={eventId} />}
+          {section === "waitlist" && <AssociationWaitlistPanel key={workspaceId} workspaceId={workspaceId} />}
+          {section === "payments" && <AssociationPaymentsPanel key={`${workspaceId}:${wantsNew}`} workspaceId={workspaceId} initialNew={wantsNew} />}
+          {section === "settings" && <AssociationOperationsPanel key={`${workspaceId}:${search?.get("tab") ?? ""}`} workspaceId={workspaceId} initialTab={search?.get("tab") ?? undefined} />}
         </div>
       </div>
     </div>

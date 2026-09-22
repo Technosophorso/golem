@@ -15,22 +15,13 @@ export function AssociationEditor({ title, onClose, children }: { title: string;
   async function close() {
     if (await confirmDialog({ title: t.ux.cancelEdit, description: t.ux.cancelHelp, confirmLabel: t.cancel, cancelLabel: t.ux.keepEditing })) onClose();
   }
-  return <section className="mx-auto w-full max-w-3xl space-y-5">
-    <div className="flex items-center justify-between gap-3"><h2 ref={heading} tabIndex={-1} className="text-xl font-semibold outline-none">{title}</h2>
-      <Button type="button" variant="outline" className="min-h-11" onClick={() => void close()}><ArrowLeft aria-hidden className="size-4" />{t.cancel}</Button></div>
+  return <section className="mx-auto w-full max-w-3xl space-y-5" data-association-editor>
+    <div className="flex items-center justify-between gap-3"><h2 ref={heading} tabIndex={-1} className="text-xl font-semibold tracking-tight outline-none focus-visible:shadow-none focus-visible:outline-none">{title}</h2>
+      <Button type="button" variant="ghost" className="min-h-11 md:min-h-8" onClick={() => void close()}><ArrowLeft aria-hidden className="size-4" />{t.cancel}</Button></div>
     {children}
   </section>;
 }
 
-export function AssociationFormSection({ title, children, advanced = false }: { title: string; children: ReactNode; advanced?: boolean }) {
-  const grid = <div className="grid min-w-0 gap-4 pt-4 md:grid-cols-2">{children}</div>;
-  return advanced ? <details className="col-span-full min-w-0 rounded-xl border border-border p-4"><summary className="min-h-11 cursor-pointer content-center text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring">{title}</summary>{grid}</details>
-    : <section className="col-span-full min-w-0 border-t border-border pt-5 first:border-0 first:pt-0"><h4 className="text-sm font-semibold">{title}</h4>{grid}</section>;
-}
-
-export function AssociationBadge({ children, positive = false }: { children: ReactNode; positive?: boolean }) {
-  return <span className={`inline-flex w-fit items-center rounded-full px-2.5 py-1 text-xs font-medium ${positive ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300" : "bg-muted text-muted-foreground"}`}>{children}</span>;
-}
 
 function associationCurrencyDigits(currency: string) {
   try { return new Intl.NumberFormat(undefined, { style: "currency", currency }).resolvedOptions().maximumFractionDigits ?? 2; }
@@ -53,14 +44,14 @@ export function associationAmountToMinor(value: string, currency: string): numbe
   const result = BigInt(whole!) * BigInt(10) ** BigInt(digits) + BigInt(fraction.padEnd(digits, "0") || "0");
   return result <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(result) : null;
 }
-export function AssociationMoneyField({ label, value, currency, onChange, required = false }: { label: string; value: number | null; currency: string; onChange: (value: number | null) => void; required?: boolean }) {
+export function AssociationMoneyField({ label, value, currency, onChange, required = false, help }: { label: string; value: number | null; currency: string; onChange: (value: number | null) => void; required?: boolean; help?: string }) {
   const t = useT().associationPage.ux, digits = associationCurrencyDigits(currency);
   const [draft, setDraft] = useState(() => value === null ? "" : Number.isSafeInteger(value) ? `${Math.floor(value / 10 ** digits)}${digits ? `.${String(value % 10 ** digits).padStart(digits, "0")}` : ""}` : "");
   const last = useRef(currency);
   const wrapper = useRef<HTMLDivElement>(null);
   useEffect(() => { wrapper.current?.querySelector("input")?.setCustomValidity(draft && associationAmountToMinor(draft, currency) === null ? t.moneyInvalid : ""); }, [draft, currency, t.moneyInvalid]);
   useEffect(() => { if (last.current !== currency) { last.current = currency; onChange(draft === "" ? null : associationAmountToMinor(draft, currency)); } }, [currency, draft, onChange]);
-  return <div ref={wrapper}><AssociationField label={label} value={draft} inputMode="decimal" required={required} placeholder={digits ? `0.${"0".repeat(digits)}` : "0"}
+  return <div ref={wrapper}><AssociationField label={label} value={draft} inputMode="decimal" required={required} placeholder={digits ? `0.${"0".repeat(digits)}` : "0"} end={currency || undefined} help={help}
     onChange={next => { setDraft(next); onChange(next === "" ? null : associationAmountToMinor(next, currency)); }}
     /></div>;
 }
