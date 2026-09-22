@@ -50,7 +50,7 @@ describe("[COMP:app-web/association] Complimentary memberships",()=>{
   it("uses explicit dates and retains the same identity after a lost reply",async()=>{api.grant.mockRejectedValueOnce(new Error("response lost"));await render(<AssociationMembershipForm workspaceId="w" plan={plan} contact={contact} disabled={false} onSaved={()=>{}}/>);await field(m.start,"2027-02-01T10:30");await submit();expect(host.textContent).toContain(m.failed);await submit();const first=api.grant.mock.calls[0][1],second=api.grant.mock.calls[1][1];expect(second).toEqual(first);expect(first).toMatchObject({contactId:contact.id,planId:plan.id,status:"active",renewalMode:"none",endsAt:null});expect(first.idempotencyKey).toMatch(/^[a-f0-9-]{36}$/);expect(Object.values(sessionStorage)).toEqual([first.idempotencyKey]);});
   it("adjusts a stable membership without rewriting its start or minting another grant",async()=>{await render(<AssociationMembershipForm workspaceId="w" row={membership} disabled={false} onSaved={()=>{}}/>);await field(m.end,"2028-01-01T00:00");await submit();expect(api.adjust).toHaveBeenCalledWith("w",membership.id,{status:"active",endsAt:new Date("2028-01-01T00:00").toISOString(),renewalMode:"none"});expect(api.adjust.mock.calls[0][2]).not.toHaveProperty("startsAt");expect(api.grant).not.toHaveBeenCalled();});
   it("refuses complimentary grant from paid plans and manual provider-row changes",async()=>{await render(<AssociationMembershipForm workspaceId="w" plan={{...plan,feeMinor:"100"}} contact={contact} disabled={false} onSaved={()=>{}}/>);await submit();expect(api.grant).not.toHaveBeenCalled();await render(<AssociationMembershipForm workspaceId="w" row={{...membership,provider:"fake-provider"}} disabled={false} onSaved={()=>{}}/>);await submit();expect(api.adjust).not.toHaveBeenCalled();});
-  it("keeps generic plan configuration available with Association disabled and displays effective access independently",async()=>{api.module.mockResolvedValue({module:{workspaceId:"w",state:"disabled",version:1},canManage:true});api.list.mockImplementation(async(_w,r)=>({items:r==="plans"?[plan]:r==="memberships"?[membership]:[],nextCursor:null}));await render(<AssociationMembershipsPanel workspaceId="w"/>);expect(host.textContent).toContain(m.ineffective);const button=[...host.querySelectorAll("button")].find(b=>b.textContent===m.newPlan)!;expect(button.disabled).toBe(false);expect(host.querySelector('a[href="/w/w/crm/contact/contact-one"]')).not.toBeNull();});
+  it("keeps generic plan configuration available with Association disabled and displays effective access independently",async()=>{api.module.mockResolvedValue({module:{workspaceId:"w",state:"disabled",version:1},canManage:true});api.list.mockImplementation(async(_w,r)=>({items:r==="plans"?[plan]:r==="memberships"?[membership]:[],nextCursor:null}));await render(<AssociationMembershipsPanel workspaceId="w"/>);expect(host.textContent).toContain(m.ineffective);expect(host.querySelector('a[href="/w/w/crm/contact/contact-one"]')).not.toBeNull();await click(m.plans);const button=[...host.querySelectorAll("button")].find(b=>b.textContent===m.newPlan)!;expect(button.disabled).toBe(false);});
 });
 describe("[COMP:app-web/association] Offline payment rescue",()=>{
   it("creates a finite outstanding case with a stable request before any settlement action",async()=>{api.createRescue.mockRejectedValueOnce(new Error("response lost"));await render(<AssociationMembershipRescueForm workspaceId="w" plan={paidPlan} contact={contact} disabled={false} onSaved={()=>{}}/>);await field(m.start,"2027-01-01T00:00");await field(m.end,"2028-01-01T00:00");await field(m.paymentDue,"2026-12-01T00:00");await field(m.rescueReason,"Reviewed bank transfer exception");await submit();await submit();const first=api.createRescue.mock.calls[0][1],second=api.createRescue.mock.calls[1][1];expect(second).toEqual(first);expect(first).toMatchObject({contactId:contact.id,planId:paidPlan.id,reason:"Reviewed bank transfer exception"});expect(first.idempotencyKey).toMatch(/^[a-f0-9-]{36}$/);expect(api.settleRescue).not.toHaveBeenCalled();});
@@ -72,5 +72,44 @@ describe("[COMP:app-web/association] Attendance, history and paged state",()=>{
   it("retains last-good rows when refresh fails, reacts to stale marks and resets cursors on filter changes",async()=>{
     function List({eventId}:{eventId:string}){const page=useAssociationPage("w","registrations",{eventId});return <AssociationListState {...page}>{page.data?.items.map(row=><p key={row.id}>{row.id}</p>)}</AssociationListState>;}
     api.list.mockImplementation(async(_w,_r,q)=>({items:[{id:q.cursor?"second":"first"}],nextCursor:q.cursor?null:"next"}));await render(<List eventId="one"/>);await click(t.next);expect(host.textContent).toContain("second");api.list.mockRejectedValue(new Error("offline"));await act(async()=>markSurfaceCacheStale("crm:w:"));expect(host.textContent).toContain("second");expect(host.textContent).toContain(m.loadFailed);api.list.mockResolvedValue({items:[{id:"new-event"}],nextCursor:null});await render(<List eventId="two"/>);expect(api.list).toHaveBeenLastCalledWith("w","registrations",{eventId:"two",cursor:undefined});expect(host.textContent).toContain("new-event");
+  });
+});
+
+describe("[COMP:app-web/association] Task-focused staff workspace",()=>{
+  it("creates a named plan with a generated reference and converts the displayed fee to cents",async()=>{
+    await render(<AssociationPlanForm workspaceId="w" disabled={false} onSaved={()=>{}}/>);
+    await field(m.name,"Community Annual");await field(m.currency,"HKD");await field(m.fee,"1080.50");await submit();
+    expect(api.plan).toHaveBeenCalledWith("w",expect.objectContaining({key:"community-annual",name:"Community Annual",feeMinor:108050,currency:"HKD"}));
+  });
+  it("does not silently round a price or clear an invalid optional member price",async()=>{
+    await render(<AssociationTicketForm workspaceId="w" eventId={event.id} ticket={ticket} disabled={false} onSaved={()=>{}}/>);
+    await field(m.memberPrice,"10.123");await submit();expect(api.ticket).not.toHaveBeenCalled();
+    await field(m.memberPrice,"10.12");await submit();expect(api.ticket).toHaveBeenCalledWith("w",event.id,expect.objectContaining({memberPriceMinor:1012}));
+  });
+  it("revalidates decimal precision when a staff member changes currency",async()=>{
+    await render(<AssociationPlanForm workspaceId="w" plan={paidPlan} disabled={false} onSaved={()=>{}}/>);
+    await field(m.fee,"100.50");await field(m.currency,"JPY");await submit();expect(api.plan).not.toHaveBeenCalled();
+    await field(m.fee,"100");await submit();expect(api.plan).toHaveBeenCalledWith("w",expect.objectContaining({currency:"JPY",feeMinor:100}));
+  });
+  it("rejects an event ending before it starts without calling the backend",async()=>{
+    await render(<AssociationEventForm workspaceId="w" event={event} disabled={false} onSaved={()=>{}}/>);
+    await field(m.end,"2026-01-01T10:00");await submit();expect(api.event).not.toHaveBeenCalled();expect(host.textContent).toContain(t.ux.dateInvalid);
+  });
+  it("selects promotion targets by event name and sends their existing IDs",async()=>{
+    api.list.mockResolvedValue({items:[event],nextCursor:null});
+    await render(<AssociationPromotionForm workspaceId="w" disabled={false} onSaved={()=>{}}/>);
+    await field(m.name,"Autumn offer");await field(m.promotionCode,"AUTUMN10");
+    await submit();expect(api.promotion).not.toHaveBeenCalled();expect(host.textContent).toContain(t.ux.noSelection);
+    const choice=[...host.querySelectorAll("label")].find(label=>label.textContent===event.title)!.querySelector<HTMLElement>('[role="checkbox"]')!;
+    await act(async()=>choice.click());await submit();
+    expect(api.promotion).toHaveBeenCalledWith("w",expect.objectContaining({key:"autumn-offer",code:"AUTUMN10",targetIds:[event.id]}));
+  });
+  it("opens plan editing in place of the list and returns after an explicit discard",async()=>{
+    api.list.mockImplementation(async(_w,r)=>({items:r==="plans"?[paidPlan]:[],nextCursor:null}));
+    await render(<AssociationMembershipsPanel workspaceId="w" initialView="plans"/>);
+    expect(host.textContent).toContain("$100.00");await click(m.edit);
+    expect(host.querySelector("form")).not.toBeNull();expect(host.textContent).not.toContain(t.ux.planChangeHelp);
+    api.confirm.mockResolvedValueOnce(false);await click(t.cancel);expect(host.querySelector("form")).not.toBeNull();
+    await click(t.cancel);expect(host.querySelector("form")).toBeNull();expect(api.plan).not.toHaveBeenCalled();
   });
 });

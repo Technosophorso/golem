@@ -12,6 +12,7 @@ import { useAssociationModule } from "./module-controls";
 import { AssociationPlanForm } from "./catalog-forms";
 import { AssociationField as Field,AssociationChoice as Choice,AssociationToggle,AssociationContactPicker,AssociationIntentNotice,AssociationListState,useAssociationPage,useAssociationAction,useAssociationIntent,associationLocalTime,associationInstant } from "./operator-controls";
 import { AssociationMembershipRescueForm,AssociationMembershipRescues } from "./membership-rescue";
+import { AssociationEditor, AssociationBadge, associationMoney } from "./workspace-ui";
 import {AssociationSponsorships} from "./sponsorships";
 
 export function AssociationMembershipForm({workspaceId,plan,contact,row,disabled,onSaved}:{workspaceId:string;plan?:AssociationPlan;contact?:CrmLookupRow;row?:AssociationMembership;disabled:boolean;onSaved:()=>void}) {
@@ -37,35 +38,46 @@ export function AssociationMembershipForm({workspaceId,plan,contact,row,disabled
     <Button type="submit" className="min-h-11" disabled={unavailable||action.pending}>{row?t.adjust:t.grant}</Button>
   </form>;
 }
-export function AssociationMembershipsPanel({workspaceId}:{workspaceId:string}) {
-  const t=useT().associationPage,plans=useAssociationPage(workspaceId,"plans"),module=useAssociationModule(workspaceId);
+export function AssociationMembershipsPanel({workspaceId,initialView="members"}:{workspaceId:string;initialView?:"members"|"plans"}) {
+  const t=useT().associationPage,u=t.ux,plans=useAssociationPage(workspaceId,"plans"),module=useAssociationModule(workspaceId);
+  const [view,setView]=useState<"members"|"plans"|"payments"|"sponsorship">(initialView);
   const [contact,setContact]=useState<CrmLookupRow|null>(null),[effectiveOnly,setEffectiveOnly]=useState(false);
   const memberships=useAssociationPage(workspaceId,"memberships",{...(contact?{contactId:contact.id}:{}),activeOnly:effectiveOnly});
   const [editing,setEditing]=useState<AssociationPlan|"new"|null>(null),[grant,setGrant]=useState<AssociationPlan|null>(null),[rescue,setRescue]=useState<AssociationPlan|null>(null),[adjust,setAdjust]=useState<AssociationMembership|null>(null);
-  const [rescueVersion,setRescueVersion]=useState(0);
+  const [rescueVersion,setRescueVersion]=useState(0),[saved,setSaved]=useState(false);
   const configure=!!module.data?.canManage&&!module.error;
-  return <section className="space-y-6"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-semibold">{t.manage.plans}</h2><Button type="button" className="min-h-11" variant="outline" disabled={!configure||!!plans.error} onClick={()=>setEditing("new")}>{t.manage.newPlan}</Button></div>
-    {!configure?<p className="text-sm text-muted-foreground">{t.manage.canConfigure}</p>:null}
-    <AssociationListState {...plans}><div className="divide-y divide-border">{plans.data?.items.map(plan=><div key={plan.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-      <div className="text-sm"><p className="font-medium">{plan.name}</p><p>{plan.planKey} · {plan.currency} {plan.feeMinor}</p>{plan.provider?<p className="text-muted-foreground">{t.manage.providerManaged}</p>:null}</div>
-      <div className="flex flex-wrap gap-2"><Button type="button" className="min-h-11" variant="ghost" disabled={!configure||!!plans.error} onClick={()=>setEditing(plan)}>{t.manage.edit}</Button>
-        <Button type="button" className="min-h-11" variant="outline" disabled={!contact||!!plan.provider||Number(plan.feeMinor)!==0||!!plans.error} onClick={()=>{setGrant(plan);setRescue(null);setAdjust(null);}}>{t.manage.grant}</Button>
-        <Button type="button" className="min-h-11" variant="outline" disabled={!configure||!contact||!!plan.provider||Number(plan.feeMinor)<=0||!!plans.error} onClick={()=>{setRescue(plan);setGrant(null);setAdjust(null);}}>{t.manage.createRescue}</Button></div>
-    </div>)}</div>{plans.data?.items.length===0?<p>{t.manage.empty}</p>:null}</AssociationListState>
-    {editing?<AssociationPlanForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} plan={editing==="new"?undefined:editing} disabled={!configure||!!plans.error} onSaved={()=>{setEditing(null);void plans.refresh();}}/>:null}
-    <h2 className="text-lg font-semibold">{t.manage.memberships}</h2>
-    <AssociationContactPicker workspaceId={workspaceId} onSelect={row=>{setContact(row);setGrant(null);setRescue(null);setAdjust(null);}}/>
-    {contact?<div className="flex flex-wrap items-center gap-3 text-sm"><Link className="inline-flex min-h-11 items-center text-primary" href={crmRecordHref(workspaceId,"contact",contact.id)}>{contact.name}</Link><Button type="button" className="min-h-11" variant="ghost" onClick={()=>{setContact(null);setGrant(null);setRescue(null);setAdjust(null);}}>{t.manage.contactClear}</Button></div>:<p className="text-sm text-muted-foreground">{t.manage.contactRequired}</p>}
-    {grant&&contact?<AssociationMembershipForm key={`${grant.id}:${contact.id}`} workspaceId={workspaceId} plan={grant} contact={contact} disabled={!!plans.error} onSaved={()=>void memberships.refresh()}/>:null}
-    {rescue&&contact?<AssociationMembershipRescueForm key={`${rescue.id}:${contact.id}`} workspaceId={workspaceId} plan={rescue} contact={contact} disabled={!configure||!!plans.error} onSaved={()=>{setRescue(null);setRescueVersion(version=>version+1);}}/>:null}
-    <AssociationToggle label={t.manage.effectiveOnly} checked={effectiveOnly} onChange={setEffectiveOnly}/>
-    <AssociationListState {...memberships}><div className="divide-y divide-border">{memberships.data?.items.map(row=><div key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-      <div className="text-sm"><Link className="inline-flex min-h-11 items-center font-medium text-primary" href={crmRecordHref(workspaceId,"contact",row.contactId)}>{row.contactName}</Link><p>{row.planName} · {t.manage.options[row.status]}</p><p>{row.isEffective===undefined?t.manage.unknown:row.isEffective?t.manage.effective:t.manage.ineffective}</p><p className="text-muted-foreground">{new Date(row.startsAt).toLocaleString()} / {row.endsAt?new Date(row.endsAt).toLocaleString():t.manage.unlimited}</p>
-        {row.provider?<p>{t.manage.providerManaged}</p>:null}</div>
-      <Button type="button" className="min-h-11" variant="outline" disabled={!!row.provider||!!memberships.error} onClick={()=>{setAdjust(row);setGrant(null);}}>{t.manage.adjust}</Button>
-    </div>)}</div>{memberships.data?.items.length===0?<p>{t.manage.empty}</p>:null}</AssociationListState>
-    {adjust?<AssociationMembershipForm key={adjust.id} workspaceId={workspaceId} row={adjust} disabled={!!memberships.error} onSaved={()=>void memberships.refresh()}/>:null}
-    <AssociationMembershipRescues key={rescueVersion} workspaceId={workspaceId} canManage={configure}/>
-    <AssociationSponsorships workspaceId={workspaceId} canManage={configure}/>
+  function savedMembership(){setGrant(null);setAdjust(null);setSaved(true);void memberships.refresh();}
+  if(editing)return <AssociationEditor title={editing==="new"?t.manage.newPlan:editing.name} onClose={()=>setEditing(null)}><AssociationPlanForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} plan={editing==="new"?undefined:editing} disabled={!configure||!!plans.error} onSaved={()=>{setEditing(null);setSaved(true);void plans.refresh();}}/></AssociationEditor>;
+  if(adjust)return <AssociationEditor title={t.manage.adjust} onClose={()=>setAdjust(null)}><AssociationMembershipForm key={adjust.id} workspaceId={workspaceId} row={adjust} disabled={!!memberships.error} onSaved={savedMembership}/></AssociationEditor>;
+  if(grant&&contact)return <AssociationEditor title={t.manage.grant} onClose={()=>setGrant(null)}><AssociationMembershipForm key={`${grant.id}:${contact.id}`} workspaceId={workspaceId} plan={grant} contact={contact} disabled={!!plans.error} onSaved={savedMembership}/></AssociationEditor>;
+  if(rescue&&contact)return <AssociationEditor title={t.manage.createRescue} onClose={()=>setRescue(null)}><AssociationMembershipRescueForm key={`${rescue.id}:${contact.id}`} workspaceId={workspaceId} plan={rescue} contact={contact} disabled={!configure||!!plans.error} onSaved={()=>{setRescue(null);setSaved(true);setRescueVersion(v=>v+1);setView("payments");}}/></AssociationEditor>;
+  return <section className="space-y-6">
+    <nav aria-label={t.manage.memberships} className="flex flex-wrap gap-2 border-b border-border pb-4">{([['members',u.members],['plans',t.manage.plans],['payments',u.offlinePayments],['sponsorship',u.sponsorship]] as const).map(([id,label])=><Button key={id} type="button" variant={view===id?"secondary":"ghost"} className="min-h-11" aria-pressed={view===id} onClick={()=>{setView(id);setSaved(false);}}>{label}</Button>)}</nav>
+    {saved?<p role="status" className="rounded-lg bg-emerald-500/10 p-3 text-sm">{u.saved}</p>:null}
+    {view==="plans"&&<>
+      <div className="flex flex-wrap items-start justify-between gap-3"><div className="max-w-xl space-y-2"><h2 className="text-lg font-semibold">{t.manage.plans}</h2><p className="text-sm text-muted-foreground">{u.planChangeHelp}</p></div><Button type="button" className="min-h-11" disabled={!configure||!!plans.error} onClick={()=>{setSaved(false);setEditing("new");}}>{t.manage.newPlan}</Button></div>
+      {module.data&&!configure?<p className="text-sm text-muted-foreground">{t.manage.canConfigure}</p>:null}
+      <AssociationListState {...plans}><div className="grid gap-3 md:grid-cols-2">{plans.data?.items.map(plan=><article key={plan.id} className="flex flex-col gap-4 rounded-xl border border-border p-5">
+        <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="font-semibold">{plan.name}</h3><AssociationBadge positive={plan.published}>{plan.published?t.manage.published:t.manage.options.draft}</AssociationBadge></div>
+        <p className="text-xl font-semibold">{associationMoney(plan.feeMinor,plan.currency)} <span className="text-sm font-normal text-muted-foreground">/ {t.manage.options[plan.billingPeriod]}</span></p>
+        {plan.eligibilityNote?<p className="text-sm text-muted-foreground">{plan.eligibilityNote}</p>:null}{plan.provider?<p className="text-xs text-muted-foreground">{t.manage.providerManaged}</p>:null}
+        <Button type="button" className="mt-auto min-h-11 self-start" variant="outline" disabled={!configure||!!plans.error} onClick={()=>{setSaved(false);setEditing(plan);}}>{t.manage.edit}</Button>
+      </article>)}</div>{plans.data?.items.length===0?<p className="rounded-xl bg-muted/40 p-6 text-sm text-muted-foreground">{u.emptyPlans}</p>:null}</AssociationListState>
+    </>}
+    {view==="members"&&<>
+      <div className="space-y-3 rounded-xl bg-muted/30 p-4"><div><h2 className="font-semibold">{u.choosePerson}</h2><p className="mt-1 text-sm text-muted-foreground">{u.choosePersonHelp}</p></div>
+        <AssociationContactPicker workspaceId={workspaceId} onSelect={row=>{setContact(row);setGrant(null);setRescue(null);setAdjust(null);}}/>
+        {contact?<div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-primary/20 bg-background p-3"><Link className="inline-flex min-h-11 items-center font-medium text-primary" href={crmRecordHref(workspaceId,"contact",contact.id)}>{contact.name}</Link><Button type="button" className="min-h-11" variant="ghost" onClick={()=>setContact(null)}>{t.manage.contactClear}</Button></div>:null}
+      </div>
+      {contact&&<AssociationListState {...plans}><div className="grid gap-3 md:grid-cols-2">{plans.data?.items.filter(plan=>!plan.provider).map(plan=><div key={plan.id} className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border p-4"><div><p className="font-medium">{plan.name}</p><p className="text-sm text-muted-foreground">{associationMoney(plan.feeMinor,plan.currency)}</p></div>
+        {Number(plan.feeMinor)===0?<Button type="button" className="min-h-11" variant="outline" disabled={!!plans.error} onClick={()=>setGrant(plan)}>{t.manage.grant}</Button>:<Button type="button" className="min-h-11" variant="outline" disabled={!configure||!!plans.error} onClick={()=>setRescue(plan)}>{t.manage.createRescue}</Button>}</div>)}</div></AssociationListState>}
+      <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-semibold">{t.manage.memberships}</h2><AssociationToggle label={t.manage.effectiveOnly} checked={effectiveOnly} onChange={setEffectiveOnly}/></div>
+      <AssociationListState {...memberships}><div className="divide-y divide-border">{memberships.data?.items.map(row=><article key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-4">
+        <div className="min-w-0 space-y-1 text-sm"><Link className="inline-flex min-h-11 items-center font-semibold text-primary" href={crmRecordHref(workspaceId,"contact",row.contactId)}>{row.contactName}</Link><p>{row.planName}</p><div className="flex flex-wrap gap-2"><AssociationBadge positive={row.status==="active"}>{t.manage.options[row.status]}</AssociationBadge><AssociationBadge positive={!!row.isEffective}>{row.isEffective===undefined?t.manage.unknown:row.isEffective?t.manage.effective:t.manage.ineffective}</AssociationBadge></div><p className="text-muted-foreground">{new Date(row.startsAt).toLocaleDateString()} / {row.endsAt?new Date(row.endsAt).toLocaleDateString():t.manage.unlimited}</p>{row.provider?<p className="text-muted-foreground">{t.manage.providerManaged}</p>:null}</div>
+        <Button type="button" className="min-h-11" variant="outline" disabled={!!row.provider||!!memberships.error} onClick={()=>{setSaved(false);setAdjust(row);}}>{t.manage.adjust}</Button>
+      </article>)}</div>{memberships.data?.items.length===0?<p className="rounded-xl bg-muted/40 p-6 text-sm text-muted-foreground">{t.manage.empty}</p>:null}</AssociationListState>
+    </>}
+    {view==="payments"&&<AssociationMembershipRescues key={rescueVersion} workspaceId={workspaceId} canManage={configure}/>}
+    {view==="sponsorship"&&<AssociationSponsorships workspaceId={workspaceId} canManage={configure}/>}
   </section>;
 }

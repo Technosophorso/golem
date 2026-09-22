@@ -13,15 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { ListSurfaceSkeleton } from "@/components/chrome/surface-skeleton";
-import { AssociationField } from "./operator-controls";
-
-function formatMinor(amount: string, currency: string): string {
-  const formatter = new Intl.NumberFormat(undefined, { style: "currency", currency });
-  const fractionDigits = formatter.resolvedOptions().maximumFractionDigits ?? 2;
-  const scale=BigInt(10)**BigInt(fractionDigits),minor=BigInt(amount),whole=minor/scale;
-  const remainder=(minor%scale).toString().padStart(fractionDigits,"0");
-  return formatter.formatToParts(whole).map(part=>part.type==="fraction"?remainder:part.value).join("");
-}
+import { AssociationBadge, AssociationCatalogPicker, associationMoney as formatMinor } from "./workspace-ui";
+import { AssociationContactPicker, AssociationField } from "./operator-controls";
 
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 type FilterDraft={eventId:string;contactId:string;status:""|AssociationOrderDetail["status"];createdAfter:string;createdBefore:string};
@@ -32,6 +25,7 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
   const t = useT().associationPage;
   const [draft,setDraft]=useState<FilterDraft>(()=>initialFilterDraft(initialEventId));
   const [filters,setFilters]=useState<AssociationOrderFilters>(()=>UUID.test(initialEventId)?{eventId:initialEventId}:{});
+  const [buyerName,setBuyerName]=useState("");
   const [filterError,setFilterError]=useState(false);
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const cursor = cursors[cursors.length - 1]!;
@@ -52,7 +46,7 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
     setFilters({...(draft.eventId?{eventId:draft.eventId}:{}),...(draft.contactId?{contactId:draft.contactId}:{}),
       ...(draft.status?{status:draft.status}:{}),...(after?{createdAfter:after}:{}),...(before?{createdBefore:before}:{})});
   }
-  function clearFilters(){const next=initialFilterDraft("");setDraft(next);setFilters({});setCursors([null]);setFilterError(false);}
+  function clearFilters(){setBuyerName("");const next=initialFilterDraft("");setDraft(next);setFilters({});setCursors([null]);setFilterError(false);}
   async function toggleDetails(orderId:string){
     if(expanded===orderId){setExpanded(null);return;}
     setExpanded(orderId);if(details[orderId])return;
@@ -72,6 +66,7 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
       markSurfaceCacheStale(`crm:${workspaceId}:`);
       markSurfaceCacheStale(`association-orders:${workspaceId}`);
       markSurfaceCacheStale(`association-module:${workspaceId}`);
+      setDetails(previous=>{const next={...previous};delete next[orderId];return next;});setExpanded(null);
       await refresh();
     } catch { setSaveError(true); await refresh(); }
     finally { setPending(null); }
@@ -81,16 +76,17 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
       <h2 className="text-lg font-semibold">{t.orders}</h2>
       <Button className="min-h-11" variant="ghost" disabled={!!pending} onClick={() => void refresh()}>{t.refresh}</Button>
     </div>
-    <form className="grid gap-3 rounded-xl border border-border p-3 md:grid-cols-2 xl:grid-cols-5" onSubmit={event=>{event.preventDefault();applyFilters();}}>
-      <AssociationField label={t.orderEventId} value={draft.eventId} onChange={eventId=>setDraft(previous=>({...previous,eventId}))}/>
-      <AssociationField label={t.orderContactId} value={draft.contactId} onChange={contactId=>setDraft(previous=>({...previous,contactId}))}/>
-      <label className="flex min-w-0 flex-col gap-1 text-sm">{t.orderStatus}<Select value={draft.status} onValueChange={value=>setDraft(previous=>({...previous,status:(value ?? "") as FilterDraft["status"]}))}>
+    <form className="grid gap-4 rounded-xl bg-muted/30 p-4 md:grid-cols-2 xl:grid-cols-3" onSubmit={event=>{event.preventDefault();applyFilters();}}>
+      <details className="min-w-0 rounded-lg border border-border bg-background p-3 md:col-span-2 xl:col-span-3"><summary className="min-h-11 cursor-pointer content-center text-sm font-medium">{t.ux.chooseEvent}{draft.eventId?` · ${t.ux.selected}`:` · ${t.ux.allEvents}`}</summary><AssociationCatalogPicker workspaceId={workspaceId} resource="events" single selected={draft.eventId?[draft.eventId]:[]} onChange={ids=>setDraft(previous=>({...previous,eventId:ids[0] ?? ""}))}/></details>
+      <details className="min-w-0 rounded-lg border border-border bg-background p-3 md:col-span-2 xl:col-span-3"><summary className="min-h-11 cursor-pointer content-center text-sm font-medium">{t.ux.filterBuyer}{buyerName?` · ${buyerName}`:""}</summary><AssociationContactPicker workspaceId={workspaceId} onSelect={row=>{setBuyerName(row.name);setDraft(previous=>({...previous,contactId:row.id}));}}/>{draft.contactId?<Button type="button" variant="ghost" className="min-h-11" onClick={()=>{setBuyerName("");setDraft(previous=>({...previous,contactId:""}));}}>{t.manage.contactClear}</Button>:null}</details>
+      <label className="flex min-w-0 flex-col gap-1 text-sm">{t.orderStatus}<Select items={[{value:"",label:t.allOrderStatuses},...Object.entries(t.orderStates).map(([value,label])=>({value,label}))]} value={draft.status} onValueChange={value=>setDraft(previous=>({...previous,status:(value ?? "") as FilterDraft["status"]}))}>
         <SelectTrigger className="min-h-11 w-full text-base" aria-label={t.orderStatus}><SelectValue /></SelectTrigger>
         <SelectContent><SelectItem value="">{t.allOrderStatuses}</SelectItem>{Object.entries(t.orderStates).map(([value,label])=><SelectItem value={value} key={value}>{label}</SelectItem>)}</SelectContent></Select></label>
       <AssociationField type="datetime-local" label={t.orderCreatedAfter} value={draft.createdAfter} onChange={createdAfter=>setDraft(previous=>({...previous,createdAfter}))}/>
       <AssociationField type="datetime-local" label={t.orderCreatedBefore} value={draft.createdBefore} onChange={createdBefore=>setDraft(previous=>({...previous,createdBefore}))}/>
-      <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-5"><Button type="submit" className="min-h-11">{t.applyOrderFilters}</Button><Button type="button" variant="outline" className="min-h-11" onClick={clearFilters}>{t.clearOrderFilters}</Button></div>
-      {filterError?<p role="alert" className="text-sm text-destructive md:col-span-2 xl:col-span-5">{t.orderFilterInvalid}</p>:null}
+      <details className="md:col-span-2 xl:col-span-3"><summary className="min-h-11 cursor-pointer content-center text-sm text-muted-foreground">{t.ux.advanced}</summary><div className="grid gap-3 md:grid-cols-2"><AssociationField label={t.orderEventId} value={draft.eventId} onChange={eventId=>setDraft(previous=>({...previous,eventId}))}/><AssociationField label={t.orderContactId} value={draft.contactId} onChange={contactId=>{setBuyerName("");setDraft(previous=>({...previous,contactId}));}}/></div></details>
+      <div className="flex flex-wrap gap-2 md:col-span-2 xl:col-span-3"><Button type="submit" className="min-h-11">{t.applyOrderFilters}</Button><Button type="button" variant="outline" className="min-h-11" onClick={clearFilters}>{t.clearOrderFilters}</Button></div>
+      {filterError?<p role="alert" className="text-sm text-destructive md:col-span-2 xl:col-span-3">{t.orderFilterInvalid}</p>:null}
     </form>
     {(error || saveError) && <p role="alert" className="text-sm text-destructive">{saveError ? t.orderSaveFailed : t.ordersLoadFailed}</p>}
     {!data && !error && <ListSurfaceSkeleton rows={5} />}
@@ -98,7 +94,7 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
       <h3 className="font-semibold">{t.orderFinancialSummary}: {summary.currency}</h3>
       <p>{t.settledOrders}: {summary.settledOrderCount} / {summary.orderCount}</p>
       <p>{t.subtotal}: {formatMinor(summary.subtotalMinor,summary.currency)} · {t.discount}: {formatMinor(summary.discountMinor,summary.currency)}</p>
-      <p>{t.gross}: {formatMinor(summary.grossMinor,summary.currency)} · {t.refundedAmount}: {formatMinor(summary.refundedMinor,summary.currency)} · {t.net}: {formatMinor(summary.netMinor,summary.currency)}</p>
+      <dl className="my-4 grid gap-4 sm:grid-cols-3">{[[t.gross,summary.grossMinor],[t.refundedAmount,summary.refundedMinor],[t.net,summary.netMinor]].map(([label,amount])=><div key={label}><dt className="text-xs text-muted-foreground">{label}</dt><dd className="mt-1 text-lg font-semibold">{formatMinor(amount!,summary.currency)}</dd></div>)}</dl>
       <p>{t.pendingValue}: {formatMinor(summary.pendingMinor,summary.currency)}</p>
       <p className="text-xs text-muted-foreground">{t.providerSettlementExternal}</p>
     </section>)}</div>:null}
@@ -107,19 +103,19 @@ export function AssociationOrdersPanel({ workspaceId,initialEventId="" }: { work
       {data?.orders.map(order => <article key={order.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
         <div className="min-w-0 space-y-1">
           <h3 className="break-all font-mono text-sm" title={order.id}>{t.order} {order.id.slice(0, 8)}</h3>
-          <p className="text-sm">{t.orderStates[order.status]}</p>
-          <p className="text-xs text-muted-foreground">{t.total}: {formatMinor(order.totalMinor, order.currency)}{order.discountMinor!=="0"?` · ${t.discount}: ${formatMinor(order.discountMinor,order.currency)}`:""}</p>
+          <AssociationBadge positive={order.status==="paid"}>{t.orderStates[order.status]}</AssociationBadge><p className="text-xs text-muted-foreground">{t.ux.orderDate}: {new Date(order.createdAt).toLocaleString()}</p>
+          <p className="text-lg font-semibold">{t.total}: {formatMinor(order.totalMinor, order.currency)}{order.discountMinor!=="0"?` · ${t.discount}: ${formatMinor(order.discountMinor,order.currency)}`:""}</p>
           {order.promotionSnapshot?<p className="text-xs text-muted-foreground">{t.manage.promotion}: {order.promotionSnapshot.name}</p>:null}
           {order.refundState !== "none" && <p className="text-xs text-muted-foreground" data-order-refund>
             {t.refund}: {t.refundStates[order.refundState]}{order.refundedMinor !== "0" ? ` · ${t.refundedAmount}: ${formatMinor(order.refundedMinor, order.currency)}` : ""}
           </p>}
           {order.disputeState !== "none" && <p className="text-xs text-muted-foreground" data-order-dispute>{t.dispute}: {t.disputeStates[order.disputeState]}</p>}
           {order.reservationExpiresAt && order.status === "pending" && <p className="text-xs text-muted-foreground">{t.reservedUntil} {new Date(order.reservationExpiresAt).toLocaleString()}</p>}
-          {order.providerReference && <p className="break-all text-xs text-muted-foreground">{t.providerReference}: {order.provider} / {order.providerReference}</p>}
           <div className="flex flex-wrap gap-2"><Link className="inline-flex min-h-11 items-center text-sm text-primary underline" href={crmRecordHref(workspaceId, "contact", order.contactId)}>{t.openContact}</Link>
-            <Button type="button" variant="ghost" className="min-h-11" disabled={detailPending===order.id} onClick={()=>void toggleDetails(order.id)}>{expanded===order.id?t.hideOrderDetails:t.orderDetails}</Button></div>
+            <Button type="button" variant="ghost" className="min-h-11" aria-expanded={expanded===order.id} disabled={detailPending===order.id} onClick={()=>void toggleDetails(order.id)}>{expanded===order.id?t.hideOrderDetails:t.orderDetails}</Button></div>
           {expanded===order.id?<div className="space-y-3 rounded-lg bg-muted/40 p-3" data-order-details>
-            {detailPending===order.id?<p>{t.loadingOrderDetails}</p>:null}
+          {order.providerReference && <p className="break-all text-xs text-muted-foreground">{t.providerReference}: {order.provider} / {order.providerReference}</p>}
+            {detailPending===order.id?<ListSurfaceSkeleton rows={2}/>:null}
             {detailErrors[order.id]?<p role="alert" className="text-destructive">{t.orderDetailsFailed}</p>:null}
             {details[order.id]?.lines.map(line=><div key={line.id} className="text-sm"><p className="font-medium">{line.ticketName} ({line.ticketKey}) · {t.quantity}: {line.quantity}</p>
               <p>{t.unitPrice}: {formatMinor(line.unitPriceMinor,order.currency)} · {t.lineTotal}: {formatMinor(line.lineTotalMinor,order.currency)}{line.discountMinor!=="0"?` · ${t.discount}: ${formatMinor(line.discountMinor,order.currency)}`:""}</p></div>)}

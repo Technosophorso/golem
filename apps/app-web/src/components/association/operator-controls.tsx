@@ -15,14 +15,14 @@ import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { ListSurfaceSkeleton } from "@/components/chrome/surface-skeleton";
 
 export function AssociationField({label,value,onChange,multiline=false,...props}:{label:string;value:string;onChange:(value:string)=>void;multiline?:boolean}&Omit<InputHTMLAttributes<HTMLInputElement>,"onChange"|"value">) {
-  const className="min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 text-base";
+  const className="min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 text-base outline-none transition-shadow focus-visible:border-primary focus-visible:ring-2 focus-visible:ring-primary/20 disabled:opacity-60";
   return <label className="flex min-w-0 flex-col gap-1 text-sm">{label}{multiline
-    ? <textarea className={className} value={value} onChange={e=>onChange(e.target.value)} disabled={props.disabled} maxLength={props.maxLength} rows={3} />
+    ? <textarea className={className} value={value} onChange={e=>onChange(e.target.value)} disabled={props.disabled} required={props.required} placeholder={props.placeholder} maxLength={props.maxLength} rows={3} />
     : <input {...props} step={props.step ?? (props.type==="datetime-local" ? "0.001" : undefined)} className={className} value={value} onChange={e=>onChange(e.target.value)} />}</label>;
 }
 export function AssociationChoice({label,value,onChange,values,disabled=false}:{label:string;value:string;onChange:(value:string)=>void;values:readonly string[];disabled?:boolean}) {
   const options=useT().associationPage.manage.options;
-  return <label className="flex min-w-0 flex-col gap-1 text-sm">{label}<Select value={value} onValueChange={v=>{if(v)onChange(v);}} disabled={disabled}>
+  return <label className="flex min-w-0 flex-col gap-1 text-sm">{label}<Select items={values.map(v=>({value:v,label:options[v as keyof typeof options]}))} value={value} onValueChange={v=>{if(v)onChange(v);}} disabled={disabled}>
     <SelectTrigger className="min-h-11 w-full" aria-label={label}><SelectValue /></SelectTrigger>
     <SelectContent>{values.map(v=><SelectItem value={v} key={v}>{options[v as keyof typeof options]}</SelectItem>)}</SelectContent>
   </Select></label>;

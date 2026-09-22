@@ -7,29 +7,33 @@ import type { AssociationPromotion } from "@/lib/api/association";
 import { Button } from "@/components/ui/button";
 import { useAssociationModule } from "./module-controls";
 import { AssociationListState,useAssociationPage } from "./operator-controls";
+import { AssociationEditor, AssociationBadge } from "./workspace-ui";
 import { AssociationPromotionForm } from "./catalog-forms";
 
 export function AssociationPromotionsPanel({workspaceId}:{workspaceId:string}) {
   const t=useT().associationPage, module=useAssociationModule(workspaceId);
   const canManage=!!module.data?.canManage&&!module.error;
   const rows=useAssociationPage(workspaceId,"promotions",{},canManage);
+  const [saved,setSaved]=useState(false);
   const [editing,setEditing]=useState<AssociationPromotion|"new"|null>(null);
   const enabled=canManage&&module.data?.module.state==="enabled";
   if(module.data&&!module.data.canManage)return <p className="text-sm text-muted-foreground">{t.ownerOnly}</p>;
+  if(editing)return <AssociationEditor title={editing==="new"?t.manage.newPromotion:editing.name} onClose={()=>setEditing(null)}><AssociationPromotionForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} promotion={editing==="new"?undefined:editing} disabled={!enabled||!!rows.error} onSaved={()=>{setEditing(null);setSaved(true);void rows.refresh();}}/></AssociationEditor>;
   return <section className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-2">
     <div><h2 className="text-lg font-semibold">{t.manage.promotions}</h2><p className="text-sm text-muted-foreground">{t.manage.promotionsHelp}</p></div>
-    <Button type="button" className="min-h-11" variant="outline" disabled={!enabled||!!rows.error} onClick={()=>setEditing("new")}>{t.manage.newPromotion}</Button>
+    <Button type="button" className="min-h-11" disabled={!enabled||!!rows.error} onClick={()=>{setSaved(false);setEditing("new");}}>{t.manage.newPromotion}</Button>
   </div>
     {module.data&&module.data.module.state!=="enabled"?<p className="text-sm text-muted-foreground">{t.stateDescriptions[module.data.module.state]}</p>:null}
-    <AssociationListState {...rows}>{rows.data?.items.length===0?<p className="text-sm">{t.manage.empty}</p>:null}
-      <div className="divide-y divide-border">{rows.data?.items.map(row=><article key={row.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+    {saved?<p role="status" className="rounded-lg bg-emerald-500/10 p-3 text-sm">{t.ux.saved}</p>:null}
+    <AssociationListState {...rows}>{rows.data?.items.length===0?<p className="rounded-xl bg-muted/40 p-6 text-sm text-muted-foreground">{t.ux.emptyPromotions}</p>:null}
+      <div className="grid gap-3 md:grid-cols-2">{rows.data?.items.map(row=><article key={row.id} className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-border p-5">
         <div className="min-w-0 text-sm"><p className="font-medium">{row.name}</p>
-          <p>{t.manage.options[row.status]} · {t.manage.options[row.discountType]} · {row.targetIds.length} {t.manage.options[row.targetKind]}</p>
+          <div className="my-2"><AssociationBadge positive={row.status==="active"}>{t.manage.options[row.status]}</AssociationBadge></div><p>{row.discountType==="percentage"?`${(row.percentageBasisPoints ?? 0)/100}%`:t.manage.options[row.discountType]} · {row.targetIds.length} {t.manage.options[row.targetKind]}</p>
           <p>{t.manage.redeemedUses}: {row.redeemedUses}{row.maxUses===null?"":` / ${row.maxUses}`} · {t.manage.reserved}: {row.reservedUses}</p>
-          <p className="break-all text-xs text-muted-foreground">{row.key} · {t.manage.codeProtected}</p></div>
+          <p className="break-all text-xs text-muted-foreground">{t.manage.codeProtected}</p></div>
         <Button type="button" variant="ghost" className="min-h-11" disabled={!enabled||!!rows.error} onClick={()=>setEditing(row)}>{t.manage.edit}</Button>
       </article>)}</div>
     </AssociationListState>
-    {editing?<AssociationPromotionForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} promotion={editing==="new"?undefined:editing} disabled={!enabled||!!rows.error} onSaved={()=>{setEditing(null);void rows.refresh();}}/>:null}
+
   </section>;
 }

@@ -14,6 +14,7 @@ import { Select,SelectTrigger,SelectContent,SelectItem,SelectValue } from "@/com
 import { useAssociationModule } from "./module-controls";
 import { AssociationField,useAssociationPage,AssociationListState,useAssociationAction } from "./operator-controls";
 import { AssociationEventForm,AssociationTicketForm } from "./catalog-forms";
+import { AssociationEditor, AssociationBadge, associationMoney } from "./workspace-ui";
 import { AssociationReservationForm } from "./reservation-form";
 
 function Attendees({workspaceId,eventId,canManage}:{workspaceId:string;eventId:string;canManage:boolean}) {
@@ -61,29 +62,33 @@ function Attendees({workspaceId,eventId,canManage}:{workspaceId:string;eventId:s
 }
 function EventOperations({workspaceId,event,enabled,canManage}:{workspaceId:string;event:AssociationEvent;enabled:boolean;canManage:boolean}) {
   const t=useT().associationPage,rows=useAssociationPage(workspaceId,"tickets",{eventId:event.id});
+  const [saved,setSaved]=useState(false);
   const [editing,setEditing]=useState<AssociationTicket|"new"|null>(null),[reserving,setReserving]=useState<AssociationTicket|null>(null);
-  return <div className="space-y-6"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-lg font-semibold">{t.manage.tickets}: {event.title}</h3>
+  if(editing)return <AssociationEditor title={editing==="new"?t.manage.newTicket:editing.name} onClose={()=>setEditing(null)}><AssociationTicketForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} eventId={event.id} ticket={editing==="new"?undefined:editing} disabled={!enabled||!!rows.error} onSaved={()=>{setEditing(null);setSaved(true);void rows.refresh();}}/></AssociationEditor>;
+  if(reserving)return <AssociationEditor title={t.manage.reserve} onClose={()=>setReserving(null)}><AssociationReservationForm key={reserving.id} workspaceId={workspaceId} ticket={rows.data?.items.find(row=>row.id===reserving.id) ?? reserving} disabled={!enabled||!!rows.error}/></AssociationEditor>;
+  return <div className="space-y-6">{saved?<p role="status" className="rounded-lg bg-emerald-500/10 p-3 text-sm">{t.ux.saved}</p>:null}<div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-lg font-semibold">{t.manage.tickets}: {event.title}</h3>
     <div className="flex flex-wrap gap-2"><Link className="inline-flex min-h-11 items-center px-3 text-sm text-primary" href={`/w/${workspaceId}/association?section=orders&eventId=${encodeURIComponent(event.id)}`}>{t.eventOrders}</Link><Button type="button" className="min-h-11" variant="outline" disabled={!enabled||!!rows.error} onClick={()=>setEditing("new")}>{t.manage.newTicket}</Button></div></div>
-    <AssociationListState {...rows}>{rows.data?.items.length===0?<p className="text-sm">{t.manage.empty}</p>:null}<div className="divide-y divide-border">{rows.data?.items.map(ticket=><div key={ticket.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
-      <div className="text-sm"><p className="font-medium">{ticket.name}</p><p>{ticket.currency} {ticket.priceMinor} · {t.manage.options[ticket.status]}</p><p>{t.manage.available}: {ticket.available ?? t.manage.unlimited} · {t.manage.reserved}: {ticket.reservedCount}</p><p className="break-all text-xs text-muted-foreground">{t.manage.ticketId}: {ticket.id}</p></div>
+    <AssociationListState {...rows}>{rows.data?.items.length===0?<p className="rounded-xl bg-muted/40 p-5 text-sm text-muted-foreground">{t.ux.emptyTickets}</p>:null}<div className="divide-y divide-border">{rows.data?.items.map(ticket=><div key={ticket.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+      <div className="text-sm"><p className="font-medium">{ticket.name}</p><p>{associationMoney(ticket.priceMinor,ticket.currency)} · {t.manage.options[ticket.status]}</p><p>{t.manage.available}: {ticket.available ?? t.manage.unlimited} · {t.manage.reserved}: {ticket.reservedCount}</p></div>
       <div className="flex flex-wrap gap-2"><Button type="button" variant="ghost" className="min-h-11" disabled={!enabled||!!rows.error} onClick={()=>setEditing(ticket)}>{t.manage.edit}</Button><Button type="button" variant="outline" className="min-h-11" disabled={!enabled||!!rows.error||ticket.status!=="on_sale"} onClick={()=>setReserving(ticket)}>{t.manage.reserve}</Button></div>
     </div>)}</div></AssociationListState>
-    {editing?<AssociationTicketForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} eventId={event.id} ticket={editing==="new"?undefined:editing} disabled={!enabled||!!rows.error} onSaved={()=>{setEditing(null);void rows.refresh();}}/>:null}
-    {reserving?<AssociationReservationForm key={reserving.id} workspaceId={workspaceId} ticket={rows.data?.items.find(row=>row.id===reserving.id) ?? reserving} disabled={!enabled||!!rows.error}/>:null}
     <Attendees workspaceId={workspaceId} eventId={event.id} canManage={canManage}/>
   </div>;
 }
 export function AssociationEventsPanel({workspaceId}:{workspaceId:string}) {
   const t=useT().associationPage,rows=useAssociationPage(workspaceId,"events"),module=useAssociationModule(workspaceId);
-  const [selected,setSelected]=useState<AssociationEvent|null>(null),[editing,setEditing]=useState<AssociationEvent|"new"|null>(null);
+  const [selected,setSelected]=useState<AssociationEvent|null>(null),[editing,setEditing]=useState<AssociationEvent|"new"|null>(null),[saved,setSaved]=useState(false);
   const configure=!!module.data?.canManage&&!module.error;
-  return <section className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-semibold">{t.manage.events}</h2><Button type="button" className="min-h-11" variant="outline" disabled={!configure||!!rows.error} onClick={()=>setEditing("new")}>{t.manage.newEvent}</Button></div>
-    {!configure?<p className="text-sm text-muted-foreground">{t.manage.canConfigure}</p>:null}
-    {module.data&&module.data.module.state!=="enabled"?<p className="text-sm text-muted-foreground">{t.stateDescriptions[module.data.module.state]}</p>:null}
-    <AssociationListState {...rows}>{rows.data?.items.length===0?<p className="text-sm">{t.manage.empty}</p>:null}<div className="divide-y divide-border">{rows.data?.items.map(event=><div key={event.id} className="flex flex-wrap items-center justify-between gap-2 py-2">
-      <button type="button" className="min-h-11 text-left text-sm" onClick={()=>{setSelected(event);setEditing(null);}}><span className="font-medium">{event.title}</span><span className="block text-muted-foreground">{new Date(event.startsAt).toLocaleString()} · {event.timezone} · {t.manage.options[event.status]}</span><span className="block break-all text-xs text-muted-foreground">{t.manage.eventId}: {event.id}</span></button>
-      <Button type="button" className="min-h-11" variant="ghost" disabled={!configure||!!rows.error} onClick={()=>{setSelected(event);setEditing(event);}}>{t.manage.edit}</Button></div>)}</div></AssociationListState>
-    {editing?<AssociationEventForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} event={editing==="new"?undefined:editing} disabled={!configure||!!rows.error} onSaved={()=>{setEditing(null);void rows.refresh();}}/>:null}
-    {selected?<EventOperations key={selected.id} workspaceId={workspaceId} event={selected} enabled={module.data?.module.state==="enabled"&&!module.error} canManage={configure}/>:null}
+  if(editing)return <AssociationEditor title={editing==="new"?t.manage.newEvent:editing.title} onClose={()=>setEditing(null)}><AssociationEventForm key={editing==="new"?"new":editing.id} workspaceId={workspaceId} event={editing==="new"?undefined:editing} disabled={!configure||!!rows.error} onSaved={()=>{setEditing(null);setSelected(null);setSaved(true);void rows.refresh();}}/></AssociationEditor>;
+  if(selected)return <section className="space-y-6"><div className="flex flex-wrap items-center justify-between gap-3"><Button type="button" variant="outline" className="min-h-11" onClick={()=>setSelected(null)}>{t.ux.backEvents}</Button><Button type="button" className="min-h-11" variant="outline" disabled={!configure||!!rows.error} onClick={()=>setEditing(rows.data?.items.find(row=>row.id===selected.id) ?? selected)}>{t.manage.edit}</Button></div><header className="space-y-2 border-b border-border pb-5"><h2 className="text-2xl font-semibold">{selected.title}</h2><p className="text-sm text-muted-foreground">{new Date(selected.startsAt).toLocaleString()} · {selected.timezone}</p></header><EventOperations key={selected.id} workspaceId={workspaceId} event={selected} enabled={module.data?.module.state==="enabled"&&!module.error} canManage={configure}/></section>;
+  return <section className="space-y-5"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-lg font-semibold">{t.manage.events}</h2><Button type="button" className="min-h-11" disabled={!configure||!!rows.error} onClick={()=>{setSaved(false);setEditing("new");}}>{t.manage.newEvent}</Button></div>
+    {saved?<p role="status" className="rounded-lg bg-emerald-500/10 p-3 text-sm">{t.ux.saved}</p>:null}
+    {module.data&&!configure?<p className="text-sm text-muted-foreground">{t.manage.canConfigure}</p>:null}
+    {module.data&&module.data.module.state!=="enabled"?<p className="rounded-lg bg-muted p-3 text-sm text-muted-foreground">{t.stateDescriptions[module.data.module.state]}</p>:null}
+    <AssociationListState {...rows}>{rows.data?.items.length===0?<p className="rounded-xl bg-muted/40 p-6 text-sm text-muted-foreground">{t.ux.emptyEvents}</p>:null}<div className="grid gap-3 md:grid-cols-2">{rows.data?.items.map(event=><article key={event.id} className="flex flex-col rounded-xl border border-border p-5">
+      <button type="button" className="min-h-11 space-y-3 text-left focus-visible:outline-2 focus-visible:outline-ring" onClick={()=>{setSelected(event);setEditing(null);}}><span className="block text-base font-semibold">{event.title}</span><span className="block text-sm text-muted-foreground">{new Date(event.startsAt).toLocaleString()} · {event.timezone}</span><AssociationBadge positive={event.status==="published"}>{t.manage.options[event.status]}</AssociationBadge></button>
+      {event.venue?<p className="mt-3 text-sm text-muted-foreground">{event.venue}</p>:null}
+      <div className="mt-5 flex flex-wrap gap-2 border-t border-border pt-3"><Button type="button" className="min-h-11" variant="outline" onClick={()=>setSelected(event)}>{t.ux.eventWorkspace}</Button><Button type="button" className="min-h-11" variant="ghost" disabled={!configure||!!rows.error} onClick={()=>setEditing(event)}>{t.manage.edit}</Button></div>
+    </article>)}</div></AssociationListState>
   </section>;
 }
