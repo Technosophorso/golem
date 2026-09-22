@@ -6,6 +6,7 @@ import {
   OPERATOR_APP_KEYS,
   customAppIdFromPathname,
   customAppPath,
+  defaultHomePath,
   homeAppFromPathname,
   homeAppBasePath,
   homeAppLocationStorageKey,
@@ -155,6 +156,16 @@ describe("[COMP:app-web/operator-app-bar] operator app registry", () => {
     expect(homePath("w1", ["page", "tasks"])).toBe("/w/w1/tasks");
     // Another workspace is unaffected.
     expect(readOperatorApp("w2", ["page", "tasks"])).toBe("page");
+  });
+
+  it("opens a workspace through its FIRST configured app, ignoring sticky Home", () => {
+    writeOperatorApp("w1", "page");
+    expect(defaultHomePath("w1", ["chat", "page", "tasks"])).toBe(
+      "/w/w1/chat",
+    );
+    expect(defaultHomePath("w2", ["custom:app-1", "page"])).toBe(
+      "/w/w2/apps/app-1",
+    );
   });
 
   it("remembers a custom app as the sticky Home selection", () => {

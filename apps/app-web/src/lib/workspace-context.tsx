@@ -16,6 +16,7 @@ import {
   type WorkspaceIdentityRefreshDetail,
 } from "@/lib/workspace-identity-events";
 import { updateWorkspacePickerPreferences } from "@/lib/api/workspaces";
+import type { HomeAppEntry } from "@use-brian/shared/home-apps";
 
 const API_URL = publicRuntimeConfig().apiUrl ?? "http://localhost:4000";
 
@@ -39,6 +40,13 @@ export type WorkspaceContextValue = {
    * for self.
    */
   me: { id: string };
+  /**
+   * Ordered Home mini-app config from the workspace detail response. Present
+   * on current web/desktop shells so the persistent sidebar can seed exact
+   * navigation before its background revalidation; optional for older cached
+   * desktop snapshots and lightweight test providers.
+   */
+  homeApps?: HomeAppEntry[];
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);

@@ -10,7 +10,7 @@ type Team = { id: string; name: string };
  * Landing route. Resolves the user's destination based on workspace
  * membership:
  *
- *   - 1 workspace        → /w/:workspaceId    (skip the picker → doc)
+ *   - 1 workspace        → /w/:workspaceId    (skip the picker → first mini app)
  *   - 0 or n workspaces  → /teams             (picker)
  *
  * The membership fetch carries the user's access_token so the backend

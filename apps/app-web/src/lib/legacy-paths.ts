@@ -50,7 +50,7 @@ const WORKSPACE_SURFACES = new Set([
 /**
  * Legacy surfaces with no standalone route in this app — chat is the
  * floating dock and settings is a modal, both live inside the doc shell —
- * so they land on the workspace root (`/w/<id>` → the `/p` index).
+ * so they land on the workspace root (`/w/<id>` → the first ordered mini app).
  */
 const WORKSPACE_ROOT_ALIASES = new Set(["home", "chat", "settings"]);
 
