@@ -57,6 +57,14 @@ describe("[COMP:app-web/desktop-spa] offline workspace bootstrap", () => {
       me: { id: "viewer-1" },
     });
 
+    expect(
+      parseDesktopWorkspaceContext("ws-1", {
+        name: "Ordered workspace",
+        role: "owner",
+        homeApps: ["chat", "page"],
+      })?.homeApps,
+    ).toEqual(["chat", "page"]);
+
     expect(parseDesktopWorkspaceContext("ws-1", null)).toBeNull();
     expect(parseDesktopWorkspaceContext("ws-1", { role: "superuser" })).toMatchObject({
       role: "member",

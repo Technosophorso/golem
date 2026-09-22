@@ -31,7 +31,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { authFetch } from "@/lib/auth-fetch";
-import { docPagePath } from "@/lib/doc-page-url";
 import { useWorkspaceContext } from "@/lib/workspace-context";
 
 /** Mirror of `apps/web`'s `Workspace` so ported surfaces typecheck unchanged. */
@@ -162,7 +161,7 @@ export function useWorkspaces(): {
   const active = workspaces.find((w) => w.id === activeId) ?? null;
   const setActive = useCallback(
     (id: string) => {
-      if (id !== activeId) router.push(docPagePath(id));
+      if (id !== activeId) router.push(`/w/${id}`);
     },
     [activeId, router],
   );

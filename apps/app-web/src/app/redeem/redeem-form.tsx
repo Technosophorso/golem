@@ -151,7 +151,7 @@ export function RedeemForm({
             )}
             <div className="flex justify-center pt-2">
               <Link
-                href={targetWorkspaceId ? `/w/${targetWorkspaceId}/p` : "/"}
+                href={targetWorkspaceId ? `/w/${targetWorkspaceId}` : "/"}
                 className="text-sm text-foreground underline hover:no-underline"
               >
                 {t.redeem.goToWorkspace}

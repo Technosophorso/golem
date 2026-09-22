@@ -15,7 +15,10 @@ vi.mock("@/lib/offline/idb", () => ({ idbGet: async () => null, idbSet: async ()
 vi.mock("@/lib/theme", () => ({ ThemeProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/lib/workspace-context", () => ({ WorkspaceContextProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/lib/custom-themes", () => ({ CustomThemesProvider: ({ children }: { children: ReactNode }) => children }));
-vi.mock("@/components/doc/doc-sidebar-data", () => ({ DocSidebarDataProvider: ({ children }: { children: ReactNode }) => children }));
+vi.mock("@/components/doc/doc-sidebar-data", () => ({
+  DocSidebarDataProvider: ({ children }: { children: ReactNode }) => children,
+  useSidebarData: () => ({ homeApps: ["feed", "page"], homeAppsLoading: false }),
+}));
 vi.mock("@/contexts/brain-surface-context", () => ({ BrainSurfaceProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/contexts/primary-assistant", () => ({ PrimaryAssistantProvider: ({ children }: { children: ReactNode }) => children }));
 vi.mock("@/components/ui/confirm-dialog", () => ({ ConfirmDialogProvider: () => null }));
@@ -61,6 +64,13 @@ afterEach(async () => {
 });
 
 describe("[COMP:app-web/desktop-spa] Feed routes in both editions", () => {
+  it("opens the first configured mini app from a bare workspace route", async () => {
+    await mount("oss", "/w/workspace-one");
+    expect(window.location.hash).toBe("#/w/workspace-one/feed");
+    expect(host.querySelector("h1")?.textContent).toBe("Feed Plan");
+    expect(host.querySelector("[data-page]")).toBeNull();
+  });
+
   it.each(["oss", "hosted"] as const)("opens Feed from Page in %s without bouncing back", async (edition) => {
     await mount(edition, "/w/workspace-one/p");
     expect(host.querySelector("[data-page]")).not.toBeNull();

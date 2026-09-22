@@ -64,7 +64,10 @@ vi.mock("@/lib/api/home-dock", () => ({
 // the mock factories below reference it at module-evaluation time.
 const never = vi.hoisted(() => () => new Promise<never>(() => {}));
 vi.mock("@/lib/api/studio", () => ({ hasAnyConnectedConnector: never }));
-vi.mock("@/lib/api/workspaces", () => ({ getWorkspaceHomeApps: never }));
+const getWorkspaceHomeApps = vi.fn();
+vi.mock("@/lib/api/workspaces", () => ({
+  getWorkspaceHomeApps: (...args: unknown[]) => getWorkspaceHomeApps(...args),
+}));
 vi.mock("@/lib/api/home-apps", () => ({ listCustomHomeApps: never }));
 vi.mock("@/lib/api/feed", () => ({ fetchFeedTeamProfiles: never }));
 vi.mock("@/lib/edition", () => ({ isHostedEdition: () => false }));
@@ -108,7 +111,14 @@ const tree = (label: string) => ({
 });
 
 function Probe() {
-  const { dock, dockLoading, saved, teamspaces } = useSidebarData();
+  const {
+    dock,
+    dockLoading,
+    saved,
+    teamspaces,
+    homeApps,
+    homeAppsLoading,
+  } = useSidebarData();
   return (
     <div>
       <span data-testid="dock">
@@ -116,6 +126,9 @@ function Probe() {
       </span>
       <span data-testid="saved">{saved.map((r) => r.name).join(",")}</span>
       <span data-testid="ts">{teamspaces.map((t) => t.name).join(",")}</span>
+      <span data-testid="home-apps">
+        {homeAppsLoading ? "loading" : homeApps.join(",")}
+      </span>
     </div>
   );
 }
@@ -130,6 +143,7 @@ describe("[COMP:app-web/sidebar-data] paints the dock and the tree from the cach
     listViews.mockReset().mockImplementation(never);
     listTeamspaces.mockReset().mockImplementation(never);
     fetchHomeDock.mockReset().mockImplementation(never);
+    getWorkspaceHomeApps.mockReset().mockImplementation(never);
     readCachedSidebarTree.mockReset().mockResolvedValue(null);
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -146,16 +160,31 @@ describe("[COMP:app-web/sidebar-data] paints the dock and the tree from the cach
   const text = (id: string) =>
     container!.querySelector(`[data-testid="${id}"]`)!.textContent;
 
-  async function mount(workspaceId = "w1") {
+  async function mount(workspaceId = "w1", initialHomeApps?: unknown) {
     await act(async () => {
       root!.render(
-        <DocSidebarDataProvider workspaceId={workspaceId}>
+        <DocSidebarDataProvider
+          workspaceId={workspaceId}
+          initialHomeApps={initialHomeApps}
+        >
           <Probe />
         </DocSidebarDataProvider>,
       );
       await settle();
     });
   }
+
+  it("seeds the exact ordered Home config before background revalidation", async () => {
+    await mount("w1", ["chat", "page"]);
+    expect(text("home-apps")).toBe("chat,page");
+    expect(getWorkspaceHomeApps).toHaveBeenCalledWith("w1");
+  });
+
+  it("settles an unseeded config read failure onto the normalized default", async () => {
+    getWorkspaceHomeApps.mockRejectedValueOnce(new Error("offline"));
+    await mount("w1");
+    expect(text("home-apps")).toBe("page,office,chat");
+  });
 
   it("first paint comes from the warmed keys with both fetches still pending", async () => {
     await loadSurfaceCache(homeDockCacheKey("w1"), async () => dock("warm"));

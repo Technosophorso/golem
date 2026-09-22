@@ -316,6 +316,21 @@ function firstEnabled(enabled: readonly HomeAppEntry[]): HomeAppEntry {
 }
 
 /**
+ * The generic app/workspace-open destination: the FIRST configured mini app.
+ *
+ * This is deliberately distinct from `homePath`, which backs the explicit
+ * Home action and resumes the operator's sticky app. Account/workspace entry
+ * uses this ordered default so whichever app an admin put first is what opens;
+ * Page has no privileged fallback.
+ */
+export function defaultHomePath(
+  workspaceId: string,
+  enabled: readonly HomeAppEntry[] = DEFAULT_HOME_APPS,
+): string {
+  return homeAppPath(workspaceId, firstEnabled(enabled));
+}
+
+/**
  * Resolve the workspace's active operator app from the cache, constrained
  * to the apps currently on the strip (`enabled` — the workspace's
  * `home_apps` config). A cached value that has since been disabled (or a
@@ -358,8 +373,9 @@ export function writeOperatorApp(
 /**
  * The Home destination: the workspace's persisted operator app's route.
  * This is what the top-row Home icon, the ⌘/Ctrl+1 shortcut, and the
- * workspace-root redirect navigate to — Home resolves to *your last app*
- * within the workspace's configured strip, never a hard-coded `/p`.
+ * Home shortcut navigate to — Home resolves to *your last app* within the
+ * workspace's configured strip, never a hard-coded `/p`. Generic workspace
+ * entry uses `defaultHomePath` instead.
  */
 export function homePath(
   workspaceId: string,
