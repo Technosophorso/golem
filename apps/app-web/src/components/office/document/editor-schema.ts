@@ -60,8 +60,8 @@ function OfficeHeaderView({ node, editor }: NodeViewProps) {
     return () => { active = false; };
   }, [headerImage?.resourceId]);
   const style = headerImage ? {
-    "--office-header-image-width": `${headerImage.widthPt}pt`,
-    "--office-header-image-height": `${headerImage.heightPt}pt`,
+    "--office-header-image-width": `${headerImage.displayWidthPt}pt`,
+    "--office-header-image-height": `${headerImage.displayHeightPt}pt`,
     backgroundImage: src ? `url("${src.replaceAll('"', '%22')}")` : undefined,
   } as CSSProperties : undefined;
   return createElement(NodeViewWrapper, {
@@ -272,7 +272,7 @@ function OfficeImageView({ node }: { node: { attrs: Record<string, unknown> } })
 
 function runCss(runStyle: Record<string, unknown> | null): string | undefined {
   return runStyle ? [
-      `font-family:${JSON.stringify(runStyle.fontFamily)}${runStyle.eastAsianFontFamily ? `,${JSON.stringify(runStyle.eastAsianFontFamily)}` : ""}`, `font-size:${String(runStyle.fontSizePt)}pt`,
+      "line-height:var(--office-run-line-height,inherit)", `font-family:${JSON.stringify(runStyle.fontFamily)}${runStyle.eastAsianFontFamily ? `,${JSON.stringify(runStyle.eastAsianFontFamily)}` : ""}`, `font-size:${String(runStyle.fontSizePt)}pt`,
       runStyle.bold ? "font-weight:700" : "font-weight:400", runStyle.italic ? "font-style:italic" : "font-style:normal",
       runStyle.color ? `color:${String(runStyle.color)}` : "", runStyle.highlight ? `background-color:${String(runStyle.highlight)}` : "",
       runStyle.underline || runStyle.strike ? `text-decoration:${[runStyle.underline ? "underline" : "", runStyle.strike ? "line-through" : ""].filter(Boolean).join(" ")}` : "",
