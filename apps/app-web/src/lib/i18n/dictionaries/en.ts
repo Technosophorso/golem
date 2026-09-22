@@ -1630,6 +1630,10 @@ export const en = {
     // "Suggested for you" home surface — the assistant-curated dock that leads
     // the Home content pane. [COMP:app-web/home-suggested]
     suggested: {
+      emptyTitle: "What would you like to work on?",
+      emptySubtitle: "Ask a question, think through an idea, or tell Brian what you need. Start a conversation and take it from there.",
+      chatStarters: ["Help me plan my week", "Think through an idea with me", "Help me set up my workspace"],
+
       greetingMorning: "Good morning",
       greetingAfternoon: "Good afternoon",
       greetingEvening: "Good evening",

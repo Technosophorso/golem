@@ -53,6 +53,20 @@ function row(over: Partial<ViewListRow> & Pick<ViewListRow, "id" | "name">): Vie
 }
 
 describe("[COMP:app-web/empty-page-landing] Landing chatter + recents", () => {
+  it("keeps setup after the composer in reading order and hides it when setup is complete", () => {
+    const view = (incomplete: boolean) => wrap(
+      <EmptyPageLanding workspaceId="ws_1" cards={[]} onOpenCard={() => {}}
+        onSubmitPrompt={() => {}} onStartBlank={() => {}} studioSetupIncomplete={incomplete} />,
+    );
+    const html = view(true);
+    expect(html.indexOf("<textarea")).toBeLessThan(html.indexOf("<aside"));
+    expect(html).toContain(dict.docPage.setupChecklist.title);
+    expect(html).toContain('/w/ws_1/studio/connectors');
+    expect(html).toContain('/w/ws_1/studio/assistants');
+    expect(html).toContain('/w/ws_1/studio/skills');
+    expect(view(false)).not.toContain(dict.docPage.setupChecklist.title);
+  });
+
   it("renders the chatter heading, subtitle, placeholder, and send label", () => {
     const html = wrap(<EmptyPageLanding workspaceId="ws_1" cards={[]} onOpenCard={() => {}} onSubmitPrompt={() => {}} onStartBlank={() => {}} />);
     expect(html).toContain(dict.docPage.landing.title);

@@ -135,7 +135,7 @@ type Props = {
   /**
    * Cold-start signal: zero connected connectors (≈ setup incomplete), or
    * `null`/`false` once set up. When `true`, the home landing renders the
-   * dismissable setup checklist above the chatter. Lifted from the shared
+   * dismissable setup checklist beside the chatter. Lifted from the shared
    * `studioSetupIncomplete` signal in `DocSidebarDataProvider` (the same
    * one the sidebar Studio nudge reads) — no second connectors fetch. Defaults
    * undefined (no checklist) so a non-cold-start caller never shows it.
@@ -259,16 +259,9 @@ export function EmptyPageLanding({
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-12 px-6 py-16">
-      {/* ── Cold-start setup checklist ───────────────────────── */}
-      {/* Home half of the §4 lifecycle-aware Studio prominence: shown only at
-          cold start (zero connected connectors). Calm + non-blocking + opt-out;
-          auto-hides the instant a connector connects (same signal as the
-          sidebar nudge). [COMP:app-web/setup-checklist] */}
-      {studioSetupIncomplete === true ? (
-        <SetupChecklist workspaceId={workspaceId} />
-      ) : null}
-
+    <div className="@container mx-auto w-full max-w-[1240px] px-5 py-10 md:px-8 md:py-16">
+      <div className="grid grid-cols-1 items-start gap-10 @min-[960px]:has-[aside>section]:grid-cols-[minmax(0,1fr)_288px] @min-[960px]:gap-12">
+      <div className="mx-auto flex w-full min-w-0 max-w-2xl flex-col gap-12 @min-[960px]:pt-8">
       {/* ── Chatter ──────────────────────────────────────────── */}
       <section className="flex flex-col items-center text-center">
         <span className="animate-pop-in mb-5 inline-flex size-12 items-center justify-center rounded-2xl border border-border bg-muted/50 text-muted-foreground shadow-sm">
@@ -576,6 +569,11 @@ export function EmptyPageLanding({
           </div>
         </section>
       ) : null}
+      </div>
+      <aside className="mx-auto w-full max-w-2xl empty:hidden">
+        {studioSetupIncomplete === true ? <SetupChecklist workspaceId={workspaceId} /> : null}
+      </aside>
+      </div>
     </div>
   );
 }

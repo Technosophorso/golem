@@ -1536,6 +1536,10 @@ export const ja: Dictionary = {
       buildingReasoning: "思考過程",
     },
     suggested: {
+      emptyTitle: "今日は何に取り組みますか？",
+      emptySubtitle: "質問したり、アイデアを一緒に考えたり、Brianに頼みたいことを伝えたり。まずは会話から始めましょう。",
+      chatStarters: ["今週の予定を一緒に立てたい", "アイデアを一緒に考えたい", "ワークスペースの設定を手伝って"],
+
       greetingMorning: "おはようございます",
       greetingAfternoon: "こんにちは",
       greetingEvening: "こんばんは",

@@ -1524,6 +1524,10 @@ export const zh: Dictionary = {
       buildingReasoning: "思考過程",
     },
     suggested: {
+      emptyTitle: "你想先處理什麼？",
+      emptySubtitle: "提出問題、一起構思，或告訴 Brian 你需要什麼。從一段對話開始。",
+      chatStarters: ["幫我規劃這一週", "和我一起構思一個想法", "幫我設定工作空間"],
+
       greetingMorning: "早安",
       greetingAfternoon: "午安",
       greetingEvening: "晚安",
