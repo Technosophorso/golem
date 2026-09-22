@@ -12,6 +12,7 @@
 
 import type { WorkspacePickerItem } from "@/lib/workspace-picker";
 import type { WorkspaceContextValue } from "@/lib/workspace-context";
+import { normalizeHomeApps } from "@use-brian/shared/home-apps";
 
 export const DESKTOP_WORKSPACES_CACHE_KEY = "desktop:workspaces:v1";
 
@@ -134,5 +135,8 @@ export function parseDesktopWorkspaceContext(
         ? clearance
         : "internal",
     me: { id: typeof me?.id === "string" ? me.id : "" },
+    ...(Object.prototype.hasOwnProperty.call(row, "homeApps")
+      ? { homeApps: normalizeHomeApps(row.homeApps) }
+      : {}),
   };
 }

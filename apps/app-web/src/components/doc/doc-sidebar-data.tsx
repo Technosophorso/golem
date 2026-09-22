@@ -211,6 +211,8 @@ type SidebarData = {
    * app-bar is navigation and the user must always have some.
    */
   homeApps: HomeAppEntry[];
+  /** True only until the workspace's ordered Home config is first resolved. */
+  homeAppsLoading: boolean;
   /**
    * The workspace's custom (workspace-built) apps. Fetched here beside the
    * config and refreshed by the same `workspace_config` signal, because the
@@ -291,9 +293,12 @@ export function useSidebarData(): SidebarData {
 
 export function DocSidebarDataProvider({
   workspaceId,
+  initialHomeApps,
   children,
 }: {
   workspaceId: string;
+  /** Raw detail-response value used to avoid a provisional-Page redirect. */
+  initialHomeApps?: unknown;
   children: React.ReactNode;
 }) {
   const t = useT().docPage;
@@ -336,22 +341,44 @@ export function DocSidebarDataProvider({
   }, [workspaceId]);
 
   // ── Home app-bar config (fetch + live repair) ─────────────────────────
-  // Seeded with the default strip so the first paint has navigation rather
-  // than an empty bar. The `workspace_config` subscription is what makes this
-  // correct inside a persistent layout: one admin save (here, in another tab,
-  // on another device, or by a teammate) repairs every open strip.
+  // Seed from the workspace detail that already built the shell. Falling back
+  // to the default keeps chrome renderable, but `homeAppsLoading` tells the
+  // bare workspace-root route not to mistake that provisional default for the
+  // workspace's real first app. The `workspace_config` subscription is what
+  // keeps this correct inside a persistent layout after the initial read.
   const [homeApps, setHomeApps] = useState<HomeAppEntry[]>(() =>
-    normalizeHomeApps(null),
+    normalizeHomeApps(initialHomeApps),
+  );
+  const [homeAppsLoading, setHomeAppsLoading] = useState(
+    initialHomeApps === undefined,
   );
   const [customApps, setCustomApps] = useState<CustomHomeApp[]>([]);
   const reloadHomeApps = useCallback(() => {
     if (!workspaceId) return;
-    void getWorkspaceHomeApps(workspaceId).then(setHomeApps);
+    void getWorkspaceHomeApps(workspaceId)
+      .then((apps) => {
+        setHomeApps(apps);
+        setHomeAppsLoading(false);
+      })
+      .catch(() => {
+        // Preserve an exact server/cache seed during a transient revalidation
+        // failure. An unseeded provider is already holding the normalized
+        // default, so either way the root can now resolve without clobbering
+        // known workspace order.
+        setHomeAppsLoading(false);
+      });
     void listCustomHomeApps(workspaceId).then(setCustomApps);
   }, [workspaceId]);
   useEffect(() => {
+    if (initialHomeApps !== undefined) {
+      setHomeApps(normalizeHomeApps(initialHomeApps));
+      setHomeAppsLoading(false);
+    } else {
+      setHomeApps(normalizeHomeApps(null));
+      setHomeAppsLoading(true);
+    }
     reloadHomeApps();
-  }, [reloadHomeApps]);
+  }, [initialHomeApps, reloadHomeApps]);
   useEffect(() => {
     if (typeof window === "undefined" || !workspaceId) return;
     const onRefresh = (event: Event) => {
@@ -363,6 +390,7 @@ export function DocSidebarDataProvider({
       // layout-provider state; stream/catch-up signals omit data and re-fetch.
       if (detail?.homeApps) {
         setHomeApps([...detail.homeApps]);
+        setHomeAppsLoading(false);
         return;
       }
       reloadHomeApps();
@@ -959,6 +987,7 @@ export function DocSidebarDataProvider({
       setSidebarOpen,
       studioSetupIncomplete,
       homeApps,
+      homeAppsLoading,
       customApps,
       feedProfiles,
       dock,
@@ -996,6 +1025,7 @@ export function DocSidebarDataProvider({
       sidebarOpen,
       studioSetupIncomplete,
       homeApps,
+      homeAppsLoading,
       customApps,
       feedProfiles,
       dock,

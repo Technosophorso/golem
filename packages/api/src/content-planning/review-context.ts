@@ -88,7 +88,9 @@ async function readFeedReviewContext(client: FeedReader, scope: FeedScope, actor
       })
       const rules = await listActivePlaybookRulesForActor({ assistantId: actor.assistantId, actorUserId: actor.userId, externalPrincipal: false })
       const exceptions = new Set((await client.query<{ id: string }>("SELECT jsonb_array_elements_text(coalesce(coverage->'postOnlyRuleIds','[]'::jsonb)) AS id FROM feed_learning_outputs WHERE session_id=$1 AND actor_user_id=$2", [actor.sessionId, actor.userId])).rows.map(row => row.id))
-      const sharedRules = rules.filter(rule => !exceptions.has(rule.id) && (rule.appliesToUserId === null || members.every(member => member.userId === rule.appliesToUserId)) && ['public', 'internal', 'confidential', 'restricted'].indexOf(rule.decisionSensitivity) <= Math.min(...members.map(member => ['public', 'internal', 'confidential', 'restricted'].indexOf(member.clearance ?? 'internal'))))
+      const ranks = ['public', 'internal', 'confidential', 'restricted']
+      const audienceRank = Math.min(ranks.indexOf(scope.clearance), ...members.map(member => ranks.indexOf(member.clearance ?? 'internal')))
+      const sharedRules = rules.filter(rule => !exceptions.has(rule.id) && (rule.appliesToUserId === null || members.every(member => member.userId === rule.appliesToUserId)) && ranks.indexOf(rule.decisionSensitivity) <= audienceRank)
       const playbook = await loadDecisionPlaybookContext({ workspaceId: scope.workspaceId, assistantId: actor.assistantId, actorUserId: actor.userId, externalPrincipal: false, allowedRuleIds: sharedRules.map(rule => rule.id), recordApplication: false, applicability: { kind: 'feed', scope: learningScope }, operationKind: 'feed_review', operationId: actor.sessionId, logLabel: 'feed-review' })
       const selectedRules = sharedRules.filter(rule => playbook.playbookRules.includes(rule.rule.trim()))
       dimensions.memory.sources.push(...visible.map(memory => source(`memory:${memory.id}`, 'memory', memory.summary, { summary: memory.summary, detail: memory.detail, tags: memory.tags })), ...selectedRules.map(rule => source(`playbook:${rule.id}`, 'playbook', 'Approved preference', rule.rule)))

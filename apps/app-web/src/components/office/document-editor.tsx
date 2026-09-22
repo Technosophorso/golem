@@ -133,10 +133,32 @@ export function DocumentEditor({ snapshot, role, suggestMode, doc, provider, cur
   useEffect(() => { if (editor) updateDocumentReviewDecorations(editor, commentThreads, suggestions); }, [commentThreads, editor, suggestions]);
   useEffect(() => {
     if (!editor) return;
-    const refresh = () => refreshDocumentPagination(editor);
+    let frame = 0;
+    const refresh = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => { if (!editor.isDestroyed) refreshDocumentPagination(editor); });
+    };
+    // A sidebar resize, image load or late font can change wrapping without
+    // changing the document. Observe width only to avoid gutter-height loops.
+    let width = -1;
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(entries => {
+      const next = entries[0]?.contentRect.width;
+      if (next !== undefined && next !== width) { width = next; refresh(); }
+    });
+    observer?.observe(editor.view.dom);
+    window.addEventListener("resize", refresh);
+    document.fonts?.addEventListener("loadingdone", refresh);
+    editor.view.dom.addEventListener("load", refresh, true);
     refresh();
     editor.on("update", refresh);
-    return () => { editor.off("update", refresh); };
+    return () => {
+      cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener("resize", refresh);
+      document.fonts?.removeEventListener("loadingdone", refresh);
+      editor.view.dom.removeEventListener("load", refresh, true);
+      editor.off("update", refresh);
+    };
   }, [editor]);
   useEffect(() => () => localDoc.destroy(), [localDoc]);
 
@@ -211,7 +233,7 @@ export function DocumentEditor({ snapshot, role, suggestMode, doc, provider, cur
     }
   }
 
-  return <div className="relative flex min-h-0 flex-1 flex-col" data-office-editor="document" data-office-artifact-id={snapshot.artifactId} data-office-structured-editor="true">
+  return <div className="relative flex min-h-0 min-w-0 flex-1 flex-col" data-office-editor="document" data-office-artifact-id={snapshot.artifactId} data-office-structured-editor="true">
     <DocumentToolbar editor={editor} editable={editable} onInsertImage={addImage} controllerRef={toolbarRef} />
     {suggestMode ? <div className="border-b bg-amber-50 px-3 py-1 text-xs font-medium text-amber-950" role="status">{t.suggesting}</div> : null}
     {status ? <div className="absolute bottom-16 left-1/2 z-50 max-w-sm -translate-x-1/2 rounded-lg bg-foreground px-3 py-2 text-xs text-background shadow-lg sm:bottom-4" role="status">{status}</div> : null}

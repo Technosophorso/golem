@@ -92,7 +92,7 @@ export function DocumentToolbar({ editor, editable, onInsertImage, controllerRef
 
   const common = { editor, editable, onInsertImage: () => imageInput.current?.click(), onInsertHeaderImage: () => headerImageInput.current?.click(), editLink, setFindOpen, setOutlineOpen, setCountsOpen };
   return <>
-    <div className="hidden border-b bg-background/95 backdrop-blur sm:block" data-document-toolbar-surface="desktop-tablet">
+    <div className="hidden min-w-0 overflow-x-auto border-b bg-background/95 backdrop-blur sm:block" data-document-toolbar-surface="desktop-tablet">
       <ToolbarContent {...common} />
     </div>
     {/* Phone bar. `bottom-2` is the no-JS baseline; the inline `bottom` adds

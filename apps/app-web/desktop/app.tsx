@@ -55,7 +55,10 @@ import { KindPickerDialogProvider } from "@/components/ui/kind-picker-dialog";
 import { DesktopLinkRecovery } from "@/components/desktop-link-recovery";
 import { WorkspaceContextProvider, type WorkspaceContextValue } from "@/lib/workspace-context";
 import { CustomThemesProvider } from "@/lib/custom-themes";
-import { DocSidebarDataProvider } from "@/components/doc/doc-sidebar-data";
+import {
+  DocSidebarDataProvider,
+  useSidebarData,
+} from "@/components/doc/doc-sidebar-data";
 import { BrainSurfaceProvider } from "@/contexts/brain-surface-context";
 import { PrimaryAssistantProvider } from "@/contexts/primary-assistant";
 import { WorkspaceChrome } from "@/components/doc/workspace-chrome";
@@ -64,6 +67,7 @@ import { WorkspacePicker } from "@/components/workspace-picker";
 import type { WorkspacePickerItem } from "@/lib/workspace-picker";
 import {
   OPERATOR_APP_KEYS,
+  defaultHomePath,
   type OperatorAppKey,
 } from "@/lib/operator-apps";
 import {
@@ -106,6 +110,7 @@ const OfficeTemplatePage = lazy(() => import("@/app/w/[workspaceId]/office/templ
 const CrmRecordPage = lazy(() => import("@/app/w/[workspaceId]/crm/[kind]/[recordId]/page"));
 const ChatPage = lazy(() => import("@/app/w/[workspaceId]/chat/page"));
 const ShopifyPage = lazy(() => import("@/app/w/[workspaceId]/shopify/page"));
+const AssociationPage = lazy(() => import("@/app/w/[workspaceId]/association/page"));
 const CustomHomeAppPage = lazy(() => import("@/app/w/[workspaceId]/apps/[appId]/page"));
 const ComputerLayout = lazy(() => import("@/app/w/[workspaceId]/computer/layout"));
 const BrowsersIndexPage = lazy(() => import("@/app/w/[workspaceId]/computer/page"));
@@ -222,6 +227,7 @@ const OPERATOR_ROUTE_ELEMENTS: Record<OperatorAppKey, ReactNode> = {
   ),
   chat: <Route key="chat" path="chat" element={<ChatPage />} />,
   shopify: <Route key="shopify" path="shopify" element={<ShopifyPage />} />,
+  association: <Route key="association" path="association" element={<AssociationPage />} />,
 };
 
 export function App() {
@@ -317,10 +323,11 @@ export function App() {
                   the SPA mirrors it client-side. */}
               <Route path="doc" element={<DocLegacyRedirect />} />
 
-              {/* Bare `/w/:id` → the doc surface; any other unknown
-                  workspace sub-path lands there too (never the picker). */}
-              <Route index element={<Navigate to="p" replace />} />
-              <Route path="*" element={<Navigate to="p" replace />} />
+              {/* Bare `/w/:id` and unknown workspace sub-paths resolve to the
+                  FIRST mini app in this workspace's ordered Home config.
+                  Page has no privileged desktop fallback. */}
+              <Route index element={<DesktopWorkspaceDefaultRoute />} />
+              <Route path="*" element={<DesktopWorkspaceDefaultRoute />} />
             </Route>
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
@@ -443,7 +450,7 @@ function Boot() {
         {state.k === "ready" && (
           <WorkspacePicker
             initialWorkspaces={state.workspaces}
-            next={`/p${useBrianRouteSuffix}`}
+            next={useBrianRouteSuffix}
             apiUrl={apiBase()}
           />
         )}
@@ -530,7 +537,11 @@ function WorkspaceShell() {
           {/* Mirrors the Next workspace layout: one primary-assistant
               resolution shared by the chat dock and the doc surface. */}
           <PrimaryAssistantProvider workspaceId={workspaceId}>
-          <DocSidebarDataProvider workspaceId={workspaceId}>
+          <DocSidebarDataProvider
+            key={workspaceId}
+            workspaceId={workspaceId}
+            initialHomeApps={ctx.value.homeApps}
+          >
             <BrainSurfaceProvider workspaceId={workspaceId}>
               <WorkspaceChrome workspaceId={workspaceId}>
                 {/* Suspense boundary for the surface slot. The reused Next
@@ -718,6 +729,21 @@ function WorkflowRunRoute() {
 function WorkspaceRedirect({ to }: { to: string }) {
   const { workspaceId = "" } = useParams<{ workspaceId: string }>();
   return <Navigate to={`/w/${workspaceId}/${to}`} replace />;
+}
+
+/** Bundled-shell counterpart of the Next `/w/[workspaceId]` root page. */
+function DesktopWorkspaceDefaultRoute() {
+  const { workspaceId = "" } = useParams<{ workspaceId: string }>();
+  const location = useLocation();
+  const { homeApps, homeAppsLoading } = useSidebarData();
+  if (!workspaceId) return <Navigate to="/" replace />;
+  const useBrianPath = useBrianWorkspacePath(
+    workspaceId,
+    new URLSearchParams(location.search).get("useBrian"),
+  );
+  if (useBrianPath) return <Navigate to={useBrianPath} replace />;
+  if (homeAppsLoading) return <SurfaceFallback />;
+  return <Navigate to={defaultHomePath(workspaceId, homeApps)} replace />;
 }
 
 /** Legacy doc-surface shim — the SPA analogue of the proxy's

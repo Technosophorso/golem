@@ -1,10 +1,11 @@
 /**
- * Pure policy for the Electron display-media handler.
+ * Pure policy for Electron's microphone and display-media handlers.
  *
- * The handler grants a primary-display video stream only because Chromium's
- * getDisplayMedia contract requires one; app-web drops that track immediately
- * and keeps the loopback audio. Keeping trust + source selection here makes the
- * security boundary unit-testable without booting Electron.
+ * The display handler grants a primary-display video stream only because
+ * Chromium's getDisplayMedia contract requires one; app-web drops that track
+ * immediately and keeps the loopback audio. Keeping trust + source selection
+ * here makes both capture security boundaries unit-testable without booting
+ * Electron.
  *
  * [COMP:app-desktop/system-audio]
  */
@@ -13,22 +14,23 @@ export type DisplaySource = {
   display_id: string;
 };
 
-function normalizedOrigin(value: string): string | null {
+function normalizedCaptureOrigin(value: string): string | null {
   try {
-    return new URL(value).origin;
+    const url = new URL(value);
+    return url.protocol === "file:" ? "file://" : url.origin;
   } catch {
     return null;
   }
 }
 
 export function isTrustedCaptureOrigin(
-  securityOrigin: string,
+  requestOriginOrUrl: string,
   appOrigin: string,
   allowBundledFile: boolean,
 ): boolean {
-  if (allowBundledFile && securityOrigin === "file://") return true;
-  const requested = normalizedOrigin(securityOrigin);
-  const expected = normalizedOrigin(appOrigin);
+  const requested = normalizedCaptureOrigin(requestOriginOrUrl);
+  if (allowBundledFile && requested === "file://") return true;
+  const expected = normalizedCaptureOrigin(appOrigin);
   return requested !== null && expected !== null && requested === expected;
 }
 
@@ -38,4 +40,3 @@ export function selectPrimaryDisplaySource<T extends DisplaySource>(
 ): T | undefined {
   return sources.find((source) => source.display_id === String(primaryDisplayId)) ?? sources[0];
 }
-

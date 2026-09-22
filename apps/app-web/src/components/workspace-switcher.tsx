@@ -14,8 +14,8 @@ import { publicRuntimeConfig } from "@/lib/runtime-public-config";
  * settings modal, Add workspace opens an in-popover create form
  * (`CreateWorkspaceForm` -> `POST /api/workspaces`) so creation never
  * leaves the switcher and behaves identically on web and the desktop
- * shell, switching the active workspace is a doc-internal navigation to
- * `/w/<id>/p`, and Log out clears the local session. Only account
+ * shell, switching the active workspace enters `/w/<id>` so its first ordered
+ * mini app decides the destination, and Log out clears the local session. Only account
  * management (Add another account, switching accounts) still bounces to
  * the **main web app** / the primary (`usebrian.ai`) — rewriting the shared
  * `.usebrian.ai` cookies is the primary's job (sub-app rule).
@@ -47,7 +47,6 @@ import { publicRuntimeConfig } from "@/lib/runtime-public-config";
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { docPagePath } from "@/lib/doc-page-url";
 import { routeProgress } from "@/lib/route-progress";
 import { useT } from "@/lib/i18n/client";
 import { desktopBridge } from "@/lib/desktop-auth-source";
@@ -372,13 +371,13 @@ export function WorkspaceSwitcher() {
     );
     // Button-driven nav (no `<a>` for the document click listener to catch).
     routeProgress.start();
-    router.push(docPagePath(workspaceId));
+    router.push(`/w/${workspaceId}`);
   }
 
   // The in-popover create form succeeded: close the switcher, refresh the
   // shared workspace list behind the paint so the next open carries the new
   // row (the current rows stay up meanwhile), and navigate into the new
-  // workspace's doc surface.
+  // workspace through its configured first mini app.
   function handleWorkspaceCreated(created: CreatedWorkspace) {
     setCreating(false);
     setOpen(false);
@@ -386,7 +385,7 @@ export function WorkspaceSwitcher() {
       // The next open retries through the cold-list effect.
     });
     routeProgress.start();
-    router.push(docPagePath(created.id));
+    router.push(`/w/${created.id}`);
   }
 
   // Sign out — desktop shell clears its own session in place; dev clears local

@@ -20,8 +20,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean })
   .IS_REACT_ACT_ENVIRONMENT = true;
 
+const { routerPush } = vi.hoisted(() => ({ routerPush: vi.fn() }));
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({ push: vi.fn(), replace: vi.fn(), prefetch: vi.fn() }),
+  useRouter: () => ({ push: routerPush, replace: vi.fn(), prefetch: vi.fn() }),
 }));
 vi.mock("@/lib/workspace-context", () => ({
   useWorkspaceContext: () => ({
@@ -135,6 +136,7 @@ describe("[COMP:app-web/workspace-switcher] paints the shared workspace list", (
     authFetchMock.mockReset();
     desktopBridgeMock.mockReset().mockReturnValue(null);
     openAddAccountMock.mockReset();
+    routerPush.mockReset();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -230,6 +232,22 @@ describe("[COMP:app-web/workspace-switcher] paints the shared workspace list", (
     expect(rowNames()).toEqual(["Acme", "Beta Robotics"]);
     expect(authFetchMock).not.toHaveBeenCalled();
   });
+
+  it("switches through the bare workspace root so its first mini app decides", async () => {
+    setWorkspaces([
+      { id: "w1", name: "Acme" },
+      { id: "w2", name: "Beta" },
+    ]);
+    await mount();
+    await open();
+    const beta = [...content()!.querySelectorAll<HTMLButtonElement>("button")].find(
+      (button) => button.textContent?.includes("Beta"),
+    );
+    expect(beta).toBeDefined();
+    await act(async () => beta!.click());
+    expect(routerPush).toHaveBeenCalledWith("/w/w2");
+  });
+
   it("offers one desktop Add account entry instead of launching cloud or the standalone OSS page", async () => {
     const addAccount = vi.fn(), chooseDeployment = vi.fn();
     desktopBridgeMock.mockReturnValue({ addAccount, chooseDeployment, runLocal: vi.fn() });

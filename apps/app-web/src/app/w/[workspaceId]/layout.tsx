@@ -9,6 +9,7 @@ import { WorkspaceChrome } from "@/components/doc/workspace-chrome";
 import { PlanGate } from "@/components/chrome/plan-gate";
 import { ComputerLivePill } from "@/components/chrome/computer-live-pill";
 import { SupportDiagnosticsIndicator } from "@/components/chrome/support-diagnostics-indicator";
+import { normalizeHomeApps } from "@use-brian/shared/home-apps";
 
 type TeamApiResponse = {
   id: string;
@@ -18,6 +19,7 @@ type TeamApiResponse = {
   role: "owner" | "admin" | "member";
   clearance?: "public" | "internal" | "confidential";
   me?: { id: string };
+  homeApps?: unknown;
 };
 
 /**
@@ -64,6 +66,7 @@ export default async function WorkspaceLayout(props: {
         role: team.role,
         clearance: team.clearance ?? "internal",
         me: { id: team.me?.id ?? "" },
+        homeApps: normalizeHomeApps(team.homeApps),
       }}
     >
       <CustomThemesProvider workspaceId={workspaceId}>
@@ -77,7 +80,11 @@ export default async function WorkspaceLayout(props: {
               surface used to run its own copy and block its whole shell on it
               ([COMP:app-web/primary-assistant-context]). */}
           <PrimaryAssistantProvider workspaceId={workspaceId}>
-            <DocSidebarDataProvider workspaceId={workspaceId}>
+            <DocSidebarDataProvider
+              key={workspaceId}
+              workspaceId={workspaceId}
+              initialHomeApps={team.homeApps}
+            >
               <BrainSurfaceProvider workspaceId={workspaceId}>
                 <WorkspaceChrome workspaceId={workspaceId}>
                   {props.children}
