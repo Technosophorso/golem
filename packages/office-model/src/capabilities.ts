@@ -84,7 +84,7 @@ export const officeCapabilityManifest = {
     rejected('pivotTable', 'spreadsheet', 'Pivot tables and data models are not supported'),
     rejected('powerQuery', 'spreadsheet', 'Power Query and external data refresh are not supported'),
     rejected('spreadsheetChart', 'spreadsheet', 'Spreadsheet charts are rejected until the canonical workbook can preserve them'),
-    rejected('spreadsheetTable', 'spreadsheet', 'Spreadsheet tables are rejected until the canonical workbook can preserve them'),
+    implemented('spreadsheetTable', 'spreadsheet', 'projection-only'),
     rejected('spreadsheetNote', 'spreadsheet', 'Spreadsheet notes and threaded comments are not preserved'),
     rejected('spreadsheetHyperlink', 'spreadsheet', 'Spreadsheet cell hyperlinks are not preserved'),
     rejected('spreadsheetRichText', 'spreadsheet', 'Rich text within one spreadsheet cell is not preserved'),

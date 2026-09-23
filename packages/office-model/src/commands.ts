@@ -11,6 +11,7 @@ import {
   SpreadsheetWorksheetSchema,
   type OfficeArtifactSnapshot,
 } from './model.js'
+import { appendSpreadsheetRecords, SpreadsheetRecordSchema } from './spreadsheet-tables.js'
 import { normalizeCellAddress, recalculateSpreadsheet } from './spreadsheet.js'
 
 const CommandBaseSchema = z.object({
@@ -22,6 +23,7 @@ const CommandBaseSchema = z.object({
 })
 
 const AtomicOfficeCommandSchema = z.discriminatedUnion('kind', [
+  CommandBaseSchema.extend({ kind: z.literal('appendSpreadsheetRecords'), sheetId: OfficeUuidSchema, tableId: OfficeUuidSchema, prototypeRow: z.number().int().min(1).max(1048576).optional(), records: z.array(SpreadsheetRecordSchema).min(1).max(10000) }).strict(),
   CommandBaseSchema.extend({ kind: z.literal('updateText'), targetId: OfficeUuidSchema, runs: z.array(OfficeRichTextRunSchema) }).strict(),
   CommandBaseSchema.extend({
     kind: z.literal('replaceTextRange'),
@@ -187,6 +189,9 @@ function applySingleMutable(next: OfficeArtifactSnapshot, command: AtomicOfficeC
     if (!image) throw new Error(`Worksheet image ${command.imageId} was not found`)
     if (command.from.row >= command.to.row || command.from.column >= command.to.column) throw new Error('Worksheet image extent must have positive width and height')
     Object.assign(image, { from: command.from, to: command.to, altText: command.decorative ? '' : command.altText, decorative: command.decorative })
+  } else if (command.kind === 'appendSpreadsheetRecords') {
+    if (next.family !== 'spreadsheet') throw new Error('appendSpreadsheetRecords requires a spreadsheet')
+    next.worksheets = appendSpreadsheetRecords(next, command).worksheets
   } else if (command.kind === 'setSpreadsheetCell') {
     if (next.family !== 'spreadsheet') throw new Error('setSpreadsheetCell requires a spreadsheet')
     const sheet = next.worksheets.find((candidate) => candidate.id === command.sheetId)
@@ -194,6 +199,9 @@ function applySingleMutable(next: OfficeArtifactSnapshot, command: AtomicOfficeC
     const address = normalizeCellAddress(command.address)
     if (!address) throw new Error(`Cell address ${command.address} is invalid`)
     let cell = sheet.cells.find((candidate) => candidate.address === address)
+    // Both coordinates and identity must name the same cell; a selected ID must
+    // never authorize overwriting a different address through the executor.
+    if (cell && cell.id !== command.cellId || !cell && findObject(next, command.cellId)) throw new Error('Spreadsheet cell identity/address mismatch')
     if (!cell) {
       cell = { id: command.cellId, address, valueType: command.valueType, value: command.value, style: {}, locked: false }
       sheet.cells.push(cell)

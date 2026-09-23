@@ -80,6 +80,7 @@ function commandFor(capabilityId: EditableId, snapshot: OfficeArtifactSnapshot, 
   } else if (snapshot.family === 'spreadsheet') {
     const sheet = snapshot.worksheets[0]
     const commands: Partial<Record<EditableId, OfficeCommand>> = {
+      spreadsheetTable: { ...base, kind: 'appendSpreadsheetRecords', sheetId: sheet.id, tableId: id(800), records: [{ '1': { valueType: 'number', value: 4 }, '2': { valueType: 'number', value: 5 } }] },
       worksheet: { ...base, kind: 'renameWorksheet', sheetId: sheet.id, name: 'Invoice updated' },
       cellValue: { ...base, kind: 'setSpreadsheetCell', sheetId: sheet.id, cellId: id(74), address: 'A2', valueType: 'number', value: 4 },
       cellFormula: { ...base, kind: 'setSpreadsheetCell', sheetId: sheet.id, cellId: id(76), address: 'C2', valueType: 'number', value: null, formula: 'ROUND(A2*B2,2)' },
@@ -101,7 +102,7 @@ function commandFor(capabilityId: EditableId, snapshot: OfficeArtifactSnapshot, 
 
 describe('[COMP:office/capabilities] Matrix-driven Office capability conformance', () => {
   it('maps every editable manifest row to a concrete command fixture', () => {
-    expect(editable).toHaveLength(36)
+    expect(editable).toHaveLength(37)
     for (const [ordinal, capability] of editable.entries()) {
       const snapshot = capability.family === 'presentation' ? completePresentationSnapshot() : capability.family === 'spreadsheet' ? completeSpreadsheetSnapshot() : completeDocumentSnapshot()
       expect(() => commandFor(capability.id, snapshot, ordinal)).not.toThrow()
@@ -110,7 +111,7 @@ describe('[COMP:office/capabilities] Matrix-driven Office capability conformance
 
   it('classifies every semantic editable row as Brian command-native and only release as action-only', () => {
     const commandNative = editable.filter((capability) => capability.assistantAuthoring === 'command')
-    expect(commandNative).toHaveLength(35)
+    expect(commandNative).toHaveLength(36)
     expect(commandNative.map((capability) => capability.id)).not.toContain('spreadsheetPdf')
     expect(editable.filter((capability) => capability.assistantAuthoring === 'action-only').map((capability) => capability.id)).toEqual(['spreadsheetPdf'])
     for (const [ordinal, capability] of commandNative.entries()) {
@@ -138,6 +139,14 @@ describe('[COMP:office/capabilities] Matrix-driven Office capability conformance
     expect(yDocToSnapshot(writer)).toEqual(applied)
     expect(yDocToSnapshot(reader)).toEqual(applied)
 
+    if (capability.id === 'spreadsheetTable' && applied.family === 'spreadsheet') {
+      expect(applied.worksheets[0].tables![0].ref).toBe('A12:C14')
+      expect(applied.worksheets[0].cells.find(c => c.address === 'C14')).toMatchObject({ formula: 'A14*B14', calculatedValue: 20 })
+      expect(applied.worksheets[0].cells.find(c => c.address === 'A14')?.style.fill).toBe('#ECFDF5')
+      appendOfficeCommand(writer, command)
+      applyOfficeUpdate(reader, encodeOfficeState(writer))
+      expect(yDocToSnapshot(reader)).toEqual(applied)
+    }
     const layout = layoutOfficeArtifact(applied)
     expect(layout.pages.length).toBeGreaterThan(0)
     expect(renderOfficePreviewSvg(layout.pages[0])).toContain('role="img"')
