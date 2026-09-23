@@ -693,6 +693,48 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     expect(controls.onCommand).toHaveBeenCalledWith([{ kind: 'decide', suggestionId: second.id, outcome: 'accepted' }]);
     expect(state.http).not.toHaveBeenCalled();
   });
+  it.each([false, true])('regenerates after saving and invalidates a pending estimate on navigation (%s)', async (navigateDuringEstimate) => {
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:refinement') }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    state.image.mockResolvedValue(new Blob(['fixture'], { type: 'image/png' }));
+    const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' }; const segmentId = crypto.randomUUID(); const controls = generationControls(); const onEdit = vi.fn();
+    const fileId = crypto.randomUUID();
+    const candidate = { id: crypto.randomUUID(), sourceRunId: crypto.randomUUID(), sourceRevision: 1, edits: [{ kind: 'replaceBlock' as const, segmentId, blockId: slot.id, preimage: { type: 'generationPlaceholder' as const, attrs: { ...slot, brief: 'An older brief' } }, replacement: [{ type: 'image' as const, attrs: { id: slot.id, fileId, mimeType: 'image/png' as const, alt: 'Prior image', placement: 'inline' as const } }] }], rationale: '', status: 'proposed' as const, threadId: null, parentId: null, authorUserId: 'fixture', authorKind: 'assistant' as const };
+    const second = structuredClone(candidate); second.id = crypto.randomUUID(); second.edits[0]!.replacement[0]!.attrs.fileId = crypto.randomUUID();
+    controls.snapshot = { copy: null, threads: [], suggestions: [candidate, second] };
+    const render = (current: FeedPlaceholderAttrs, pending: boolean, revision: number) => act(() => root.render(<GenerationPlaceholder slot={current} segmentId={segmentId} controls={{ ...controls, pending, revision }} onEdit={onEdit} onSelect={vi.fn()} />));
+    render(slot, false, 2);
+    // An older-brief preview remains visible, but it cannot be accepted over current content.
+    await vi.waitFor(() => expect(host.querySelector('[data-feed-pending-image] img')).not.toBeNull());
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-feed-pending-image]')!.click());
+    expect(button(en.feedCollaboration.accept).disabled).toBe(true);
+    const instruction = document.querySelector<HTMLTextAreaElement>(`textarea[placeholder="${en.feedGeneration.iterationPlaceholder}"]`)!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(instruction, 'Make the background blue.'); instruction.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(en.feedGeneration.prepareIteration);
+    const edited = onEdit.mock.calls[0]![0][0].replacement[0].attrs as FeedPlaceholderAttrs;
+    expect(edited).toMatchObject({ baseImageFileId: fileId, briefRevision: 1 });
+    expect(edited.brief).toContain('Make the background blue.');
+    expect(state.http).not.toHaveBeenCalled();
+    render(edited, true, 2);
+    expect(state.http).not.toHaveBeenCalled();
+    const estimate: FeedGenerationEstimate = { id: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), revision: 3, segmentId, slot: edited, count: 1, model: 'gemini-3.1-flash-image', tier: 'image', price: { currency: 'USD', maximumUsd: 0.02, rateVersion: 'fixture', billing: 'included' }, inputCharacters: 500, maxTokens: 1000, sources: [], omissions: [], confirmationRequired: true };
+    let respond!: () => void;
+    state.http.mockReturnValueOnce(new Promise(resolve => { respond = () => resolve({ ok: true, json: async () => ({ estimate }) }); }));
+    render(edited, false, 3);
+    if (navigateDuringEstimate) { await click(en.feedGeneration.nextImage); await click(en.feedGeneration.previousImage); }
+    await act(async () => respond());
+    if (navigateDuringEstimate) {
+      expect(document.querySelector('[aria-label="' + en.feedGeneration.estimateTitle + '"]')).toBeNull();
+      expect(state.http).toHaveBeenCalledTimes(1); return;
+    }
+    await vi.waitFor(() => expect(document.body.textContent).toContain('$0.02'));
+    expect(state.http).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(state.http.mock.calls[0]![1].body)).toMatchObject({ expectedRevision: 3, slotId: slot.id });
+    expect(document.querySelector('[aria-label="' + en.feedGeneration.estimateTitle + '"]')?.closest('details')).toBeNull();
+    state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ run: {} }) });
+    await click(en.feedGeneration.confirm);
+    expect(state.http).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(state.http.mock.calls[1]![1].body)).toMatchObject({ estimateId: estimate.id, confirmed: true });
+  });
   it('scenarios 5 and 8: stale candidates remain visible with Keep for later and cannot overwrite a changed slot', async () => {
     const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();
     const candidate = { id: crypto.randomUUID(), sourceRunId: crypto.randomUUID(), sourceRevision: 1, edits: [{ kind: 'replaceBlock' as const, segmentId, blockId: slot.id, preimage: { type: 'generationPlaceholder' as const, attrs: { ...slot, brief: 'Older brief.' } }, replacement: [{ type: 'paragraph' as const, attrs: { id: slot.id }, content: [{ type: 'text' as const, text: 'Retained candidate.' }] }] }], rationale: 'Earlier request.', status: 'proposed', threadId: null, parentId: null, authorUserId: 'fixture', authorKind: 'assistant' as const };

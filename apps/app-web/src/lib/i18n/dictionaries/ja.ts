@@ -199,8 +199,8 @@ export const ja: Dictionary = {
     "imageOptionPosition": "画像 {current} / {total}",
     "iterationInstruction": "この画像を変更",
     "iterationPlaceholder": "変更したい点を入力...",
-    "prepareIteration": "新しい試行に追加",
-    "iterationHint": "生成指示を更新します。再生成する前にリクエストと費用を確認してください。",
+    "prepareIteration": "再生成",
+    "iterationHint": "コメントに沿ってこの画像を編集します。費用を確認してから実行してください。",
     "revisionPrefix": "修正リクエスト"
 },
   feedReview: {

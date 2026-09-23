@@ -27,7 +27,7 @@ async function fixture(options: { status?: string; data?: string; empty?: boolea
       else send({ id: frame.id, result: {} })
     }
   })
-  const rpc = new CodexRpcPeer({ input, output })
+  const rpc = new CodexRpcPeer({ input, output, maxFrameBytes: 64 * 1024 * 1024 })
   return { rpc, cwd: '/tmp/empty-fixture', calls, png, diagnostics: () => ({ stderrBytes: 17, stderrTruncated: false }) }
 }
 describe('[COMP:core/codex-image] explicit image receipt bridge', () => {
@@ -101,5 +101,23 @@ describe('[COMP:core/codex-image] explicit image receipt bridge', () => {
     const request = vi.fn().mockResolvedValue({ account: planType ? { type: 'chatgpt', email: 'fixture@example.com', planType } : null, requiresOpenaiAuth: true })
     await expect(inspectCodexImage({ rpc: { request } as any, cwd: '/tmp/fixture' }, ['gpt-test'])).rejects.toThrow('image_generation_unavailable')
     expect(request).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('[COMP:core/codex-image] authorized image editing', () => {
+  it('attaches source pixels to the image turn and directs imagegen to edit that attachment', async () => {
+    const f = await fixture()
+    try {
+      const source = { data: f.png, mimeType: 'image/png' as const }
+      const receipt = await generateCodexImage(f, snapshot, 'Make the sky blue', AbortSignal.timeout(3000), source)
+      expect(receipt.image).toBeDefined()
+      expect(f.calls.find(call => call.method === 'turn/start')?.params.input).toEqual([{ type: 'image', url: `data:image/png;base64,${f.png}` }, { type: 'text', text: 'Make the sky blue' }])
+      expect(f.calls.find(call => call.method === 'thread/start')?.params.baseInstructions).toContain('num_last_images_to_include: 1')
+    } finally { f.rpc.close() }
+  })
+  it('handles a bounded multi-megabyte invalid output as a known malformed receipt', async () => {
+    const f = await fixture({ data: Buffer.alloc(6_000_000).toString('base64') })
+    try { expect((await generateCodexImage(f, snapshot, 'One image', AbortSignal.timeout(3000))).error).toBe('image_malformed') }
+    finally { f.rpc.close() }
   })
 })

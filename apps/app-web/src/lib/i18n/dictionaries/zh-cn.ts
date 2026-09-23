@@ -210,8 +210,8 @@ export const zhCN: Dictionary = {
     "imageOptionPosition": "图片 {current} / {total}",
     "iterationInstruction": "修改这张图片",
     "iterationPlaceholder": "描述要修改的内容...",
-    "prepareIteration": "加入新的尝试",
-    "iterationHint": "这会更新生成指示。再次生成前，请确认请求和费用。",
+    "prepareIteration": "重新生成",
+    "iterationHint": "根据你的意见修改这张图片。确认费用后再开始。",
     "revisionPrefix": "修改要求"
 },
   feedReview: {

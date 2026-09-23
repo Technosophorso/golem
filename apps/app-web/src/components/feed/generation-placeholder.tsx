@@ -42,6 +42,9 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
   const [model, setModel] = useState<'standard' | 'pro' | 'max'>('standard'); const [count, setCount] = useState(1);
   const [estimate, setEstimate] = useState<FeedGenerationEstimate | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
   const [imageIndex, setImageIndex] = useState(0); const [iteration, setIteration] = useState('');
+  const estimateEpoch = useRef(0);
+  const clearEstimate = () => { estimateEpoch.current++; setEstimate(null); };
+  const queuedIteration = useRef<{ slot: string; revision: number } | null>(null);
   const retained = useRef<{ key: string; mutationId: string } | null>(null); const dispatchIds = useRef(new Map<string, string>());
   const referenceUploadInput = useRef<HTMLInputElement>(null); const imageUploadInput = useRef<HTMLInputElement>(null);
   const media = usePostMedia(c.workspaceId); const node: FeedNode = { type: 'generationPlaceholder', attrs: props.slot };
@@ -51,26 +54,45 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
   const candidates = c.snapshot?.suggestions.filter(s => s.sourceRunId && s.edits.some(edit => edit.kind === 'replaceBlock' && edit.blockId === props.slot.id)) ?? [];
   const imageCandidates = props.slot.kind === 'image' ? candidates.filter(candidate => candidateImage(candidate) !== null).sort((left, right) => Number(['proposed', 'deferred'].includes(right.status) && candidateMatchesSlot(right, props.slot)) - Number(['proposed', 'deferred'].includes(left.status) && candidateMatchesSlot(left, props.slot))) : [];
   const imageCandidateKey = imageCandidates.map(candidate => candidate.id).join(':');
-  const pendingImageCandidate = imageCandidates.find(candidate => ['proposed', 'deferred'].includes(candidate.status) && candidateMatchesSlot(candidate, props.slot));
-  const pendingImage = pendingImageCandidate ? candidateImage(pendingImageCandidate) : null;
+  const pendingImageCandidate = imageCandidates.find(candidate => ['proposed', 'deferred'].includes(candidate.status));
+  const pendingImage = pendingImageCandidate ? candidateImage(pendingImageCandidate) : props.slot.baseImageFileId ? { type: 'image' as const, attrs: { fileId: props.slot.baseImageFileId, alt: props.slot.altIntent ?? '' } } : null;
+  const currentInputs = JSON.stringify({ slot: props.slot, revision: c.revision, model, count, imageProvider, iteration, candidateId: imageCandidates[imageIndex]?.id });
+  const latestInputs = useRef(currentInputs); latestInputs.current = currentInputs;
   useEffect(() => { setImageIndex(0); }, [imageCandidateKey]);
   const replace = (replacement: FeedNode[]) => props.onEdit([{ kind: 'replaceBlock', segmentId: props.segmentId, blockId: props.slot.id, preimage: node, replacement }]);
-  const update = (patch: Partial<FeedPlaceholderAttrs>) => { setEstimate(null); replace([{ type: 'generationPlaceholder', attrs: { ...props.slot, ...patch, briefRevision: props.slot.briefRevision + 1 } }]); };
+  const update = (patch: Partial<FeedPlaceholderAttrs>) => { queuedIteration.current = null; clearEstimate(); replace([{ type: 'generationPlaceholder', attrs: { ...props.slot, ...patch, briefRevision: props.slot.briefRevision + 1 } }]); };
   async function request(suffix: string, body: unknown) {
     const res = await authFetch(`${publicRuntimeConfig().apiUrl ?? 'http://localhost:4000'}${feedCollaborationPath(c.assistantId, c.sessionId)}${suffix}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     const data = await res.json(); if (!res.ok) throw new Error(data.code ?? 'generation_failed'); return data;
   }
   async function estimateGeneration() {
-    if (generationBlocked || active) return; setBusy(true); setError(null);
+    if (generationBlocked || active) return; setBusy(true); setError(null); const epoch = estimateEpoch.current;
     const body = { expectedRevision: c.revision, segmentId: props.segmentId, slotId: props.slot.id, model, ...(props.slot.kind === 'image' ? { imageProvider } : {}), count: props.slot.kind === 'image' ? 1 : count, locale };
     const key = JSON.stringify(body); if (retained.current?.key !== key) retained.current = { key, mutationId: crypto.randomUUID() };
-    try { setEstimate((await request('/generations/estimate', { ...body, mutationId: retained.current.mutationId })).estimate); retained.current = null; }
+    try { const result = await request('/generations/estimate', { ...body, mutationId: retained.current.mutationId }); if (estimateEpoch.current === epoch && latestInputs.current === currentInputs) setEstimate(result.estimate); retained.current = null; }
     catch (err) { setError(err instanceof Error && err.message.includes('unavailable') ? t.unavailable : t.failed); } finally { setBusy(false); c.onRefresh(); }
+  }
+  // Wait for the exact local edit to be acknowledged, never estimate the old brief.
+  useEffect(() => {
+    const queued = queuedIteration.current;
+    if (!queued || generationBlocked || active || c.revision <= queued.revision) return;
+    queuedIteration.current = null;
+    if (canonicalFeedValue(props.slot) !== queued.slot) { setError(t.failed); return; }
+    void estimateGeneration();
+  }, [props.slot, c.revision, generationBlocked, active]);
+  function regenerateImage() {
+    const instruction = iteration.trim(); const image = imageCandidates[imageIndex] && candidateImage(imageCandidates[imageIndex]!);
+    if (!instruction || !image || generationBlocked || active) return;
+    const slot = { ...props.slot, brief: [props.slot.brief.trim(), `${t.revisionPrefix}: ${instruction}`].filter(Boolean).join('\n\n'),
+      baseImageFileId: image.attrs.fileId, briefRevision: props.slot.briefRevision + 1 };
+    clearEstimate(); setError(null);
+    queuedIteration.current = { slot: canonicalFeedValue(slot), revision: c.revision };
+    replace([{ type: 'generationPlaceholder', attrs: slot }]);
   }
   async function dispatch() {
     if (!estimate || generationBlocked || active || estimate.revision !== c.revision) return;
     setBusy(true); setError(null); const mutationId = dispatchIds.current.get(estimate.id) ?? crypto.randomUUID(); dispatchIds.current.set(estimate.id, mutationId);
-    try { await request('/generations', { mutationId, estimateId: estimate.id, confirmed: true }); setEstimate(null); }
+    try { await request('/generations', { mutationId, estimateId: estimate.id, confirmed: true }); clearEstimate(); setIteration(''); }
     catch { setError(t.failed); } finally { setBusy(false); c.onRefresh(); }
   }
   function fillImage(fileId: string, mimeType: string) {
@@ -110,9 +132,18 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
     </div>
     {files === 'reference' ? <FeedGenerationFilePicker controls={c} onCancel={() => setFiles(null)} onPick={async id => { addFileReference(id); setFiles(null); }} /> : null}
   </section>;
+  const confirmation = estimate ? <section className="space-y-2 border-t pt-3" aria-label={t.estimateTitle}>
+      <h4 className="font-medium">{t.estimateTitle}</h4>{estimate.slot.baseImageFileId ? <FeedGenerationImage workspaceId={c.workspaceId} fileId={estimate.slot.baseImageFileId} alt={t.imagePreview} className="h-24 w-24 rounded object-contain" /> : null}<p className="whitespace-pre-wrap text-sm">{estimate.slot.brief}</p><p className="text-sm">{t.model}: {estimate.model} · {t.candidates}: {estimate.count}</p>
+      <p className="text-sm">{estimate.price.billing === 'subscription' ? t.quotaUsage : t.estimatedCost}: {estimate.price.billing === 'subscription' ? t.quotaUnknown : estimate.price.maximumUsd === null ? t.costUnknown : new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }).format(estimate.price.maximumUsd)}</p>
+      <p className="text-xs">{estimate.price.billing === 'subscription' ? t.costSubscription : estimate.price.billing === 'byo' ? t.costByo : estimate.price.billing === 'metered' ? t.costMetered : t.costIncluded}{estimate.price.credits !== undefined ? ` ${t.credits}: ${estimate.price.credits}` : ''}</p>
+      <dl className="text-sm">{(['intent', 'length', 'aspectRatio', 'style', 'altIntent'] as const).map(key => estimate.slot[key] !== undefined ? <div key={key}><dt className="font-medium">{t[key]}</dt><dd>{estimate.slot[key]}</dd></div> : null)}</dl>
+      <p className="text-sm">{t.confirmShape}</p><p className="text-xs">{t.sources}: {estimate.sources.map(source => source.title).join(', ') || tr.unavailable}</p>
+      {estimate.omissions.length ? <p className="text-sm">{t.referenceOmissions}</p> : null}
+      <Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={generationBlocked || active || estimate.revision !== c.revision} onClick={() => void dispatch()}>{t.confirm}</Button><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => clearEstimate()}>{tc.cancel}</Button>
+    </section> : null;
   return <Dialog.Root open={open} onOpenChange={setOpen}>
     <section data-feed-slot={props.slot.id} className="my-3 flex min-w-0 flex-wrap items-center gap-x-2 rounded-lg bg-muted/40 px-3 py-1" onPointerDown={props.onSelect} onFocusCapture={props.onSelect}>
-      {pendingImage ? <div className="order-first w-full pt-2" data-feed-pending-image><FeedGenerationImage workspaceId={c.workspaceId} fileId={pendingImage.attrs.fileId} alt={pendingImage.attrs.alt ?? ''} className="max-h-48 w-full rounded-lg object-contain" /></div> : null}
+      {pendingImage ? <button type="button" aria-label={t.openDetails} onClick={() => setOpen(true)} className="order-first min-h-11 w-full pt-2" data-feed-pending-image><FeedGenerationImage workspaceId={c.workspaceId} fileId={pendingImage.attrs.fileId} alt={pendingImage.attrs.alt ?? ''} className="max-h-48 w-full rounded-lg object-contain" /></button> : null}
       <span className="flex shrink-0 items-center gap-2 text-sm font-medium text-muted-foreground"><Icon className="size-4" aria-hidden />{label}</span>
       <input aria-label={t.brief} title={props.slot.brief || t.briefHint} placeholder={t.briefHint} value={props.slot.brief} disabled={c.readOnly}
         className="order-last min-h-11 w-full min-w-0 border-0 bg-transparent text-base shadow-none outline-none focus-visible:shadow-none md:order-none md:w-auto md:flex-1"
@@ -125,10 +156,10 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
       <Dialog.Backdrop data-feed-generation-backdrop onClick={() => setOpen(false)} className="fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
       <Dialog.Popup className="fixed left-1/2 top-1/2 z-[101] max-h-[85dvh] w-[calc(100vw-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border bg-background p-5 shadow-xl">
         <div className="mb-2 flex items-center justify-between gap-3"><Dialog.Title className="text-base font-semibold">{label}</Dialog.Title><Dialog.Close aria-label={t.closeDetails} render={<Button variant="ghost" size="icon" className="size-11 shrink-0" />}><X className="size-4" aria-hidden /></Dialog.Close></div>
-        {imageCandidates.length ? <FeedImageCandidateCarousel controls={c} runs={runs} candidates={imageCandidates} slot={props.slot} index={imageIndex} onIndexChange={setImageIndex} iteration={iteration} onIterationChange={setIteration} onPrepareIteration={() => {
-          const instruction = iteration.trim(); if (!instruction) return;
-          update({ brief: [props.slot.brief.trim(), `${t.revisionPrefix}: ${instruction}`].filter(Boolean).join('\n\n') }); setIteration('');
-        }} /> : null}
+        {imageCandidates.length ? <FeedImageCandidateCarousel controls={c} runs={runs} candidates={imageCandidates} slot={props.slot} index={imageIndex} onIndexChange={index => { queuedIteration.current = null; clearEstimate(); setImageIndex(index); }} iteration={iteration} onIterationChange={value => { queuedIteration.current = null; clearEstimate(); setIteration(value); }} onPrepareIteration={regenerateImage} busy={generationBlocked || active} /> : null}
+        {imageCandidates.length ? <>{confirmation}{busy ? <p role="status" className="text-sm">{t.loading}</p> : null}{error ? <p role="alert" className="text-sm">{error}</p> : null}</> : null}
+        <details key={imageCandidates.length ? "refinement" : "initial"} open={imageCandidates.length ? undefined : true}>
+        {imageCandidates.length ? <summary className="min-h-11 cursor-pointer py-3 text-sm">{t.imageDetails}</summary> : null}
         <Dialog.Description className="mb-5 text-sm text-muted-foreground">{props.slot.kind === 'image' ? t.imageInstructions : t.draftFirst}</Dialog.Description>
         <div className="space-y-3" onFocusCapture={props.onSelect}>
     <label className="block space-y-1 text-sm"><span>{t.brief}</span><textarea aria-label={t.brief} className={inputClass} value={props.slot.brief} disabled={c.readOnly} rows={3} onChange={e => update({ brief: e.target.value })} /></label>
@@ -142,7 +173,7 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1"><label className="block text-sm">{t.imageSize}</label><SearchableSelect className="min-h-11 text-base" popupClassName="z-[110] [&_[role=option]]:min-h-11 [&_input]:text-base" aria-label={t.imageSize} value={props.slot.aspectRatio ?? '1:1'} disabled={c.readOnly} items={['1:1', '16:9', '9:16', '4:3', '3:4'].map(value => ({ value, label: value }))} onValueChange={value => update({ aspectRatio: value as FeedPlaceholderAttrs['aspectRatio'] })} /></div>
         <div className="space-y-1"><label className="block text-sm">{t.imageProvider}</label>{imageProviders.length > 1 ? <SearchableSelect aria-label={t.imageProvider} className="min-h-11 text-base" popupClassName="z-[110] [&_[role=option]]:min-h-11" value={imageProvider}
-          disabled={c.readOnly || active || busy} items={imageProviders} onValueChange={value => { setImageProvider(value as 'gemini' | 'openai-codex'); setEstimate(null); setError(null); }} /> : <div aria-label={t.imageProvider} className="flex min-h-11 items-center rounded-md border bg-muted/40 px-3 text-sm">{imageProviders[0]!.label}</div>}</div>
+          disabled={c.readOnly || active || busy} items={imageProviders} onValueChange={value => { setImageProvider(value as 'gemini' | 'openai-codex'); clearEstimate(); setError(null); }} /> : <div aria-label={t.imageProvider} className="flex min-h-11 items-center rounded-md border bg-muted/40 px-3 text-sm">{imageProviders[0]!.label}</div>}</div>
       </div>
       {imageProvider === 'openai-codex' ? <p className="text-xs text-muted-foreground">{t.codexConnection}</p> : null}
       <details className="space-y-3"><summary className="min-h-11 cursor-pointer py-3 text-sm">{t.imageDetails}</summary>
@@ -159,27 +190,20 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
         {files === 'image' ? <FeedGenerationFilePicker controls={c} onCancel={() => setFiles(null)} onPick={async id => { try { const blob = await fetchDocFileBlob(c.workspaceId, id); fillImage(id, blob.type); } catch { setError(t.imageRequired); } setFiles(null); }} /> : null}
       </details>
     </>}
-    {props.slot.kind === 'text' ? <div className="flex flex-wrap gap-2" role="group" aria-label={t.model}>{(['standard', 'pro', 'max'] as const).map(tier => <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" key={tier} disabled={generationBlocked || active} aria-pressed={model === tier} onClick={() => { setModel(tier); setEstimate(null); }}>{tr[tier]}</Button>)}</div> : null}
-    {props.slot.kind === 'text' ? <label className="block text-sm">{t.candidates}<input className={inputClass} type="number" min={1} max={5} value={count} disabled={generationBlocked || active} onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 5) { setCount(value); setEstimate(null); } }} /></label> : null}
+    {props.slot.kind === 'text' ? <div className="flex flex-wrap gap-2" role="group" aria-label={t.model}>{(['standard', 'pro', 'max'] as const).map(tier => <Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" key={tier} disabled={generationBlocked || active} aria-pressed={model === tier} onClick={() => { setModel(tier); clearEstimate(); }}>{tr[tier]}</Button>)}</div> : null}
+    {props.slot.kind === 'text' ? <label className="block text-sm">{t.candidates}<input className={inputClass} type="number" min={1} max={5} value={count} disabled={generationBlocked || active} onChange={e => { const value = Number(e.target.value); if (Number.isInteger(value) && value >= 1 && value <= 5) { setCount(value); clearEstimate(); } }} /></label> : null}
     <Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={generationBlocked || active || !props.slot.brief.trim()} onClick={() => void estimateGeneration()}>{runs.length ? t.tryAgain : t.generate}</Button>
     {c.offline ? <p role="status" className="text-sm">{tr.offline}</p> : c.pending ? <p role="status" className="text-sm text-muted-foreground">{t.savingDraft}</p> : null}
-    {busy ? <p role="status" className="text-sm">{t.loading}</p> : null}{error ? <p role="alert" className="text-sm">{error}</p> : null}
-    {estimate ? <section className="space-y-2 rounded-lg border bg-background p-3" aria-label={t.estimateTitle}>
-      <h4 className="font-medium">{t.estimateTitle}</h4><p className="whitespace-pre-wrap text-sm">{estimate.slot.brief}</p><p className="text-sm">{t.model}: {estimate.model} · {t.candidates}: {estimate.count}</p>
-      <p className="text-sm">{estimate.price.billing === 'subscription' ? t.quotaUsage : t.estimatedCost}: {estimate.price.billing === 'subscription' ? t.quotaUnknown : estimate.price.maximumUsd === null ? t.costUnknown : new Intl.NumberFormat(locale, { style: 'currency', currency: 'USD', maximumFractionDigits: 4 }).format(estimate.price.maximumUsd)}</p>
-      <p className="text-xs">{estimate.price.billing === 'subscription' ? t.costSubscription : estimate.price.billing === 'byo' ? t.costByo : estimate.price.billing === 'metered' ? t.costMetered : t.costIncluded}{estimate.price.credits !== undefined ? ` ${t.credits}: ${estimate.price.credits}` : ''}</p>
-      <dl className="text-sm">{(['intent', 'length', 'aspectRatio', 'style', 'altIntent'] as const).map(key => estimate.slot[key] !== undefined ? <div key={key}><dt className="font-medium">{t[key]}</dt><dd>{estimate.slot[key]}</dd></div> : null)}</dl>
-      <p className="text-sm">{t.confirmShape}</p><p className="text-xs">{t.sources}: {estimate.sources.map(source => source.title).join(', ') || tr.unavailable}</p>
-      {estimate.omissions.length ? <p className="text-sm">{t.referenceOmissions}</p> : null}
-      <Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={generationBlocked || active || estimate.revision !== c.revision} onClick={() => void dispatch()}>{t.confirm}</Button><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => setEstimate(null)}>{tc.cancel}</Button>
-    </section> : null}
+    {!imageCandidates.length && busy ? <p role="status" className="text-sm">{t.loading}</p> : null}{!imageCandidates.length && error ? <p role="alert" className="text-sm">{error}</p> : null}
+    {!imageCandidates.length ? confirmation : null}
     <FeedGenerationResults controls={c} runs={runs} candidates={props.slot.kind === 'image' ? candidates.filter(candidate => candidateImage(candidate) === null) : candidates} slot={props.slot} onRunAction={async (id, action) => { try { await request(`/runs/${id}/${action}`, {}); } catch { setError(t.failed); } c.onRefresh(); }} />
         </div>
+        </details>
       </Dialog.Popup>
     </Dialog.Portal>
   </Dialog.Root>;
 }
-function FeedImageCandidateCarousel(props: { controls: FeedGenerationControls; runs: FeedEditorialRunSummary[]; candidates: FeedDraftSuggestion[]; slot: FeedPlaceholderAttrs; index: number; onIndexChange: (index: number) => void; iteration: string; onIterationChange: (value: string) => void; onPrepareIteration: () => void }) {
+function FeedImageCandidateCarousel(props: { controls: FeedGenerationControls; runs: FeedEditorialRunSummary[]; candidates: FeedDraftSuggestion[]; slot: FeedPlaceholderAttrs; index: number; onIndexChange: (index: number) => void; iteration: string; onIterationChange: (value: string) => void; onPrepareIteration: () => void; busy: boolean }) {
   const t = useT().feedGeneration; const tc = useT().feedCollaboration; const candidate = props.candidates[props.index]; const swipeStart = useRef<number | null>(null);
   if (!candidate) return null;
   const image = candidateImage(candidate); if (!image) return null;
@@ -187,7 +211,7 @@ function FeedImageCandidateCarousel(props: { controls: FeedGenerationControls; r
   const run = props.runs.find(item => item.id === candidate.sourceRunId); const actionable = ['proposed', 'deferred'].includes(candidate.status);
   const disabled = props.controls.readOnly || props.controls.offline || props.controls.pending;
   const move = (direction: -1 | 1) => props.onIndexChange(Math.max(0, Math.min(props.candidates.length - 1, props.index + direction)));
-  return <section className="mb-5 space-y-3 rounded-xl border bg-muted/20 p-3" aria-label={t.imagePreview} data-feed-image-carousel data-feed-candidate={candidate.id}>
+  return <section className="mb-4 space-y-3" aria-label={t.imagePreview} data-feed-image-carousel data-feed-candidate={candidate.id}>
     <div className="relative flex min-h-52 items-center justify-center overflow-hidden rounded-lg bg-muted/50"
       onTouchStart={event => { swipeStart.current = event.touches[0]?.clientX ?? null; }}
       onTouchEnd={event => { const start = swipeStart.current; const end = event.changedTouches[0]?.clientX; swipeStart.current = null; if (start === null || end === undefined || Math.abs(end - start) < 40) return; move(end < start ? 1 : -1); }}>
@@ -204,9 +228,9 @@ function FeedImageCandidateCarousel(props: { controls: FeedGenerationControls; r
     {candidate.rationale ? <p className="text-sm text-muted-foreground">{candidate.rationale}</p> : null}
     {stale && actionable ? <p className="text-sm">{t.stale}</p> : null}
     {actionable ? <div className="flex flex-wrap gap-2"><Button variant="default" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled || stale} onClick={() => void props.controls.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'accepted' }])}>{tc.accept}</Button><Button variant="destructive" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled} onClick={() => void props.controls.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'rejected' }])}>{tc.reject}</Button><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={disabled || candidate.status === 'deferred'} onClick={() => void props.controls.onCommand([{ kind: 'decide', suggestionId: candidate.id, outcome: 'deferred' }])}>{t.keepLater}</Button></div> : <p className="text-xs">{tc[candidate.status as 'accepted' | 'rejected'] ?? candidate.status}</p>}
-    <div className="space-y-2 rounded-lg border bg-background p-3">
+    <div className="space-y-2">
       <label className="block space-y-1 text-sm"><span>{t.iterationInstruction}</span><textarea className={inputClass} rows={2} value={props.iteration} placeholder={t.iterationPlaceholder} disabled={props.controls.readOnly} onChange={event => props.onIterationChange(event.target.value)} /></label>
-      <div className="flex flex-wrap items-center gap-2"><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={props.controls.readOnly || !props.iteration.trim()} onClick={props.onPrepareIteration}>{t.prepareIteration}</Button><span className="text-xs text-muted-foreground">{t.iterationHint}</span></div>
+      <div className="flex flex-wrap items-center gap-2"><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" disabled={props.busy || !props.iteration.trim()} onClick={props.onPrepareIteration}>{t.prepareIteration}</Button><span className="text-xs text-muted-foreground">{t.iterationHint}</span></div>
     </div>
   </section>;
 }

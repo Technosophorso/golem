@@ -199,8 +199,8 @@ export const zh: Dictionary = {
     "imageOptionPosition": "圖片 {current} / {total}",
     "iterationInstruction": "修改這張圖片",
     "iterationPlaceholder": "描述要修改的內容...",
-    "prepareIteration": "加入新的嘗試",
-    "iterationHint": "這會更新生成指示。再次生成前，請確認請求與費用。",
+    "prepareIteration": "重新生成",
+    "iterationHint": "根據你的意見修改這張圖片。確認費用後再開始。",
     "revisionPrefix": "修改要求"
 },
   feedReview: {

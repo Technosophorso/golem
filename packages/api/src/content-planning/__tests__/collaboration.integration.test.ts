@@ -655,7 +655,7 @@ describe('[COMP:feed/draft-generation] durable image and output integration', ()
       await tool.execute({ mutationId: randomUUID(), action: 'convert', kind: 'image', ...(wholePost ? { target } : {}), patch: { brief: 'Use a simplified visual with three shapes.' } }, {} as ToolContext)
       const converted = (await getFeedCollaboration(f.actor)).copy!
       expect(converted.revision).toBe(5)
-      expect(converted.content.composition!.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: { id: f.slotId, kind: 'image', brief: 'Use a simplified visual with three shapes.', briefRevision: 0, references: [], altIntent: fixed.attrs.alt } })
+      expect(converted.content.composition!.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: { id: f.slotId, kind: 'image', brief: 'Use a simplified visual with three shapes.', briefRevision: 0, references: [], baseImageFileId: fixed.attrs.fileId, altIntent: fixed.attrs.alt } })
       expect(f.call).not.toHaveBeenCalled()
       await f.command([{ kind: 'undo', revision: 5 }], 5)
       expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual(fixed)
@@ -716,5 +716,57 @@ describe('[COMP:feed/draft-generation] durable image and output integration', ()
     expect(await store.markPosted({ assistantId: f.actor.assistantId, draftId: saved!.id, userId: f.actor.userId, permalink: 'https://example.com/posted' })).toBe(true)
     expect((await pool.query('SELECT id,source_revision FROM feed_post_confirmations WHERE session_id=$1', [f.actor.sessionId])).rows).toEqual(confirmations)
 
+  })
+})
+
+describe('[COMP:feed/draft-generation] anchored visual refinement', () => {
+  it('tracks explicit source pixels in the draft audience footprint and refuses foreign file anchors', async () => {
+    const f = await generationFixture(), foreign = await generationFixture()
+    const file = async (workspaceId: string) => (await pool.query<{ id: string }>("INSERT INTO workspace_files(workspace_id,path,name,mime,storage_uri,sensitivity) VALUES($1,$2,'Source diagram','image/png','file:///fixture-source','internal') RETURNING id", [workspaceId, `/${randomUUID()}.png`])).rows[0]!.id
+    const baseImageFileId = await file(f.workspaceId)
+    const change = (id: string): FeedCommand[] => [{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [{ type: 'generationPlaceholder', attrs: { ...f.slot, kind: 'image', briefRevision: 1, baseImageFileId: id } }] }] }]
+    await expect(f.command(change(await file(foreign.workspaceId)))).rejects.toMatchObject({ code: 'file_not_available_to_draft' })
+    await f.command(change(baseImageFileId))
+    const copy = (await getFeedCollaboration(f.actor)).copy!
+    expect(copy.content.sourceFileIds).toContain(baseImageFileId)
+    expect(copy.content.sourceSensitivity).toBe('internal')
+    await pool.query("UPDATE workspace_members SET clearance='public' WHERE workspace_id=$1 AND user_id=$2", [f.workspaceId, f.other.userId])
+    await expect(getFeedCollaboration(f.actor)).rejects.toMatchObject({ code: 'draft_source_access_required' })
+    expect(f.call).not.toHaveBeenCalled()
+  })
+
+  it('freezes the first reviewable image without mutating the slot, detects changed bytes, and sends the frozen source to the provider', async () => {
+    const f = await generationFixture()
+    const slot = { ...f.slot, kind: 'image' as const, briefRevision: 1 }
+    await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [{ type: 'generationPlaceholder', attrs: slot }] }] }])
+    const fileId = randomUUID()
+    await pool.query("INSERT INTO workspace_files(id,workspace_id,path,name,mime,storage_uri,sensitivity) VALUES($1,$2,$3,'Generated diagram','image/png','file:///fixture-image','internal')", [fileId, f.workspaceId, `/${fileId}.png`])
+    const image = { data: 'fixture-authorized-image-bytes', mimeType: 'image/png' as const }
+    const call = vi.fn(async (_input: unknown) => ({ text: '', imageReceipt: { image, usage: { inputTokens: 100, outputTokens: 50, measured: true } } }))
+    const model = await f.port.resolve({ ...f.actor, workspaceId: f.workspaceId }, 'image', 'standard')
+    f.port.resolve = vi.fn(async () => ({ ...model, call }))
+    f.port.persistImage = vi.fn(async () => ({ fileId, mimeType: 'image/png' as const, alt: 'Diagram' }))
+    const readImage = vi.fn(async () => ({ fileId, image, hash: 'original-bytes', inputTokens: 258 }))
+    f.port.readImage = readImage
+    const request = { ...f.request, mutationId: randomUUID(), count: 1, expectedRevision: 4 }
+    const initial = await f.service.estimate(f.actor, request)
+    await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: initial.id, confirmed: true })
+    await f.service.handler((await claimFeedRun(['image_generation']))!, new AbortController().signal)
+    expect(readImage).not.toHaveBeenCalled()
+    const estimate = await f.service.estimate(f.actor, { ...request, mutationId: randomUUID() })
+    expect(estimate.slot.baseImageFileId).toBe(fileId)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: slot })
+    readImage.mockResolvedValueOnce({ fileId, image, hash: 'changed-bytes', inputTokens: 258 })
+    await expect(f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })).rejects.toMatchObject({ code: 'generation_sources_changed' })
+    const queued = await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
+    const active = await claimFeedRun(['image_generation']); expect(active!.id).toBe(queued.id)
+    await f.service.handler(active!, new AbortController().signal)
+    expect(call).toHaveBeenLastCalledWith(expect.objectContaining({ sourceImage: image }))
+    const suggestions = (await getFeedCollaboration(f.actor)).suggestions
+    expect(suggestions).toHaveLength(2)
+    expect(suggestions[1]!.edits[0]).toMatchObject({ preimage: { type: 'generationPlaceholder', attrs: slot } })
+    // Revocation is rechecked at preflight rather than silently regenerating a new picture.
+    await pool.query('UPDATE workspace_files SET retracted_at=now() WHERE id=$1', [fileId])
+    await expect(f.service.estimate(f.actor, { ...request, mutationId: randomUUID() })).rejects.toMatchObject({ code: 'file_not_available_to_draft' })
   })
 })

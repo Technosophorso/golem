@@ -52,19 +52,19 @@ export function parseGeminiImageReceipt(raw: unknown): GeminiImageReceipt {
   if (!images.length) return { ...receipt, error: 'image_missing' }
   if (images.length !== 1 || candidates.length !== 1) return { ...receipt, error: 'image_malformed' }
   const image = record(images[0]!.inlineData)
-  if (typeof image.data !== 'string' || !image.data.length || image.data.length > Math.ceil(FEED_IMAGE_CAPABILITY.maxImageBytes / 3) * 4 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(image.data)) return { ...receipt, error: 'image_malformed' }
+  if (typeof image.data !== 'string' || !image.data.length || image.data.length > Math.ceil(FEED_IMAGE_CAPABILITY.maxImageBytes / 3) * 4 || Buffer.from(image.data, 'base64').toString('base64') !== image.data) return { ...receipt, error: 'image_malformed' }
   const bytes = Buffer.from(image.data, 'base64')
   const valid = image.mimeType === 'image/png' ? bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) : image.mimeType === 'image/jpeg' ? bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 : image.mimeType === 'image/webp' ? bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP' : false
   if (!valid || bytes.length > FEED_IMAGE_CAPABILITY.maxImageBytes) return { ...receipt, error: 'image_malformed' }
   return { ...receipt, image: { data: image.data, mimeType: image.mimeType as NonNullable<GeminiImageReceipt['image']>['mimeType'] } }
 }
 export function createGeminiImageProvider(transport: GoogleTransport | undefined, fetcher: typeof fetch = fetch) {
-  return { async generate(input: { model: string; prompt: string; aspectRatio?: string; signal: AbortSignal }): Promise<GeminiImageReceipt> {
+  return { async generate(input: { model: string; prompt: string; aspectRatio?: string; sourceImage?: NonNullable<GeneratedImageReceipt['image']>; signal: AbortSignal }): Promise<GeminiImageReceipt> {
     if (!transport) throw new Error('image_generation_unavailable')
     const authorization = await authorizeGoogleRequest(transport)
     const headers = authorization.headers
     if (transport.kind === 'ai-studio' && !headers['x-goog-api-key']) throw new Error('image_generation_unavailable')
-    const response = await fetcher(transport.endpoint(input.model, 'generateContent'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal: input.signal, body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: input.prompt }] }], generationConfig: { candidateCount: 1, responseModalities: ['IMAGE'], maxOutputTokens: FEED_IMAGE_CAPABILITY.outputTokens, imageConfig: { imageSize: FEED_IMAGE_CAPABILITY.size, aspectRatio: input.aspectRatio ?? '1:1' }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } } }) })
+    const response = await fetcher(transport.endpoint(input.model, 'generateContent'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal: input.signal, body: JSON.stringify({ contents: [{ role: 'user', parts: [...(input.sourceImage ? [{ inlineData: input.sourceImage }] : []), { text: input.prompt }] }], generationConfig: { candidateCount: 1, responseModalities: ['IMAGE'], maxOutputTokens: FEED_IMAGE_CAPABILITY.outputTokens, imageConfig: { imageSize: FEED_IMAGE_CAPABILITY.size, aspectRatio: input.aspectRatio ?? '1:1' }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } } }) })
     if (!response.ok) return { error: 'image_provider_rejected', status: response.status, providerError: await parseGeminiProviderError(response), usage: { inputTokens: 0, outputTokens: 0, measured: false } }
     if (!response.body) return { error: 'image_malformed', usage: { inputTokens: 0, outputTokens: 0, measured: false } }
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0
@@ -90,4 +90,18 @@ export function createGeminiImageProvider(transport: GoogleTransport | undefined
     }
     return receipt
   } }
+}
+
+/** Validate an authorized edit source before any provider dispatch. */
+export async function validateFeedImageSource(bytes: Uint8Array, mimeType: string): Promise<{ image: NonNullable<GeneratedImageReceipt['image']>; inputTokens: number }> {
+  if (!bytes.length || bytes.length > FEED_IMAGE_CAPABILITY.maxSourceImageBytes) throw new Error('image_source_invalid')
+  const image = sharp(bytes, { failOn: 'error', limitInputPixels: FEED_IMAGE_CAPABILITY.maxImagePixels })
+  const metadata = await image.metadata()
+  const expected = ({ png: 'image/png', jpeg: 'image/jpeg', webp: 'image/webp' } as const)[metadata.format as 'png' | 'jpeg' | 'webp']
+  if (!expected || mimeType !== expected || !metadata.width || !metadata.height || (metadata.pages ?? 1) !== 1) throw new Error('image_source_invalid')
+  await image.raw().toBuffer()
+  // Flash Image charges 1,120 tokens per input image; retain a conservative
+  // tiled allowance above that floor for larger supported sources.
+  const inputTokens = Math.max(FEED_IMAGE_CAPABILITY.rates.imageTokens, Math.ceil(metadata.width / 384) * Math.ceil(metadata.height / 384) * 258)
+  return { image: { data: Buffer.from(bytes).toString('base64'), mimeType: expected }, inputTokens }
 }

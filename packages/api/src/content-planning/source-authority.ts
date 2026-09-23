@@ -8,7 +8,10 @@ export function feedSelectedFiles(composition: FeedComposition): Map<string, str
   const ids = new Map<string, string | null>()
   for (const { node } of walkFeed(composition)) {
     if (node.type === 'image') ids.set(node.attrs.fileId, node.attrs.mimeType)
-    if (node.type === 'generationPlaceholder') for (const ref of node.attrs.references) if ('fileId' in ref && !ids.has(ref.fileId)) ids.set(ref.fileId, null)
+    if (node.type === 'generationPlaceholder') {
+      if (node.attrs.baseImageFileId && !ids.has(node.attrs.baseImageFileId)) ids.set(node.attrs.baseImageFileId, null)
+      for (const ref of node.attrs.references) if ('fileId' in ref && !ids.has(ref.fileId)) ids.set(ref.fileId, null)
+    }
   }
   return ids
 }

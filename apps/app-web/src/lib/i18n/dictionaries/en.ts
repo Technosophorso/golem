@@ -212,8 +212,8 @@ export const en = {
     "imageOptionPosition": "Image {current} of {total}",
     "iterationInstruction": "Change this image",
     "iterationPlaceholder": "Describe what should change...",
-    "prepareIteration": "Add to new attempt",
-    "iterationHint": "This updates the brief. Review the request and cost before generating again.",
+    "prepareIteration": "Regenerate",
+    "iterationHint": "Edit this image using your comments. Review the cost before confirming.",
     "revisionPrefix": "Revision request"
 },
   feedReview: {

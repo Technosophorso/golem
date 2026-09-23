@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { createGeminiImageProvider, parseGeminiImageReceipt } from '../gemini-image.js'
+import { createGeminiImageProvider, parseGeminiImageReceipt, validateFeedImageSource } from '../gemini-image.js'
 import { aiStudioTransport, vertexTransport } from '../google-transport.js'
 import { FEED_IMAGE_CAPABILITY, feedImageCost } from '@use-brian/shared'
 const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII='
@@ -61,5 +61,27 @@ describe('[COMP:core/gemini-image] native HTTP contract', () => {
     const fetcher = vi.fn().mockRejectedValue(new DOMException('Timeout', 'TimeoutError'))
     await expect(createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) })).rejects.toThrow('Timeout')
     expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('[COMP:core/gemini-image] bounded visual edit input', () => {
+  it('sends source pixels in the same one-call request as the requested edit', async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(output())))
+    const image = { data: png, mimeType: 'image/png' as const }
+    await createGeminiImageProvider(aiStudioTransport('fictional-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Change only the background', sourceImage: image, signal: AbortSignal.timeout(1000) })
+    expect(JSON.parse(fetcher.mock.calls[0]![1].body).contents[0].parts).toEqual([{ inlineData: image }, { text: 'Change only the background' }])
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
+  it('bounds and decodes source pixels and rejects MIME confusion before provider dispatch', async () => {
+    const bytes = Buffer.from(png, 'base64')
+    expect(await validateFeedImageSource(bytes, 'image/png')).toMatchObject({ image: { data: png, mimeType: 'image/png' }, inputTokens: 1120 })
+    await expect(validateFeedImageSource(bytes, 'image/jpeg')).rejects.toThrow('image_source_invalid')
+    await expect(validateFeedImageSource(new Uint8Array(FEED_IMAGE_CAPABILITY.maxSourceImageBytes + 1), 'image/png')).rejects.toThrow('image_source_invalid')
+    await expect(validateFeedImageSource(bytes.subarray(0, 40), 'image/png')).rejects.toThrow()
+  })
+  it('validates multi-megabyte base64 without recursive-regex stack overflow', () => {
+    const bytes = Buffer.alloc(6_000_000); Buffer.from(png, 'base64').copy(bytes)
+    const data = bytes.toString('base64')
+    expect(parseGeminiImageReceipt(output([{ inlineData: { mimeType: 'image/png', data } }])).image?.data).toBe(data)
   })
 })
