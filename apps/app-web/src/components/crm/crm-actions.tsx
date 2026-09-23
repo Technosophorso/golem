@@ -1,9 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Dialog } from "@base-ui/react/dialog";
 import { Archive, ArchiveRestore, Download, GitMerge, MoreHorizontal, Plus, Upload, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { canSelectCrmMergePair, crmDuplicatePairs, selectCrmMergePairs, type CrmMergePair } from "@/lib/crm-duplicate-selection";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import {
   DropdownMenu,
@@ -164,25 +166,26 @@ export function CrmActions({
   );
 }
 
-function Shell({ open, onOpenChange, title, description, children }: {
+function Shell({ open, onOpenChange, title, description, children, busy = false }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description: string;
   children: React.ReactNode;
+  busy?: boolean;
 }) {
   const t = useT().crmPage.r2;
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
+    <Dialog.Root open={open} onOpenChange={(next) => { if (!busy) onOpenChange(next); }}>
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm" />
         {/* Full-screen below `sm` (the settings-modal shape, responsive
             contract M5): a floating card with the iOS keyboard open left its
             lower third, Create included, under the keyboard. */}
         <Dialog.Popup className="fixed left-1/2 top-1/2 z-50 flex h-[100dvh] w-full max-w-none -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-none border border-border bg-background shadow-xl sm:h-auto sm:max-h-[85dvh] sm:w-[calc(100%-2rem)] sm:max-w-2xl sm:rounded-2xl">
-          <div className="flex items-start justify-between border-b border-border px-5 py-4">
+          <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
             <div><Dialog.Title className="text-base font-semibold">{title}</Dialog.Title><Dialog.Description className="mt-1 text-xs text-muted-foreground">{description}</Dialog.Description></div>
-            <Button size="icon-sm" variant="ghost" className="max-sm:size-11" onClick={() => onOpenChange(false)} aria-label={t.close}><X aria-hidden /></Button>
+            <Button size="icon-sm" variant="ghost" className="max-sm:size-11" disabled={busy} onClick={() => onOpenChange(false)} aria-label={t.close}><X aria-hidden /></Button>
           </div>
           <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
         </Dialog.Popup>
@@ -501,124 +504,259 @@ function ImportDialog({ workspaceId, config, canCreateField, open, initialKind, 
   );
 }
 
-export function DuplicatesDialog({ workspaceId, open, onOpenChange, onMerged }: {
+export function DuplicatesDialog(props: {
   workspaceId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onMerged: () => void;
 }) {
+  // Selection and Undo receipts must never cross workspace boundaries.
+  return <DuplicateReview key={props.workspaceId} {...props} />;
+}
+
+function DuplicateReview({ workspaceId, open, onOpenChange, onMerged }: Parameters<typeof DuplicatesDialog>[0]) {
   const t = useT().crmPage.r2;
   const [groups, setGroups] = useState<CrmDuplicateGroup[]>([]);
   const [separations, setSeparations] = useState<CrmSeparation[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [lastMerge, setLastMerge] = useState<{ id: string; undoUntil: string } | null>(null);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [receipts, setReceipts] = useState<Array<{ id: string; undoUntil: string }>>([]);
   const [lastSeparation, setLastSeparation] = useState<CrmSeparation | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [needsRefresh, setNeedsRefresh] = useState(false);
+  const operation = useRef(false);
+  const mounted = useRef(true);
+  const readVersion = useRef(0);
+  const pairs = useMemo(() => crmDuplicatePairs(groups), [groups]);
+  const selectedPairs = pairs.filter((pair) => selected.has(pair.key));
+  const allCompatible = selectCrmMergePairs(selectedPairs, pairs, separations);
+  const disabled = busy || loading || needsRefresh;
+
   useEffect(() => {
-    if (!open || loaded) return;
-    setLoaded(true);
+    mounted.current = true;
+    return () => { mounted.current = false; readVersion.current++; };
+  }, []);
+
+  async function refreshCandidates() {
+    const version = ++readVersion.current;
     setLoading(true);
+    setNeedsRefresh(true);
+    try {
+      const [nextGroups, nextSeparations] = await Promise.all([
+        fetchCrmDuplicates(workspaceId), fetchCrmSeparations(workspaceId),
+      ]);
+      if (!mounted.current || version !== readVersion.current) return;
+      setGroups(nextGroups);
+      setSeparations(nextSeparations);
+      setSelected(new Set());
+      setNeedsRefresh(false);
+      setLoaded(true);
+    } catch (cause) {
+      if (mounted.current && version === readVersion.current) {
+        setError(cause instanceof Error ? cause.message : t.duplicatesLoadFailed);
+      }
+    } finally {
+      if (mounted.current && version === readVersion.current) setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (open) {
+      setError(null);
+      void refreshCandidates();
+    }
+    return () => { readVersion.current++; };
+    // Reads are explicitly refreshed on open and after a mutation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  function begin() {
+    if (operation.current) return false;
+    operation.current = true;
+    setBusy(true);
     setError(null);
-    void Promise.all([fetchCrmDuplicates(workspaceId), fetchCrmSeparations(workspaceId)])
-      .then(([nextGroups, nextSeparations]) => { setGroups(nextGroups); setSeparations(nextSeparations); })
-      .catch((cause) => setError(cause instanceof Error ? cause.message : t.duplicatesLoadFailed))
-      .finally(() => setLoading(false));
-  }, [open, loaded, workspaceId]);
+    return true;
+  }
+
+  function finish() {
+    operation.current = false;
+    if (mounted.current) setBusy(false);
+  }
+
+  function choose(candidates: CrmMergePair[], include: boolean) {
+    if (disabled) return;
+    const next = include
+      ? selectCrmMergePairs(selectedPairs, candidates, separations)
+      : selectedPairs.filter((pair) => !candidates.some((candidate) => candidate.key === pair.key));
+    setSelected(new Set(next.map((pair) => pair.key)));
+  }
+
+  async function mergeSelection(requested: CrmMergePair[]) {
+    const plan = selectCrmMergePairs([], requested, separations);
+    if (disabled || plan.length === 0 || !begin()) return;
+    let completed = 0;
+    try {
+      const kept = new Map<string, { name: string; count: number }>();
+      for (const pair of plan) {
+        const summary = kept.get(pair.survivor.id) ?? { name: pair.survivor.name, count: 0 };
+        summary.count++;
+        kept.set(pair.survivor.id, summary);
+      }
+      const confirmed = await confirmDialog({
+        title: t.mergeRecords,
+        description: t.bulkMergeDescription.replace("{count}", String(plan.length)),
+        confirmLabel: t.mergeSelected.replace("{count}", String(plan.length)),
+        cancelLabel: t.cancel,
+        content: <ul className="max-h-48 space-y-2 overflow-y-auto text-sm">{[...kept].map(([id, summary]) => (
+          <li key={id}>{t.bulkKeepSummary.replace("{name}", summary.name).replace("{count}", String(summary.count))}</li>
+        ))}</ul>,
+      });
+      if (!confirmed || !mounted.current) return;
+      setSelected(new Set());
+      setStatus(t.bulkMergeProgress.replace("{count}", "0").replace("{total}", String(plan.length)));
+      for (const pair of plan) {
+        if (!mounted.current) break;
+        const result = await mergeCrmRecords(workspaceId, pair.survivor.id, pair.duplicate.id);
+        completed++;
+        if (!mounted.current) break;
+        setReceipts((previous) => [...previous, { id: result.mergeId, undoUntil: result.undoUntil }]);
+        setGroups((previous) => previous.map((group) => ({ ...group,
+          records: group.records.filter((record) => record.id !== pair.duplicate.id),
+        })).filter((group) => group.records.length > 1));
+        setStatus(t.bulkMergeProgress.replace("{count}", String(completed)).replace("{total}", String(plan.length)));
+      }
+      if (mounted.current) await refreshCandidates();
+    } catch (cause) {
+      if (mounted.current) {
+        setNeedsRefresh(true);
+        setError(`${t.bulkMergeStopped} ${cause instanceof Error ? cause.message : t.mergeFailed}`);
+      }
+    } finally {
+      if (mounted.current && completed > 0) onMerged();
+      finish();
+    }
+  }
+
+  async function undoCompleted(all: boolean) {
+    if (receipts.length === 0 || !begin()) return;
+    const plan = (all ? receipts : receipts.slice(-1)).slice().reverse();
+    let completed = 0;
+    try {
+      for (const receipt of plan) {
+        if (!mounted.current) break;
+        await undoCrmMerge(workspaceId, receipt.id);
+        completed++;
+        if (!mounted.current) break;
+        setReceipts((previous) => previous.filter((item) => item.id !== receipt.id));
+        setStatus(t.bulkUndoProgress.replace("{count}", String(completed)).replace("{total}", String(plan.length)));
+      }
+      if (mounted.current) await refreshCandidates();
+    } catch (cause) {
+      if (mounted.current) {
+        setNeedsRefresh(true);
+        setError(cause instanceof Error ? cause.message : t.undoFailed);
+      }
+    } finally {
+      if (mounted.current && completed > 0) onMerged();
+      finish();
+    }
+  }
+
+  async function keepSeparate(pair: CrmMergePair) {
+    if (disabled || !begin()) return;
+    try {
+      const kept = await keepCrmRecordsSeparate(workspaceId, pair.survivor.id, pair.duplicate.id);
+      if (mounted.current) {
+        setLastSeparation(kept.separation);
+        await refreshCandidates();
+      }
+    } catch (cause) {
+      if (mounted.current) { setNeedsRefresh(true); setError(cause instanceof Error ? cause.message : t.keepSeparateFailed); }
+    } finally { finish(); }
+  }
+
+  async function reviewAgain(id: string) {
+    if (disabled || !begin()) return;
+    try {
+      await reviewCrmSeparationAgain(workspaceId, id);
+      if (mounted.current) { setLastSeparation(null); await refreshCandidates(); }
+    } catch (cause) {
+      if (mounted.current) { setNeedsRefresh(true); setError(cause instanceof Error ? cause.message : t.reviewAgainFailed); }
+    } finally { finish(); }
+  }
+
+  async function archive(record: { id: string; name: string }) {
+    if (disabled || !begin()) return;
+    try {
+      const confirmed = await confirmDialog({ title: t.archiveTitle, description: t.archiveDescription.replace("{name}", record.name), confirmLabel: t.archive, cancelLabel: t.cancel });
+      if (!confirmed || !mounted.current) return;
+      await setCrmRecordArchived(workspaceId, record.id, true);
+      if (mounted.current) { onMerged(); await refreshCandidates(); }
+    } catch (cause) {
+      if (mounted.current) { setNeedsRefresh(true); setError(cause instanceof Error ? cause.message : t.archiveFailed); }
+    } finally { finish(); }
+  }
+
   return (
-    <Shell open={open} onOpenChange={(next) => { if (!next) setLoaded(false); onOpenChange(next); }} title={t.reviewDuplicates} description={t.duplicatesDescription}>
+    <Shell open={open} busy={busy} onOpenChange={(next) => { if (!operation.current) onOpenChange(next); }} title={t.reviewDuplicates} description={t.duplicatesDescription}>
       <div className="space-y-3">
-        {lastMerge && (
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-3 py-2">
-            <div className="text-xs">
-              <div className="font-medium">{t.mergeComplete}</div>
-              <div className="text-muted-foreground">{t.undoAvailableUntil.replace("{date}", new Date(lastMerge.undoUntil).toLocaleString())}</div>
-            </div>
-            <Button size="xs" variant="outline" onClick={() => void (async () => {
-              setError(null);
-              try {
-                await undoCrmMerge(workspaceId, lastMerge.id);
-                setLastMerge(null);
-                setGroups(await fetchCrmDuplicates(workspaceId));
-                onMerged();
-              } catch (cause) {
-                setError(cause instanceof Error ? cause.message : t.undoFailed);
-              }
-            })()}>{t.undoMerge}</Button>
+        {receipts.length > 0 && <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3">
+          <div className="text-xs">
+            <div className="font-medium">{t.bulkUndoReady.replace("{count}", String(receipts.length))}</div>
+            <div className="text-muted-foreground">{t.undoAvailableUntil.replace("{date}", new Date(receipts[0].undoUntil).toLocaleString())}</div>
           </div>
-        )}
-        {lastSeparation && (
-          <div className="flex items-center justify-between gap-3 rounded-xl border border-sky-500/30 bg-sky-500/5 px-3 py-2">
-            <div className="text-xs"><div className="font-medium">{t.keptSeparate}</div><div className="text-muted-foreground">{lastSeparation.leftName} · {lastSeparation.rightName}</div></div>
-            <Button size="xs" variant="outline" onClick={() => void (async () => {
-              setError(null);
-              try {
-                await reviewCrmSeparationAgain(workspaceId, lastSeparation.id);
-                setLastSeparation(null);
-                const [nextGroups, nextSeparations] = await Promise.all([fetchCrmDuplicates(workspaceId), fetchCrmSeparations(workspaceId)]);
-                setGroups(nextGroups); setSeparations(nextSeparations);
-              } catch (cause) {
-                setError(cause instanceof Error ? cause.message : t.reviewAgainFailed);
-              }
-            })()}>{t.reviewAgain}</Button>
+          <div className="flex flex-wrap gap-2">
+            <Button size="xs" variant="outline" className="max-sm:min-h-11" disabled={busy || loading} onClick={() => void undoCompleted(false)}>{t.undoMerge}</Button>
+            {receipts.length > 1 && <Button size="xs" variant="outline" className="max-sm:min-h-11" disabled={busy || loading} onClick={() => void undoCompleted(true)}>{t.undoAllMerges.replace("{count}", String(receipts.length))}</Button>}
           </div>
-        )}
-        {error && <div className="flex items-center justify-between gap-2 text-xs text-destructive"><span>{error}</span><Button size="xs" variant="ghost" onClick={() => { setLoaded(false); setError(null); }}>{t.retry}</Button></div>}
-        {loading && <div className="text-sm text-muted-foreground">{t.duplicatesLoading}</div>}
-        {groups.map((group) => (
-          <div key={`${group.kind}:${group.reason}:${group.value}`} className="rounded-xl border border-border p-3">
-            <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{t.duplicateReasons[group.reason]} · {group.value}</div>
-            <div className="mt-2 space-y-1">{group.records.map((record, index) => <div key={record.id} className="flex items-center justify-between gap-2 text-xs"><span>{record.name}</span>{index === 0 ? <span className="text-muted-foreground">{t.keepRecord}</span> : <div className="flex items-center gap-1"><Button size="xs" variant="outline" onClick={() => void (async () => {
-              const confirmed = await confirmDialog({ title: t.mergeRecords, description: t.mergeDescription.replace("{merged}", record.name).replace("{survivor}", group.records[0].name), confirmLabel: t.merge, cancelLabel: t.cancel });
-              if (!confirmed) return;
-              setError(null);
-              try {
-                const merged = await mergeCrmRecords(workspaceId, group.records[0].id, record.id);
-                setLastMerge({ id: merged.mergeId, undoUntil: merged.undoUntil });
-                setGroups(await fetchCrmDuplicates(workspaceId));
-                onMerged();
-              } catch (cause) {
-                setError(cause instanceof Error ? cause.message : t.mergeFailed);
-              }
-            })()}><GitMerge aria-hidden />{t.merge}</Button><Button size="xs" variant="ghost" onClick={() => void (async () => {
-              setError(null);
-              try {
-                const kept = await keepCrmRecordsSeparate(workspaceId, group.records[0].id, record.id);
-                setLastSeparation(kept.separation);
-                const [nextGroups, nextSeparations] = await Promise.all([fetchCrmDuplicates(workspaceId), fetchCrmSeparations(workspaceId)]);
-                setGroups(nextGroups); setSeparations(nextSeparations);
-              } catch (cause) {
-                setError(cause instanceof Error ? cause.message : t.keepSeparateFailed);
-              }
-            })()}>{t.keepSeparate}</Button><Button size="xs" variant="ghost" onClick={() => void (async () => {
-              // Archive, not merge: for a record that is genuinely junk rather
-              // than the same person seen twice, merging would fold its (wrong)
-              // attributes into the survivor. Archiving leaves the survivor
-              // untouched and is restorable from Archived records.
-              const confirmed = await confirmDialog({ title: t.archiveTitle, description: t.archiveDescription.replace("{name}", record.name), confirmLabel: t.archive, cancelLabel: t.cancel });
-              if (!confirmed) return;
-              setError(null);
-              try {
-                await setCrmRecordArchived(workspaceId, record.id, true);
-                setGroups(await fetchCrmDuplicates(workspaceId));
-                onMerged();
-              } catch (cause) {
-                setError(cause instanceof Error ? cause.message : t.archiveFailed);
-              }
-            })()}><Archive aria-hidden />{t.archive}</Button></div>}</div>)}</div>
+        </div>}
+        {lastSeparation && <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-sky-500/30 bg-sky-500/5 p-3 text-xs">
+          <span>{t.keptSeparate}: {lastSeparation.leftName} · {lastSeparation.rightName}</span>
+          <Button size="xs" variant="outline" className="max-sm:min-h-11" disabled={disabled} onClick={() => void reviewAgain(lastSeparation.id)}>{t.reviewAgain}</Button>
+        </div>}
+        {error && <div role="alert" className="flex items-center justify-between gap-2 text-xs text-destructive"><span>{error}</span><Button size="xs" variant="outline" className="max-sm:min-h-11" disabled={busy || loading} onClick={() => { setError(null); void refreshCandidates(); }}>{t.retry}</Button></div>}
+        {status && <div role="status" className="text-sm">{status}</div>}
+        {loading && <div role="status" aria-label={t.duplicatesLoading} className="space-y-2">{[0, 1, 2].map((row) => <div key={row} className="h-10 animate-pulse rounded-lg bg-muted" />)}</div>}
+        {groups.length > 0 && <div className="sticky -top-5 z-10 space-y-2 border-b border-border bg-background py-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="outline" className="max-sm:min-h-11" disabled={disabled || allCompatible.length === selectedPairs.length} onClick={() => choose(pairs, true)}>{t.selectAllDuplicates}</Button>
+            <Button size="sm" variant="ghost" className="max-sm:min-h-11" disabled={disabled || selectedPairs.length === 0} onClick={() => setSelected(new Set())}>{t.clearDuplicateSelection}</Button>
+            <Button size="sm" className="max-sm:min-h-11 sm:ml-auto" disabled={disabled || selectedPairs.length === 0} onClick={() => void mergeSelection(selectedPairs)}><GitMerge aria-hidden />{t.mergeSelected.replace("{count}", String(selectedPairs.length))}</Button>
           </div>
-        ))}
+          <p className="text-xs text-muted-foreground">{t.bulkDuplicateScope}</p>
+          {pairs.some((pair) => !canSelectCrmMergePair(pair, selectedPairs, separations)) && <p className="text-xs text-muted-foreground">{t.bulkDuplicateOverlap}</p>}
+        </div>}
+        {groups.map((group) => {
+          const groupPairs = crmDuplicatePairs([group]);
+          const eligible = groupPairs.filter((pair) => canSelectCrmMergePair(pair, selectedPairs, separations));
+          const chosen = eligible.filter((pair) => selected.has(pair.key));
+          return <section key={`${group.kind}:${group.reason}:${group.value}`} className="rounded-xl border border-border p-3">
+            <label className="flex min-h-11 cursor-pointer items-center gap-2 text-xs font-medium">
+              <Checkbox aria-label={t.selectDuplicateGroup.replace("{name}", group.value)} checked={eligible.length > 0 && chosen.length === eligible.length} indeterminate={chosen.length > 0 && chosen.length < eligible.length} disabled={disabled || eligible.length === 0} onCheckedChange={(include) => choose(eligible, include)} />
+              <span className="min-w-0 break-words">{t.duplicateReasons[group.reason]} · {group.value}</span>
+            </label>
+            <div className="space-y-2">{group.records.map((record, index) => {
+              const pair = groupPairs.find((candidate) => candidate.duplicate.id === record.id);
+              const conflict = pair ? !canSelectCrmMergePair(pair, selectedPairs, separations) : false;
+              return <div key={record.id} className="flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2 text-xs">
+                <label className="flex min-h-11 min-w-32 flex-1 cursor-pointer items-center gap-2">
+                  {index > 0 && pair && <Checkbox aria-label={t.includeDuplicate.replace("{name}", record.name).replace("{survivor}", pair.survivor.name)} checked={selected.has(pair.key)} disabled={disabled || conflict} onCheckedChange={(include) => choose([pair], include)} />}
+                  <span className="break-words">{record.name}</span>
+                </label>
+                {index === 0 ? <span className="rounded bg-muted px-2 py-1 font-medium">{t.keepRecord}</span> : pair && <div className="flex flex-wrap items-center gap-1">
+                  <Button size="xs" variant="outline" className="max-sm:min-h-11" disabled={disabled || conflict} onClick={() => void mergeSelection([pair])}><GitMerge aria-hidden />{t.merge}</Button>
+                  <Button size="xs" variant="ghost" className="max-sm:min-h-11" disabled={disabled} onClick={() => void keepSeparate(pair)}>{t.keepSeparate}</Button>
+                  <Button size="xs" variant="ghost" className="max-sm:min-h-11" disabled={disabled} onClick={() => void archive(record)}><Archive aria-hidden />{t.archive}</Button>
+                </div>}
+              </div>;
+            })}</div>
+          </section>;
+        })}
         {loaded && !loading && !error && groups.length === 0 && <div className="text-sm text-muted-foreground">{t.noDuplicates}</div>}
-        {separations.length > 0 && <details className="rounded-xl border border-border p-3"><summary className="cursor-pointer text-xs font-medium">{t.keptSeparateSection.replace("{count}", String(separations.length))}</summary><div className="mt-2 space-y-2">{separations.map((separation) => <div key={separation.id} className="flex items-center justify-between gap-2 text-xs"><span>{separation.leftName} · {separation.rightName}</span><Button size="xs" variant="ghost" onClick={() => void (async () => {
-          setError(null);
-          try {
-            await reviewCrmSeparationAgain(workspaceId, separation.id);
-            const [nextGroups, nextSeparations] = await Promise.all([fetchCrmDuplicates(workspaceId), fetchCrmSeparations(workspaceId)]);
-            setGroups(nextGroups); setSeparations(nextSeparations);
-          } catch (cause) {
-            setError(cause instanceof Error ? cause.message : t.reviewAgainFailed);
-          }
-        })()}>{t.reviewAgain}</Button></div>)}</div></details>}
+        {separations.length > 0 && <details className="rounded-xl border border-border p-3"><summary className="min-h-11 cursor-pointer text-xs font-medium">{t.keptSeparateSection.replace("{count}", String(separations.length))}</summary><div className="mt-2 space-y-2">{separations.map((separation) => <div key={separation.id} className="flex flex-wrap items-center justify-between gap-2 text-xs"><span>{separation.leftName} · {separation.rightName}</span><Button size="xs" variant="ghost" className="max-sm:min-h-11" disabled={disabled} onClick={() => void reviewAgain(separation.id)}>{t.reviewAgain}</Button></div>)}</div></details>}
       </div>
     </Shell>
   );
