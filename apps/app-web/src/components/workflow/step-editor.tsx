@@ -1881,7 +1881,39 @@ function ConnectToField({
   );
 }
 
-function RawJsonFields({
+// This is a draft-shape guard, not runtime workflow validation. Keep incomplete
+// but renderable values (e.g. an empty toolName); never publish arbitrary JSON
+// into the board. Identity/type changes go through the graph/type controls.
+function isRawStepDraft(value: unknown, previous: WorkflowStep): value is WorkflowStep {
+  const record = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+  const optionalString = (v: unknown) => v === undefined || typeof v === "string";
+  const edge = (v: unknown) => v === null || typeof v === "string";
+  if (!record(value) || value.id !== previous.id || value.type !== previous.type) return false;
+  if (!optionalString(value.description) || !optionalString(value.storeOutputAs)) return false;
+  if (value.nextStepId !== undefined && !edge(value.nextStepId) &&
+      !(Array.isArray(value.nextStepId) && value.nextStepId.every((v) => typeof v === "string"))) return false;
+  switch (value.type) {
+    case "tool_call":
+      return typeof value.toolName === "string" && record(value.arguments);
+    case "branch":
+      return "condition" in value && edge(value.nextStepIdIfTrue) && edge(value.nextStepIdIfFalse);
+    case "wait":
+      if (value.until !== undefined) {
+        if (!record(value.until) || !record(value.until.duration)) return false;
+        const duration = value.until.duration;
+        if (!["minutes", "hours", "days"].every((key) =>
+          duration[key] === undefined || (typeof duration[key] === "number" && Number.isFinite(duration[key])))) return false;
+      }
+      return value.at === undefined || (record(value.at) &&
+        typeof value.at.datetime === "string" && optionalString(value.at.timezone));
+    default:
+      // Assistant steps have structured fields, not this raw JSON editor.
+      return false;
+  }
+}
+
+export function RawJsonFields({
   step,
   onChange,
   disabled,
@@ -1924,10 +1956,12 @@ function RawJsonFields({
               setText(v);
               try {
                 const parsed = JSON.parse(v);
-                if (parsed && typeof parsed === "object" && parsed.id) {
-                  setError(null);
-                  onChange(parsed as WorkflowStep);
+                if (!isRawStepDraft(parsed, step)) {
+                  setError(t.workflowPage.builder.stepJsonInvalid);
+                  return;
                 }
+                setError(null);
+                onChange(parsed);
               } catch {
                 setError(t.workflowPage.builder.stepJsonInvalid);
               }
@@ -1936,6 +1970,8 @@ function RawJsonFields({
             // A typical tool_call step serializes to ~11+ lines; default taller
             // (still resize-y) so the whole step JSON is visible once expanded.
             rows={14}
+            aria-label={t.workflowPage.builder.stepAdvancedLabel}
+            aria-invalid={!!error}
             spellCheck={false}
             className="px-3 py-2 bg-background border border-border rounded-md text-[16px] md:text-xs font-mono outline-none focus:ring-2 focus:ring-ring resize-y"
           />
