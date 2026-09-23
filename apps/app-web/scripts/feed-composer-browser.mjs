@@ -73,7 +73,38 @@ try {
     results.push({ name, failures, ...row });
     await page.locator('[data-fixture-rail]').screenshot({ path: join(output, `${name}.png`) });
   }
-  for (const width of [1440, 390]) {
+  for (const [locale, width] of [['en', 1440], ['en', 390], ['en', 320], ['ja', 390], ['zh', 390], ['zh-cn', 390]]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`http://127.0.0.1:${port}/scripts/fixtures/feed-composer-browser.html?workflow=1&locale=${locale}`);
+    const workflow = page.locator('[data-feed-post-workflow]');
+    await workflow.waitFor();
+    const dict = await page.evaluate(() => window.feedComposerFixture.dict);
+    await page.locator('[data-workflow-scroll]').evaluate(el => { el.scrollTop = 700; });
+    await page.waitForTimeout(100);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false, 'Workflow must not overflow the phone');
+    for (const button of await workflow.getByRole('button').all()) {
+      const box = await button.boundingBox();
+      assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= 844, 'Workflow action remains visible after scrolling');
+      if (width < 768) assert.ok(box.width >= 44 && box.height >= 44, 'Workflow actions have phone touch targets');
+    }
+    const review = workflow.getByRole('button', { name: dict.feedCollaboration.review, exact: true });
+    await review.click();
+    const panel = page.locator('[data-feed-editor-panel]');
+    await panel.waitFor({ state: 'visible' });
+    await page.waitForTimeout(150);
+    const box = await panel.boundingBox();
+    assert.ok(box && box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= 844, 'Review panel fits the viewport');
+    await panel.getByRole('button', { name: dict.feedCollaboration.closePanel, exact: true }).click();
+    await page.waitForTimeout(150);
+    assert.ok(await review.evaluate(el => el === document.activeElement), 'Closing Review restores focus to its visible opener');
+    await page.screenshot({ path: join(output, `workflow-${locale}-${width}.png`) });
+    for (const [label, stage] of [[dict.feedPage.postEditor.submitForApproval, 'review'], [dict.feedPage.postEditor.approve, 'ready'], [dict.feedPage.postEditor.markPosted, 'posted']]) {
+      await workflow.getByRole('button', { name: label, exact: true }).click();
+      assert.equal(await workflow.locator('[aria-current="step"]').innerText(), dict.feedPage.posts.status[stage]);
+    }
+    results.push({ name: `workflow-${locale}-${width}`, failures: [], stages: 4 });
+  }
+  if (!process.env.FEED_WORKFLOW_ONLY) for (const width of [1440, 390]) {
     await page.setViewportSize({ width, height: 844 });
     await page.goto(`http://127.0.0.1:${port}/scripts/fixtures/feed-composer-browser.html?comment=1`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
     await page.locator('[contenteditable=true]').waitFor();
@@ -100,7 +131,7 @@ try {
     assert.equal(commands[0][0].text, 'A concrete example would help.');
     results.push({ name: `comment-${width}`, failures: [], width, anchorTop, rect, submitted: true });
   }
-  if (!process.env.FEED_COMMENT_ONLY) for (const locale of ['en', 'ja', 'zh', 'zh-cn']) for (const width of [320, 360, 390]) {
+  if (!process.env.FEED_COMMENT_ONLY && !process.env.FEED_WORKFLOW_ONLY) for (const locale of ['en', 'ja', 'zh', 'zh-cn']) for (const width of [320, 360, 390]) {
     const phone = width === 390;
     await page.setViewportSize({ width: phone ? 390 : 1440, height: 844 });
     for (const long of [false, true]) {

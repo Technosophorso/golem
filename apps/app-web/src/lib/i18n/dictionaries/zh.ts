@@ -7776,6 +7776,8 @@ export const zh: Dictionary = {
       versionsLabel: "版本",
       versionYours: "我的版本",
       versionAssistant: "方案 {n}",
+      workflow: "貼文流程",
+      submitForApproval: "提交審批",
       useThisVersion: "使用这一版",
       saveChanges: "保存修改",
       saveBeforeApprove: "批准前请先保存修改",

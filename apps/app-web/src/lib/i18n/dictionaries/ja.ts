@@ -7834,6 +7834,8 @@ export const ja: Dictionary = {
       versionsLabel: "バージョン",
       versionYours: "自分の版",
       versionAssistant: "案 {n}",
+      workflow: "投稿の進行状況",
+      submitForApproval: "承認を依頼",
       useThisVersion: "この版を使う",
       saveChanges: "変更を保存",
       saveBeforeApprove: "承認する前に編集内容を保存してください",

@@ -8079,6 +8079,8 @@ export const en = {
       versionsLabel: "Versions",
       versionYours: "Yours",
       versionAssistant: "Draft {n}",
+      workflow: "Post workflow",
+      submitForApproval: "Submit for approval",
       useThisVersion: "Use this version",
       saveChanges: "Save changes",
       saveBeforeApprove: "Save your edits before approving",

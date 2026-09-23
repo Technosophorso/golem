@@ -28,6 +28,7 @@ export async function authFetch(input: string, init?: RequestInit): Promise<Resp
   if (url.pathname.endsWith('/messages')) return Response.json([]);
   if (url.pathname.endsWith('/pending')) return Response.json({ pending: null, toolConfirmation: null });
   if (url.pathname === '/api/usage') return Response.json({ plan: 'max' });
+  if (url.pathname === '/api/goals') return Response.json({ goals: [] });
   if (url.pathname.includes('/skills') || url.pathname.includes('/slash-commands')) return Response.json([]);
   throw new Error(`Unmocked fixture request: ${url.pathname}`);
 }
