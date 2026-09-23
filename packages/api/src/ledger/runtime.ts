@@ -18,6 +18,7 @@
 
 import { createGcsFilesClient, type GcsFilesClient } from '../files/gcs-client.js'
 import { createLocalFilesClient, resolveLocalFilesBaseDir } from '../files/local-files-client.js'
+import { azureBlobOptionsFromEnv, createAzureBlobFilesClient } from '../files/azure-blob-client.js'
 import { createLedgerPayloadStore, type LedgerPayloadStore } from './payload-store.js'
 
 let injected: LedgerPayloadStore | null = null
@@ -35,6 +36,8 @@ function resolveFromEnv(): LedgerPayloadStore {
       createGcsFilesClient({ bucket, projectId: process.env.GOOGLE_CLOUD_PROJECT }),
     )
   }
+  const azure = azureBlobOptionsFromEnv(process.env)
+  if (azure) return createLedgerPayloadStore(createAzureBlobFilesClient(azure))
   const configuredLocalDir = process.env.LOCAL_FILES_DIR?.trim()
   // Mirror bootOpenApi: on Cloud Run (K_SERVICE) without an explicit local
   // dir there is no usable disk — recording degrades honestly via throw.

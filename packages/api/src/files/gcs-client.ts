@@ -103,6 +103,14 @@ export type GcsFilesClient = {
    * pull case.
    */
   writeStream(key: string, opts: { mime: string; metadata?: GcsObjectMetadata }): Writable
+
+  /**
+   * Extra request headers a direct PUT to `signedWriteUrl` must carry. GCS
+   * and S3 need none; Azure Blob requires `x-ms-blob-type: BlockBlob`, which a
+   * SAS cannot embed. Routes that hand a signed URL to a browser or connector
+   * echo this beside the URL (`uploadHeaders`).
+   */
+  signedWriteHeaders?: Readonly<Record<string, string>>
 }
 
 /**
@@ -335,12 +343,12 @@ export function buildStorageKey(workspaceId: string, fileId: string): string {
 
 /**
  * Storage-backend URI scheme recorded in `workspace_files.storage_uri`. `gs`
- * for GCS buckets (the default), `s3` for S3-compatible buckets, and `file` for
- * OSS local-directory storage. The scheme is
+ * for GCS buckets (the default), `s3` for S3-compatible buckets, `az` for an
+ * Azure Blob container, and `file` for OSS local-directory storage. The scheme is
  * cosmetic for routing (`parseStorageBucket` matches by bucket name), but keeps
  * each file's origin backend legible.
  */
-export type StorageUriScheme = 'gs' | 's3' | 'file'
+export type StorageUriScheme = 'gs' | 's3' | 'az' | 'file'
 
 /** `<scheme>://bucket/<workspace_id>/<file_id>` URI for the workspace_files.storage_uri column. */
 export function buildStorageUri(
@@ -353,14 +361,14 @@ export function buildStorageUri(
 }
 
 /**
- * Extract the backend identifier from a `gs://`, `s3://`, or `file://` storage
+ * Extract the backend identifier from a `gs://`, `s3://`, `az://`, or `file://` storage
  * URI. Used to route reads of an existing file to whichever backend it
  * actually lives in (a workspace that switched to BYO storage still has older
  * files in the app default bucket — each file's own `storage_uri` is
  * authoritative). Scheme-agnostic: routing is by bucket name, not backend.
  */
 export function parseStorageBucket(storageUri: string): string {
-  const m = /^(?:gs|s3|file):\/\/([^/]+)\//.exec(storageUri)
+  const m = /^(?:gs|s3|az|file):\/\/([^/]+)\//.exec(storageUri)
   if (m) return m[1]
   const fm = /^file:\/\/(.+)\/[^/]+\/[^/]+$/.exec(storageUri)
   if (fm) return fm[1]
@@ -368,7 +376,7 @@ export function parseStorageBucket(storageUri: string): string {
 }
 
 /**
- * Extract the OBJECT KEY from a `gs://`, `s3://`, or `file://` storage URI.
+ * Extract the OBJECT KEY from a `gs://`, `s3://`, `az://`, or `file://` storage URI.
  *
  * The counterpart to `parseStorageBucket`, and load-bearing for the same
  * reason: `workspace_files.storage_uri` is authoritative per file, so a reader
@@ -386,7 +394,7 @@ export function parseStorageBucket(storageUri: string): string {
  */
 export function parseStorageKey(storageUri: string): string {
   const bucket = parseStorageBucket(storageUri)
-  const rest = /^(?:gs|s3|file):\/\/(.*)$/.exec(storageUri)?.[1]
+  const rest = /^(?:gs|s3|az|file):\/\/(.*)$/.exec(storageUri)?.[1]
   if (rest === undefined || !rest.startsWith(`${bucket}/`)) {
     throw new Error(`gcs: cannot parse object key from storage_uri: ${storageUri}`)
   }

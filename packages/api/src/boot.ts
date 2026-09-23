@@ -456,6 +456,7 @@ import { getWorkspaceFileById } from './db/workspace-files.js'
 import { createGcsFilesClient, type GcsFilesClient } from './files/gcs-client.js'
 import { initLedgerRuntime } from './ledger/runtime.js'
 import { createLocalFilesClient, resolveLocalFilesBaseDir } from './files/local-files-client.js'
+import { azureBlobOptionsFromEnv, createAzureBlobFilesClient } from './files/azure-blob-client.js'
 import { localFilesTransferRoutes } from './routes/local-files-transfer.js'
 import { openRecordingsRoutes } from './routes/recordings.js'
 import { recordingLiveRoutes } from './routes/recording-live.js'
@@ -833,9 +834,18 @@ export interface OpenApiEnv {
   BRIAN_MESSAGE_STORE_ALLOW_REMOTE?: string
   BRIAN_MESSAGE_STORE_HMAC_SECRET?: string
   LLM_PROVIDER_KEY_ENCRYPTION_KEY?: string
-  // Blob storage. GCS wins when set; LOCAL_FILES_DIR enables durable
+  // Blob storage. GCS wins when set; AZURE_BLOB_CONTAINER selects an Azure Blob
+  // container (self-hosted on Azure); LOCAL_FILES_DIR enables durable
   // self-hosted local storage; otherwise non-Cloud-Run dev falls back to /tmp.
+  // GCS and Azure together is a misconfiguration and fails boot.
   GCS_FILES_BUCKET?: string
+  AZURE_BLOB_CONTAINER?: string
+  /** Shared-key auth for Azure Blob: a connection string, or account + key. */
+  AZURE_STORAGE_CONNECTION_STRING?: string
+  AZURE_STORAGE_ACCOUNT?: string
+  AZURE_STORAGE_ACCOUNT_KEY?: string
+  /** Blob endpoint override for Azurite or a sovereign cloud. */
+  AZURE_BLOB_ENDPOINT?: string
   LOCAL_FILES_DIR?: string
   /** Public HTTPS base used only for signed local-file transfer URLs. */
   LOCAL_FILES_PUBLIC_URL?: string
@@ -4058,7 +4068,14 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // ── Workspace filesystem ──
   const configuredLocalFilesDir = env.LOCAL_FILES_DIR?.trim()
   const localFilesDir = resolveLocalFilesBaseDir(configuredLocalFilesDir)
-  const localFilesClient = !env.GCS_FILES_BUCKET && !(process.env.K_SERVICE && !configuredLocalFilesDir)
+  // Azure Blob is the self-hosted bucket option (throws on a half-configured
+  // deployment so boot fails closed rather than landing on the temp dir).
+  const azureBlobOptions = azureBlobOptionsFromEnv(env)
+  if (azureBlobOptions && env.GCS_FILES_BUCKET) {
+    throw new Error('[files] GCS_FILES_BUCKET and AZURE_BLOB_CONTAINER are both set — pick one app-default blob store')
+  }
+  const cloudBlobConfigured = Boolean(env.GCS_FILES_BUCKET) || azureBlobOptions !== null
+  const localFilesClient = !cloudBlobConfigured && !(process.env.K_SERVICE && !configuredLocalFilesDir)
     ? createLocalFilesClient({
         baseDir: localFilesDir,
         apiUrl: env.LOCAL_FILES_PUBLIC_URL?.trim() || env.API_URL,
@@ -4067,8 +4084,12 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     : null
   const filesBlobClient = env.GCS_FILES_BUCKET
     ? createGcsFilesClient({ bucket: env.GCS_FILES_BUCKET, projectId: process.env.GOOGLE_CLOUD_PROJECT })
-    : localFilesClient
-  if (filesBlobClient && !env.GCS_FILES_BUCKET) {
+    : azureBlobOptions
+      ? createAzureBlobFilesClient(azureBlobOptions)
+      : localFilesClient
+  if (azureBlobOptions) {
+    console.log(`[files] using Azure Blob container ${azureBlobOptions.container} for workspace files.`)
+  } else if (filesBlobClient && !env.GCS_FILES_BUCKET) {
     const mode = configuredLocalFilesDir ? 'configured self-hosted storage' : 'ephemeral dev fallback'
     console.warn(`[files] GCS_FILES_BUCKET unset — using local-disk file storage at ${localFilesDir} (${mode}).`)
   }
@@ -4098,8 +4119,8 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     // credential. See docs/plans/byo-google-storage.md.
     const defaultFilesResolver = createSingletonFilesClientResolver(
       filesBlobClient,
-      env.GCS_FILES_BUCKET ?? localFilesDir,
-      env.GCS_FILES_BUCKET ? undefined : 'file',
+      env.GCS_FILES_BUCKET ?? azureBlobOptions?.container ?? localFilesDir,
+      env.GCS_FILES_BUCKET ? undefined : azureBlobOptions ? 'az' : 'file',
     )
     const lookupStorageBinding = async (workspaceId: string): Promise<WorkspaceStorageBinding | null> => {
       // A binding resolves only while we hold the key. Disconnect wipes the key

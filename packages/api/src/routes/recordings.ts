@@ -189,7 +189,9 @@ export function openRecordingsRoutes(deps: RouteDeps): Router {
       createdByUserId: userId,
     })
     const uploadUrl = await resolved.gcs.signedWriteUrl(key, { contentType: mime, ttlSec: 3600 })
-    res.json({ recordingId: episode.id, uploadUrl, key })
+    // Azure Blob needs `x-ms-blob-type` on the PUT; GCS/S3/local send none.
+    const uploadHeaders = resolved.gcs.signedWriteHeaders
+    res.json({ recordingId: episode.id, uploadUrl, key, ...(uploadHeaders ? { uploadHeaders } : {}) })
   })
 
   router.get('/:recordingId/transcript', async (req, res) => {

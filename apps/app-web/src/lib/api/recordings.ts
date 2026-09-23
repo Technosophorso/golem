@@ -240,12 +240,15 @@ async function putWithUploadProgress(input: {
   body: Blob;
   mime: string;
   contentRange?: string;
+  /** Backend-mandated headers (Azure Blob: `x-ms-blob-type`). */
+  uploadHeaders?: Record<string, string>;
   onProgress: (loadedBytes: number) => void;
 }): Promise<number> {
   return new Promise<number>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", input.uploadUrl);
     xhr.setRequestHeader("Content-Type", input.mime);
+    for (const [name, value] of Object.entries(input.uploadHeaders ?? {})) xhr.setRequestHeader(name, value);
     if (input.contentRange) xhr.setRequestHeader("Content-Range", input.contentRange);
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable && event.total > 0) {
@@ -320,9 +323,10 @@ export async function startRecordingUpload(params: {
     }),
   });
   if (!mintRes.ok) throw await asError(mintRes, "Could not start the upload");
-  const { recordingId, uploadUrl } = (await mintRes.json()) as {
+  const { recordingId, uploadUrl, uploadHeaders } = (await mintRes.json()) as {
     recordingId: string;
     uploadUrl: string;
+    uploadHeaders?: Record<string, string>;
   };
 
   // PUT bytes direct to storage. The Content-Type must match what the signed URL was
@@ -355,6 +359,7 @@ export async function startRecordingUpload(params: {
         uploadUrl,
         body: params.file,
         mime,
+        uploadHeaders,
         onProgress: (loadedBytes) => {
           if (params.file.size > 0) {
             params.onProgress?.(Math.min(1, loadedBytes / params.file.size));
@@ -369,7 +374,7 @@ export async function startRecordingUpload(params: {
   } else {
     const put = await fetch(uploadUrl, {
       method: "PUT",
-      headers: { "Content-Type": mime },
+      headers: { "Content-Type": mime, ...(uploadHeaders ?? {}) },
       body: params.file,
     });
     if (!put.ok) {
