@@ -16,7 +16,11 @@ const mockFetch = vi.mocked(authFetch);
 beforeEach(() => mockFetch.mockReset());
 
 describe("[COMP:app-web/pending-questions] pending session input", () => {
-  it("maps a durable tool row into the shared confirmation card shape", async () => {
+  it.each([
+    { capability: true, expected: true },
+    { capability: false, expected: false },
+    { capability: undefined, expected: false },
+  ])("restores the shared confirmation card with capability $capability", async ({ capability, expected }) => {
     mockFetch.mockResolvedValueOnce(
       new Response(
         JSON.stringify({
@@ -27,7 +31,7 @@ describe("[COMP:app-web/pending-questions] pending session input", () => {
             input: { path: "plan.md" },
             description: "Write plan.md",
             displayLines: ["File: plan.md"],
-            allowPersistentApproval: false,
+            allowPersistentApproval: capability,
             expiresAt: null,
             createdAt: "2026-09-01T00:00:00.000Z",
           },
@@ -45,6 +49,7 @@ describe("[COMP:app-web/pending-questions] pending session input", () => {
       toolCallId: "approval:ap-1",
       approvalId: "ap-1",
       restored: true,
+      allowPersistentApproval: expected,
       toolName: "fileWrite",
       input: { path: "plan.md" },
       description: "Write plan.md",
