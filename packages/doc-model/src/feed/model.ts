@@ -3,6 +3,7 @@ import { Schema } from '@tiptap/pm/model'
 import {
   feedCompositionSchema, type FeedComposition, type FeedNode, type FeedInline,
   type FeedEdit, type FeedTarget, type FeedAnchor, type FeedMedia, type FeedSpan,
+  type FeedPlaceholderAttrs,
 } from '@use-brian/shared'
 
 export class FeedCompositionError extends Error {
@@ -406,9 +407,9 @@ export function proposeFeedReplacement(composition: FeedComposition, target: Fee
 }
 
 /** Explicit slot insertion/conversion; ordinary bracketed text is untouched. */
-export function insertFeedPlaceholder(composition: FeedComposition, selection: { target: FeedTarget; caret?: { segmentId: string; blockId: string; offset: number } }, kind: 'text' | 'image', convert = false): FeedEdit[] {
+export function insertFeedPlaceholder(composition: FeedComposition, selection: { target: FeedTarget; caret?: { segmentId: string; blockId: string; offset: number } }, kind: 'text' | 'image', convert = false, initial?: Partial<FeedPlaceholderAttrs>): FeedEdit[] {
   const brief = convert ? feedTargetQuote(composition, selection.target) : ''
-  const node: FeedNode = { type: 'generationPlaceholder', attrs: { id: id(), kind, brief, briefRevision: 0, references: [] } }
+  const node: Extract<FeedNode, { type: 'generationPlaceholder' }> = { type: 'generationPlaceholder', attrs: { brief, references: [], ...initial, id: id(), kind, briefRevision: 0 } }
   const edits: FeedEdit[] = []
   let current = composition
   let caret = selection.caret
@@ -419,7 +420,11 @@ export function insertFeedPlaceholder(composition: FeedComposition, selection: {
     caret = { segmentId: spans[0]!.segmentId, blockId: spans[0]!.blockId, offset: spans[0]!.from }
   } else if (convert && selection.target.kind === 'block') {
     const target = selection.target; const before = locateFeedNode(composition, target.segmentId, target.blockId).node
-    if (!isFeedTextBlock(before)) throw new FeedCompositionError('invalid_target')
+    if (before.type === 'image') {
+      if (kind !== 'image') throw new FeedCompositionError('invalid_target')
+      node.attrs.brief = initial?.brief ?? before.attrs.alt ?? ''
+      if (node.attrs.altIntent === undefined && before.attrs.alt) node.attrs.altIntent = before.attrs.alt
+    } else if (!isFeedTextBlock(before)) throw new FeedCompositionError('invalid_target')
     node.attrs.id = before.attrs.id
     return [{ kind: 'replaceBlock', segmentId: target.segmentId, blockId: target.blockId, preimage: before, replacement: [node] }]
   }

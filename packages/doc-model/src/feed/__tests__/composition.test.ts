@@ -195,4 +195,21 @@ describe('[COMP:feed/composition-model] typed placeholder authoring', () => {
     expect(duplicateFeedNode(placeholder).attrs.id).not.toBe(placeholder.attrs.id)
     expect(projectFeed(composition).text).toBe('[notes] then [notes].')
   })
+  it('converts a fixed image to an image slot in place and Undo restores the upload', () => {
+    const composition = imported('Opening.'); const segment = composition.segments[0]!
+    const image: FeedNode = { type: 'image', attrs: { id: randomUUID(), fileId: randomUUID(), mimeType: 'image/png', placement: 'attachment', alt: 'Detailed orchard diagram' } }
+    segment.content.push(image)
+    const edits = insertFeedPlaceholder(composition, { target: { kind: 'block', segmentId: segment.id, blockId: image.attrs.id } }, 'image', true, { brief: 'Use a simpler visual with three shapes.' })
+    const changed = applyFeedEdits(composition, edits)
+    expect(changed.composition.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: { id: image.attrs.id, kind: 'image', brief: 'Use a simpler visual with three shapes.', briefRevision: 0, references: [], altIntent: image.attrs.alt } })
+    expect(applyFeedEdits(changed.composition, changed.inverse).composition).toEqual(composition)
+    expect(() => insertFeedPlaceholder(composition, { target: { kind: 'block', segmentId: segment.id, blockId: image.attrs.id } }, 'text', true)).toThrow('invalid_target')
+  })
+  it('uses a fixed image alt as the default brief and alt intent', () => {
+    const composition = imported('Opening.'); const segment = composition.segments[0]!
+    const image: FeedNode = { type: 'image', attrs: { id: randomUUID(), fileId: randomUUID(), mimeType: 'image/webp', placement: 'inline', alt: 'Accessible source description' } }
+    segment.content.push(image)
+    const changed = applyFeedEdits(composition, insertFeedPlaceholder(composition, { target: { kind: 'block', segmentId: segment.id, blockId: image.attrs.id } }, 'image', true))
+    expect(changed.composition.segments[0]!.content[1]).toMatchObject({ type: 'generationPlaceholder', attrs: { id: image.attrs.id, kind: 'image', brief: image.attrs.alt, altIntent: image.attrs.alt, briefRevision: 0 } })
+  })
 })

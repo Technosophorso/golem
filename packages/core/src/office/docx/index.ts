@@ -347,6 +347,44 @@ function symbolText(tag: string): string {
   return /^wingdings ?2$/i.test(font ?? '') && code === 'F0A3' ? '☐' : '�'
 }
 
+// PAGE is represented by the section's existing dynamic-footer flag. Preserve
+// ordinary text and inert fields, but never retain a recognised PAGE cache.
+function normalizeFooterPageFields(xml: string): { xml: string; count: number } {
+  const isPage = (instruction: string) => /^PAGE(?:\s|$)/i.test(decodeXmlText(instruction).trim())
+  let count = 0
+  const simpleNormalized = xml.replace(/<w:fldSimple\b[^>]*>[\s\S]*?<\/w:fldSimple>/g, (field) => {
+    if (/<w:fldChar\b|<w:fldSimple\b/.test(field.slice(field.indexOf('>') + 1))) return field
+    const instruction = xmlValue(field, 'w:fldSimple', 'w:instr') ?? ''
+    if (!isPage(instruction)) return field
+    count += 1
+    return field.replace(/<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>|<w:(?:tab|br|cr|sym)\b[^>]*\/>/g, '')
+  })
+  const simpleRanges = [...simpleNormalized.matchAll(/<w:fldSimple\b[^>]*>[\s\S]*?<\/w:fldSimple>/g)].map((match) => [match.index!, match.index! + match[0].length])
+  const stack: Array<{ instruction: string; result: boolean; nested: boolean; ranges: Array<[number, number]> }> = []
+  const remove: Array<[number, number]> = []
+  for (const token of simpleNormalized.matchAll(/<w:fldChar\b[^>]*\/>|<w:fldChar\b[^>]*>[\s\S]*?<\/w:fldChar>|<w:instrText(?:\s[^>]*)?>([\s\S]*?)<\/w:instrText>|<w:t(?:\s[^>]*)?>[\s\S]*?<\/w:t>|<w:(?:tab|br|cr|sym)\b[^>]*\/>/g)) {
+    if (simpleRanges.some(([start, end]) => token.index! >= start && token.index! < end)) continue
+    if (token[0].startsWith('<w:fldChar')) {
+      const kind = xmlValue(token[0], 'w:fldChar', 'w:fldCharType')
+      if (kind === 'begin') {
+        for (const parent of stack) parent.nested = true
+        stack.push({ instruction: '', result: false, nested: stack.length > 0, ranges: [] })
+      } else if (kind === 'separate' && stack.length) stack[stack.length - 1].result = true
+      else if (kind === 'end' && stack.length) {
+        const field = stack.pop()!
+        if (!field.nested && field.result && isPage(field.instruction)) { count += 1; remove.push(...field.ranges) }
+      }
+    } else if (stack.length) {
+      const field = stack[stack.length - 1]
+      if (token[1] !== undefined && !field.result) field.instruction += token[1]
+      else if (field.result && token[1] === undefined) field.ranges.push([token.index!, token.index! + token[0].length])
+    }
+  }
+  let normalized = simpleNormalized
+  for (const [start, end] of remove.sort((a, b) => b[0] - a[0])) normalized = normalized.slice(0, start) + normalized.slice(end)
+  return { xml: normalized, count }
+}
+
 function richRunsFromWordXml(xml: string, seed: string, inherited = '', styles?: WordStyles): OfficeRichTextRun[] {
   let checkboxField = false
   const runs = [...xml.matchAll(/<w:r(?:\s[^>]*)?>([\s\S]*?)<\/w:r>/g)].flatMap((match, index) => {
@@ -799,6 +837,7 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
   const footerPath = footerId ? partTarget(documentRels, footerId, 'word') : null
   const headerXml = headerPath ? await zip.file(headerPath)?.async('string') ?? '' : ''
   const footerXml = footerPath ? await zip.file(footerPath)?.async('string') ?? '' : ''
+  const footerFields = normalizeFooterPageFields(footerXml)
   const headerImage = headerPath ? await headerImageFromWordXml(zip, headerPath, headerXml, context) : {}
   const sectionProperties = body.match(/<w:sectPr(?:\s[^>]*)?>([\s\S]*?)<\/w:sectPr>/)?.[1] ?? ''
   const widthPt = Number(xmlValue(sectionProperties, 'w:pgSz', 'w:w') ?? 12_240) / 20
@@ -821,17 +860,18 @@ async function externalDocumentSnapshot(zip: JSZip, xml: string, context: Office
       id: stableOfficeUuid(`${context.artifactId}:section:0`),
       page: { widthPt, heightPt, marginTopPt: margin('top', 72), marginRightPt: margin('right', 72), marginBottomPt: margin('bottom', 72), marginLeftPt: margin('left', 72), orientation: xmlValue(sectionProperties, 'w:pgSz', 'w:orient') === 'landscape' ? 'landscape' : 'portrait' },
       header: richRunsFromWordXml(headerXml, `${context.artifactId}:header`).filter((run) => run.text),
-      footer: richRunsFromWordXml(footerXml, `${context.artifactId}:footer`).filter((run) => run.text),
+      footer: richRunsFromWordXml(footerFields.xml, `${context.artifactId}:footer`).filter((run) => run.text),
       headerImage: headerImage.image,
       headerAlignment: textParagraphAlignment(headerXml),
       footerAlignment: textParagraphAlignment(footerXml),
       headerBorderBottom: borderFromXml(headerXml, 'bottom'),
       footerBorderTop: borderFromXml(footerXml, 'top'),
-      showPageNumber: /<w:fldSimple[^>]*w:instr="[^"]*PAGE|<w:instrText[^>]*>\s*PAGE\b/i.test(footerXml),
+      showPageNumber: footerFields.count > 0,
       nodes,
     }],
   }
   const diagnostics = formattingDiagnostics(xml + headerXml + footerXml, stylesXml + numberingXml)
+  if (footerFields.count) diagnostics.push({ severity: 'warning', code: 'docx.formatting.footer_page_number', path: footerPath ?? 'word/footer.xml', message: 'Footer PAGE fields become one dynamic page number at the footer end; cached values are removed. Original field placement and number formatting are normalized.' })
   const references = [...(xml + stylesXml).matchAll(/<w:numPr\b[^>]*>([\s\S]*?)<\/w:numPr>/g)]
   if (references.some(m => xmlValue(m[1], 'w:numId') !== '0' && (!numbering.has(xmlValue(m[1], 'w:numId') ?? '') || Number(xmlValue(m[1], 'w:ilvl') ?? 0) !== 0))) diagnostics.push({ severity: 'warning', code: 'docx.formatting.numbering', path: 'word/numbering.xml', message: 'Only single-level decimal, Roman and letter numbering without level overrides is supported; unsupported markers were omitted.' })
   return { snapshot, resources: headerImage.resource ? [headerImage.resource] : [], diagnostics }

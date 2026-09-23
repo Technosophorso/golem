@@ -47,6 +47,12 @@ function makeApp(deps: Partial<LocalSessionDeps>) {
     localSessionRoutes({
       jwtSecret: JWT_SECRET,
       isEnabled: () => true,
+      sessions: {
+        create: vi.fn().mockResolvedValue({
+          id: '00000000-0000-4000-a000-0000000000a1',
+          authVersion: 0,
+        }),
+      },
       ...deps,
     }),
   )

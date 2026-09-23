@@ -47,7 +47,10 @@ export async function GET(request: Request) {
   if (as) backendUrl.searchParams.set("as", as);
 
   try {
-    const backendRes = await fetch(backendUrl, { method: "POST" });
+    const backendRes = await fetch(backendUrl, {
+      method: "POST",
+      headers: { "X-Client-User-Agent": request.headers.get("user-agent") ?? "" },
+    });
     if (!backendRes.ok) {
       console.error("[/api/auth/dev-login] backend rejected:", backendRes.status);
       return NextResponse.redirect(

@@ -20,7 +20,7 @@ import {
 const OperationBase = z.object({})
 const AssistantOfficeOperationSchema = z.discriminatedUnion('kind', [
   OperationBase.extend({ kind: z.literal('updateText'), targetId: z.string().uuid(), runs: z.array(OfficeRichTextRunSchema).max(10_000) }).strict(),
-  OperationBase.extend({ kind: z.literal('insertDocumentNode'), sectionId: z.string().uuid(), index: z.number().int().min(0), node: DocumentFlowNodeSchema }).strict(),
+  OperationBase.extend({ kind: z.literal('insertDocumentNode'), sectionId: z.string().uuid(), index: z.number().int().min(0).optional(), beforeNodeId: z.string().uuid().optional(), afterNodeId: z.string().uuid().optional(), node: DocumentFlowNodeSchema }).strict(),
   OperationBase.extend({ kind: z.literal('insertSlideObject'), slideId: z.string().uuid(), index: z.number().int().min(0), object: PresentationObjectSchema }).strict(),
   OperationBase.extend({ kind: z.literal('deleteObject'), targetId: z.string().uuid() }).strict(),
   OperationBase.extend({ kind: z.literal('setObjectProperty'), targetId: z.string().uuid(), path: z.array(z.string().regex(/^[A-Za-z][A-Za-z0-9]*$/)).min(1).max(8), value: z.unknown() }).strict(),
@@ -49,9 +49,22 @@ type AssistantOfficeOperation = z.infer<typeof AssistantOfficeOperationSchema>
 
 const AssistantOfficePlanSchema = z.object({ commands: z.array(AssistantOfficeOperationSchema).min(1).max(200) }).strict()
 
+// Derive payload keys from the validator so new operations cannot silently
+// become names-only capabilities in the model's contract.
+const operationFieldCatalog = AssistantOfficeOperationSchema.options.map((operation) => ({
+  kind: operation.shape.kind.value,
+  required: Object.entries(operation.shape).filter(([key, field]) => key !== 'kind' && !field.isOptional()).map(([key]) => key),
+  optional: Object.entries(operation.shape).filter(([key, field]) => key !== 'kind' && field.isOptional()).map(([key]) => key),
+}))
+
 const SYSTEM_PROMPT = `You are Brian's command planner for a canonical Office artifact. Return one JSON object and nothing else: {"commands":[...]}.
 
 Use only these operation kinds: updateText, insertDocumentNode, insertSlideObject, deleteObject, setObjectProperty, addSlide, reorderSlide, deleteSlide, reorderSlideObject, updateSpreadsheetImage, setSpreadsheetCell, setSpreadsheetDimension, addWorksheet, renameWorksheet, reorderWorksheet, deleteWorksheet. The server adds commandId, artifactId, baseVersion, actor, and origin; never include them. Do not return batch or attachResource.
+
+Operation payload fields (in addition to kind; no extra keys):
+${JSON.stringify(operationFieldCatalog)}
+
+Source objects have id, but updateText, deleteObject and setObjectProperty identify their target with targetId, never id. updateText.runs is an array of canonical rich-text run objects, each with id, text, and style copied from the context; preserve the existing style and explicit line breaks unless the instruction changes them. Never put a bare text field on an operation. setObjectProperty.path is an array of property names, not a dotted string; value is the canonical property value. Inserted node/object/slide/worksheet payloads must use their complete canonical shapes from context. Use valid UUIDs for new run or object IDs; the server freshens new identities.
 
 The supplied target IDs are the user's authority boundary. Change only selected content and the owning section, slide, or worksheet structure needed by the explicit instruction. Never change stable IDs, artifact/workspace identity, schema/capability versions, locks, resources, or unrelated content. Never invent a resource. Existing resource IDs may be retained by supported inserted objects. Use canonical JSON shapes copied from the context. Preserve every fact, name, amount, date, identifier, term, and commitment unless the instruction explicitly changes it. Use the smallest command set that completes the instruction. Do not return a no-op.`
 
@@ -266,11 +279,23 @@ function assertOperationAuthority(command: OfficeCommand, snapshot: OfficeArtifa
   }
 }
 
-function hydrateOperation(operation: AssistantOfficeOperation, envelope: Pick<OfficeCommand, 'artifactId' | 'baseVersion' | 'actor' | 'origin'>, existingIds: Set<string>): OfficeCommand {
+function hydrateOperation(operation: AssistantOfficeOperation, envelope: Pick<OfficeCommand, 'artifactId' | 'baseVersion' | 'actor' | 'origin'>, existingIds: Set<string>, snapshot: OfficeArtifactSnapshot): OfficeCommand {
   let payload: Record<string, unknown> = structuredClone(operation) as Record<string, unknown>
   if (operation.kind === 'updateText') payload = { ...operation, runs: freshenNewIds(operation.runs, existingIds) }
   else if (operation.kind === 'setObjectProperty') payload = { ...operation, value: freshenNewIds(operation.value, existingIds) }
-  else if (operation.kind === 'insertDocumentNode') payload = { ...operation, node: freshenNewIds(operation.node, existingIds) }
+  else if (operation.kind === 'insertDocumentNode') {
+    if ([operation.index, operation.beforeNodeId, operation.afterNodeId].filter((value) => value !== undefined).length !== 1) throw new Error('Office insertion requires exactly one of index, beforeNodeId or afterNodeId')
+    const section = snapshot.family === 'document' ? snapshot.sections.find((item) => item.id === operation.sectionId) : undefined
+    if (!section) throw new Error('Office insertion section was not found')
+    let index = operation.index
+    if (index === undefined) {
+      const anchorIndex = section.nodes.findIndex((node) => node.id === (operation.beforeNodeId ?? operation.afterNodeId))
+      if (anchorIndex < 0) throw new Error('Office insertion anchor is not a current flow node in the owning section')
+      index = anchorIndex + (operation.afterNodeId ? 1 : 0)
+    }
+    if (index > section.nodes.length) throw new Error('Office insertion index exceeds the owning section length')
+    payload = { kind: operation.kind, sectionId: operation.sectionId, index, node: freshenNewIds(operation.node, existingIds) }
+  }
   else if (operation.kind === 'insertSlideObject') payload = { ...operation, object: freshenNewIds(operation.object, existingIds) }
   else if (operation.kind === 'addSlide') payload = { ...operation, slide: freshenNewIds(operation.slide, existingIds) }
   else if (operation.kind === 'addWorksheet') payload = { ...operation, worksheet: freshenNewIds(operation.worksheet, existingIds) }
@@ -282,7 +307,10 @@ function promptContext(snapshot: OfficeArtifactSnapshot, targetIds: string[]): u
   const targets = new Set(targetIds)
   const common = { family: snapshot.family, title: snapshot.title, locale: snapshot.locale, resources: snapshot.resources, selectedTargetIds: targetIds }
   if (snapshot.family === 'document') {
-    return { ...common, sections: snapshot.sections.filter((section) => targets.has(section.id) || containsId(section, targets)).map((section) => ({ ...section, nodes: targets.has(section.id) ? section.nodes.slice(0, 500) : section.nodes.filter((node) => containsId(node, targets)) })), otherSections: snapshot.sections.map((section) => ({ id: section.id, nodeCount: section.nodes.length })) }
+    return { ...common, sections: snapshot.sections.filter((section) => targets.has(section.id) || containsId(section, targets)).map((section) => {
+      const selected = section.nodes.map((node, index) => ({ node, index })).filter(({ node, index }) => targets.has(section.id) ? index < 500 : containsId(node, targets))
+      return { ...section, nodes: selected.map(({ node }) => node), nodePositions: selected.map(({ node, index }) => ({ id: node.id, index })), nodeCount: section.nodes.length }
+    }), otherSections: snapshot.sections.map((section) => ({ id: section.id, nodeCount: section.nodes.length })) }
   }
   if (snapshot.family === 'presentation') {
     return { ...common, slideSize: snapshot.slideSize, themeId: snapshot.themeId, masters: snapshot.masters, layouts: snapshot.layouts, slides: snapshot.slides.filter((slide) => targets.has(slide.id) || containsId(slide, targets)), otherSlides: snapshot.slides.map((slide, index) => ({ id: slide.id, index, title: slide.title })) }
@@ -301,23 +329,39 @@ export async function generateAssistantOfficeCommands(params: {
   brandVoice?: string | null
 }): Promise<OfficeCommand[]> {
   const scope = revisionScope(params.snapshot, params.targetIds)
+  const editableTextTargetIds: string[] = []
+  visit(params.snapshot, (record) => {
+    if (typeof record.id === 'string' && Array.isArray(record.runs) && scope.directIds.has(record.id) && !scope.lockedIds.has(record.id)) editableTextTargetIds.push(record.id)
+  })
   const brandVoice = params.brandVoice?.trim()
+  const familyGuidance = params.snapshot.family === 'document'
+    ? 'This is a document. Use only updateText, insertDocumentNode, deleteObject, and setObjectProperty. Delete a document table row with deleteObject targeting the row ID. For header/footer text, use setObjectProperty on the selected section ID with path ["header"] or ["footer"] and value equal to the complete preserved run array. Individual header/footer run IDs are not updateText or deleteObject targets. Preserve every untouched run ID and style. Never use slide or worksheet operations.'
+    : params.snapshot.family === 'presentation'
+      ? 'This is a presentation. Use only updateText, insertSlideObject, deleteObject, setObjectProperty, addSlide, reorderSlide, deleteSlide, and reorderSlideObject. Never use document or worksheet operations.'
+      : 'This is a spreadsheet. Use only deleteObject, setObjectProperty, updateSpreadsheetImage, setSpreadsheetCell, setSpreadsheetDimension, addWorksheet, renameWorksheet, reorderWorksheet, and deleteWorksheet. Never use document or slide operations.'
+  const insertionGuidance = params.snapshot.family === 'document' ? '\nFor insertDocumentNode supply exactly one of beforeNodeId, afterNodeId, or index. Prefer beforeNodeId/afterNodeId for a request relative to an existing flow node. Anchors must name a top-level node in that section, not a run, table row or cell. The server resolves anchors after earlier commands. If using index, use the zero-based section nodes array position, adjusting for earlier commands, never a flattened text-target position. nodePositions contains original section indices even when context is filtered.' : ''
+  const systemPrompt = `${SYSTEM_PROMPT}\n\n${familyGuidance}${insertionGuidance}`
   const response = await collectStream(params.provider.stream({
     model: params.model,
-    systemPrompt: brandVoice ? `${SYSTEM_PROMPT}\n\n${brandVoice}` : SYSTEM_PROMPT,
-    messages: [{ role: 'user', content: `Instruction:\n${params.instruction.replace(/(^|\s)@Brian\b/gi, '$1').trim()}\n\nCanonical editable context:\n${JSON.stringify(promptContext(params.snapshot, params.targetIds))}` }] as Message[],
+    systemPrompt: brandVoice ? `${systemPrompt}\n\n${brandVoice}` : systemPrompt,
+    messages: [{ role: 'user', content: `Instruction:\n${params.instruction.replace(/(^|\s)@Brian\b/gi, '$1').trim()}\n\nExisting editable text-container IDs for updateText.targetId:\n${JSON.stringify(editableTextTargetIds)}\nTarget the owning paragraph, heading, list item, table cell or text object that contains runs, never a run ID or paragraphStart ID.\n\nCanonical editable context:\n${JSON.stringify(promptContext(params.snapshot, params.targetIds))}` }] as Message[],
     maxTokens: 12_000,
+    responseFormat: 'json',
     temperature: 0.1,
   }))
   const plan = AssistantOfficePlanSchema.parse(parseJsonObject(responseText(response)))
   const envelope = { artifactId: params.snapshot.artifactId, baseVersion: params.baseVersion, actor: { type: 'assistant' as const, id: params.assistantId }, origin: 'ai' as const }
-  const commands = plan.commands.map((operation) => hydrateOperation(operation, envelope, scope.existingIds))
-  for (const command of commands) assertOperationAuthority(command, params.snapshot, scope)
+  const commands: OfficeCommand[] = []
   let candidate = params.snapshot
-  for (const command of commands) candidate = applyOfficeCommand(candidate, command)
+  for (const operation of plan.commands) {
+    const command = hydrateOperation(operation, envelope, scope.existingIds, candidate)
+    assertOperationAuthority(command, params.snapshot, scope)
+    candidate = applyOfficeCommand(candidate, command)
+    commands.push(command)
+  }
   const preflight = preflightOfficeCandidate(candidate)
   if (!preflight.ok) throw new Error(`Office command plan failed preflight: ${preflight.diagnostics.map((item) => `${item.path}: ${item.message}`).join('; ')}`)
-  const fit = fitOfficeArtifact(candidate)
+  const fit = fitOfficeArtifact(candidate, { readabilityReference: params.snapshot })
   if (!fit.ok) throw new Error(`Office command plan failed fit: ${fit.issues.map((item) => `${item.objectId}: ${item.message}`).join('; ')}`)
   if (JSON.stringify(candidate) === JSON.stringify(params.snapshot)) throw new Error('Office command plan returned no changes')
   return commands

@@ -22,7 +22,7 @@ import express, { type Router } from 'express'
 export function createTestApp(
   mountPath: string,
   router: Router,
-  opts?: { userId?: string },
+  opts?: { userId?: string; authSessionId?: string },
 ): express.Express {
   const app = express()
 
@@ -37,6 +37,7 @@ export function createTestApp(
   if (opts?.userId) {
     app.use((_req, _res, next) => {
       ;(_req as express.Request & { userId?: string }).userId = opts.userId
+      ;(_req as express.Request & { authSessionId?: string }).authSessionId = opts.authSessionId
       next()
     })
   }

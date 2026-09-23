@@ -45,6 +45,31 @@ beforeEach(async () => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 describe("[COMP:app-web/feed-chat-stream] Feed panel", () => {
+  it("stages a pasted clipboard image and sends an image-only turn with its real metadata", async () => {
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:clipboard-image") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const fileId = crypto.randomUUID();
+    mocks.fetch.mockImplementation(async (url, init) => {
+      if (String(url).endsWith("/api/files/upload")) return new Response(JSON.stringify({ files: [{ id: fileId }] }), { status: 200 });
+      if (String(url).endsWith("/api/chat") && init?.method === "POST") return new Response(frame("done"));
+      return new Response(frame("status", { status: "idle" }) + frame("done"));
+    });
+    const field = host.querySelector("textarea")!;
+    const image = new File(["pixels"], "clipboard.png", { type: "image/png" });
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { files: [image], getData: () => "" } });
+    await act(async () => field.dispatchEvent(paste));
+    expect(paste.defaultPrevented).toBe(true);
+    await vi.waitFor(() => expect(host.textContent).toContain("clipboard.png"));
+    expect(host.querySelector<HTMLImageElement>('img[src="blob:clipboard-image"]')).not.toBeNull();
+    const sendButton = host.querySelector<HTMLButtonElement>(`button[title="${en.feedPage.tuningChat.send}"]`)!;
+    await vi.waitFor(() => expect(sendButton.disabled).toBe(false));
+    await act(async () => sendButton.click());
+    const chatCall = mocks.fetch.mock.calls.find(([url, init]) => String(url).endsWith("/api/chat") && init?.method === "POST")!;
+    expect(JSON.parse(chatCall[1].body)).toMatchObject({ message: "", fileIds: [fileId], sessionId: "draft", assistantId: "writer" });
+    expect(host.querySelector<HTMLImageElement>('img[alt="clipboard.png"]')?.src).toBe("blob:clipboard-image");
+    expect(host.textContent?.match(/clipboard\.png/g)).toHaveLength(1);
+  });
   it("paints deltas before done, keeps receipts/files/documents after done, and rekeys the user row for retry", async () => {
     const direct = source(); mocks.fetch.mockResolvedValue(direct.response);
     await send("Improve the draft");

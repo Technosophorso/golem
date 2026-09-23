@@ -53,7 +53,10 @@ export async function POST(request: Request) {
   try {
     const backendRes = await fetch(`${API_URL}/auth/refresh`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "X-Client-User-Agent": request.headers.get("user-agent") ?? "",
+      },
       body: JSON.stringify({ refreshToken }),
     });
 

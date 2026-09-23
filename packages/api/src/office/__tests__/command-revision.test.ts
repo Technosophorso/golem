@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Message } from '@use-brian/core'
-import type { DocumentSnapshot, PresentationSnapshot, SpreadsheetSnapshot } from '@use-brian/office-model'
+import { applyOfficeCommand, type DocumentSnapshot, type PresentationSnapshot, type SpreadsheetSnapshot } from '@use-brian/office-model'
 import { generateAssistantOfficeCommands } from '../command-revision.js'
 
 const uid = (n: number) => `38000000-0000-4000-8000-${String(n).padStart(12, '0')}`
@@ -33,6 +33,46 @@ function spreadsheet(): SpreadsheetSnapshot {
 }
 
 describe('[COMP:api/office-generation] Brian-native Office command planning', () => {
+  it('supplies exact operation payload keys and canonical rich-text guidance', async () => {
+    const snapshot = document()
+    const model = provider({ commands: [{ kind: 'updateText', targetId: uid(11), runs: [{ id: uid(12), text: 'Revised', style }] }] })
+    await generateAssistantOfficeCommands({ provider: model as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Revise the paragraph' })
+    const prompt = model.requests[0]?.systemPrompt ?? ''
+    expect(model.requests[0]).toMatchObject({ responseFormat: 'json', maxTokens: 12000 })
+    const userMessage = String(model.requests[0]?.messages?.[0]?.content)
+    expect(userMessage).toContain(`Existing editable text-container IDs for updateText.targetId:\n["${uid(11)}"]`)
+    expect(userMessage).toContain('never a run ID or paragraphStart ID')
+    expect(prompt).toContain('Individual header/footer run IDs are not updateText or deleteObject targets')
+    const catalogLine = prompt.split('\n').find((line) => line.startsWith('[{"kind":"updateText"'))
+    const catalog = JSON.parse(catalogLine ?? '[]')
+    expect(catalog).toHaveLength(16)
+    expect(catalog).toContainEqual({ kind: 'updateText', required: ['targetId', 'runs'], optional: [] })
+    expect(catalog).toContainEqual({ kind: 'deleteObject', required: ['targetId'], optional: [] })
+    expect(catalog).toContainEqual({ kind: 'insertDocumentNode', required: ['sectionId', 'node'], optional: ['index', 'beforeNodeId', 'afterNodeId'] })
+    expect(prompt).toContain('Prefer beforeNodeId/afterNodeId')
+    expect(catalog).toContainEqual({ kind: 'setSpreadsheetCell', required: ['sheetId', 'cellId', 'address', 'valueType', 'value'], optional: ['formula'] })
+    expect(prompt).toContain('targetId, never id')
+    expect(prompt).toContain('id, text, and style copied from the context')
+    expect(prompt).toContain('Never put a bare text field on an operation')
+    expect(prompt).toContain('This is a document. Use only updateText, insertDocumentNode, deleteObject, and setObjectProperty.')
+    expect(prompt).toContain('Delete a document table row with deleteObject targeting the row ID')
+  })
+
+  it('rejects node-shaped edits instead of guessing operation payloads', async () => {
+    const model = provider({ commands: [{ kind: 'updateText', id: uid(11), text: 'Revised' }] })
+    await expect(generateAssistantOfficeCommands({ provider: model as never, model: 'test', snapshot: document(), baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Revise the paragraph' })).rejects.toThrow()
+  })
+
+  it('allows a body revision with an untouched small footer but rejects changed small text', async () => {
+    const snapshot = document()
+    snapshot.sections[0].footer = [{ id: uid(15), text: 'BRAND', style: { ...style, fontSizePt: 7.5 } }]
+    const valid = provider({ commands: [{ kind: 'updateText', targetId: uid(11), runs: [{ id: uid(12), text: 'Revised', style }] }] })
+    const params = { model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Revise the paragraph' }
+    await expect(generateAssistantOfficeCommands({ ...params, provider: valid as never })).resolves.toHaveLength(1)
+    const invalid = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(10), path: ['footer'], value: [{ ...snapshot.sections[0].footer[0], text: 'New tiny text' }] }] })
+    await expect(generateAssistantOfficeCommands({ ...params, provider: invalid as never })).rejects.toThrow('readability floor')
+  })
+
   it('hydrates server-owned command authority for document structure', async () => {
     const snapshot = document()
     const model = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(10), path: ['showPageNumber'], value: false }, { kind: 'insertDocumentNode', sectionId: uid(10), index: 1, node: { id: uid(99), kind: 'pageBreak' } }] })
@@ -51,6 +91,61 @@ describe('[COMP:api/office-generation] Brian-native Office command planning', ()
 
     const pageEscape = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(10), path: ['page', 'marginTopPt'], value: 36 }] })
     await expect(generateAssistantOfficeCommands({ provider: pageEscape as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(11)], instruction: 'Center this paragraph' })).rejects.toThrow('selected target boundary')
+  })
+
+  it.each(['beforeNodeId', 'afterNodeId'] as const)('resolves %s against the current section after earlier deletion and insertion', async (location) => {
+    const snapshot = document()
+    snapshot.sections[0].nodes.push({ id: uid(13), kind: 'heading', level: 1, styleName: 'Heading1', alignment: 'start', runs: [{ id: uid(14), text: 'Signatures', style }] })
+    const model = provider({ commands: [
+      { kind: 'deleteObject', targetId: uid(11) },
+      { kind: 'insertDocumentNode', sectionId: uid(10), beforeNodeId: uid(13), node: { id: uid(97), kind: 'paragraph', alignment: 'start', runs: [{ id: uid(98), text: 'Introduction', style }] } },
+      { kind: 'insertDocumentNode', sectionId: uid(10), [location]: uid(13), node: { id: uid(99), kind: 'pageBreak' } },
+    ] })
+    const commands = await generateAssistantOfficeCommands({ provider: model as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Place the break next to Signatures after replacing the introduction' })
+    expect(commands[2]).toMatchObject({ kind: 'insertDocumentNode', index: location === 'beforeNodeId' ? 1 : 2 })
+    expect(commands[2]).not.toHaveProperty(location)
+    const result = commands.reduce((state, command) => applyOfficeCommand(state, command) as DocumentSnapshot, snapshot)
+    expect(result.sections[0].nodes.map((node) => node.kind)).toEqual(location === 'beforeNodeId' ? ['paragraph', 'pageBreak', 'heading'] : ['paragraph', 'heading', 'pageBreak'])
+  })
+
+  it('keeps true section indices in a filtered selection context', async () => {
+    const snapshot = document()
+    snapshot.sections[0].nodes.push({ id: uid(13), kind: 'heading', level: 1, styleName: 'Heading1', alignment: 'start', runs: [{ id: uid(14), text: 'Signatures', style }] })
+    const model = provider({ commands: [{ kind: 'insertDocumentNode', sectionId: uid(10), beforeNodeId: uid(13), node: { id: uid(99), kind: 'pageBreak' } }] })
+    const commands = await generateAssistantOfficeCommands({ provider: model as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(13)], instruction: 'Insert a page break before Signatures' })
+    const context = JSON.parse(String(model.requests[0]?.messages?.[0]?.content).split('Canonical editable context:\n')[1]!)
+    expect(context.sections[0].nodePositions).toEqual([{ id: uid(13), index: 1 }])
+    expect(context.sections[0].nodes).toHaveLength(1)
+    expect(commands[0]).toMatchObject({ index: 1 })
+  })
+
+  it.each([
+    {},
+    { index: 0, beforeNodeId: uid(11) },
+    { beforeNodeId: uid(11), afterNodeId: uid(11) },
+    { beforeNodeId: uid(12) },
+    { beforeNodeId: uid(999) },
+    { index: 2 },
+  ])('rejects invalid insertion locations without modifying the source: %j', async (location) => {
+    const snapshot = document()
+    const original = structuredClone(snapshot)
+    const model = provider({ commands: [{ kind: 'insertDocumentNode', sectionId: uid(10), ...location, node: { id: uid(99), kind: 'pageBreak' } }] })
+    await expect(generateAssistantOfficeCommands({ provider: model as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Insert a break' })).rejects.toThrow('Office insertion')
+    expect(snapshot).toEqual(original)
+  })
+
+  it('rejects an anchor deleted by an earlier operation atomically', async () => {
+    const snapshot = document()
+    const model = provider({ commands: [{ kind: 'deleteObject', targetId: uid(11) }, { kind: 'insertDocumentNode', sectionId: uid(10), beforeNodeId: uid(11), node: { id: uid(99), kind: 'pageBreak' } }] })
+    await expect(generateAssistantOfficeCommands({ provider: model as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Insert a break' })).rejects.toThrow('anchor is not a current flow node')
+    expect(snapshot.sections[0].nodes[0].id).toBe(uid(11))
+  })
+
+  it('rejects an anchor from another section', async () => {
+    const snapshot = document()
+    snapshot.sections.push({ ...structuredClone(snapshot.sections[0]), id: uid(20), nodes: [{ id: uid(21), kind: 'paragraph', styleName: 'Body', alignment: 'start', runs: [{ id: uid(22), text: 'Other section', style }] }] })
+    const model = provider({ commands: [{ kind: 'insertDocumentNode', sectionId: uid(10), beforeNodeId: uid(21), node: { id: uid(99), kind: 'pageBreak' } }] })
+    await expect(generateAssistantOfficeCommands({ provider: model as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Insert a break' })).rejects.toThrow('anchor is not a current flow node')
   })
 
   it('allows formatting on a selected presentation object and rejects a locked sibling', async () => {

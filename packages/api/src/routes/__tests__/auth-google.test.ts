@@ -16,6 +16,14 @@ import { authRoutes } from '../auth.js'
 import type { User } from '../../db/users.js'
 
 const JWT_SECRET = 'test-jwt-secret'
+const sessions = {
+  create: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a3', authVersion: 0 }),
+  validateAccess: vi.fn().mockResolvedValue(true),
+  validateRefresh: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a3', authVersion: 0 }),
+  listForUser: vi.fn().mockResolvedValue([]),
+  revokeForUser: vi.fn().mockResolvedValue(true),
+  revokeAllForUser: vi.fn().mockResolvedValue(true),
+}
 
 const findOrCreateUser = vi.fn()
 const findUserByEmail = vi.fn()
@@ -74,7 +82,7 @@ function stubTokeninfo(payload: Record<string, unknown>) {
 function makeApp() {
   const app = express()
   app.use(express.json())
-  app.use('/auth', authRoutes(JWT_SECRET))
+  app.use('/auth', authRoutes(JWT_SECRET, undefined, undefined, undefined, undefined, undefined, undefined, sessions))
   return app
 }
 

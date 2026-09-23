@@ -90,6 +90,12 @@ function OfficeCreateForm({
   const [error, setError] = useState<"failed" | "unavailable" | null>(null);
   const [generationAvailable, setGenerationAvailable] = useState<boolean | null>(null);
   const dirty = Boolean(outcome || audience || additionalContext);
+  const fields = [
+    { id: "office-create-outcome", label: t.outcome, value: outcome, limit: 4_000, setValue: setOutcome, placeholder: t.outcomePlaceholder, required: true },
+    { id: "office-create-audience", label: t.audience, value: audience, limit: 1_000, setValue: setAudience, placeholder: t.audiencePlaceholder, required: true },
+    { id: "office-create-context", label: t.additionalContext, value: additionalContext, limit: 4_000, setValue: setAdditionalContext, placeholder: t.additionalContextPlaceholder, required: false },
+  ];
+  const invalidFields = fields.some((field) => field.value.length > field.limit || (field.required && !field.value.trim()));
 
   useEffect(() => {
     onDirtyChange?.(dirty);
@@ -121,6 +127,7 @@ function OfficeCreateForm({
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
+    if (busy || generationAvailable !== true || invalidFields) return;
     setBusy(true);
     setError(null);
     try {
@@ -146,13 +153,23 @@ function OfficeCreateForm({
     <p className="mt-2 text-sm text-muted-foreground">{t.templateFirstCreateDescription}</p>
     <div className="mt-5 flex items-center gap-3 rounded-lg border bg-muted/30 p-3 text-sm"><span className="font-medium">{template.name}</span><span className="text-muted-foreground">{template.family === "document" ? t.document : template.family === "presentation" ? t.presentation : t.spreadsheet}</span><button type="button" onClick={onChangeTemplate} className="ml-auto rounded-md px-2 py-1 font-medium text-primary hover:bg-background">{t.browseTemplates}</button></div>
     <form onSubmit={submit} className="mt-8 space-y-6">
-          <label className="block text-sm font-medium">{t.outcome}<textarea required value={outcome} onChange={(event) => setOutcome(event.target.value)} placeholder={t.outcomePlaceholder} className="mt-2 min-h-32 w-full rounded-md border bg-background p-3 text-[16px] font-normal md:text-sm" /></label>
-          <label className="block text-sm font-medium">{t.audience}<input required value={audience} onChange={(event) => setAudience(event.target.value)} placeholder={t.audiencePlaceholder} className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-[16px] font-normal md:text-sm" /></label>
-          <label className="block text-sm font-medium">{t.additionalContext}<textarea value={additionalContext} onChange={(event) => setAdditionalContext(event.target.value)} placeholder={t.additionalContextPlaceholder} className="mt-2 min-h-24 w-full rounded-md border bg-background p-3 text-[16px] font-normal md:text-sm" /></label>
+      {fields.map((field) => {
+        const tooLong = field.value.length > field.limit;
+        const props = { id: field.id, required: field.required, value: field.value, onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => field.setValue(event.target.value), placeholder: field.placeholder, "aria-invalid": tooLong, "aria-describedby": `${field.id}-help` };
+        return <div key={field.id}>
+          <label htmlFor={field.id} className="block text-sm font-medium">{field.label}</label>
+          {field.id === "office-create-audience"
+            ? <input {...props} className="mt-2 h-10 w-full rounded-md border bg-background px-3 text-[16px] font-normal md:text-sm" />
+            : <textarea {...props} className="mt-2 min-h-32 w-full rounded-md border bg-background p-3 text-[16px] font-normal md:text-sm" />}
+          <p id={`${field.id}-help`} role={tooLong ? "alert" : undefined} className={tooLong ? "mt-1 text-sm text-destructive" : "mt-1 text-xs text-muted-foreground"}>
+            {format(tooLong ? t.createFieldTooLong : t.createCharacterCount, { field: field.label, count: field.value.length, limit: field.limit })}
+          </p>
+        </div>;
+      })}
           {error ? <p role="alert" className="text-sm text-destructive">{error === "unavailable" ? t.createUnavailable : t.createFailed}</p> : null}
       <div className="flex justify-end gap-2 border-t pt-5">
         <button type="button" onClick={onCancel} className="h-10 rounded-md border px-4 text-sm font-medium">{copy.common.cancel}</button>
-        <button type="submit" disabled={generationAvailable !== true || busy || !outcome.trim() || !audience.trim()} className="h-10 rounded-md bg-action px-5 text-sm font-medium text-action-foreground disabled:opacity-50">{busy ? t.generating : t.generate}</button>
+        <button type="submit" disabled={generationAvailable !== true || busy || invalidFields} className="h-10 rounded-md bg-action px-5 text-sm font-medium text-action-foreground disabled:opacity-50">{busy ? t.generating : t.generate}</button>
       </div>
     </form>
   </div>;

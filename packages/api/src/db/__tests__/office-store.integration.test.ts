@@ -73,17 +73,23 @@ describe('[COMP:api/office-store] Office stores', () => {
   it('commits a version with one locked CAS statement and returns conflict as null', async () => {
     const success = fakeDb({ 'WITH current_head': [{ id: 'v2', version: 2 }] })
     const store = createOfficeArtifactStore(success.query)
-    const committed = await store.commitVersion({ userId: 'u1', artifactId: 'a1', expectedVersion: 1, snapshotFileId: 'f1', snapshotHash: 'a'.repeat(64), operationClock: new Uint8Array([1]), schemaVersion: 1, capabilityVersion: 1, origin: 'manual', authorType: 'user', authorUserId: 'u1', summary: 'Edit' })
+    const committed = await store.commitVersion({ userId: 'u1', artifactId: 'a1', snapshotTitle: 'Generated agreement', expectedVersion: 1, snapshotFileId: 'f1', snapshotHash: 'a'.repeat(64), operationClock: new Uint8Array([1]), schemaVersion: 1, capabilityVersion: 1, origin: 'manual', authorType: 'user', authorUserId: 'u1', summary: 'Edit' })
     expect(committed).toEqual({ id: 'v2', version: 2 })
     expect(success.calls[0].sql).toContain('FOR UPDATE')
+    expect(success.calls).toHaveLength(1)
+    expect(success.calls[0].sql).toContain('head_version = i.version, title = $14')
+    expect(success.calls[0].sql).toContain('FROM inserted i WHERE a.id = i.artifact_id')
+    expect(success.calls[0].params[13]).toBe('Generated agreement')
     const conflict = fakeDb()
-    expect(await createOfficeArtifactStore(conflict.query).commitVersion({ userId: 'u1', artifactId: 'a1', expectedVersion: 0, snapshotFileId: 'f1', snapshotHash: 'b'.repeat(64), operationClock: new Uint8Array(), schemaVersion: 1, capabilityVersion: 1, origin: 'manual', authorType: 'user', summary: 'Stale' })).toBeNull()
+    expect(await createOfficeArtifactStore(conflict.query).commitVersion({ userId: 'u1', artifactId: 'a1', snapshotTitle: 'Stale title', expectedVersion: 0, snapshotFileId: 'f1', snapshotHash: 'b'.repeat(64), operationClock: new Uint8Array(), schemaVersion: 1, capabilityVersion: 1, origin: 'manual', authorType: 'user', summary: 'Stale' })).toBeNull()
+    expect(conflict.calls).toHaveLength(1)
   })
 
   it('restores an immutable version and the collaborative live snapshot atomically', async () => {
     const db = fakeDb({ 'JOIN live': [{ id: 'v3', version: 3 }] })
     const restored = await createOfficeArtifactStore(db.query).restoreVersion({
       userId: 'u1', artifactId: 'a1', targetVersionId: 'v1', expectedVersion: 2,
+      snapshotTitle: 'Restored agreement',
       summary: 'Restore v1', liveUpdate: new Uint8Array([1, 2]),
       liveStateVector: new Uint8Array([3]), liveCanonicalHash: 'e'.repeat(64),
     })
@@ -91,6 +97,8 @@ describe('[COMP:api/office-store] Office stores', () => {
     expect(db.calls[0]?.sql).toContain('INSERT INTO office_collab_documents')
     expect(db.calls[0]?.sql).toContain('base_version=EXCLUDED.base_version')
     expect(db.calls[0]?.params.slice(0, 5)).toEqual(['a1', 'v1', 2, 'u1', 'Restore v1'])
+    expect(db.calls[0]?.sql).toContain('head_version = i.version, title = $9')
+    expect(db.calls[0]?.params[8]).toBe('Restored agreement')
   })
 
   it('names versions and manages explicit and inherited sharing roles', async () => {

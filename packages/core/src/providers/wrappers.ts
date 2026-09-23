@@ -625,6 +625,13 @@ async function* streamWithDetection(
   let inTextMode = false
   let emittedText = false
 
+  // Structured fields legitimately repeat names, addresses and style objects.
+  // Only bounded, tool-free JSON requests skip the prose phrase detector.
+  const boundedJson = request.responseFormat === 'json'
+    && !request.tools?.length
+    && Number.isFinite(request.maxTokens)
+    && (request.maxTokens ?? 0) > 0
+
   const stream = inner(request)
 
   for await (const chunk of stream) {
@@ -650,7 +657,7 @@ async function* streamWithDetection(
 
       // Check for n-gram repetition (only after enough text). The word-count
       // gate is allocation-free; detection runs on the bounded window above.
-      if (approxWordCount(textBuffer) >= 20) {
+      if (!boundedJson && approxWordCount(textBuffer) >= 20) {
         const { looping, cleanEnd } = detectNgramRepetition(textBuffer)
         if (looping) {
           const lastUsage = await drainForUsage(stream)

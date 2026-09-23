@@ -33,10 +33,17 @@ import { clearLocalDocCaches } from "@/lib/offline/idb";
 import { resetSurfaceCache } from "@/lib/surface-cache";
 import { primaryAuthUrl } from "@/lib/primary-auth";
 import { setUserInfoCache } from "@/lib/user";
+import { revokeCurrentAccountSession } from "@/lib/api/account";
 
-export function signOutActiveAccount(): void {
+export function signOutActiveAccount(options: { revokeCurrent?: boolean } = {}): void {
   if (typeof window === "undefined") return;
   void (async () => {
+    if (options.revokeCurrent !== false) {
+      // Best effort: cookie clearing is still the local source of truth when
+      // the API is unreachable, but a healthy sign-out should disappear from
+      // the device ledger immediately.
+      await revokeCurrentAccountSession();
+    }
     // Scrub the offline doc caches BEFORE the session ends: page content
     // persisted for offline editing must not outlive the sign-out on a shared
     // browser. Internally time-bounded, so a hung IndexedDB can't strand the

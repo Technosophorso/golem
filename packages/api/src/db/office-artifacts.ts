@@ -195,6 +195,7 @@ export function createOfficeArtifactStore(db: OfficeDbQuery = defaultOfficeDbQue
     async commitVersion(params: {
       userId: string
       artifactId: string
+      snapshotTitle: string
       expectedVersion: number
       snapshotFileId: string
       snapshotHash: string
@@ -225,18 +226,19 @@ export function createOfficeArtifactStore(db: OfficeDbQuery = defaultOfficeDbQue
           RETURNING id, artifact_id, version
         ), advanced AS (
           UPDATE office_artifacts a
-             SET head_version_id = i.id, head_version = i.version, updated_at = now()
+             SET head_version_id = i.id, head_version = i.version, title = $14, updated_at = now()
             FROM inserted i WHERE a.id = i.artifact_id
           RETURNING i.id, i.version
         )
         SELECT id, version::int AS version FROM advanced
-      `, [params.artifactId, params.expectedVersion, params.snapshotFileId, params.snapshotHash, Buffer.from(params.operationClock), params.schemaVersion, params.capabilityVersion, params.authorType, params.authorUserId ?? null, params.authorAssistantId ?? null, params.origin, params.summary, params.checkpointKind ?? null])
+      `, [params.artifactId, params.expectedVersion, params.snapshotFileId, params.snapshotHash, Buffer.from(params.operationClock), params.schemaVersion, params.capabilityVersion, params.authorType, params.authorUserId ?? null, params.authorAssistantId ?? null, params.origin, params.summary, params.checkpointKind ?? null, params.snapshotTitle])
       return result.rows[0] ?? null
     },
 
     async restoreVersion(params: {
       userId: string
       artifactId: string
+      snapshotTitle: string
       targetVersionId: string
       expectedVersion: number
       summary: string
@@ -276,13 +278,13 @@ export function createOfficeArtifactStore(db: OfficeDbQuery = defaultOfficeDbQue
           RETURNING artifact_id
         ), advanced AS (
           UPDATE office_artifacts a
-             SET head_version_id = i.id, head_version = i.version, updated_at = now()
+             SET head_version_id = i.id, head_version = i.version, title = $9, updated_at = now()
             FROM inserted i WHERE a.id = i.artifact_id
           RETURNING i.id, i.version
         )
         SELECT a.id, a.version::int AS version FROM advanced a
         JOIN live l ON l.artifact_id=$1
-      `, [params.artifactId, params.targetVersionId, params.expectedVersion, params.userId, params.summary, Buffer.from(params.liveUpdate), Buffer.from(params.liveStateVector), params.liveCanonicalHash])
+      `, [params.artifactId, params.targetVersionId, params.expectedVersion, params.userId, params.summary, Buffer.from(params.liveUpdate), Buffer.from(params.liveStateVector), params.liveCanonicalHash, params.snapshotTitle])
       return result.rows[0] ?? null
     },
 

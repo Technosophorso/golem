@@ -11,7 +11,7 @@
  * The guard branches return JSON and are exercised with supertest. The
  * "stream opens" path holds the socket open, so it runs against a real
  * ephemeral `http` server and is torn down once the SSE headers arrive.
- * `verifyAccessToken` + `subscribeToBrainChanges` are module-mocked;
+ * `verifyAccessTokenClaims` + `subscribeToBrainChanges` are module-mocked;
  * `workspaceStore` is injected.
  *
  * Spec: docs/architecture/platform/realtime-sync.md.
@@ -21,16 +21,17 @@ import express from 'express'
 import request from 'supertest'
 import http from 'node:http'
 
-vi.mock('../../auth/jwt.js', () => ({ verifyAccessToken: vi.fn() }))
+vi.mock('../../auth/jwt.js', () => ({ verifyAccessTokenClaims: vi.fn() }))
 vi.mock('../../brain-stream/sse-fanout.js', () => ({ subscribeToBrainChanges: vi.fn(() => () => {}) }))
 
 import { brainStreamRoutes } from '../brain-stream.js'
-import { verifyAccessToken } from '../../auth/jwt.js'
+import { verifyAccessTokenClaims } from '../../auth/jwt.js'
 import { subscribeToBrainChanges } from '../../brain-stream/sse-fanout.js'
 import type { WorkspaceStore } from '../../db/workspace-store.js'
 
-const mockVerify = vi.mocked(verifyAccessToken)
+const mockVerify = vi.mocked(verifyAccessTokenClaims)
 const mockSubscribe = vi.mocked(subscribeToBrainChanges)
+const mockValidateAccess = vi.fn().mockResolvedValue(true)
 
 const WID = '11111111-1111-1111-1111-111111111111'
 const UID = '22222222-2222-2222-2222-222222222222'
@@ -47,7 +48,12 @@ function makeApp(
   app.use(express.json())
   app.use(
     '/api/brain/stream',
-    brainStreamRoutes({ workspaceStore, jwtSecret: 'test-secret', ...opts }),
+    brainStreamRoutes({
+      workspaceStore,
+      jwtSecret: 'test-secret',
+      authSessions: { validateAccess: mockValidateAccess },
+      ...opts,
+    }),
   )
   return app
 }
@@ -55,6 +61,7 @@ function makeApp(
 beforeEach(() => {
   vi.clearAllMocks()
   mockSubscribe.mockReturnValue(() => {})
+  mockValidateAccess.mockResolvedValue(true)
 })
 
 describe('[COMP:api/brain-stream-sse] auth + workspace guards', () => {
@@ -73,7 +80,7 @@ describe('[COMP:api/brain-stream-sse] auth + workspace guards', () => {
   })
 
   it('400 when workspaceId is missing', async () => {
-    mockVerify.mockReturnValue(UID)
+    mockVerify.mockReturnValue({ userId: UID })
     const res = await request(makeApp(makeWorkspaceStore()))
       .get('/api/brain/stream')
       .set('Authorization', 'Bearer good.jwt')
@@ -81,7 +88,7 @@ describe('[COMP:api/brain-stream-sse] auth + workspace guards', () => {
   })
 
   it('400 when workspaceId is not a uuid', async () => {
-    mockVerify.mockReturnValue(UID)
+    mockVerify.mockReturnValue({ userId: UID })
     const res = await request(makeApp(makeWorkspaceStore()))
       .get('/api/brain/stream?workspaceId=not-a-uuid')
       .set('Authorization', 'Bearer good.jwt')
@@ -89,7 +96,7 @@ describe('[COMP:api/brain-stream-sse] auth + workspace guards', () => {
   })
 
   it('404 for a non-member (existence not probeable)', async () => {
-    mockVerify.mockReturnValue(UID)
+    mockVerify.mockReturnValue({ userId: UID })
     const store = makeWorkspaceStore(null)
     const res = await request(makeApp(store))
       .get(`/api/brain/stream?workspaceId=${WID}`)
@@ -101,10 +108,19 @@ describe('[COMP:api/brain-stream-sse] auth + workspace guards', () => {
   it('accepts the token via ?access_token= too (browser EventSource path)', async () => {
     // Missing workspaceId still 400s, but proves the query-token branch runs
     // (verify is consulted) without opening a stream.
-    mockVerify.mockReturnValue(UID)
+    mockVerify.mockReturnValue({ userId: UID })
     const res = await request(makeApp(makeWorkspaceStore())).get('/api/brain/stream?access_token=good.jwt')
     expect(res.status).toBe(400)
     expect(mockVerify).toHaveBeenCalledWith('good.jwt', 'test-secret')
+  })
+
+  it('401 when the token session has been revoked', async () => {
+    mockVerify.mockReturnValue({ userId: UID, sessionId: 'session-1', authVersion: 2 })
+    mockValidateAccess.mockResolvedValue(false)
+    const res = await request(makeApp(makeWorkspaceStore()))
+      .get(`/api/brain/stream?workspaceId=${WID}`)
+      .set('Authorization', 'Bearer revoked.jwt')
+    expect(res.status).toBe(401)
   })
 })
 
@@ -113,7 +129,7 @@ describe('[COMP:api/brain-stream-sse] stream open (member)', () => {
   let port: number
 
   beforeEach(async () => {
-    mockVerify.mockReturnValue(UID)
+    mockVerify.mockReturnValue({ userId: UID })
     const app = makeApp(makeWorkspaceStore('member'))
     server = http.createServer(app)
     await new Promise<void>((resolve) => server.listen(0, resolve))
@@ -158,7 +174,7 @@ describe('[COMP:api/brain-stream-sse] lifetime bound', () => {
   let unsubscribed: boolean
 
   beforeEach(async () => {
-    mockVerify.mockReturnValue(UID)
+    mockVerify.mockReturnValue({ userId: UID })
     unsubscribed = false
     mockSubscribe.mockReturnValue(() => {
       unsubscribed = true

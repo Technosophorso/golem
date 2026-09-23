@@ -69,6 +69,7 @@ export async function GET(request: Request) {
 
     const backendRes = await fetch(new URL(`${API_URL}/auth/local-session`), {
       method: "POST",
+      headers: { "X-Client-User-Agent": request.headers.get("user-agent") ?? "" },
     });
     if (!backendRes.ok) {
       console.error("[/api/auth/local-session] backend rejected:", backendRes.status);

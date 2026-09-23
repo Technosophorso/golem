@@ -1,5 +1,5 @@
-import { Router, type Response } from 'express'
-import { createTokens, verifyRefreshToken } from '../auth/jwt.js'
+import { Router, type Request, type Response } from 'express'
+import { createTokens, verifyRefreshTokenClaims } from '../auth/jwt.js'
 import { requireAuth } from '../auth/middleware.js'
 import { verifyTgLinkToken } from '../auth/tg-link-token.js'
 import { isValidTimezone } from '../auth/client-timezone.js'
@@ -11,6 +11,11 @@ import type { DesktopAuthStore } from '../db/desktop-auth-store.js'
 import type { SmtpClient } from '../email/smtp-client.js'
 import { createHash, timingSafeEqual } from 'node:crypto'
 import { matchedOidcWorkspaceIds, type OidcEnrollmentConfig } from '../auth/outpost-auth-config.js'
+import {
+  authSessionClientInfo,
+  authSessionStore,
+  type AuthSessionStore,
+} from '../db/auth-session-store.js'
 
 /**
  * Fire-and-forget hook invoked after a Telegram identity is successfully
@@ -72,6 +77,7 @@ export function authRoutes(
   emailAuth?: EmailAuthDeps,
   desktopAuthStore?: DesktopAuthStore,
   oidcAuth?: OidcAuthDeps,
+  sessions: AuthSessionStore = authSessionStore,
 ): Router {
   const router = Router()
 
@@ -225,7 +231,7 @@ export function authRoutes(
       }
 
       // Issue tokens
-      const tokens = createTokens(user.id, jwtSecret)
+      const tokens = await createSessionTokens(user.id, jwtSecret, req, sessions)
 
       res.json({
         user: {
@@ -355,7 +361,7 @@ export function authRoutes(
           avatarUrl: user.avatarUrl,
         },
         isNew,
-        ...createTokens(user.id, jwtSecret),
+        ...(await createSessionTokens(user.id, jwtSecret, req, sessions)),
       })
     } catch (err) {
       console.error('[auth/oidc] session mint error:', err)
@@ -541,10 +547,12 @@ export function authRoutes(
     }
 
     await respondWithEmailSession(
+      req,
       res,
       jwtSecret,
       consumed,
       resolveCaptureTz(req.clientTimezone, bodyTimezone),
+      sessions,
     )
   })
 
@@ -611,10 +619,12 @@ export function authRoutes(
         : undefined
 
     await respondWithEmailSession(
+      req,
       res,
       jwtSecret,
       result,
       resolveCaptureTz(req.clientTimezone, bodyTimezone),
+      sessions,
       tgLink,
     )
   })
@@ -626,7 +636,7 @@ export function authRoutes(
    * user with no linked Telegram (e.g., they opened `/manage` without
    * ever running /start in the bot).
    */
-  router.get('/telegram-link', requireAuth(jwtSecret), async (req, res) => {
+  router.get('/telegram-link', requireAuth(jwtSecret, sessions), async (req, res) => {
     const userId = req.userId
     if (!userId) {
       res.status(401).json({ error: 'Unauthorized' })
@@ -669,7 +679,7 @@ export function authRoutes(
    * any member — provisioning the assistant is the admin-gated act, not this.
    * See docs/architecture/channels/telegram-mini-app.md.
    */
-  router.post('/telegram-link-update', requireAuth(jwtSecret), async (req, res) => {
+  router.post('/telegram-link-update', requireAuth(jwtSecret, sessions), async (req, res) => {
     const userId = req.userId
     if (!userId) {
       res.status(401).json({ error: 'Unauthorized' })
@@ -736,13 +746,19 @@ export function authRoutes(
       return
     }
 
-    const userId = verifyRefreshToken(refreshToken, jwtSecret)
-    if (!userId) {
+    const claims = verifyRefreshTokenClaims(refreshToken, jwtSecret)
+    if (!claims) {
       res.status(401).json({ error: 'Invalid or expired refresh token' })
       return
     }
 
-    const tokens = createTokens(userId, jwtSecret)
+    const session = await sessions.validateRefresh(claims, authSessionClientInfo(req))
+    if (!session) {
+      res.status(401).json({ error: 'Invalid or revoked refresh token' })
+      return
+    }
+    const userId = claims.userId
+    const tokens = createTokens(userId, jwtSecret, session)
 
     // Return fresh user data so the frontend can update the stale `user` cookie.
     // Without this, the plan badge stays on "free" after a Stripe upgrade.
@@ -773,7 +789,7 @@ export function authRoutes(
   const B64URL_RE = /^[A-Za-z0-9_-]+$/
 
   /** Mint a single-use code for the authenticated user, bound to a PKCE challenge. */
-  router.post('/desktop/code', requireAuth(jwtSecret), async (req, res) => {
+  router.post('/desktop/code', requireAuth(jwtSecret, sessions), async (req, res) => {
     if (!desktopAuthStore) {
       res.status(503).json({ error: 'Desktop sign-in is not configured' })
       return
@@ -839,7 +855,7 @@ export function authRoutes(
         res.status(400).json({ error: 'PKCE verification failed' })
         return
       }
-      const tokens = createTokens(consumed.userId, jwtSecret)
+      const tokens = await createSessionTokens(consumed.userId, jwtSecret, req, sessions)
       const user = await findUserById(consumed.userId)
       res.json({
         ...tokens,
@@ -1140,6 +1156,17 @@ function resolveCaptureTz(headerTz: string | undefined, bodyTimezone: unknown): 
     : undefined
 }
 
+async function createSessionTokens(
+  userId: string,
+  jwtSecret: string,
+  req: Request,
+  sessions: AuthSessionStore,
+) {
+  const session = await sessions.create(userId, authSessionClientInfo(req))
+  if (!session) throw new Error('auth_session_user_missing')
+  return createTokens(userId, jwtSecret, session)
+}
+
 /**
  * Resolve the email → user, mint the JWT pair, and write the standard sign-in
  * response. Shared by the link (`/email/verify`) and passcode
@@ -1152,10 +1179,12 @@ function resolveCaptureTz(headerTz: string | undefined, bodyTimezone: unknown): 
  * rides back as `linkWarning`.
  */
 async function respondWithEmailSession(
+  req: Request,
   res: Response,
   jwtSecret: string,
   consumed: MagicLinkConsumed,
   captureTz: string | undefined,
+  sessions: AuthSessionStore,
   tgLink?: {
     token: string
     linkedAccountStore: LinkedAccountStore | undefined
@@ -1176,7 +1205,7 @@ async function respondWithEmailSession(
       )
     }
 
-    const tokens = createTokens(user.id, jwtSecret)
+    const tokens = await createSessionTokens(user.id, jwtSecret, req, sessions)
     res.json({
       user: {
         id: user.id,

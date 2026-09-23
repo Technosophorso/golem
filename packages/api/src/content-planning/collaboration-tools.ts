@@ -46,14 +46,14 @@ export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMess
     ] : []),
     buildTool({ ...common, name: 'manageFeedEditorialRun', description: 'Read, cancel or safely retry a draft Review or generation run. Unknown charged outcomes cannot retry; get a new generation estimate and explicit confirmation instead. A saved response repairs without another model call.', inputSchema: z.object({ runId: uuid, action: z.enum(['read', 'cancel', 'retry']) }).strict(), isReadOnly: false, requiresConfirmation: true,
       async execute(input) { await live(); return { data: summarizeFeedRun(await (input.action === 'read' ? getFeedRun : input.action === 'cancel' ? cancelFeedRun : retryFeedRun)(context.actor, input.runId)) } } }),
-    buildTool({ ...common, name: 'editFeedPlaceholder', description: 'Apply an explicitly requested operation to the selected Feed slot: insert at a caret, convert selected notes, update its brief/options, fill manually, move, duplicate or remove. Requires confirmation. Uses the same typed edit and history transaction as the editor. Never starts generation or publication.',
+    buildTool({ ...common, name: 'editFeedPlaceholder', description: 'Apply an explicitly requested operation to the selected Feed slot: insert at a caret, convert selected notes or a selected fixed image, update its brief/options, fill manually, move, duplicate or remove. A fixed image can only become an image slot; patch can set its initial brief/options in the same edit. Requires confirmation. Uses the same typed edit and history transaction as the editor, and Undo restores the original image. Never starts generation or publication.',
       inputSchema: z.object({ mutationId: uuid, action: z.enum(['insert', 'convert', 'update', 'fillText', 'fillImage', 'moveUp', 'moveDown', 'duplicate', 'remove']), kind: z.enum(['text', 'image']).optional(), offset: z.number().int().nonnegative().optional(), patch: feedPlaceholderAttrsSchema.omit({ id: true, briefRevision: true }).partial().optional(), text: z.string().min(1).max(100_000).optional(), image: feedMediaSchema.optional() }).strict(), isReadOnly: false, requiresConfirmation: true,
       async execute(input) {
         const current = await live(); const composition = current.copy!.content.composition!; const target = context.reference.target ?? { kind: 'post' as const }; let edits: FeedEdit[];
         if (input.action === 'insert' || input.action === 'convert') {
           if (!input.kind || (input.action === 'convert' && target.kind === 'post')) throw new FeedCollaborationError(400, 'placeholder_target_required')
           const caret = input.offset !== undefined && target.kind === 'block' ? { segmentId: target.segmentId, blockId: target.blockId, offset: input.offset } : undefined
-          edits = insertFeedPlaceholder(composition, { target, caret }, input.kind, input.action === 'convert')
+          edits = insertFeedPlaceholder(composition, { target, caret }, input.kind, input.action === 'convert', input.action === 'convert' ? input.patch : undefined)
         } else {
           if (target.kind !== 'block') throw new FeedCollaborationError(400, 'placeholder_target_required')
           const found = locateFeedNode(composition, target.segmentId, target.blockId); const node = found.node

@@ -21,6 +21,50 @@ function textChunks(texts: string[]): StreamChunk[] {
 }
 
 describe('[COMP:providers/text-loop] Text loop prevention', () => {
+  const contractFields = JSON.stringify({ title: 'Confidentiality agreement', values: {
+    PARTY_NAME: 'Example Professional Consultancy Services Company Limited',
+    SIGNATURE_NAME: 'Example Professional Consultancy Services Company Limited',
+    NOTICE_NAME: 'Example Professional Consultancy Services Company Limited',
+    ADDRESS: 'Suite 2501 Tesbury Centre Hong Kong',
+  } }, null, 2)
+
+  it('preserves repeated legal names in bounded tool-free JSON across chunk boundaries', async () => {
+    const chunks = contractFields.match(/.{1,17}|\n/g)!
+    const response = await collectStream(composeWrappers(mockStream(textChunks(chunks)), wrapTextLoopPrevention())({
+      model: 'test', messages: [], systemPrompt: 'Fill template fields', responseFormat: 'json', maxTokens: 6000,
+    }))
+    const text = response.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('')
+    expect(text).toBe(contractFields)
+    expect(JSON.parse(text).values.NOTICE_NAME).toBe('Example Professional Consultancy Services Company Limited')
+  })
+
+  it.each([undefined, 0, Infinity, NaN])('does not exempt JSON without a finite positive budget: %s', async (maxTokens) => {
+    const response = await collectStream(composeWrappers(mockStream(textChunks(contractFields.split(/(?<=\n)/))), wrapTextLoopPrevention())({
+      model: 'test', messages: [], systemPrompt: 'test', responseFormat: 'json', maxTokens,
+    }))
+    const text = response.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('')
+    expect(text).not.toBe(contractFields)
+  })
+
+  it('retains degenerate and restart detection for bounded JSON', async () => {
+    for (const chunks of [ ['{"title":"Example", "text":"', '\b'.repeat(20), '"}'], [contractFields, contractFields] ]) {
+      const response = await collectStream(composeWrappers(mockStream(textChunks(chunks)), wrapTextLoopPrevention())({
+        model: 'test', messages: [], systemPrompt: 'test', responseFormat: 'json', maxTokens: 6000,
+      }))
+      const text = response.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('')
+      expect(text).toBe(chunks[0])
+    }
+  })
+
+  it('keeps phrase detection for tool-enabled JSON requests', async () => {
+    const response = await collectStream(composeWrappers(mockStream(textChunks(contractFields.split(/(?<=\n)/))), wrapTextLoopPrevention())({
+      model: 'test', messages: [], systemPrompt: 'test', responseFormat: 'json', maxTokens: 6000,
+      tools: [{ name: 'example', description: 'Example tool', parameters: { type: 'object', properties: {} } }],
+    }))
+    const text = response.content.flatMap((block) => block.type === 'text' ? [block.text] : []).join('')
+    expect(text).not.toBe(contractFields)
+  })
+
   it('passes through normal text without interference', async () => {
     const stream = composeWrappers(
       mockStream(textChunks(['Hello, ', 'how are you ', 'doing today?'])),

@@ -6,6 +6,19 @@ const id = (suffix: number): string => `00000000-0000-4000-8000-${suffix.toStrin
 const style = { fontFamily: 'Arial', fontSizePt: 12, bold: false, italic: false, underline: false, strike: false, color: '#111111' }
 
 describe('[COMP:office/layout] Deterministic Office layout', () => {
+  it('preserves only identical small objects from the same committed artifact', () => {
+    const base: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Footer', resources: [], accessibility: { title: 'Footer' }, sections: [{ id: id(5), page: { widthPt: 595, heightPt: 842, marginTopPt: 72, marginRightPt: 62, marginBottomPt: 68, marginLeftPt: 62, orientation: 'portrait' }, header: [], footer: [{ id: id(6), text: 'BRAND', style: { ...style, fontSizePt: 7.5 } }], showPageNumber: false, nodes: [] }] }
+    expect(fitOfficeArtifact(base).ok).toBe(false)
+    expect(fitOfficeArtifact(structuredClone(base), { readabilityReference: base }).ok).toBe(true)
+    expect(fitOfficeArtifact(base, { readabilityReference: { ...base, artifactId: id(99) } }).ok).toBe(false)
+    for (const patch of [{ text: 'New small content' }, { id: id(7) }, { style: { ...style, fontSizePt: 7 } }]) {
+      const changed = structuredClone(base)
+      Object.assign(changed.sections[0].footer[0], patch)
+      expect(fitOfficeArtifact(changed, { readabilityReference: base }).issues).toContainEqual(expect.objectContaining({ code: 'readability' }))
+    }
+    expect(fitOfficeArtifact(base, { readabilityReference: base, maxPages: 0 }).issues).toContainEqual(expect.objectContaining({ code: 'overflow' }))
+  })
+
   it('uses width scale in wrapping advances while retaining font height and word boundaries', () => {
     const source: DocumentSnapshot = { schemaVersion: 1, capabilityVersion: 1, artifactId: id(1), workspaceId: id(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: id(4), title: 'Scale', resources: [], accessibility: { title: 'Scale' }, sections: [{ id: id(5), page: { widthPt: 200, heightPt: 200, marginTopPt: 20, marginRightPt: 20, marginBottomPt: 20, marginLeftPt: 20, orientation: 'portrait' }, header: [], footer: [], showPageNumber: false, nodes: [{ id: id(10), kind: 'paragraph', styleName: 'Body', alignment: 'start', spacingAfterPt: 0, runs: [{ id: id(11), text: 'A '.repeat(20), style }] }] }] }
     const normal = layoutOfficeArtifact(source).pages[0].primitives[0].heightPt

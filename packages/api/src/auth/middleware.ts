@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express'
-import { verifyAccessToken } from './jwt.js'
+import { verifyAccessTokenClaims } from './jwt.js'
+import { authSessionStore, type AuthSessionStore } from '../db/auth-session-store.js'
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -7,6 +8,8 @@ declare global {
   namespace Express {
     interface Request {
       userId?: string
+      authSessionId?: string
+      authVersion?: number
     }
   }
 }
@@ -15,8 +18,13 @@ declare global {
  * Express middleware that verifies JWT access token from Authorization header.
  * Sets req.userId on success, returns 401 on failure.
  */
-export function requireAuth(jwtSecret: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+type AuthSessionValidator = Pick<AuthSessionStore, 'validateAccess'>
+
+export function requireAuth(
+  jwtSecret: string,
+  sessions: AuthSessionValidator = authSessionStore,
+) {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const header = req.headers.authorization
     if (!header?.startsWith('Bearer ')) {
       res.status(401).json({ error: 'Missing or invalid Authorization header' })
@@ -24,14 +32,29 @@ export function requireAuth(jwtSecret: string) {
     }
 
     const token = header.slice(7)
-    const userId = verifyAccessToken(token, jwtSecret)
-    if (!userId || !UUID_RE.test(userId)) {
+    const claims = verifyAccessTokenClaims(token, jwtSecret)
+    if (
+      !claims ||
+      !UUID_RE.test(claims.userId) ||
+      (claims.sessionId !== undefined && !UUID_RE.test(claims.sessionId))
+    ) {
       res.status(401).json({ error: 'Invalid or expired token' })
       return
     }
 
-    req.userId = userId
-    next()
+    try {
+      if (!(await sessions.validateAccess(claims))) {
+        res.status(401).json({ error: 'Invalid or revoked token' })
+        return
+      }
+      req.userId = claims.userId
+      req.authSessionId = claims.sessionId
+      req.authVersion = claims.authVersion ?? 0
+      next()
+    } catch (error) {
+      console.error('[auth] session validation failed:', error)
+      res.status(503).json({ error: 'Authentication temporarily unavailable' })
+    }
   }
 }
 
@@ -39,14 +62,29 @@ export function requireAuth(jwtSecret: string) {
  * Optional auth — extracts userId if token present, but doesn't reject.
  * Allows both authenticated and guest access.
  */
-export function optionalAuth(jwtSecret: string) {
-  return (req: Request, _res: Response, next: NextFunction): void => {
+export function optionalAuth(
+  jwtSecret: string,
+  sessions: AuthSessionValidator = authSessionStore,
+) {
+  return async (req: Request, _res: Response, next: NextFunction): Promise<void> => {
     const header = req.headers.authorization
     if (header?.startsWith('Bearer ')) {
       const token = header.slice(7)
-      const userId = verifyAccessToken(token, jwtSecret)
-      if (userId && UUID_RE.test(userId)) {
-        req.userId = userId
+      const claims = verifyAccessTokenClaims(token, jwtSecret)
+      if (
+        claims &&
+        UUID_RE.test(claims.userId) &&
+        (claims.sessionId === undefined || UUID_RE.test(claims.sessionId))
+      ) {
+        try {
+          if (await sessions.validateAccess(claims)) {
+            req.userId = claims.userId
+            req.authSessionId = claims.sessionId
+            req.authVersion = claims.authVersion ?? 0
+          }
+        } catch (error) {
+          console.error('[auth] optional session validation failed:', error)
+        }
       }
     }
     next()

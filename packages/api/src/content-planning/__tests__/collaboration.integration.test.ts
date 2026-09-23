@@ -607,6 +607,26 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 const imageBytes = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII='
 describe('[COMP:feed/draft-generation] durable image and output integration', () => {
+  it('lets the Feed agent convert a selected fixed image into a patched generation slot with Undo', async () => {
+    const f = await generationFixture(); const dir = await mkdtemp(join(tmpdir(), 'feed-image-convert-'))
+    try {
+      const files = createFilesApi({ store: createDbWorkspaceFilesStore(), auditStore: createWorkspaceAuditStore(), resolver: createSingletonFilesClientResolver(createLocalFilesClient({ baseDir: dir }), 'feed-convert-fixture', 'file') })
+      const uploaded = await files.writeBytes({ workspaceId: f.workspaceId, userId: f.actor.userId, assistantId: null, clearance: 'internal' }, { path: '/doc/fixed-image.png', bytes: Buffer.from(imageBytes, 'base64'), mime: 'image/png', sensitivity: 'internal' })
+      if (!uploaded.ok) throw new Error('Fixture image required')
+      const fixed = { type: 'image' as const, attrs: { id: f.slotId, fileId: uploaded.value.id, mimeType: 'image/png' as const, placement: 'attachment' as const, alt: 'Detailed orchard diagram' } }
+      await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [fixed] }] }])
+      const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 4, target: { kind: 'block', segmentId: f.segmentId, blockId: f.slotId } })
+      const tool = buildFeedCollaborationTools(context!, undefined, f.service).find(item => item.name === 'editFeedPlaceholder')!
+      expect(tool.description).toContain('selected fixed image')
+      await tool.execute({ mutationId: randomUUID(), action: 'convert', kind: 'image', patch: { brief: 'Use a simplified visual with three shapes.' } }, {} as ToolContext)
+      const converted = (await getFeedCollaboration(f.actor)).copy!
+      expect(converted.revision).toBe(5)
+      expect(converted.content.composition!.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: { id: f.slotId, kind: 'image', brief: 'Use a simplified visual with three shapes.', briefRevision: 0, references: [], altIntent: fixed.attrs.alt } })
+      expect(f.call).not.toHaveBeenCalled()
+      await f.command([{ kind: 'undo', revision: 5 }], 5)
+      expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual(fixed)
+    } finally { await rm(dir, { recursive: true, force: true }) }
+  })
   it.each(['gemini', 'openai-codex'] as const)('scenarios 4-5 and 8-9: %s persists bytes once, accepts in place, exports ordered assets and blocks unfinished or stale approval', async imageProvider => {
     const f = await generationFixture(); const dir = await mkdtemp(join(tmpdir(), 'feed-image-'))
     try {

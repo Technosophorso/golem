@@ -39,6 +39,7 @@ import {
   useChatSession,
   useMessageStream,
   type Message,
+  type MessageAttachment,
 } from "@use-brian/chat-ui";
 import { cn } from "@/lib/utils";
 import { authFetch } from "@/lib/auth-fetch";
@@ -97,6 +98,13 @@ import { ChatFileAttachments } from "@/components/chrome/chat-file-attachment";
 import { ChatConfirmationCard } from "@/components/chrome/chat-confirmation-card";
 import { PendingQuestionPanel } from "@/components/chrome/pending-question-panel";
 import { ChatDocumentCard } from "@/components/chat-app/chat-document-viewer";
+import { AttachmentChips } from "@/components/doc/attachment-chips";
+import { MessageAttachments } from "@/components/doc/message-attachment-card";
+import {
+  imageFilesFromClipboard,
+  readyAttachments,
+  useFileAttachments,
+} from "@/lib/use-file-attachments";
 import { Dialog } from "@base-ui/react/dialog";
 import { Button } from "@/components/ui/button";
 import type { DocumentAttachment } from "@use-brian/chat-ui";
@@ -355,6 +363,9 @@ export const TuningChatPanel = forwardRef<
   const [researchExhausted, setResearchExhausted] = useState(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const sessionIdRef = useRef<string | null>(null);
+  const att = useFileAttachments(
+    () => fixedSessionId ?? sessionIdRef.current ?? undefined,
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -442,6 +453,7 @@ export const TuningChatPanel = forwardRef<
     session.dispatch({ type: "stream/abort" });
     setPendingQuestion(null);
     setOpenDocument(null);
+    att.clear();
     setReconnecting(false);
     setRecoveryFailed(false);
     setNotice(null);
@@ -492,7 +504,7 @@ export const TuningChatPanel = forwardRef<
   });
   /** `sendMessage` is called from inside its own `onDone` (the flush). */
   const sendMessageRef = useRef<
-    ((text: string, fileIds: string[]) => Promise<boolean>) | null
+    ((text: string, fileIds: string[], truncateFromMessageId?: string, localAttachments?: MessageAttachment[]) => Promise<boolean>) | null
   >(null);
 
   /**
@@ -674,7 +686,7 @@ export const TuningChatPanel = forwardRef<
   recoverSessionRef.current = recoverSession;
 
   const sendMessage = useCallback(
-    async (text: string, fileIds: string[], truncateFromMessageId?: string) => {
+    async (text: string, fileIds: string[], truncateFromMessageId?: string, localAttachments?: MessageAttachment[]) => {
       if (!ready || !initialized || busyRef.current) return false;
       const trimmed = text.trim();
       if (!trimmed && fileIds.length === 0) return false;
@@ -684,9 +696,10 @@ export const TuningChatPanel = forwardRef<
       busyRef.current = true;
       appliedInputIdsRef.current.clear();
       followBottomRef.current = true;
-      const userMessage: Message = { id: `local-${Date.now()}`, role: "user", text: trimmed || t.voiceNote, timestamp: new Date(), ...(fileIds.length ? { attachments: fileIds.map(id => ({ id, fileName: t.voiceNote, mimeType: "audio/webm" })) } : {}) };
+      const attachments = localAttachments ?? fileIds.map(id => ({ id, fileName: t.voiceNote, mimeType: "audio/webm" }));
+      const userMessage: Message = { id: `local-${Date.now()}`, role: "user", text: trimmed, timestamp: new Date(), ...(attachments.length ? { attachments } : {}) };
       session.appendMessage(userMessage);
-      setInput(""); setError(null); setErrorCode(null); setNotice(null); setAcceptedGoal(null);
+      setInput(""); if (localAttachments) att.detach(); setError(null); setErrorCode(null); setNotice(null); setAcceptedGoal(null);
       setStatusMessage(null); setReconnecting(false);
       updateTurn(newFeedChatTurn());
       session.dispatch({ type: "stream/start" });
@@ -736,7 +749,7 @@ export const TuningChatPanel = forwardRef<
     },
     // Async events read fresh UI handlers through refs; transport ownership uses the epoch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [assistantId, initialized, session, stream, model, researchMode, workspaceId, t, updateTurn, ready, props.feedTarget, fixedSessionId, channelId],
+    [assistantId, initialized, session, stream, model, researchMode, workspaceId, t, updateTurn, ready, props.feedTarget, fixedSessionId, channelId, att.detach],
   );
 
   const resolveConfirmation = async (toolCallId: string, decision: "allow" | "deny", comment?: string) => {
@@ -766,15 +779,22 @@ export const TuningChatPanel = forwardRef<
 
   const onSend = useCallback(async (steer = false) => {
     if (!ready || !initialized || recoveryFailed || (busyRef.current && !session.state.isStreaming)) return;
-    if (!input.trim()) return;
+    const fileIds = att.fileIds();
+    if ((!input.trim() && fileIds.length === 0) || att.uploading) return;
     // A turn is already running: hand this to it rather than starting a
-    // second one. See docs/architecture/engine/mid-turn-input.md.
+    // second one. Attachments remain staged for the next ordinary turn because
+    // the mid-turn queue is deliberately text-only.
     if (busyRef.current || stream.inFlight()) {
+      if (fileIds.length > 0) return;
       if (midTurn.queue(input, steer)) setInput("");
       return;
     }
-    await sendMessage(input, []);
-  }, [input, initialized, midTurn, ready, recoveryFailed, sendMessage, session.state.isStreaming, stream]);
+    const localAttachments = readyAttachments(att.attachments).map(a => ({
+      id: a.fileId!, fileName: a.fileName, mimeType: a.mimeType,
+      ...(a.previewUrl ? { localPreviewUrl: a.previewUrl } : {}),
+    }));
+    await sendMessage(input, fileIds, undefined, localAttachments);
+  }, [att.attachments, att.fileIds, att.uploading, initialized, input, midTurn, ready, recoveryFailed, sendMessage, session.state.isStreaming, stream]);
 
   // Feed hides the global chat chrome but keeps its recorder controller alive.
   // While this floating tuning panel owns the replacement dock, short captures
@@ -927,6 +947,7 @@ export const TuningChatPanel = forwardRef<
                         {msg.text}
                       </div>
                     )}
+                    {msg.attachments?.length ? <MessageAttachments workspaceId={workspaceId} attachments={msg.attachments.map(file => ({ id: file.id, name: file.fileName, mime: file.mimeType, ...(file.localPreviewUrl ? { dataUrl: file.localPreviewUrl } : {}) }))} /> : null}
                     <div className="flex items-center gap-0.5 justify-end opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity -mr-1">
                       <ActionButton tooltip={copiedMessageId === msg.id ? t.copied : t.copy} onClick={() => void handleCopy(msg.id, msg.text)}>
                         {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
@@ -1078,12 +1099,23 @@ export const TuningChatPanel = forwardRef<
             commands={slashCommands}
             className="mx-2.5 mt-2.5"
           />
+          <AttachmentChips
+            attachments={att.attachments}
+            onRemove={att.remove}
+            className="mx-2.5 mt-2.5"
+          />
           <div className="px-3.5 pt-2.5">
             <textarea
               ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={(e) => {
+                const images = imageFilesFromClipboard(e.clipboardData);
+                if (images.length === 0) return;
+                e.preventDefault();
+                void att.upload(images);
+              }}
               // Typeable while the reply streams — `onSend` no-ops on
               // `stream.inFlight()`, so Enter can't double-send; the message
               // list carries the thinking indicator.
@@ -1165,7 +1197,7 @@ export const TuningChatPanel = forwardRef<
                   (muted to mark the difference). See mid-turn-input.md. */}
               <button
                 onClick={() => void onSend()}
-                disabled={!ready || !initialized || recoveryFailed || (busyRef.current && !isStreaming) || !input.trim()}
+                disabled={!ready || !initialized || recoveryFailed || att.uploading || (busyRef.current && !isStreaming) || (isStreaming && att.hasReady) || (!input.trim() && !att.hasReady)}
                 className={cn(
                   "inline-flex size-11 items-center justify-center rounded-xl transition-colors shadow-sm shrink-0 md:size-8",
                   "disabled:opacity-30 disabled:cursor-not-allowed",

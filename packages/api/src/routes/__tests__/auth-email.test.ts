@@ -8,6 +8,14 @@ import type { MagicLinkStore } from '../../db/magic-link-store.js'
 import type { SmtpClient } from '../../email/smtp-client.js'
 
 const JWT_SECRET = 'test-jwt-secret'
+const sessions = {
+  create: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a2', authVersion: 0 }),
+  validateAccess: vi.fn().mockResolvedValue(true),
+  validateRefresh: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a2', authVersion: 0 }),
+  listForUser: vi.fn().mockResolvedValue([]),
+  revokeForUser: vi.fn().mockResolvedValue(true),
+  revokeAllForUser: vi.fn().mockResolvedValue(true),
+}
 
 const queryMock = vi.fn()
 vi.mock('../../db/client.js', () => ({
@@ -83,6 +91,9 @@ function makeApp(
       tgDeps?.linkedAccountStore,
       tgDeps?.notifyTelegramLinked,
       emailAuth,
+      undefined,
+      undefined,
+      sessions,
     ),
   )
   return app

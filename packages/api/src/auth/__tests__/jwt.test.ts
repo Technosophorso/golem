@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { createTokens, verifyAccessToken, verifyRefreshToken } from '../jwt.js'
+import {
+  createTokens,
+  verifyAccessToken,
+  verifyAccessTokenClaims,
+  verifyRefreshToken,
+} from '../jwt.js'
 
 const SECRET = 'test-secret-key-for-jwt-tests-only-not-prod'
 
@@ -8,6 +13,18 @@ describe('[COMP:api/auth] createTokens + verifyAccessToken', () => {
     const { accessToken } = createTokens('user_123', SECRET)
     const verified = verifyAccessToken(accessToken, SECRET)
     expect(verified).toBe('user_123')
+  })
+
+  it('round-trips revocable session claims', () => {
+    const { accessToken } = createTokens('user_123', SECRET, {
+      id: '00000000-0000-4000-a000-000000000001',
+      authVersion: 4,
+    })
+    expect(verifyAccessTokenClaims(accessToken, SECRET)).toEqual({
+      userId: 'user_123',
+      sessionId: '00000000-0000-4000-a000-000000000001',
+      authVersion: 4,
+    })
   })
 
   it('round-trips a user id through a refresh token', () => {

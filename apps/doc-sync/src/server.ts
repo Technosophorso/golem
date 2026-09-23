@@ -32,6 +32,7 @@ import {
   type AssistantRunChannel,
 } from '@use-brian/doc-model'
 import { resolveAuth } from './auth-hook.js'
+import { authSessionStore } from '@use-brian/api/db/auth-session-store.js'
 import { assertDrawingProtocol } from './drawing-protocol.js'
 import { assertPageAccess, isReadOnlyRole, recheckPageConnection, type RlsQuery } from './clearance-gate.js'
 import {
@@ -128,6 +129,9 @@ const hocuspocus = new Hocuspocus({
     })
     if (auth.kind === 'reject') throw new Error(`unauthorized: ${auth.reason}`)
     if (auth.kind === 'service') return { service: true as const }
+    if (!(await authSessionStore.validateAccess(auth))) {
+      throw new Error('unauthorized: revoked_session')
+    }
     const target = parseSyncDocumentName(data.documentName)
     if (target.kind === 'office') {
       const access = await resolveOfficeAccess(auth.userId, target.id)
@@ -135,6 +139,8 @@ const hocuspocus = new Hocuspocus({
       data.connectionConfig.readOnly = !access.canEdit
       return {
         userId: auth.userId,
+        sessionId: auth.sessionId,
+        authVersion: auth.authVersion,
         workspaceId: access.workspaceId,
         role: access.role,
         office: true as const,
@@ -156,6 +162,8 @@ const hocuspocus = new Hocuspocus({
     data.connectionConfig.readOnly = isReadOnlyRole(access.role)
     return {
       userId: auth.userId,
+      sessionId: auth.sessionId,
+      authVersion: auth.authVersion,
       workspaceId: access.workspaceId,
       clearance: access.clearance,
       role: access.role,
@@ -169,8 +177,20 @@ const hocuspocus = new Hocuspocus({
   // Awareness remains available for read-only Archive/Trash previews.
   async beforeHandleMessage(data) {
     const target = parseSyncDocumentName(data.documentName)
-    const context = data.context as { service?: true; userId?: string } | undefined
+    const context = data.context as {
+      service?: true
+      userId?: string
+      sessionId?: string
+      authVersion?: number
+    } | undefined
     if (context?.service) return
+    if (!context?.userId || !(await authSessionStore.validateAccess({
+      userId: context.userId,
+      sessionId: context.sessionId,
+      authVersion: context.authVersion,
+    }))) {
+      throw new Error('unauthorized: revoked_session')
+    }
     if (target.kind === 'page') {
       await recheckPageConnection({ userId: context?.userId, pageId: target.id, query: rlsQuery, connection: data.connection })
       return

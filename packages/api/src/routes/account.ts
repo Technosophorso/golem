@@ -14,6 +14,7 @@ import type { LinkCodeStore } from '../db/link-codes.js'
 import type { GcsFilesClient } from '../files/gcs-client.js'
 import { buildStorageKey, buildStorageUri } from '../files/gcs-client.js'
 import type { FilesClientResolver } from '../files/files-api.js'
+import { authSessionStore, type AuthSessionStore } from '../db/auth-session-store.js'
 
 type AccountRouteOptions = {
   linkedAccountStore?: LinkedAccountStore
@@ -49,6 +50,8 @@ type AccountRouteOptions = {
   workspaceMembership?: (userId: string, workspaceId: string) => Promise<unknown | null>
   /** Canonical public API origin used in the persisted avatar proxy URL. */
   publicApiUrl?: string
+  /** Revocable login/device ledger. Injectable for route tests. */
+  authSessions?: AuthSessionStore
 }
 
 type StoredAvatar = {
@@ -101,6 +104,89 @@ const upload = multer({
  */
 export function accountRoutes(options: AccountRouteOptions = {}): Router {
   const router = Router()
+  const sessions = options.authSessions ?? authSessionStore
+
+  // ── Account device sessions ───────────────────────────────────
+
+  router.get('/sessions', async (req, res) => {
+    const userId = req.userId
+    if (!userId) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' })
+      return
+    }
+    try {
+      const rows = await sessions.listForUser(userId)
+      res.json({
+        sessions: rows.map((row) => ({
+          ...row,
+          current: row.id === req.authSessionId,
+        })),
+      })
+    } catch (error) {
+      console.error('[account] list auth sessions failed:', error)
+      res.status(500).json({ error: 'Failed to list devices' })
+    }
+  })
+
+  router.delete('/sessions/current', async (req, res) => {
+    const userId = req.userId
+    if (!userId) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' })
+      return
+    }
+    try {
+      if (req.authSessionId) {
+        await sessions.revokeForUser(userId, req.authSessionId)
+      }
+      res.json({ ok: true })
+    } catch (error) {
+      console.error('[account] revoke current auth session failed:', error)
+      res.status(500).json({ error: 'Failed to log out this device' })
+    }
+  })
+
+  router.delete('/sessions/:sessionId', async (req, res) => {
+    const userId = req.userId
+    if (!userId) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' })
+      return
+    }
+    const sessionId = req.params.sessionId
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
+      res.status(404).json({ error: 'Device not found' })
+      return
+    }
+    try {
+      const revoked = await sessions.revokeForUser(userId, sessionId)
+      if (!revoked) {
+        res.status(404).json({ error: 'Device not found' })
+        return
+      }
+      res.json({ ok: true, current: sessionId === req.authSessionId })
+    } catch (error) {
+      console.error('[account] revoke auth session failed:', error)
+      res.status(500).json({ error: 'Failed to log out device' })
+    }
+  })
+
+  router.delete('/sessions', async (req, res) => {
+    const userId = req.userId
+    if (!userId) {
+      res.status(401).json({ error: 'Missing or invalid Authorization header' })
+      return
+    }
+    try {
+      const revoked = await sessions.revokeAllForUser(userId)
+      if (!revoked) {
+        res.status(404).json({ error: 'Account not found' })
+        return
+      }
+      res.json({ ok: true })
+    } catch (error) {
+      console.error('[account] revoke all auth sessions failed:', error)
+      res.status(500).json({ error: 'Failed to log out all devices' })
+    }
+  })
 
   // ── GET /api/account/linked-accounts ──────────────────────────
 
@@ -568,15 +654,12 @@ export function accountRoutes(options: AccountRouteOptions = {}): Router {
         client.release()
       }
 
-      // ── Deferred cleanup (warnings only — see 25-privacy-controls.md) ──
+      // ── Deferred Stripe cleanup (see privacy-controls.md) ──
       if (user.stripeCustomerId) {
         console.warn(
           `[account-delete] Stripe customer cleanup owed: ${user.stripeCustomerId} (user ${userId})`,
         )
       }
-      console.warn(
-        `[account-delete] Refresh token denylist owed: user ${userId} — access tokens expire within 1h`,
-      )
       console.log(
         `[account-delete] Deleted user ${userId}, ${ownedAssistantsDeleted} assistants cascaded`,
       )
