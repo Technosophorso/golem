@@ -1936,6 +1936,17 @@ export function RawJsonFields({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step.type, step.id]);
 
+  const b = t.workflowPage.builder;
+  const approvalChannel = step.type === "tool_call" ? step.approval?.deliveryChannel ?? "web" : "web";
+  const approvalItems: Record<string, string> = {
+    web: b.approvalChannelWeb,
+    recent: b.approvalChannelRecent,
+    telegram: b.deliverChannelTelegram,
+  };
+  // Legacy explicit channels are notification stubs. Keep an existing value
+  // visible without offering it as a new, working notification destination.
+  if (!(approvalChannel in approvalItems)) approvalItems[approvalChannel] = approvalChannel;
+
   const summary = stepSummary(step, t);
   return (
     <div className="mt-3 flex flex-col gap-2">
@@ -1943,6 +1954,40 @@ export function RawJsonFields({
           step without parsing JSON. The raw config moves into the Advanced
           disclosure below (collapsed by default - one click, nothing removed). */}
       {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
+
+      {step.type === "tool_call" && (
+        <div className="flex flex-col gap-1.5">
+          <FieldLabel label={b.approvalChannelLabel} hint={b.approvalChannelHint} />
+          <Select
+            value={approvalChannel}
+            items={approvalItems}
+            disabled={disabled || !!error}
+            onValueChange={(value) => {
+              if (!value || !(value in approvalItems)) return;
+              const next: typeof step = {
+                ...step,
+                approval: {
+                  ...step.approval,
+                  deliveryChannel: value as NonNullable<typeof step.approval>["deliveryChannel"],
+                },
+              };
+              // Keep Advanced JSON in sync so its next edit cannot restore the
+              // old channel. Invalid JSON stays local until corrected.
+              setText(JSON.stringify(next, null, 2));
+              onChange(next);
+            }}
+          >
+            <SelectTrigger size="sm" aria-label={b.approvalChannelLabel} className="w-full min-h-11 md:min-h-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(approvalItems).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       <details className="rounded-md bg-muted/40 px-3 py-2 [&[open]]:pb-3">
         <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground marker:text-muted-foreground">
