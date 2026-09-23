@@ -76,6 +76,7 @@ export function ConnectorToolGovernance({
   workspaceId,
   instanceId,
   onPolicyError,
+  onPolicySaved,
 }: {
   assistantId: string;
   connectorId: string;
@@ -92,6 +93,7 @@ export function ConnectorToolGovernance({
   workspaceId?: string | null;
   instanceId?: string;
   onPolicyError?: () => void;
+  onPolicySaved?: () => void;
 }) {
   const t = useT();
   const [allowed, setAllowed] = useState<Set<string>>(new Set());
@@ -169,6 +171,8 @@ export function ConnectorToolGovernance({
         setWsPolicies(prev);
         onPolicyError?.();
         if (res.status === 403) setWsPolicyReadOnly(true);
+      } else {
+        onPolicySaved?.();
       }
     } catch {
       setWsPolicies(prev);

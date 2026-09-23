@@ -122,6 +122,7 @@ function ConnectorPermissions({ assistantId, connector }: { assistantId: string;
     <ConnectorToolGovernance
       key={resource.updatedAt}
       onPolicyError={() => setSaveError(true)}
+      onPolicySaved={() => setSaveError(false)}
       assistantId={assistantId} connectorId={connector.providerId ?? connector.id}
       governanceId={connector.id} scope={connector.scope}
       workspaceId={team.workspaceId} instanceId={connector.instanceId}
