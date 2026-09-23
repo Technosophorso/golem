@@ -6,12 +6,17 @@ import { buildTool } from '../types.js'
  * Returns the question text, which the query loop surfaces to the user.
  * The user's response comes as the next message in the conversation.
  */
+export const askQuestionSchema = z.object({
+  question: z.string().trim().min(1).describe('The question to ask the user'),
+  options: z.array(z.string().trim().min(1).max(80)).min(2).max(8)
+    .refine((labels) => new Set(labels).size === labels.length, 'Options must be distinct')
+    .optional().describe('Optional single-choice suggestions; the user can also type an answer'),
+})
+
 export const askQuestionTool = buildTool({
   name: 'askQuestion',
   description: 'Ask the user a question when you need clarification before proceeding. Only use when the answer genuinely changes what you would do.',
-  inputSchema: z.object({
-    question: z.string().describe('The question to ask the user'),
-  }),
+  inputSchema: askQuestionSchema,
   isConcurrencySafe: true,
   isReadOnly: true,
 

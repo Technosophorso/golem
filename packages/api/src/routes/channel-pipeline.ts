@@ -137,6 +137,20 @@ const PER_TURN_FILES_INDEX_CAP = 50
 
 // ── Channel hooks ────────────────────────────────────────────────
 
+export type ChannelQuestion = { question: string; options?: string[] }
+
+/** Only terminal engine questions may replace the buffered conversational draft. */
+export function deliverChannelResponse(
+  hooks: Pick<ChannelHooks, 'sendResponse'>,
+  text: string,
+  documents?: OutgoingDocument[],
+  question?: ChannelQuestion,
+  notice?: string | null,
+) {
+  const body = question?.question ?? text
+  return hooks.sendResponse(notice ? `${notice}\n\n${body}` : body, documents, question)
+}
+
 /**
  * Channel-specific rendering callbacks. The pipeline calls these
  * at the appropriate points — channels implement them.
@@ -262,6 +276,7 @@ export type ChannelHooks = {
 
   /**
    * Deliver the final response text for one turn. Called on `turn_complete`.
+   * The optional question carries validated terminal choices, never tool-input narration.
    * `text` may be empty — the channel decides how to handle that
    * (e.g., react with thumbsup, or do nothing).
    *
@@ -280,7 +295,7 @@ export type ChannelHooks = {
    * reacted to. Channels that don't have a stable platform id
    * (web streaming, scheduled-job executor) return `void`.
    */
-  sendResponse(text: string, documents?: OutgoingDocument[]): Promise<{ channelMessageId?: string } | void>
+  sendResponse(text: string, documents?: OutgoingDocument[], question?: ChannelQuestion): Promise<{ channelMessageId?: string } | void>
 
   /**
    * Called the FIRST time a session observes the budget-downgraded state.
@@ -2140,6 +2155,7 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
   // stamp entirely; a missing `lastFlushedAssistantRowId` (recovery
   // path that never flushed) also skips. Errors during the stamp are
   // logged but don't propagate — the user already saw the message.
+  let terminalQuestion: ChannelQuestion | undefined
   let endpointFallbackAnnounced = false
   const sendResponseAndStampChannelId = async (text: string, documents?: OutgoingDocument[]): Promise<void> => {
     // A channel has no `notice` lane, so an announced fallback has to travel
@@ -2159,9 +2175,8 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
       : null
     if (endpointNotice) endpointFallbackAnnounced = true
     const pendingNotice = imageFallbackNotice ?? endpointNotice
-    const noticed = pendingNotice ? `${pendingNotice}\n\n${text}` : text
     imageFallbackNotice = null
-    const result = await hooks.sendResponse(noticed, documents)
+    const result = await deliverChannelResponse(hooks, text, documents, terminalQuestion, pendingNotice)
     const channelMessageId = result && typeof result === 'object'
       ? result.channelMessageId
       : undefined
@@ -2366,6 +2381,9 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
         : {}),
     })) {
       switch (event.type) {
+        case 'question':
+          terminalQuestion = { question: event.question, options: event.options }
+          break
         case 'text_delta':
           // Streaming channels (web SSE) render text as it arrives; the
           // client is a render layer that can drop control markers, so
@@ -2571,7 +2589,9 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
           // which are thin layers over this same function rather than forks
           // of it. No cron, workflow, or A2A lane reaches here, so there is no
           // unattended surface for the notice to spam.
-          if (!outboundText && documents.length === 0) {
+          // A terminal question is deliverable even though its tool-bearing
+          // assistant turn is intentionally excluded by text assembly.
+          if (!outboundText && !terminalQuestion && documents.length === 0) {
             const emptyReason = classifyEmptyDelivery({
               window: pendingAssistantTurns.slice(deliveryCutIdx),
               retractedCount: deliveryCutIdx,
