@@ -75,10 +75,11 @@ vi.mock('@use-brian/channels', async () => {
     createTelegramAdapter: (opts: Parameters<typeof actual.createTelegramAdapter>[0]) => {
       const real = actual.createTelegramAdapter(opts)
       return Object.assign(real, {
-        sendMessage: vi.fn(async (channelId: string, message: { text: string; documents?: OutgoingTestDocument[] }) => {
-          adapterSendCalls.push({ channelId, text: message.text, documents: message.documents })
+        sendMessage: vi.fn(async (channelId: string, message: { text: string; documents?: OutgoingTestDocument[]; actions?: Array<{ data: string; label: string }> }) => {
+          adapterSendCalls.push({ channelId, text: message.text, documents: message.documents, actions: message.actions })
           return 'msg_stub'
         }),
+        answerCallbackQuery: vi.fn(async () => {}),
         sendStatus: vi.fn(async () => 'status_stub'),
         sendTypingIndicator: vi.fn(async () => {}),
         editMessage: vi.fn(async () => {}),
@@ -153,7 +154,7 @@ vi.mock('../channel-pipeline.js', () => ({
     messageText?: string
     userContentBlocks?: Array<{ type: string; mimeType?: string }>
     hooks: {
-      sendResponse: (text: string, documents?: OutgoingTestDocument[]) => Promise<void>
+      sendResponse: (text: string, documents?: OutgoingTestDocument[], question?: { question: string; options?: string[] }) => Promise<void>
       sendError?: (err: Error) => Promise<void>
     }
   }) => {
@@ -170,7 +171,7 @@ vi.mock('../channel-pipeline.js', () => ({
     if (pipelineError) {
       await params.hooks.sendError?.(pipelineError)
     } else {
-      await params.hooks.sendResponse('ok', pipelineDocuments)
+      await params.hooks.sendResponse(pipelineQuestion?.question ?? 'ok', pipelineDocuments, pipelineQuestion)
     }
   }),
 }))
@@ -248,9 +249,10 @@ vi.mock('../../db/channel-user-store.js', async () => {
 
 // Capture outbound sendMessage invocations so we can assert the channel id.
 type OutgoingTestDocument = { filename: string; mime: string; data: Buffer; caption?: string }
-const adapterSendCalls: Array<{ channelId: string; text: string; documents?: OutgoingTestDocument[] }> = []
+const adapterSendCalls: Array<{ channelId: string; text: string; documents?: OutgoingTestDocument[]; actions?: Array<{ data: string; label: string }> }> = []
 // Set by a test to make the mocked pipeline hand documents to `sendResponse`
 // (the second argument the real pipeline passes at turn_complete).
+let pipelineQuestion: { question: string; options?: string[] } | undefined
 let pipelineDocuments: OutgoingTestDocument[] | undefined
 vi.mock('../../db/chat-lock.js', () => ({
   withChatLock: vi.fn(async (key: string, fn: () => Promise<unknown>) => {
@@ -337,6 +339,7 @@ beforeEach(() => {
   chatLockCalls.length = 0
   pipelineCalls.length = 0
   adapterSendCalls.length = 0
+  pipelineQuestion = undefined
   pipelineDocuments = undefined
   pipelineError = undefined
   leaveChatCalls.length = 0
@@ -2397,4 +2400,121 @@ describe('[COMP:api/telegram-byo-route] outbound documents', () => {
     expect(send?.text).toBe('ok')
     expect(send?.documents?.map((d) => d.filename)).toEqual(['boarding-pass.pdf'])
   })
+})
+
+
+describe('[COMP:api/telegram-byo-route] question buttons', () => {
+  function makeApp(config: Record<string, unknown> = { requireMention: true }, withIdentity = false) {
+    return createTestApp('/webhook/telegram-byo', telegramByoRoutes({
+      provider: {} as never, systemPrompt: '', tools: new Map(), memoryStore: {} as never,
+      integrationStore: makeIntegrationStore(config) as never,
+      ...(withIdentity ? {
+        linkedAccountStore: { findByProvider: vi.fn(async () => ({ userId: 'owner_1', assistantId: 'assistant_1' })) } as never,
+        channelUserStore: {} as never,
+      } : {}),
+      capabilityStore: {} as never, apiUrl: 'http://test',
+    }))
+  }
+  const message = (text = '@testbot help') => ({ update_id: 900, message: {
+    message_id: 900, from: { id: 42, first_name: 'Casey', username: 'casey' },
+    chat: { id: -100, type: 'supergroup', is_forum: true }, message_thread_id: 7,
+    date: 12345, text, entities: [{ type: 'mention', offset: 0, length: 8 }],
+  } })
+  const callback = (data: string, sender = 42, chat = -100, topic = 7) => ({
+    update_id: 901, callback_query: { id: 'cq', from: { id: sender, username: 'casey' }, data,
+      message: { message_id: 901, chat: { id: chat, type: 'supergroup', is_forum: true }, message_thread_id: topic },
+    },
+  })
+  async function settle() { await flushMicrotasks(); await flushMicrotasks() }
+  async function ask(app: ReturnType<typeof makeApp>) {
+    pipelineQuestion = { question: 'Which?', options: ['A', '/connect'] }
+    await postUpdate(app, message())
+    await settle()
+    const actions = adapterSendCalls.at(-1)?.actions
+    expect(actions?.map((a) => a.label)).toEqual(['A', '/connect'])
+    pipelineQuestion = undefined
+    return actions!
+  }
+
+  it('routes a button label as ordinary text through the same sender, topic and lock, once', async () => {
+    const app = makeApp()
+    const actions = await ask(app)
+    await postUpdate(app, callback(actions[1]!.data))
+    await settle()
+    expect(pipelineCalls).toHaveLength(2)
+    expect(pipelineCalls[1]).toMatchObject({ userId: pipelineCalls[0]!.userId, channelId: '-100:topic:7', messageText: '/connect' })
+    expect(chatLockCalls.at(-1)).toBe('tg-byo:-100:topic:7')
+    await postUpdate(app, callback(actions[1]!.data))
+    await settle()
+    expect(pipelineCalls).toHaveLength(2)
+  })
+
+  it('rejects other group members, cross-chat and cross-topic clicks without consuming the valid answer', async () => {
+    const app = makeApp()
+    const [action] = await ask(app)
+    for (const update of [callback(action!.data, 43), callback(action!.data, 42, -101), callback(action!.data, 42, -100, 8)]) {
+      await postUpdate(app, update)
+      await settle()
+    }
+    expect(pipelineCalls).toHaveLength(1)
+    await postUpdate(app, callback(action!.data))
+    await settle()
+    expect(pipelineCalls).toHaveLength(2)
+    expect(pipelineCalls[1]?.messageText).toBe('A')
+  })
+
+  it('accepts typed answers and invalidates old buttons', async () => {
+    const app = makeApp()
+    const [action] = await ask(app)
+    await postUpdate(app, message('@testbot Something else'))
+    await settle()
+    expect(pipelineCalls).toHaveLength(2)
+    expect(pipelineCalls[1]?.messageText).toContain('Something else')
+    await postUpdate(app, callback(action!.data))
+    await settle()
+    expect(pipelineCalls).toHaveLength(2)
+  })
+
+  it('rechecks access policy before submitting a callback answer', async () => {
+    const config: Record<string, unknown> = { requireMention: true }
+    const app = makeApp(config)
+    const [action] = await ask(app)
+    config.userAccessMode = 'blocklist'
+    config.blockedUserIds = ['42']
+    await postUpdate(app, callback(action!.data))
+    await settle()
+    expect(pipelineCalls).toHaveLength(1)
+  })
+
+  it('rejects changed resolved identity and fails closed on identity lookup errors', async () => {
+    const { findUserById } = await import('../../db/users.js')
+    for (const failLookup of [false, true]) {
+      const app = makeApp({ requireMention: true }, true)
+      const [action] = await ask(app)
+      const count = pipelineCalls.length
+      if (failLookup) vi.mocked(findUserById).mockRejectedValueOnce(new Error('identity service unavailable'))
+      else vi.mocked(findUserById).mockResolvedValueOnce({ id: 'other-user' } as never)
+      await postUpdate(app, callback(action!.data))
+      await settle()
+      expect(pipelineCalls).toHaveLength(count)
+    }
+  })
+
+  it('rejects a button after the chat is routed to another assistant', async () => {
+    const { findAssistantById } = await import('../../db/users.js')
+    const app = makeApp()
+    const [action] = await ask(app)
+    const original = await findAssistantById('assistant_1')
+    vi.mocked(findAssistantById).mockResolvedValueOnce(original)
+      .mockResolvedValueOnce({ ...original, id: 'assistant_2' } as never)
+    const defaultRoute = await mockResolveTelegramRouting('channel_1', null)
+    mockResolveTelegramRouting.mockResolvedValueOnce(defaultRoute).mockResolvedValueOnce({
+      id: 'ca_2', channelId: 'channel_1', assistantId: 'assistant_2',
+      externalSurfaceId: '-100:topic:7', modelAlias: 'standard', createdAt: new Date(),
+    })
+    await postUpdate(app, callback(action!.data))
+    await settle()
+    expect(pipelineCalls).toHaveLength(1)
+  })
+
 })

@@ -1,3 +1,4 @@
+import { askQuestionSchema } from '../tools/base/ask-question.js'
 import { filterToolsByCapabilities } from '../tools/capability-gate.js'
 import { getHeapStatistics } from 'node:v8'
 import { renderSystemContext } from '../providers/system-context.js'
@@ -78,6 +79,8 @@ export type QueryEvent =
    * docs/architecture/engine/live-streaming.md.
    */
   | { type: 'thinking_delta'; text: string }
+  /** Successful terminal clarification, after misuse stripping and suspend handling. */
+  | { type: 'question'; question: string; options?: string[] }
   | { type: 'tool_start'; id: string; name: string }
   | { type: 'tool_input'; id: string; name: string; input: Record<string, unknown> }
   /**
@@ -1513,6 +1516,11 @@ async function* queryLoopCore(
       //   - questionResumeEnabled is off (workers, scheduled jobs, smoke), OR
       //   - createPendingQuestion hook is absent, OR
       //   - the suspend persistence failed (logged above).
+      const questionCall = response.content.find((b) => b.type === 'tool_use' && b.name === 'askQuestion')
+      const parsedQuestion = askQuestionSchema.safeParse(questionCall?.type === 'tool_use' ? questionCall.input : undefined)
+      if (parsedQuestion.success && toolResultBlocks.every((r) => !r.isError)) {
+        yield { type: 'question', ...parsedQuestion.data }
+      }
       console.log('[query-loop] askQuestion called — terminating turn so user can respond')
       yield { type: 'turn_complete', response, totalUsage }
       return

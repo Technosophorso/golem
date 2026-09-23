@@ -1220,3 +1220,11 @@ describe('[COMP:api/client-principal-runtime] external-client definition boundar
     expect(result.success).toBe(false)
   })
 })
+
+it('accepts recent approval delivery', () => {
+  const definition = {
+    startStepId: 'send',
+    steps: [{ id: 'send', type: 'tool_call', toolName: 'sendMail', arguments: {}, approval: { deliveryChannel: 'recent' } }],
+  }
+  expect(WorkflowDefinitionSchema.parse(definition).steps[0]).toMatchObject({ approval: { deliveryChannel: 'recent' } })
+})

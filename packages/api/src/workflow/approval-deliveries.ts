@@ -16,10 +16,12 @@
  * [COMP:channels/approval-deliveries]
  */
 
+import type { DeliverToChannel } from '@use-brian/core'
 import { query } from '../db/client.js'
 import type { ApprovalDeliveryDispatcher } from './approval.js'
 
 export type ApprovalDeliveryDeps = {
+  deliverToChannel?: DeliverToChannel
   webBaseUrl: string
   /** Token for the official Use Brian Telegram bot. Optional — telegram delivery is skipped when absent. */
   telegramBotToken?: string
@@ -34,7 +36,25 @@ export function createApprovalDeliveryDispatcher(
       return
     }
 
-    const deepLink = `${deps.webBaseUrl}/workspaces/${params.workspaceId}/approvals?focus=${params.approvalId}`
+    const deepLink = `${deps.webBaseUrl}/w/${params.workspaceId}/approvals?focus=${params.approvalId}`
+
+    if (params.recentTarget) {
+      if (!deps.deliverToChannel || !params.assistantId) return
+      const outcome = await deps.deliverToChannel({
+        ...params.recentTarget,
+        workspaceId: params.workspaceId,
+        assistantId: params.assistantId,
+        userId: params.approverUserId,
+        text: composeMessage(params, deepLink),
+      })
+      if (outcome.status !== 'delivered') {
+        console.warn(
+          `[approval-deliveries] ${params.recentTarget.channelType} delivery ${outcome.status}; approval ${params.approvalId} relies on web UI`,
+          outcome,
+        )
+      }
+      return
+    }
 
     if (params.deliveryChannelType === 'telegram') {
       if (!deps.telegramBotToken) {
@@ -71,8 +91,10 @@ function composeMessage(
     `🔐 *${params.workflowName}* asks to run \`${params.toolName}\`.`,
     `Args: \`${argsPreview}${argsPreview.length === 200 ? '…' : ''}\``,
     ``,
-    `Reply with \`approve ${params.approvalId.slice(0, 8)}\` or \`reject ${params.approvalId.slice(0, 8)}\`,`,
-    `or open: ${deepLink}`,
+    ...(params.recentTarget ? [`Approve or reject on the web: ${deepLink}`] : [
+      `Reply with \`approve ${params.approvalId.slice(0, 8)}\` or \`reject ${params.approvalId.slice(0, 8)}\`,`,
+      `or open: ${deepLink}`,
+    ]),
   ].join('\n')
 }
 

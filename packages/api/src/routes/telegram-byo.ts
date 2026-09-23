@@ -26,6 +26,7 @@
  *      resolves the sender, runs the query loop.
  */
 
+import { TelegramQuestions, type QuestionBinding } from './telegram-questions.js'
 import { Router } from 'express'
 import { createTelegramAdapter, createTelegramApi, verifyTelegramWebhook, validateTelegramCredentials, describeTelegramDownloadFailure, TELEGRAM_BOT_DOWNLOAD_LIMIT_BYTES } from '@use-brian/channels'
 import type { IncomingMessage, TelegramAdapterConfig, RequireMentionConfig, ChatSeenEvent } from '@use-brian/channels'
@@ -249,6 +250,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
 
   // Pending confirmation resolvers — keyed by `chatId:toolCallId`
   type PendingConf = { resolver: ConfirmationResolver; chatId: string }
+  const questions = new TelegramQuestions()
   const pendingConfResolvers = new Map<string, PendingConf>()
 
   // Pending recording-surcharge confirmations — keyed by a short token embedded
@@ -533,6 +535,28 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
       },
       onCallbackQuery: async (query) => {
         const parts = query.data.split(':')
+        if (parts[0] === 'ask') {
+          const pending = questions.take(query.data, integration.id, query.chatId, query.userId)
+          await adapter.answerCallbackQuery(query.id, {
+            text: pending ? 'Answer received' : 'Expired or unavailable. Please type your answer.',
+          }).catch(() => {})
+          if (!pending) return
+          const callback = (req.body as { callback_query?: { from?: { id: number; username?: string } } }).callback_query
+          try {
+            await handleIncoming({
+              channelId: query.chatId,
+              userId: query.userId,
+              text: pending.answer,
+              isGroupChat: pending.incoming.isGroupChat,
+              messageId: `ask:${query.id}`,
+              timestamp: Date.now(),
+              raw: { from: callback?.from },
+            }, pending)
+          } catch (err) {
+            reportIncomingFailure('message', query.chatId, err)
+          }
+          return
+        }
 
         // Recording-surcharge confirm (inline buttons): rec_confirm:<token>:<yes|no>
         if (parts[0] === 'rec_confirm' && parts.length >= 3) {
@@ -698,7 +722,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
     // wiring above can reference it before its declaration. Closes over
     // the bound aliases, `ownerId`, `channelId`, `credentials`,
     // `tgConfig`, and `adapter` from the enclosing request scope.
-    async function handleIncoming(incoming: IncomingMessage): Promise<void> {
+    async function handleIncoming(incoming: IncomingMessage, questionBinding?: QuestionBinding): Promise<void> {
       // 4b. Sender access. A blocklist match is a hard denial. An allowlist
       //     match is carried through identity resolution because it is also an
       //     explicit conversation-only guest grant in private DMs and groups.
@@ -733,7 +757,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
       // and is bound to its default assistant. Claim is atomic, so only one
       // Telegram account can win even if the same code is sent concurrently.
       if (
-        options.ownerPairing?.enabled &&
+        !questionBinding && options.ownerPairing?.enabled &&
         options.linkedAccountStore &&
         !incoming.isGroupChat &&
         incoming.text
@@ -792,7 +816,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
       //       so only the owner can manage connectors here; non-owners get a
       //       polite refusal pointing them at the official shared bot.
       //       See docs/architecture/channels/telegram-mini-app.md → "/connect".
-      if (/^\/connect(\b|$)/i.test((incoming.text ?? '').trim())) {
+      if (!questionBinding && /^\/connect(\b|$)/i.test((incoming.text ?? '').trim())) {
         const telegramUserIdStr = incoming.userId
         const linked = options.linkedAccountStore
           ? await options.linkedAccountStore.findByProvider('telegram', telegramUserIdStr)
@@ -966,6 +990,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
           }
         } catch (err) {
           console.error('[telegram-byo] channel user resolution failed:', err)
+          if (questionBinding) return
           // On resolution failure in a private chat, redirect rather than
           // leak memory to the owner.
           if (!incoming.isGroupChat) privateChatRedirect = true
@@ -1037,6 +1062,9 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
         }
       }
 
+      if (questionBinding && (questionBinding.assistantId !== routedAssistantId
+        || questionBinding.userId !== channelUserId)) return
+
       // 5b. Audio FILE → recording-to-brain pipeline instead of normal chat.
       //     A deliberate recording (msg.audio), routed to transcription + brain
       //     ingest with the duration surcharge. Voice notes stay on the existing
@@ -1052,8 +1080,9 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
       }
 
       // 6. Sequentialize per chat via Postgres advisory lock
-      await withChatLock(`tg-byo:${incoming.channelId}`, () =>
-        processMessage({
+      await withChatLock(`tg-byo:${incoming.channelId}`, () => {
+        questions.invalidate(boundIntegration.id, incoming)
+        return processMessage({
           backgroundModel: options.backgroundModel,
           adapter,
           incoming,
@@ -1069,8 +1098,10 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
           archiveConnectorInstanceId: boundIntegration.connectorInstanceId,
           ...options,
           pendingConfResolvers,
-        }),
-      )
+          questions,
+          integrationId: boundIntegration.id,
+        })
+      })
     }
 
     // Cross-webhook media-group routing. Telegram sends each photo of a
@@ -1176,6 +1207,8 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
 // ── Per-message handler ─────────────────────────────────────────
 
 type ProcessMessageParams = {
+  questions: TelegramQuestions
+  integrationId: string
   /** Servable background-lane model, threaded from the route options. */
   backgroundModel?: string
   adapter: ReturnType<typeof createTelegramAdapter>
@@ -1766,7 +1799,7 @@ async function processMessage(params: ProcessMessageParams): Promise<void> {
           actions,
         })
       },
-      async sendResponse(text, documents) {
+      async sendResponse(text, documents, question) {
         // Delete the tool status message, then send response as a new message
         if (statusMessageId) {
           await adapter.deleteMessage?.(incoming.channelId, statusMessageId)
@@ -1783,6 +1816,13 @@ async function processMessage(params: ProcessMessageParams): Promise<void> {
             text: cleaned ? text : '',
             format: 'markdown',
             documents,
+            actions: question?.options ? params.questions.create({
+              integrationId: params.integrationId,
+              assistantId: assistant.id,
+              userId: channelUserId,
+              incoming: { channelId: incoming.channelId, userId: incoming.userId,
+                text: '', timestamp: incoming.timestamp, isGroupChat: incoming.isGroupChat, raw: {} },
+            }, question.options) : undefined,
           })
         } else {
           // Loud-fail after query-loop's empty-response retries exhausted.
