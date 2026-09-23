@@ -1881,7 +1881,39 @@ function ConnectToField({
   );
 }
 
-function RawJsonFields({
+// This is a draft-shape guard, not runtime workflow validation. Keep incomplete
+// but renderable values (e.g. an empty toolName); never publish arbitrary JSON
+// into the board. Identity/type changes go through the graph/type controls.
+function isRawStepDraft(value: unknown, previous: WorkflowStep): value is WorkflowStep {
+  const record = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === "object" && !Array.isArray(v);
+  const optionalString = (v: unknown) => v === undefined || typeof v === "string";
+  const edge = (v: unknown) => v === null || typeof v === "string";
+  if (!record(value) || value.id !== previous.id || value.type !== previous.type) return false;
+  if (!optionalString(value.description) || !optionalString(value.storeOutputAs)) return false;
+  if (value.nextStepId !== undefined && !edge(value.nextStepId) &&
+      !(Array.isArray(value.nextStepId) && value.nextStepId.every((v) => typeof v === "string"))) return false;
+  switch (value.type) {
+    case "tool_call":
+      return typeof value.toolName === "string" && record(value.arguments);
+    case "branch":
+      return "condition" in value && edge(value.nextStepIdIfTrue) && edge(value.nextStepIdIfFalse);
+    case "wait":
+      if (value.until !== undefined) {
+        if (!record(value.until) || !record(value.until.duration)) return false;
+        const duration = value.until.duration;
+        if (!["minutes", "hours", "days"].every((key) =>
+          duration[key] === undefined || (typeof duration[key] === "number" && Number.isFinite(duration[key])))) return false;
+      }
+      return value.at === undefined || (record(value.at) &&
+        typeof value.at.datetime === "string" && optionalString(value.at.timezone));
+    default:
+      // Assistant steps have structured fields, not this raw JSON editor.
+      return false;
+  }
+}
+
+export function RawJsonFields({
   step,
   onChange,
   disabled,
@@ -1904,6 +1936,17 @@ function RawJsonFields({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [step.type, step.id]);
 
+  const b = t.workflowPage.builder;
+  const approvalChannel = step.type === "tool_call" ? step.approval?.deliveryChannel ?? "web" : "web";
+  const approvalItems: Record<string, string> = {
+    web: b.approvalChannelWeb,
+    recent: b.approvalChannelRecent,
+    telegram: b.deliverChannelTelegram,
+  };
+  // Legacy explicit channels are notification stubs. Keep an existing value
+  // visible without offering it as a new, working notification destination.
+  if (!(approvalChannel in approvalItems)) approvalItems[approvalChannel] = approvalChannel;
+
   const summary = stepSummary(step, t);
   return (
     <div className="mt-3 flex flex-col gap-2">
@@ -1911,6 +1954,40 @@ function RawJsonFields({
           step without parsing JSON. The raw config moves into the Advanced
           disclosure below (collapsed by default - one click, nothing removed). */}
       {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
+
+      {step.type === "tool_call" && (
+        <div className="flex flex-col gap-1.5">
+          <FieldLabel label={b.approvalChannelLabel} hint={b.approvalChannelHint} />
+          <Select
+            value={approvalChannel}
+            items={approvalItems}
+            disabled={disabled || !!error}
+            onValueChange={(value) => {
+              if (!value || !(value in approvalItems)) return;
+              const next: typeof step = {
+                ...step,
+                approval: {
+                  ...step.approval,
+                  deliveryChannel: value as NonNullable<typeof step.approval>["deliveryChannel"],
+                },
+              };
+              // Keep Advanced JSON in sync so its next edit cannot restore the
+              // old channel. Invalid JSON stays local until corrected.
+              setText(JSON.stringify(next, null, 2));
+              onChange(next);
+            }}
+          >
+            <SelectTrigger size="sm" aria-label={b.approvalChannelLabel} className="w-full min-h-11 md:min-h-0">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {Object.entries(approvalItems).map(([value, label]) => (
+                <SelectItem key={value} value={value}>{label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
 
       <details className="rounded-md bg-muted/40 px-3 py-2 [&[open]]:pb-3">
         <summary className="cursor-pointer select-none text-xs font-medium text-muted-foreground marker:text-muted-foreground">
@@ -1924,10 +2001,12 @@ function RawJsonFields({
               setText(v);
               try {
                 const parsed = JSON.parse(v);
-                if (parsed && typeof parsed === "object" && parsed.id) {
-                  setError(null);
-                  onChange(parsed as WorkflowStep);
+                if (!isRawStepDraft(parsed, step)) {
+                  setError(t.workflowPage.builder.stepJsonInvalid);
+                  return;
                 }
+                setError(null);
+                onChange(parsed);
               } catch {
                 setError(t.workflowPage.builder.stepJsonInvalid);
               }
@@ -1936,6 +2015,8 @@ function RawJsonFields({
             // A typical tool_call step serializes to ~11+ lines; default taller
             // (still resize-y) so the whole step JSON is visible once expanded.
             rows={14}
+            aria-label={t.workflowPage.builder.stepAdvancedLabel}
+            aria-invalid={!!error}
             spellCheck={false}
             className="px-3 py-2 bg-background border border-border rounded-md text-[16px] md:text-xs font-mono outline-none focus:ring-2 focus:ring-ring resize-y"
           />

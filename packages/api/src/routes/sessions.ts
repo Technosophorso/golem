@@ -1,3 +1,4 @@
+import { guardFeedStream } from '../content-planning/source-authority.js'
 import { findFeedThreadDraft } from '../content-planning/collaboration-service.js'
 import { getFeedCollaboration } from '../db/feed-collaboration-store.js'
 import { Router } from 'express'
@@ -75,6 +76,7 @@ export async function gateSessionRead(
   jwtUserId: string,
   session: GatedSession,
 ): Promise<{ status: number; error: string } | null> {
+  if (session.mode === 'draft' && session.id && !(await query('SELECT feed_draft_audience_allowed($1) AS allowed', [session.id])).rows[0]?.allowed) return { status: 403, error: 'Draft source access required' }
   if (session.channelType === 'feed_thread') {
     const parent = session.id ? await findFeedThreadDraft(session.id) : null
     if (!parent || parent.assistantId !== session.assistantId) return { status: 404, error: 'Draft discussion not found' }
@@ -337,7 +339,7 @@ export function sessionRoutes(opts: SessionRouteOptions = {}): Router {
                 s.channel_type as "channelType",
                 s.context_group_id as "contextGroupId",
                 s.context_project_id as "contextProjectId"
-         FROM sessions s
+         FROM (SELECT * FROM sessions WHERE feed_draft_audience_allowed(id)) s
          WHERE ${workspaceScope
            ? `s.assistant_id IN (SELECT a.id FROM assistants a WHERE a.workspace_id = $1)`
            : `s.assistant_id = $1`} AND s.user_id = $2
@@ -443,7 +445,7 @@ export function sessionRoutes(opts: SessionRouteOptions = {}): Router {
                 s.assistant_id AS "assistantId",
                 s.context_group_id AS "contextGroupId",
                 s.context_project_id AS "contextProjectId"
-           FROM sessions s
+           FROM (SELECT * FROM sessions WHERE feed_draft_audience_allowed(id)) s
            JOIN assistants a ON a.id = s.assistant_id
           WHERE a.workspace_id = $1
             AND s.visibility = 'workspace'
@@ -645,7 +647,7 @@ export function sessionRoutes(opts: SessionRouteOptions = {}): Router {
                 a.default_workspace_group_id AS "defaultWorkspaceGroupId",
                 a.project_scope_mode AS "projectScopeMode",
                 a.default_project_id AS "defaultProjectId"
-           FROM sessions s
+           FROM (SELECT * FROM sessions WHERE feed_draft_audience_allowed(id)) s
            JOIN assistants a ON a.id = s.assistant_id
           WHERE s.id = $1 AND s.user_id = $2`,
         [req.params.id, user.id],
@@ -809,7 +811,7 @@ export function sessionRoutes(opts: SessionRouteOptions = {}): Router {
                 s.channel_type as "channelType",
                 s.app_origin as "appOrigin",
                 a.workspace_id as "workspaceId"
-           FROM sessions s
+           FROM (SELECT * FROM sessions WHERE feed_draft_audience_allowed(id)) s
            LEFT JOIN assistants a ON a.id = s.assistant_id
           WHERE s.id = $1`,
         [sessionId],
@@ -866,7 +868,7 @@ export function sessionRoutes(opts: SessionRouteOptions = {}): Router {
                 s.channel_type as "channelType", s.mode, s.visibility,
                 s.app_origin as "appOrigin",
                 a.workspace_id as "workspaceId"
-           FROM sessions s
+           FROM (SELECT * FROM sessions WHERE feed_draft_audience_allowed(id)) s
            LEFT JOIN assistants a ON a.id = s.assistant_id
           WHERE s.id = $1`,
         [sessionId],
@@ -1861,18 +1863,19 @@ export function sessionRoutes(opts: SessionRouteOptions = {}): Router {
       res.end()
     }
 
+    const relayEvent = (event: SessionEvent) => {
+      if (closed) return
+      const relay = reconnectRelayFrames(event)
+      if (relay.finalize) { finalize(relay.frames); return }
+      for (const frame of relay.frames) send(frame.event, frame.data)
+    }
     unsubscribe = subscribeSessionEvents({
       sessionId: req.params.id,
       userId: jwtUserId,
       name: null,
-      cb: (event: SessionEvent) => {
-        const relay = reconnectRelayFrames(event)
-        if (relay.finalize) {
-          finalize(relay.frames)
-          return
-        }
-        for (const frame of relay.frames) send(frame.event, frame.data)
-      },
+      cb: session.mode === 'draft' || session.channelType === 'feed_thread'
+        ? guardFeedStream({ query }, req.params.id, jwtUserId, relayEvent, () => finalize([]))
+        : relayEvent,
     })
 
     // Backstop: the bus event can be missed (a turn that ended on another

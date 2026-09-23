@@ -1,4 +1,5 @@
 "use client";
+import { feedSourcesCacheKey } from '@/lib/surface-prefetch';
 import { Dialog } from '@base-ui/react/dialog';
 import { ChevronLeft, ChevronRight, ImagePlus, TextCursorInput, MoreHorizontal, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -15,7 +16,7 @@ import { usePostMedia } from '@/lib/use-post-media';
 import { ACCEPTED_MEDIA_MIME } from '@/lib/feed-media';
 import { SearchableSelect } from '@/components/ui/searchable-select';
 import { useCachedResource } from '@/lib/surface-cache';
-import { listBrain, type BrainRow } from '@/lib/api/brain';
+import { type BrainRow } from '@/lib/api/brain';
 import { feedOwner } from '@/lib/offline/feed-cache';
 import { fetchDocFileBlob } from '@/components/doc/doc-file-url';
 const inputClass = 'min-h-11 w-full rounded-md border bg-background p-2 text-base';
@@ -223,8 +224,8 @@ function FeedGenerationFileChoice({ controls: c, file, index, total, onPick }: {
 }
 function FeedGenerationFilePicker({ controls: c, onPick, onCancel }: { controls: FeedGenerationControls; onPick: (id: string) => Promise<void>; onCancel: () => void }) {
   const t = useT().feedGeneration; const tc = useT().feedCollaboration; const [search, setSearch] = useState('');
-  const key = `brain-entry:${c.workspaceId}:feed-files:${feedOwner()}:${c.assistantId}:${search}`;
-  const files = useCachedResource(key, () => listBrain({ workspaceId: c.workspaceId, viewpointAssistantId: c.assistantId, primitives: ['files'], search, limit: 50, failOnError: true }));
+  const key = `${feedSourcesCacheKey(c.workspaceId, c.assistantId, c.sessionId, 'file')}:${search}`;
+  const files = useCachedResource(key, async () => { const response = await authFetch(`${publicRuntimeConfig().apiUrl ?? ''}${feedCollaborationPath(c.assistantId, c.sessionId)}/sources?kind=file`); if (!response.ok) throw new Error('source_access_required'); const data = await response.json() as { sources: BrainRow[] }; return { rows: data.sources.filter(row => row.name.toLowerCase().includes(search.toLowerCase())), nextCursor: null }; });
   return <section className="space-y-2 rounded-lg border bg-background p-3"><input className={inputClass} aria-label={t.searchFiles} value={search} onChange={e => setSearch(e.target.value)} />
     {files.loading ? <p role="status">{t.loading}</p> : files.error ? <p role="alert">{t.failed}<Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={() => void files.refresh()}>{tc.retry}</Button></p> : <div className="grid max-h-60 grid-cols-2 gap-2 overflow-y-auto sm:grid-cols-3">{files.data?.rows.length ? files.data.rows.map((file, index) => <FeedGenerationFileChoice controls={c} file={file} index={index} total={files.data!.rows.length} key={file.id} onPick={onPick} />) : <p className="col-span-full">{t.noFiles}</p>}</div>}
     {files.data?.nextCursor ? <p className="text-xs">{t.moreFiles}</p> : null}<Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={onCancel}>{tc.cancel}</Button>

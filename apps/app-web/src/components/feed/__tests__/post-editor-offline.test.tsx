@@ -140,6 +140,54 @@ describe('[COMP:app-web/feed-post-editor] automatic legacy upgrade', () => {
     expect(container.textContent).not.toContain(en.feedPage.postEditor.retrySync);
     expect(container.textContent).not.toContain(en.feedPage.postEditor.saveAsNewPost);
   });
+  it('keeps recovery visible and disables both actions until a delayed retry succeeds', async () => {
+    const post = await legacyPost(); goOnline(post, true); await render(post.session.id);
+    const notice = container.querySelector('[data-feed-sync-recovery]')!;
+    expect(notice.getAttribute('aria-label')).toBe(en.feedPage.postEditor.syncPaused);
+    expect(notice.textContent).toContain(en.feedPage.postEditor.syncBlocked);
+    const header = container.querySelector('[data-feed-document-header]')!;
+    expect(header.textContent).toContain(en.feedPage.postEditor.syncPaused);
+    expect(header.textContent).not.toContain(en.feedPage.postEditor.syncBlocked);
+    goOnline(post);
+    const respond = vi.mocked(authFetch).getMockImplementation()!;
+    let release!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(authFetch).mockImplementation(async (url, init) => {
+      if (String(url).endsWith('/commands')) await pending;
+      return respond(url, init);
+    });
+    await act(async () => notice.querySelector<HTMLButtonElement>('button')!.click());
+    const retrying = container.querySelector('[data-feed-sync-recovery]')!;
+    expect(retrying.textContent).toContain(en.feedPage.postEditor.retryingSync);
+    expect([...retrying.querySelectorAll('button')].every(button => button.disabled)).toBe(true);
+    await act(async () => release());
+    expect(container.querySelector('[data-feed-sync-recovery]')).toBeNull();
+    expect(await readLocalFeedPost('assistant-1', post.session.id)).toMatchObject({ dirty: false });
+  });
+  it('keeps the copy action available offline and carries the preserved text into a new post', async () => {
+    const post = await legacyPost(); goOnline(post, true); await render(post.session.id);
+    state.offline = true;
+    Object.defineProperty(navigator, 'onLine', { value: false, configurable: true });
+    await render(post.session.id);
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>('[data-feed-sync-recovery] button')];
+    expect(buttons[0].disabled).toBe(true);
+    expect(buttons[1].disabled).toBe(false);
+    await act(async () => buttons[1].click());
+    const destination = state.push.mock.calls[0][0] as string;
+    const copy = await readLocalFeedPost('assistant-1', destination.split('/').at(-1)!);
+    expect(copy?.content.text).toBe(post.content.text);
+    expect(copy?.session.id).not.toBe(post.session.id);
+  });
+  it('offers only a new copy for unsynced edits on a read-only post', async () => {
+    const post = await legacyPost();
+    post.dirty = true;
+    post.session.selectedDraft = { text: post.content.text, status: 'ready' };
+    await render(post.session.id);
+    const notice = container.querySelector('[data-feed-sync-recovery]')!;
+    expect(notice.textContent).toContain(en.feedPage.postEditor.syncReadOnly);
+    expect(notice.querySelectorAll('button')).toHaveLength(1);
+    expect(notice.querySelector('button')!.textContent).toBe(en.feedPage.postEditor.saveAsNewPost);
+  });
   it('retains denied work and exposes recovery without repeatedly retrying the upgrade', async () => {
     const post = await legacyPost(); goOnline(post, true); await render(post.session.id);
     expect(commands()).toHaveLength(1);

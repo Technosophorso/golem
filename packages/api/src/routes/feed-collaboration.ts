@@ -1,3 +1,4 @@
+import { readFeedSelectedSources } from '../content-planning/source-authority.js'
 import type { FeedReviewContextLoader } from '../content-planning/review-context.js'
 /** Authenticated shared Feed collaboration routes. [COMP:feed/draft-comments] */
 import { exportFeedArticle, feedOutputProjection } from '../content-planning/projection.js'
@@ -21,12 +22,25 @@ export function feedCollaborationRoutes(options: { generation?: FeedGenerationSe
     if (!uuid.safeParse(req.params.assistantId).success || !uuid.safeParse(req.params.sessionId).success) { res.status(400).json({ error: 'Invalid draft identity' }); return }
     next()
   })
+  router.get(`${base}/sources`, async (req, res) => {
+    try {
+      const kind = z.enum(['file', 'memory']).parse(req.query.kind)
+      const actor: FeedActor = { userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }
+      const sources = await withFeedTransaction(actor, (client, scope) => readFeedSelectedSources(client, actor, scope, kind, null), false)
+      res.json({ sources: sources.map(({ id, name, sensitivity }) => ({ id, name, sensitivity })) })
+    } catch (error) { replyError(res, error) }
+  })
   router.get(`${base}/collaboration`, async (req, res) => {
     try { res.json(await readReviewedFeedCollaboration({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, options.reviewContext)) }
     catch (error) { replyError(res, error) }
   })
   router.post(`${base}/commands`, async (req, res) => {
-    try { res.json({ receipt: await feedCommand({ userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }, feedCommandRequestSchema.parse(req.body)) }) }
+    try {
+      const actor: FeedActor = { userId: req.userId!, assistantId: req.params.assistantId, sessionId: req.params.sessionId, kind: 'user' }
+      const receipt = await feedCommand(actor, feedCommandRequestSchema.parse(req.body))
+      const copy = await withFeedTransaction(actor, client => readFeedCopy(client, actor.sessionId), false)
+      res.json({ receipt, sourceSensitivity: copy?.content.sourceSensitivity, sourceAuthority: { sourceFileIds: copy?.content.sourceFileIds, sourceMemoryIds: copy?.content.sourceMemoryIds, sourceCompartments: copy?.content.sourceCompartments, sourceProjectIds: copy?.content.sourceProjectIds } })
+    }
     catch (error) { replyError(res, error) }
   })
   router.get(`${base}/learning`, async (req, res) => {

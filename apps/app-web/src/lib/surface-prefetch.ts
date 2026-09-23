@@ -189,6 +189,10 @@ export function feedCollaborationCacheKey(workspaceId: string, assistantId: stri
   return `feed-collaboration:${workspaceId}${viewerSuffix()}:${assistantId}:${sessionId}${threadId ? `:thread:${threadId}` : ''}`;
 }
 
+export function feedSourcesCacheKey(workspaceId: string, assistantId: string, sessionId: string, kind: 'file' | 'memory'): string {
+  return `${feedCollaborationCacheKey(workspaceId, assistantId, sessionId)}:sources:${kind}`;
+}
+
 export function feedLearningCacheKey(workspaceId: string, assistantId: string, sessionId: string): string {
   return `${feedCollaborationCacheKey(workspaceId, assistantId, sessionId)}:learning`;
 }

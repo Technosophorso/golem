@@ -498,7 +498,7 @@ export function createContentPlanningStore(): ContentPlanningStore {
                FROM content_planning_drafts d
               WHERE d.session_id = s.id AND d.removed_at IS NULL
            ) counts ON true
-          WHERE s.assistant_id = $1
+          WHERE s.assistant_id = $1 AND feed_draft_audience_allowed(s.id)
             AND s.mode = 'draft'
             AND ($2::text IS NULL OR s.title LIKE '[' || $2 || ']%')
           ORDER BY s.last_active_at DESC`,
@@ -647,7 +647,7 @@ export function createContentPlanningStore(): ContentPlanningStore {
     async listSessionDrafts(assistantId, sessionId) {
       const result = await query<Parameters<typeof mapDraftRow>[0]>(
         `${DRAFT_SELECT}
-          WHERE d.assistant_id = $1
+          WHERE d.assistant_id = $1 AND feed_draft_audience_allowed(d.session_id)
             AND d.session_id = $2
             AND d.removed_at IS NULL
           ORDER BY d.created_at DESC`,
@@ -659,7 +659,7 @@ export function createContentPlanningStore(): ContentPlanningStore {
     async listPending(assistantId, limit) {
       const result = await query<Parameters<typeof mapDraftRow>[0]>(
         `${DRAFT_SELECT}
-          WHERE d.assistant_id = $1
+          WHERE d.assistant_id = $1 AND feed_draft_audience_allowed(d.session_id)
             AND d.status = 'pending'
             AND d.removed_at IS NULL
           ORDER BY d.created_at DESC
@@ -672,7 +672,7 @@ export function createContentPlanningStore(): ContentPlanningStore {
     async listReady(assistantId) {
       const result = await query<Parameters<typeof mapDraftRow>[0]>(
         `${DRAFT_SELECT}
-          WHERE d.assistant_id = $1
+          WHERE d.assistant_id = $1 AND feed_draft_audience_allowed(d.session_id)
             AND d.status = 'ready'
             AND d.removed_at IS NULL
           ORDER BY d.created_at DESC`,
@@ -684,7 +684,7 @@ export function createContentPlanningStore(): ContentPlanningStore {
     async getDraft(assistantId, draftId) {
       const result = await query<Parameters<typeof mapDraftRow>[0]>(
         `${DRAFT_SELECT}
-          WHERE d.assistant_id = $1
+          WHERE d.assistant_id = $1 AND feed_draft_audience_allowed(d.session_id)
             AND d.id = $2
             AND d.removed_at IS NULL`,
         [assistantId, draftId],

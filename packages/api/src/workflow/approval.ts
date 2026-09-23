@@ -33,6 +33,7 @@ import {
 } from '@use-brian/core'
 import type { WorkspaceAuditStore } from '../db/workspace-audit-store.js'
 import type { PendingApprovalsStore, PendingApproval } from '../db/pending-approvals-store.js'
+import type { RecentApprovalResolver, RecentApprovalTarget } from './recent-approval-channel.js'
 import type { SessionResumeStore } from '../db/session-resume-store.js'
 
 export type ApprovalDeliveryDispatcher = (params: {
@@ -45,9 +46,12 @@ export type ApprovalDeliveryDispatcher = (params: {
   approverUserId: string
   deliveryChannelType: 'web' | 'telegram' | 'slack' | 'whatsapp' | 'msteams' | 'feishu'
   deliveryChannelId: string | null
+  recentTarget?: RecentApprovalTarget
+  assistantId?: string
 }) => Promise<void>
 
 export type ApprovalBridgeDeps = {
+  resolveRecentChannel?: RecentApprovalResolver
   approvalsStore: PendingApprovalsStore
   auditStore: WorkspaceAuditStore
   workflowStore: WorkflowStore
@@ -92,6 +96,12 @@ export function makeRequestApproval(deps: ApprovalBridgeDeps): NonNullable<Execu
       : '<workflow>'
     const stepRow = await getStepRunSystem(deps, stepRunId)
 
+    const recentTarget = deliveryChannel === 'recent'
+      ? await deps.resolveRecentChannel?.({ workspaceId, assistantId, approverUserId }) ?? null
+      : null
+    const deliveryChannelType = deliveryChannel === 'recent' ? recentTarget?.channelType ?? 'web' : deliveryChannel
+    const deliveryChannelId = recentTarget?.channelId ?? null
+
     const approval = await deps.approvalsStore.create({
       workspaceId,
       workflowRunId: runId,
@@ -100,12 +110,13 @@ export function makeRequestApproval(deps: ApprovalBridgeDeps): NonNullable<Execu
       toolName,
       arguments: args,
       approvalPayload: {
+        ...(recentTarget ? { deliveryTarget: recentTarget } : {}),
         ...(displayLines ? { displayLines } : {}),
         ...(decisionApplicationId ? { decisionApplicationId } : {}),
       },
       approverUserId,
-      deliveryChannelType: deliveryChannel,
-      deliveryChannelId: null, // delivery layer resolves the channel id from approver's preferred channel
+      deliveryChannelType,
+      deliveryChannelId,
       expiresAt,
     })
 
@@ -121,6 +132,8 @@ export function makeRequestApproval(deps: ApprovalBridgeDeps): NonNullable<Execu
         toolName,
         stepId: stepRow?.stepId ?? null,
         deliveryChannel,
+        deliveryChannelType,
+        deliveryChannelId,
       },
     }).catch(() => { /* fire-and-forget */ })
 
@@ -136,8 +149,10 @@ export function makeRequestApproval(deps: ApprovalBridgeDeps): NonNullable<Execu
         toolName,
         arguments: args,
         approverUserId,
-        deliveryChannelType: deliveryChannel,
-        deliveryChannelId: null,
+        deliveryChannelType,
+        deliveryChannelId,
+        assistantId,
+        ...(recentTarget ? { recentTarget } : {}),
       })
     } catch (err) {
       console.error(`[workflow-approval] delivery failed for ${approval.id}:`, err)

@@ -207,7 +207,8 @@ export type ToolCallStep = WorkflowStepCommon & {
   approval?: {
     /** Force a detached approval even when the effective tool policy is allow. */
     required?: boolean
-    deliveryChannel?: 'web' | 'telegram' | 'slack' | 'whatsapp' | 'msteams' | 'feishu'
+    /** recent = assigned approver's last inbound messaging conversation with this assistant; web fallback. */
+    deliveryChannel?: 'recent' | 'web' | 'telegram' | 'slack' | 'whatsapp' | 'msteams' | 'feishu'
     /**
      * Hours before the approval auto-expires (status='expired').
      * Omit for no expiry — totally detached, user can return any time.

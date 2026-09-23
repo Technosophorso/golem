@@ -1,5 +1,6 @@
+import { readFeedSelectedSources } from './source-authority.js'
 /** Frozen, authorized source manifests for all five Feed Review checks. [COMP:feed/draft-review] */
-import type { AccessContext } from '@use-brian/core'
+import { maxSensitivity, type AccessContext } from '@use-brian/core'
 import { FEED_REVIEW_DIMENSIONS, FEED_EDITORIAL_LIMITS, FEED_LEARNING_LIMITS, type FeedReviewContext, type FeedReviewSource, type FeedReviewCoverage, type FeedReviewDimension, type FeedLearningScope } from '@use-brian/shared'
 import { projectFeed, walkFeed } from '@use-brian/doc-model'
 import { type FeedActor, type FeedScope, type FeedReader, type StructuredFeedContent, readFeedCopy, requireFeedComposition, FeedCollaborationError, withFeedTransaction } from '../db/feed-collaboration-store.js'
@@ -62,7 +63,7 @@ async function readFeedReviewContext(client: FeedReader, scope: FeedScope, actor
   const historyAssistantIds = brandId ? (await client.query<{ id: string }>(`SELECT id FROM assistants WHERE workspace_id=$1 AND kind='app' AND app_type='distribution' AND (id=$2 OR EXISTS (SELECT 1 FROM assistant_capabilities ac WHERE ac.assistant_id=assistants.id AND ac.capability='brand' AND ac.revoked_at IS NULL)) ORDER BY id`, [scope.workspaceId, actor.assistantId])).rows.map(row => row.id) : [actor.assistantId]
   const linkedGoal = content.goalId ? await getGoalById(actor.userId, content.goalId) : null
   const goalCompartment = linkedGoal?.workspaceId === scope.workspaceId && linkedGoal.contextGroupId ? (await client.query('SELECT compartment_key FROM workspace_groups WHERE id=$1 AND workspace_id=$2', [linkedGoal.contextGroupId, scope.workspaceId])).rows[0]?.compartment_key as string | undefined : undefined
-  const learningScope: FeedLearningScope = { platform, postFormat: content.postFormat, brandId, sensitivity: scope.clearance as FeedLearningScope['sensitivity'], compartments: [...new Set([...(session.context_compartments ?? []), ...(goalCompartment ? [goalCompartment] : [])])], projectIds: [...new Set([...(session.context_project_id ? [session.context_project_id] : []), ...(linkedGoal?.workspaceId === scope.workspaceId && linkedGoal.contextProjectId ? [linkedGoal.contextProjectId] : [])])] }
+  const learningScope: FeedLearningScope = { platform, postFormat: content.postFormat, brandId, sensitivity: maxSensitivity(scope.clearance as 'public' | 'internal' | 'confidential', content.sourceSensitivity ?? 'public'), compartments: [...new Set([...(content.sourceCompartments ?? []), ...(session.context_compartments ?? []), ...(goalCompartment ? [goalCompartment] : [])])], projectIds: [...new Set([...(content.sourceProjectIds ?? []), ...(session.context_project_id ? [session.context_project_id] : []), ...(linkedGoal?.workspaceId === scope.workspaceId && linkedGoal.contextProjectId ? [linkedGoal.contextProjectId] : [])])] }
   const tasks: [FeedReviewDimension, () => Promise<void>][] = [
     ['monthly_plan', async () => {
       const store = createContentPlanStore(); const brief = await store.getBrief(actor.assistantId, month); const slots = await store.listSlots({ assistantId: actor.assistantId, month })
@@ -93,6 +94,10 @@ async function readFeedReviewContext(client: FeedReader, scope: FeedScope, actor
       const sharedRules = rules.filter(rule => !exceptions.has(rule.id) && (rule.appliesToUserId === null || members.every(member => member.userId === rule.appliesToUserId)) && ranks.indexOf(rule.decisionSensitivity) <= audienceRank)
       const playbook = await loadDecisionPlaybookContext({ workspaceId: scope.workspaceId, assistantId: actor.assistantId, actorUserId: actor.userId, externalPrincipal: false, allowedRuleIds: sharedRules.map(rule => rule.id), recordApplication: false, applicability: { kind: 'feed', scope: learningScope }, operationKind: 'feed_review', operationId: actor.sessionId, logLabel: 'feed-review' })
       const selectedRules = sharedRules.filter(rule => playbook.playbookRules.includes(rule.rule.trim()))
+      const selected = await readFeedSelectedSources(client, actor, scope, 'memory', content.selectedMemoryIds ?? [])
+      if (selected.length !== new Set(content.selectedMemoryIds ?? []).size) throw new FeedCollaborationError(403, 'memory_not_available_to_draft')
+      const visibleIds = new Set(visible.map(memory => memory.id))
+      dimensions.memory.sources.push(...selected.filter(memory => !visibleIds.has(memory.id)).map(memory => source(`memory:${memory.id}`, 'memory', memory.summary ?? 'Selected memory', { summary: memory.summary, detail: memory.detail })))
       dimensions.memory.sources.push(...visible.map(memory => source(`memory:${memory.id}`, 'memory', memory.summary, { summary: memory.summary, detail: memory.detail, tags: memory.tags })), ...selectedRules.map(rule => source(`playbook:${rule.id}`, 'playbook', 'Approved preference', rule.rule)))
       const limits = [...dimensions.memory.coverage.limits]; if (lists.some(list => list.total > visible.length) || selectedRules.length < rules.length) limits.push('private_or_bounded_sources_omitted')
       if (exceptions.size || memoryExceptions.size) limits.push('post_only_guidance_exception')

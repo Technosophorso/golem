@@ -139,7 +139,7 @@ async function loadDraft(
        JOIN sessions s ON s.id=p.session_id
        JOIN assistants a ON a.id=s.assistant_id AND a.workspace_id=p.workspace_id
        JOIN feed_post_working_copies w ON w.session_id=p.session_id
-      WHERE p.workspace_id=$1 AND p.id=$2 AND p.channel='email' AND p.placement_kind='email_body'`,
+      WHERE p.workspace_id=$1 AND p.id=$2 AND p.channel='email' AND p.placement_kind='email_body' AND feed_draft_audience_allowed(p.session_id)`,
     [workspaceId, placementId])).rows[0]
   if (!placement) throw new CampaignEmailError('not_found', 'Email campaign placement was not found.')
   let selectedRevision = placement.currentRevision

@@ -423,7 +423,7 @@ export type ExecutorDeps = {
     arguments: Record<string, unknown>
     /** Server-resolved confirmation details for the queue preview. */
     displayLines?: string[]
-    deliveryChannel: 'web' | 'telegram' | 'slack' | 'whatsapp' | 'msteams' | 'feishu'
+    deliveryChannel: 'recent' | 'web' | 'telegram' | 'slack' | 'whatsapp' | 'msteams' | 'feishu'
     expiresAt: Date | null
     /** Exact out-of-band application id from the immediately upstream model step. */
     decisionApplicationId?: string
@@ -1278,7 +1278,7 @@ type StepDispatchResult =
       toolName: string
       arguments: Record<string, unknown>
       displayLines?: string[]
-      deliveryChannel: 'web' | 'telegram' | 'slack' | 'whatsapp' | 'msteams' | 'feishu'
+      deliveryChannel: 'recent' | 'web' | 'telegram' | 'slack' | 'whatsapp' | 'msteams' | 'feishu'
       expiresAt: Date | null
       decisionApplicationId?: string
     }

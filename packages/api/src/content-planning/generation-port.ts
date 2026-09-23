@@ -141,9 +141,9 @@ async function persistFeedImage(options: FeedImagePortOptions, run: FeedEditoria
       UNION ALL SELECT decision_sensitivity AS sensitivity,'{}'::text[] AS compartments,'{}'::uuid[] AS project_ids FROM assistant_playbook_rules WHERE assistant_id=$4 AND id=ANY($5::uuid[])
       UNION ALL SELECT sensitivity,'{}'::text[] AS compartments,'{}'::uuid[] AS project_ids FROM workspace_brands WHERE workspace_id=$1 AND id=ANY($6::uuid[])`, [scope.workspaceId, sourceFiles, ids('memory'), run.assistantId, ids('playbook'), ids('brand')])).rows
     const ranks = ['public', 'internal', 'confidential', 'restricted']
-    const baseline = publicAudience || scope.clearance === 'public' ? 0 : 1
+    const baseline = Math.max(ranks.indexOf(context.content.sourceSensitivity ?? 'public'), publicAudience || scope.clearance === 'public' ? 0 : 1)
     const sensitivity = ranks[Math.max(baseline, ...rows.map(row => ranks.indexOf(row.sensitivity ?? 'internal')))] as NonNullable<FilesContext['clearance']>
-    return { sensitivity, compartments: [...new Set(rows.flatMap(row => row.compartments ?? []))], projectIds: [...new Set(rows.flatMap(row => row.project_ids ?? []))] }
+    return { sensitivity, compartments: [...new Set([...(context.content.sourceCompartments ?? []), ...rows.flatMap(row => row.compartments ?? [])])], projectIds: [...new Set([...(context.content.sourceProjectIds ?? []), ...rows.flatMap(row => row.project_ids ?? [])])] }
   })
   const ctx: FilesContext = { workspaceId: run.workspaceId, userId: run.actorUserId, assistantId: null, assistantKind: 'standard', clearance: authority.sensitivity, writeCompartments: authority.compartments, writeProjectIds: authority.projectIds }
 

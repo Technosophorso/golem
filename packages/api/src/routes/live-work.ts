@@ -282,7 +282,7 @@ async function fetchSessionRows(workspaceId: string): Promise<SessionRosterRow[]
        FROM sessions s
        JOIN assistants a ON a.id = s.assistant_id
        LEFT JOIN users u ON u.id = s.user_id
-      WHERE a.workspace_id = $1
+      WHERE a.workspace_id = $1 AND feed_draft_audience_allowed(s.id)
         AND s.channel_type NOT IN ('workflow', 'assistant-call')
         AND (s.status = 'running'
              OR s.last_active_at > now() - ($2 || ' minutes')::interval)

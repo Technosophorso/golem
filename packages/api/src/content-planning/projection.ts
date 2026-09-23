@@ -54,6 +54,10 @@ export async function assertFeedSavedReady(actor: FeedActor, canonical: FeedSave
   if (!saved) throw new FeedCollaborationError(409, 'save_current_composition_required')
   if (canonicalFeedValue(saved.canonical.content) !== canonicalFeedValue(canonical.content)) throw new FeedCollaborationError(409, 'saved_composition_conflict')
   if (saved.projection.issues.length) throw new FeedCollaborationError(409, saved.projection.issues[0]!.code)
+  if (platform !== 'email' && saved.canonical.content.sourceSensitivity && saved.canonical.content.sourceSensitivity !== 'public') {
+    const release = (await query('SELECT public_release FROM feed_post_working_copies WHERE session_id=$1', [actor.sessionId])).rows[0]?.public_release
+    if (release?.audience !== 'public' || release.revision !== canonical.revision) throw new FeedCollaborationError(409, 'public_release_required')
+  }
   return saved
 }
 const extension = (mime: string) => ({ 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' })[mime] ?? 'bin'
@@ -70,7 +74,7 @@ export async function exportFeedArticle(actor: FeedActor, expectedRevision: numb
   let total = 0
   for (const media of saved.projection.media) {
     if (!files) throw new FeedCollaborationError(503, 'image_storage_unavailable')
-    const result = await files.readBytes({ workspaceId: saved.scope.workspaceId, userId: actor.userId, assistantId: actor.assistantId, assistantKind: 'app', clearance: saved.scope.clearance as 'internal', compartments: saved.scope.compartments }, media.fileId)
+    const result = await files.readBytes({ workspaceId: saved.scope.workspaceId, userId: actor.userId, assistantId: actor.assistantId, assistantKind: 'app', clearance: saved.scope.memberClearance as 'public' | 'internal' | 'confidential', compartments: saved.scope.memberCompartments }, media.fileId)
     if (!result.ok || result.value.file.mime !== media.mimeType) throw new FeedCollaborationError(403, 'file_unavailable')
     total += result.value.bytes.length
     if (total > 100 * 1024 * 1024) throw new FeedCollaborationError(413, 'article_assets_too_large')

@@ -243,10 +243,9 @@ export function createWorkflowChannelDelivery(
 
     if (channelType === 'slack') {
       if (!options.integrationStore) return { status: 'skipped', channelType, reason: 'no_integration' }
-      const integ = await options.integrationStore.getCredentialsForAssistantSystem(
-        assistantId,
-        'slack',
-      )
+      const integ = channelIntegrationId
+        ? await options.integrationStore.getCredentialsForAssistantIntegrationSystem(workspaceId, assistantId, channelIntegrationId, 'slack', channelId)
+        : await options.integrationStore.getCredentialsForAssistantSystem(assistantId, 'slack')
       if (!integ) return { status: 'skipped', channelType, reason: 'no_integration' }
       // `threadRef` (an earlier delivery's Slack ts) posts into that thread;
       // the returned ts anchors later `deliver.thread` steps.
@@ -300,7 +299,9 @@ export function createWorkflowChannelDelivery(
 
     if (channelType === 'msteams') {
       if (!options.integrationStore) return { status: 'skipped', channelType, reason: 'no_integration' }
-      const integ = await options.integrationStore.getCredentialsForAssistantSystem(assistantId, 'msteams')
+      const integ = channelIntegrationId
+        ? await options.integrationStore.getCredentialsForAssistantIntegrationSystem(workspaceId, assistantId, channelIntegrationId, 'msteams', channelId)
+        : await options.integrationStore.getCredentialsForAssistantSystem(assistantId, 'msteams')
       if (!integ) return { status: 'skipped', channelType, reason: 'no_integration' }
       const creds = integ.credentials as { app_id: string; app_password: string; tenant_id: string }
       // Teams proactive delivery needs a serviceUrl — there is no inbound
