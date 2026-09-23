@@ -246,7 +246,7 @@ export type ToolCallStep = {
   arguments: Record<string, unknown>;
   approval?: {
     required?: boolean;
-    deliveryChannel?: "web" | "telegram" | "slack" | "whatsapp" | "feishu";
+    deliveryChannel?: "web" | "recent" | "telegram" | "slack" | "whatsapp" | "msteams" | "feishu";
     expiresAfterHours?: number;
   };
 };

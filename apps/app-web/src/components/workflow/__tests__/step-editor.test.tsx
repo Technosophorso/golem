@@ -14,11 +14,11 @@ afterEach(() => {
   container?.remove();
 });
 const tool: WorkflowStep = { id: "tool-1", type: "tool_call", toolName: "listTasks", arguments: {} };
-function mount(step: WorkflowStep = tool) {
+function mount(step: WorkflowStep = tool, disabled = false) {
   const changed = vi.fn();
   function Harness() {
     const [draft, setDraft] = useState(step);
-    return <RawJsonFields step={draft} t={en} onChange={(next) => { changed(next); setDraft(next); }} />;
+    return <RawJsonFields step={draft} disabled={disabled} t={en} onChange={(next) => { changed(next); setDraft(next); }} />;
   }
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -96,5 +96,72 @@ describe("[COMP:app-web/workflow] raw step draft safety", () => {
     const next = { ...branch, condition: { "==": [{ var: "input.enabled" }, true] }, nextStepIdIfTrue: "tool-1" };
     input(JSON.stringify(next));
     expect(changed).toHaveBeenCalledExactlyOnceWith(next);
+  });
+});
+
+
+describe("[COMP:app-web/workflow] approval notification channel", () => {
+  const b = en.workflowPage.builder;
+  async function choose(label: string) {
+    await act(async () => container.querySelector<HTMLButtonElement>("[role=combobox]")!.click());
+    const option = [...document.querySelectorAll<HTMLElement>("[role=option]")]
+      .find((node) => node.textContent === label)!;
+    expect(option).toBeTruthy();
+    await act(async () => option.click());
+  }
+
+  it("defaults to web without mutating the draft and offers only supported channels", async () => {
+    const changed = mount();
+    expect(container.querySelector("[role=combobox]")?.textContent).toContain(b.approvalChannelWeb);
+    expect(changed).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLButtonElement>("[role=combobox]")!.click());
+    expect([...document.querySelectorAll("[role=option]")].map((node) => node.textContent))
+      .toEqual([b.approvalChannelWeb, b.approvalChannelRecent, b.deliverChannelTelegram]);
+  });
+
+  it.each([true, false, undefined])("preserves required=%s and expiry while syncing Advanced JSON", async (required) => {
+    const step: WorkflowStep = { ...tool, approval: { required, expiresAfterHours: 12 } };
+    const changed = mount(step);
+    await choose(b.approvalChannelRecent);
+    const next = { ...step, approval: { ...step.approval, deliveryChannel: "recent" } };
+    expect(changed).toHaveBeenLastCalledWith(next);
+    expect(JSON.parse(container.querySelector("textarea")!.value)).toEqual(JSON.parse(JSON.stringify(next)));
+    await choose(b.deliverChannelTelegram);
+    expect(changed).toHaveBeenLastCalledWith({ ...step, approval: { ...step.approval, deliveryChannel: "telegram" } });
+    await choose(b.approvalChannelWeb);
+    expect(changed).toHaveBeenLastCalledWith({ ...step, approval: { ...step.approval, deliveryChannel: "web" } });
+  });
+
+  it.each(["slack", "whatsapp", "msteams", "feishu"] as const)("preserves existing %s configuration", async (deliveryChannel) => {
+    const step: WorkflowStep = { ...tool, approval: { deliveryChannel, required: true } };
+    const changed = mount(step);
+    expect(container.querySelector("[role=combobox]")?.textContent).toContain(deliveryChannel);
+    expect(changed).not.toHaveBeenCalled();
+    input(JSON.stringify({ ...step, description: "Renamed" }));
+    expect(changed).toHaveBeenLastCalledWith({ ...step, description: "Renamed" });
+    await choose(b.approvalChannelRecent);
+    expect(changed).toHaveBeenLastCalledWith({ ...step, description: "Renamed", approval: { required: true, deliveryChannel: "recent" } });
+  });
+
+  it("reflects recent selected through Advanced JSON", () => {
+    mount();
+    input(JSON.stringify({ ...tool, approval: { deliveryChannel: "recent" } }));
+    expect(container.querySelector("[role=combobox]")?.textContent).toContain(b.approvalChannelRecent);
+  });
+
+  it("disables channel changes when the editor is disabled", () => {
+    mount(tool, true);
+    expect(container.querySelector<HTMLButtonElement>("[role=combobox]")!.disabled).toBe(true);
+  });
+
+  it("protects an invalid JSON draft from selector edits", () => {
+    mount();
+    input('{');
+    expect(container.querySelector<HTMLButtonElement>("[role=combobox]")!.disabled).toBe(true);
+  });
+
+  it("does not show approval channels on wait steps", () => {
+    mount({ id: "wait", type: "wait", until: { duration: { minutes: 1 } } });
+    expect(container.querySelector("[role=combobox]")).toBeNull();
   });
 });

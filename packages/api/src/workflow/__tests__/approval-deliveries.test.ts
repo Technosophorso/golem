@@ -93,3 +93,44 @@ describe('[COMP:channels/approval-deliveries] createApprovalDeliveryDispatcher',
     expect(mockFetch).not.toHaveBeenCalled()
   })
 })
+
+it.each(['telegram', 'slack', 'whatsapp', 'msteams', 'feishu'] as const)(
+  'dispatches resolved recent %s through the workflow adapter, never the legacy bot', async (channelType) => {
+    const deliverToChannel = vi.fn().mockResolvedValue({ status: 'delivered' })
+    const recentTarget = { channelType, channelId: 'destination', channelIntegrationId: 'byo', threadRef: 'thread' }
+    await createApprovalDeliveryDispatcher({
+      webBaseUrl: 'https://app.test', telegramBotToken: 'official', deliverToChannel,
+    })(params({ deliveryChannelType: channelType, assistantId: 'assistant', recentTarget }))
+    expect(deliverToChannel).toHaveBeenCalledWith({
+      ...recentTarget, workspaceId: 'ws-1', assistantId: 'assistant', userId: 'u-1',
+      text: expect.stringContaining('/w/ws-1/approvals?focus=appr-12345678-rest'),
+    })
+    const text = deliverToChannel.mock.calls[0][0].text
+    expect(text).toContain('Approve or reject on the web: https://app.test/w/ws-1/approvals')
+    expect(text).not.toContain('Reply with')
+    expect(text).not.toContain('`approve ')
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockQuery).not.toHaveBeenCalled()
+  },
+)
+
+
+it.each(['skipped', 'failed'] as const)('warns when recent delivery is %s without falling back to the official bot', async (status) => {
+  const outcome = status === 'skipped'
+    ? { status, channelType: 'telegram', reason: 'no_integration' }
+    : { status, channelType: 'telegram', error: 'unavailable' }
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  try {
+    const deliverToChannel = vi.fn().mockResolvedValue(outcome)
+    await createApprovalDeliveryDispatcher({
+      webBaseUrl: 'https://app.test', telegramBotToken: 'official', deliverToChannel,
+    })(params({ deliveryChannelType: 'telegram', assistantId: 'assistant',
+      recentTarget: { channelType: 'telegram', channelId: '123', channelIntegrationId: 'byo' },
+    }))
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`delivery ${status}`), outcome)
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockQuery).not.toHaveBeenCalled()
+  } finally {
+    warn.mockRestore()
+  }
+})

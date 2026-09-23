@@ -7,6 +7,9 @@ import regressions. The opt-in browser test uses the live official catalog.
 
 | COMP tag | doc path | source path | test path |
 | --- | --- | --- | --- |
+| workflow/recent-approval-channel | docs/workflow/recent-approval-channel.md | packages/api/src/workflow/recent-approval-channel.ts | packages/api/src/workflow/__tests__/recent-approval-channel.test.ts |
+| app-web/workflow | docs/workflow/recent-approval-channel.md | apps/app-web/src/components/workflow/step-editor.tsx | apps/app-web/src/components/workflow/__tests__/step-editor.test.tsx |
+| channels/approval-deliveries | docs/workflow/recent-approval-channel.md | packages/api/src/workflow/approval-deliveries.ts | packages/api/src/workflow/__tests__/approval-deliveries.test.ts |
 | doc-sync/awareness-lifetime | docs/collab-runtime.md | apps/doc-sync/package.json | apps/doc-sync/src/__tests__/awareness-lifetime.test.ts |
 | app-web/collab-runtime | docs/collab-runtime.md | scripts/collab-singletons.mjs; apps/app-web/next.config.ts; apps/app-web/vite.desktop.config.ts; apps/app-web/vitest.config.ts; packages/doc-model/vitest.config.ts | apps/app-web/src/components/doc/__tests__/collab-runtime.test.ts; apps/app-web/scripts/collab-runtime-browser.mjs; packages/doc-model/src/__tests__/encode.test.ts |
 | app-web/dev-route-discovery | docs/dev-routing.md | apps/app-web/package.json | apps/app-web/src/__tests__/dev-route-discovery.test.ts; apps/app-web/scripts/route-discovery-regression.mjs |
