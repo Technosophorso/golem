@@ -6,6 +6,8 @@
 -- SQL NULL remains absent; JSON null is universe; [] is the General grant.
 -- [COMP:api/context-scope-store]
 
+BEGIN;
+
 ALTER POLICY saved_views_workspace_member ON public.saved_views
   USING (
     workspace_id IN (
@@ -84,3 +86,5 @@ ALTER POLICY saved_views_workspace_member ON public.saved_views
       OR NULLIF(current_setting('app.agent_project_ids', true), '')::jsonb ? project_id::text
     )
   );
+
+COMMIT;

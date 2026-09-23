@@ -7,6 +7,15 @@ const migration = (name: string) => readFile(
 )
 
 describe('[COMP:api/context-scope-store] context scope migration contract', () => {
+  it('wraps the saved-page policy repair in one transaction', async () => {
+    const sql = (await migration('537_saved_views_scope_guc_casts.sql'))
+      .replace(/^\s*--[^\n]*$/gm, '').trim()
+    expect(sql).toMatch(/^BEGIN;\s+ALTER POLICY saved_views_workspace_member/)
+    expect(sql).toMatch(/;\s+COMMIT;$/)
+    expect(sql.match(/\bBEGIN\s*;/g)).toHaveLength(1)
+    expect(sql.match(/\bCOMMIT\s*;/g)).toHaveLength(1)
+  })
+
   it('keeps the four reserved migrations consecutive and append-only', async () => {
     const [primitives, principals, content, surfaces] = await Promise.all([
       migration('472_context_primitives.sql'),
