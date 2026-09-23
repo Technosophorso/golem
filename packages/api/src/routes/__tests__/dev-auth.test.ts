@@ -42,6 +42,12 @@ function makeApp(deps: Partial<DevAuthDeps> & { createUser?: DevAuthDeps['create
     devAuthRoutes({
       jwtSecret: JWT_SECRET,
       isLocal: () => true,
+      sessions: {
+        create: vi.fn().mockResolvedValue({
+          id: '00000000-0000-4000-a000-0000000000a2',
+          authVersion: 0,
+        }),
+      },
       ...deps,
     }),
   )

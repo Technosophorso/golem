@@ -10,6 +10,14 @@ const USER_A = '11111111-1111-1111-1111-111111111111'
 const ASSISTANT_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const ASSISTANT_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
 const WORKSPACE_A = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+const sessions = {
+  create: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a1', authVersion: 0 }),
+  validateAccess: vi.fn().mockResolvedValue(true),
+  validateRefresh: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a1', authVersion: 0 }),
+  listForUser: vi.fn().mockResolvedValue([]),
+  revokeForUser: vi.fn().mockResolvedValue(true),
+  revokeAllForUser: vi.fn().mockResolvedValue(true),
+}
 
 // query() in auth.ts runs raw SQL against the pool; mock it so tests don't
 // need a real DB. We return different rows per SQL pattern.
@@ -21,7 +29,7 @@ vi.mock('../../db/client.js', () => ({
 function makeApp(store: LinkedAccountStore | undefined) {
   const app = express()
   app.use(express.json())
-  app.use('/auth', authRoutes(JWT_SECRET, undefined, store))
+  app.use('/auth', authRoutes(JWT_SECRET, undefined, store, undefined, undefined, undefined, undefined, sessions))
   return app
 }
 

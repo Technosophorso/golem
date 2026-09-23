@@ -35,7 +35,7 @@ VOLUME="${BRIAN_RIG_VOLUME:-usebrian-brain-data}"
 # it). This is the same image the self-host recipe uses.
 IMAGE="${BRIAN_RIG_IMAGE:-pgvector/pgvector:pg18}"
 
-API_PORT=4000
+API_PORT_FILE="$STATE/api-port"
 WEB_PORT=3003
 DOC_SYNC_PORT=8080
 
@@ -59,7 +59,8 @@ Usage: scripts/rig-up.sh [options]
   -h, --help         this help
 
 Environment overrides: DATABASE_URL (else use-brian/.env, else the rig default),
-BRIAN_RIG_CONTAINER, BRIAN_RIG_VOLUME, BRIAN_RIG_IMAGE, BRIAN_RIG_TIMEOUT.
+BRIAN_RIG_CONTAINER, BRIAN_RIG_VOLUME, BRIAN_RIG_IMAGE, BRIAN_RIG_TIMEOUT,
+USEBRIAN_API_PORT (default 4000, or the last recorded rig port).
 USAGE
 }
 
@@ -83,6 +84,7 @@ docker info >/dev/null 2>&1 || die "the Docker daemon is not reachable. Start Do
 command -v pnpm >/dev/null 2>&1 || die "pnpm not found. Run \`corepack enable\`."
 command -v node >/dev/null 2>&1 || die "node not found (this repo pins Node 22 via .nvmrc)."
 [ -d "$ROOT/node_modules" ] || die "dependencies are not installed. Run \`pnpm install\` in $ROOT first."
+API_PORT="$(node "$ROOT/scripts/launch-ports.mjs" "$API_PORT_FILE")" || die "invalid API port"
 
 # The launcher PROMPTS on stdin when it has neither a model credential nor a
 # persisted provider choice. Under nohup that prompt is an invisible hang, which
@@ -126,6 +128,10 @@ eval "$(node "$ROOT/scripts/rig-env.mjs")" || die "could not resolve DATABASE_UR
        remote or shared server. Point DATABASE_URL at 127.0.0.1 or unset it."
 
 # ── already up? ─────────────────────────────────────────────────────────────
+if pid="$(rig_pid)"; then
+  recorded_api_port="$(node "$ROOT/scripts/launch-ports.mjs" "$API_PORT_FILE" --recorded)" || die "invalid recorded API port"
+  [ "$API_PORT" = "$recorded_api_port" ] || die "rig is running on :$recorded_api_port; run scripts/rig-down.sh --keep-db before changing its API port"
+fi
 if [ "$FRESH" = "0" ] && pid="$(rig_pid)" && api_healthy; then
   say "rig is already up (launcher pid $pid) — refreshing the owner session only."
   mint_only=1
@@ -251,8 +257,10 @@ if [ "$mint_only" = "0" ]; then
     DATABASE_URL="$RIG_DB_URL"
     MIGRATION_DIRS=
     USEBRIAN_NO_BROWSER=1
+    USEBRIAN_API_PORT="$API_PORT"
   )
   [ "$CORE_ONLY" = 1 ] && launch_env+=(USEBRIAN_CORE_ONLY=1)
+  printf '%s\n' "$API_PORT" >"$API_PORT_FILE"
   nohup env "${launch_env[@]}" \
     node "$ROOT/scripts/launch.mjs" >>"$LOG" 2>&1 </dev/null &
   echo $! >"$PIDFILE"
@@ -279,7 +287,7 @@ while :; do
     die "not ready within ${READY_TIMEOUT}s, waiting on: $stage (full log: $LOG).
        A cold first boot compiles the workspace — retry with --timeout 600."
   fi
-  if ! api_healthy; then stage='api :4000'; sleep 2; continue; fi
+  if ! api_healthy; then stage="api :$API_PORT"; sleep 2; continue; fi
   code="$(curl -sS --max-time 20 -o "$SESSION_FILE.tmp" -w '%{http_code}' \
     -X POST "http://127.0.0.1:$API_PORT/auth/local-session" 2>/dev/null || echo 000)"
   case "$code" in

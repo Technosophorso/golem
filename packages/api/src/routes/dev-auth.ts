@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { createTokens } from '../auth/jwt.js'
 import { findOrCreateUser, type User } from '../db/users.js'
+import { authSessionClientInfo, authSessionStore, type AuthSessionStore } from '../db/auth-session-store.js'
 
 /**
  * LOCAL-ONLY dev auth bypass — `POST /auth/dev-login` (GET also accepted for
@@ -63,11 +64,13 @@ export type DevAuthDeps = {
   createUser?: typeof findOrCreateUser
   /** Injectable for unit tests; defaults to the real environment gate. */
   isLocal?: () => boolean
+  sessions?: Pick<AuthSessionStore, 'create'>
 }
 
 export function devAuthRoutes(deps: DevAuthDeps): Router {
   const createUser = deps.createUser ?? findOrCreateUser
   const isLocal = deps.isLocal ?? isLocalDevEnv
+  const sessions = deps.sessions ?? authSessionStore
   const router = Router()
 
   const handler = async (
@@ -100,7 +103,9 @@ export function devAuthRoutes(deps: DevAuthDeps): Router {
         name,
       })
 
-      const tokens = createTokens(user.id, deps.jwtSecret)
+      const session = await sessions.create(user.id, authSessionClientInfo(req))
+      if (!session) throw new Error('auth_session_user_missing')
+      const tokens = createTokens(user.id, deps.jwtSecret, session)
 
       // Same response shape as POST /auth/google so the web dev-login route
       // can reuse the exact cookie-setting logic.

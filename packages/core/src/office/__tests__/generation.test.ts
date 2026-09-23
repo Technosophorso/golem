@@ -106,6 +106,7 @@ describe('[COMP:office/generation] Explicit Office revision lane', () => {
 
   it('applies only commands attributed to the authorized Brian assistant', async () => {
     const snapshot = documentSnapshot()
+    snapshot.sections[0].footer = [{ id: id(999), text: 'BRAND', style: { fontFamily: 'Arial', fontSizePt: 7.5, bold: false, italic: false, underline: false, strike: false, color: '#111111' } }]
     const targetId = snapshot.sections[0].nodes[0].id
     const base = { artifactId: snapshot.artifactId, assistantId: id(91), baseVersion: 1, currentVersion: 1, role: 'edit' as const, instruction: 'Remove it', targetIds: [targetId], changedObjectIdsSinceBase: [], threadExcerpt: [], templateConstraints: [], evidencePacket: [], snapshot }
     const valid = { commandId: id(90), artifactId: snapshot.artifactId, baseVersion: 1, actor: { type: 'assistant' as const, id: id(91) }, origin: 'ai' as const, kind: 'deleteObject' as const, targetId }

@@ -26,7 +26,6 @@ VOLUME="${BRIAN_RIG_VOLUME:-usebrian-brain-data}"
 
 # Every port the launcher can bind: api, app-web, doc-sync, the four channel
 # connectors, the chat archive, and the browser relay's search range.
-RIG_PORTS=(4000 3003 8080 8090 8091 8092 8093 8094 8095 8096)
 
 WIPE=0
 KEEP_DB=0
@@ -61,6 +60,8 @@ if [ "$WIPE" = 1 ] && [ "$KEEP_DB" = 1 ]; then
 fi
 
 # ── the stack ───────────────────────────────────────────────────────────────
+API_PORT="$(node "$ROOT/scripts/launch-ports.mjs" "$STATE/api-port" --recorded)" || exit 1
+RIG_PORTS=("$API_PORT" 3003 8080 8090 8091 8092 8093 8094 8095 8096)
 stop_pid() {
   local pid="$1" label="$2"
   kill -0 "$pid" 2>/dev/null || return 0

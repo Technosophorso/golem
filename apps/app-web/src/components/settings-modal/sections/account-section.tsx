@@ -25,6 +25,9 @@ import {
   updateDisplayName,
   uploadAvatar,
   removeAvatar,
+  listAccountSessions,
+  revokeAccountSession,
+  revokeAllAccountSessions,
   listLinkedAccounts,
   unlinkAccount,
   createTelegramLinkCode,
@@ -34,6 +37,7 @@ import {
   MAX_AVATAR_BYTES,
   planProfileRefresh,
   type LinkedAccount,
+  type AccountSession,
   type TelegramLinkCode,
   type SlackLinkCode,
   type FeishuLinkCode,
@@ -281,6 +285,8 @@ export function AccountSection() {
 
       <ConnectedAccountsSection />
 
+      <DevicesSection />
+
       <div className="border-t border-border pt-6 space-y-3">
         <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">{t.settings.account.signOut}</h3>
         <button
@@ -290,6 +296,149 @@ export function AccountSection() {
           {t.settings.account.logOut}
         </button>
       </div>
+    </div>
+  );
+}
+
+export function DevicesSection() {
+  const t = useT();
+  const [sessions, setSessions] = useState<AccountSession[] | null>(null);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  async function load() {
+    const rows = await listAccountSessions();
+    if (rows === null) {
+      setLoadFailed(true);
+      setSessions([]);
+      return;
+    }
+    setLoadFailed(false);
+    setSessions(rows);
+  }
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  async function revoke(session: AccountSession) {
+    const confirmed = await confirmDialog({
+      title: t.settings.account.logOutDeviceTitle,
+      description: format(t.settings.account.logOutDeviceConfirm, {
+        device: session.deviceLabel,
+      }),
+      confirmLabel: t.settings.account.logOutDevice,
+      cancelLabel: t.settings.common.cancel,
+      variant: "destructive",
+    });
+    if (!confirmed) return;
+    setBusyId(session.id);
+    const ok = await revokeAccountSession(session.id);
+    if (!ok) {
+      setBusyId(null);
+      setLoadFailed(true);
+      return;
+    }
+    if (session.current) {
+      signOutActiveAccount({ revokeCurrent: false });
+      return;
+    }
+    setSessions((current) => current?.filter((row) => row.id !== session.id) ?? []);
+    setBusyId(null);
+  }
+
+  async function revokeAll() {
+    const confirmed = await confirmDialog({
+      title: t.settings.account.logOutAllDevicesTitle,
+      description: t.settings.account.logOutAllDevicesConfirm,
+      confirmLabel: t.settings.account.logOutAllDevices,
+      cancelLabel: t.settings.common.cancel,
+      variant: "destructive",
+    });
+    if (!confirmed) return;
+    setBusyId("all");
+    const ok = await revokeAllAccountSessions();
+    if (!ok) {
+      setBusyId(null);
+      setLoadFailed(true);
+      return;
+    }
+    signOutActiveAccount({ revokeCurrent: false });
+  }
+
+  return (
+    <div className="border-t border-border pt-6 space-y-3">
+      <div>
+        <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">
+          {t.settings.account.devices}
+        </h3>
+        <p className="mt-1 text-xs text-muted-foreground">
+          {t.settings.account.devicesDesc}
+        </p>
+      </div>
+
+      {sessions === null && (
+        <p className="text-xs text-muted-foreground">{t.settings.common.loading}</p>
+      )}
+      {loadFailed && (
+        <div className="flex items-center gap-3">
+          <p className="text-xs text-red-400">{t.settings.account.devicesLoadError}</p>
+          <Button type="button" variant="outline" size="sm" onClick={() => void load()}>
+            {t.settings.account.retry}
+          </Button>
+        </div>
+      )}
+      {!loadFailed && sessions?.length === 0 && (
+        <p className="text-xs text-muted-foreground">{t.settings.account.noDevices}</p>
+      )}
+
+      {!loadFailed && sessions && sessions.length > 0 && (
+        <div className="divide-y divide-border rounded-lg border border-border">
+          {sessions.map((session) => (
+            <div key={session.id} className="flex items-center gap-3 p-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium">{session.deviceLabel}</span>
+                  {session.current && (
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[11px] text-muted-foreground">
+                      {t.settings.account.currentDevice}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                  {format(t.settings.account.lastActive, {
+                    time: new Intl.DateTimeFormat(undefined, {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    }).format(new Date(session.lastSeenAt)),
+                  })}
+                  {session.ipAddress ? ` · ${session.ipAddress}` : ""}
+                </p>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={busyId !== null}
+                onClick={() => void revoke(session)}
+              >
+                {busyId === session.id ? "…" : t.settings.account.logOutDevice}
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        disabled={busyId !== null}
+        onClick={() => void revokeAll()}
+        className="text-red-500 hover:text-red-500"
+      >
+        {busyId === "all" ? "…" : t.settings.account.logOutAllDevices}
+      </Button>
     </div>
   );
 }

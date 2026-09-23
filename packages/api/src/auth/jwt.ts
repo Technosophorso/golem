@@ -12,6 +12,8 @@ const REFRESH_TOKEN_EXPIRY = 30 * 24 * 60 * 60 // 30 days
 
 type TokenPayload = {
   sub: string   // user ID
+  sid?: string  // revocable auth session ID
+  ver?: number  // users.auth_version at issuance
   iat: number
   exp: number
   type: 'access' | 'refresh'
@@ -51,16 +53,28 @@ function verify(token: string, secret: string): TokenPayload | null {
   }
 }
 
-export function createTokens(userId: string, secret: string) {
+export type VerifiedAuthToken = {
+  userId: string
+  sessionId?: string
+  authVersion?: number
+}
+
+export type TokenSession = {
+  id: string
+  authVersion: number
+}
+
+export function createTokens(userId: string, secret: string, session?: TokenSession) {
   const now = Math.floor(Date.now() / 1000)
+  const sessionClaims = session ? { sid: session.id, ver: session.authVersion } : {}
 
   const accessToken = sign(
-    { sub: userId, iat: now, exp: now + ACCESS_TOKEN_EXPIRY, type: 'access' },
+    { sub: userId, ...sessionClaims, iat: now, exp: now + ACCESS_TOKEN_EXPIRY, type: 'access' },
     secret,
   )
 
   const refreshToken = sign(
-    { sub: userId, iat: now, exp: now + REFRESH_TOKEN_EXPIRY, type: 'refresh' },
+    { sub: userId, ...sessionClaims, iat: now, exp: now + REFRESH_TOKEN_EXPIRY, type: 'refresh' },
     secret,
   )
 
@@ -73,13 +87,35 @@ export function createTokens(userId: string, secret: string) {
 }
 
 export function verifyAccessToken(token: string, secret: string): string | null {
-  const payload = verify(token, secret)
-  if (!payload || payload.type !== 'access') return null
-  return payload.sub
+  return verifyAccessTokenClaims(token, secret)?.userId ?? null
 }
 
 export function verifyRefreshToken(token: string, secret: string): string | null {
+  return verifyRefreshTokenClaims(token, secret)?.userId ?? null
+}
+
+function verifiedClaims(payload: TokenPayload): VerifiedAuthToken | null {
+  if (typeof payload.sub !== 'string') return null
+  if (payload.sid !== undefined && typeof payload.sid !== 'string') return null
+  if (
+    payload.ver !== undefined &&
+    (!Number.isSafeInteger(payload.ver) || payload.ver < 0)
+  ) return null
+  return {
+    userId: payload.sub,
+    ...(payload.sid ? { sessionId: payload.sid } : {}),
+    ...(payload.ver !== undefined ? { authVersion: payload.ver } : {}),
+  }
+}
+
+export function verifyAccessTokenClaims(token: string, secret: string): VerifiedAuthToken | null {
+  const payload = verify(token, secret)
+  if (!payload || payload.type !== 'access') return null
+  return verifiedClaims(payload)
+}
+
+export function verifyRefreshTokenClaims(token: string, secret: string): VerifiedAuthToken | null {
   const payload = verify(token, secret)
   if (!payload || payload.type !== 'refresh') return null
-  return payload.sub
+  return verifiedClaims(payload)
 }

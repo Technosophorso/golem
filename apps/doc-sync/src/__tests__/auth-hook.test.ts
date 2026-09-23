@@ -40,6 +40,24 @@ describe('[COMP:doc-sync/auth] resolveAuth', () => {
     expect(r).toEqual({ kind: 'user', userId: 'user-1' })
   })
 
+  it('preserves revocation claims for live-message admission checks', () => {
+    const r = resolveAuth({
+      token: 'tracked',
+      jwtSecret,
+      verify: () => ({
+        userId: 'user-1',
+        sessionId: 'session-1',
+        authVersion: 3,
+      }),
+    })
+    expect(r).toEqual({
+      kind: 'user',
+      userId: 'user-1',
+      sessionId: 'session-1',
+      authVersion: 3,
+    })
+  })
+
   it('rejects an invalid token', () => {
     expect(resolveAuth({ token: 'bad', jwtSecret, verify: () => null })).toEqual({
       kind: 'reject',

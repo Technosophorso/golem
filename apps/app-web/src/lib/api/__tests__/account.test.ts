@@ -5,7 +5,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/auth-fetch", () => ({ authFetch: vi.fn() }));
 
 import { authFetch } from "@/lib/auth-fetch";
-import { planProfileRefresh, uploadAvatar } from "../account";
+import {
+  listAccountSessions,
+  planProfileRefresh,
+  revokeAccountSession,
+  revokeAllAccountSessions,
+  revokeCurrentAccountSession,
+  uploadAvatar,
+} from "../account";
 
 const mockAuthFetch = vi.mocked(authFetch);
 
@@ -48,5 +55,26 @@ describe("[COMP:api/account-avatar] app-web account API", () => {
     expect(
       planProfileRefresh(null, "http://localhost:3003/w/ws-active/p/page-1"),
     ).toEqual({ kind: "local" });
+  });
+
+  it("lists and revokes account device sessions through scoped endpoints", async () => {
+    mockAuthFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      sessions: [{ id: "session-1", deviceLabel: "Browser", current: true }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    await expect(listAccountSessions()).resolves.toEqual([
+      expect.objectContaining({ id: "session-1", current: true }),
+    ]);
+
+    mockAuthFetch.mockResolvedValue(new Response(null, { status: 200 }));
+    await expect(revokeAccountSession("session/1")).resolves.toBe(true);
+    await expect(revokeCurrentAccountSession()).resolves.toBe(true);
+    await expect(revokeAllAccountSessions()).resolves.toBe(true);
+
+    expect(mockAuthFetch.mock.calls.slice(1).map(([url, init]) => [url, init?.method])).toEqual([
+      [expect.stringContaining("/api/account/sessions/session%2F1"), "DELETE"],
+      [expect.stringContaining("/api/account/sessions/current"), "DELETE"],
+      [expect.stringMatching(/\/api\/account\/sessions$/), "DELETE"],
+    ]);
   });
 });

@@ -5,6 +5,49 @@ import { exportOfficeDocument, importOfficeDocument, reparseOfficeDocument } fro
 import { completeDocumentSnapshot, id, resolveFixtureResource } from './fixtures.js'
 
 describe('[COMP:office/docx-engine] DOCX engine', () => {
+  it.each(['simple', 'complex', 'split'])('normalizes %s footer PAGE fields without duplicating their cached values', async (kind) => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('word/document.xml', '<w:document xmlns:w="w" xmlns:r="r"><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr><w:footerReference w:type="default" r:id="f"/></w:sectPr></w:body></w:document>')
+    zip.file('word/_rels/document.xml.rels', '<Relationships><Relationship Id="f" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>')
+    const field = kind === 'simple' ? '<w:fldSimple w:instr=" PAGE "><w:r><w:t>37</w:t></w:r></w:fldSimple>' : `<w:r><w:fldChar w:fldCharType="begin"/></w:r><w:r><w:instrText>${kind === 'split' ? ' PA' : ' PAGE '}</w:instrText></w:r>${kind === 'split' ? '<w:r><w:instrText>GE </w:instrText></w:r>' : ''}<w:r><w:fldChar w:fldCharType="separate"/></w:r><w:r><w:t>37</w:t></w:r><w:r><w:fldChar w:fldCharType="end"/></w:r>`
+    zip.file('word/footer1.xml', `<w:ftr><w:p><w:r><w:rPr><w:color w:val="00AAFF"/><w:sz w:val="15"/></w:rPr><w:t>BRAND 2 </w:t></w:r>${field}<w:fldSimple w:instr="NUMPAGES"><w:r><w:t>99</w:t></w:r></w:fldSimple></w:p></w:ftr>`)
+    const context = { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Footer field' }
+    const result = await importOfficeDocument(await zip.generateAsync({ type: 'nodebuffer' }), context)
+    expect(result.ok).toBe(true)
+    if (result.snapshot?.family !== 'document') throw new Error('document required')
+    expect(result.snapshot.sections[0].showPageNumber).toBe(true)
+    expect(result.snapshot.sections[0].footer.map(run => run.text).join('')).toBe('BRAND 2 99')
+    expect(result.snapshot.sections[0].footer[0].style).toMatchObject({ color: '#00AAFF', fontSizePt: 7.5 })
+    expect(result.diagnostics.some(item => item.code === 'docx.formatting.footer_page_number')).toBe(true)
+    const native = await JSZip.loadAsync((await exportOfficeDocument(result.snapshot)).bytes)
+    const footer = await native.file('word/footer1.xml')!.async('string')
+    expect(footer).not.toContain('>37<')
+    expect(footer.match(/<w:instrText[^>]*>PAGE<\/w:instrText>/g)).toHaveLength(1)
+    native.remove('customXml/brian-office.json')
+    const reopened = await importOfficeDocument(await native.generateAsync({ type: 'nodebuffer' }), context)
+    expect(reopened.ok).toBe(true)
+    expect(reopened.snapshot?.family === 'document' && reopened.snapshot.sections[0].footer.map(run => run.text).join('').trim()).toBe('BRAND 2 99')
+  })
+
+  it.each([
+    '<w:fldSimple w:instr="NUMPAGES"><w:r><w:t>37</w:t></w:r></w:fldSimple>',
+    '<w:fldSimple w:instr="PAGEREF bookmark"><w:r><w:t>37</w:t></w:r></w:fldSimple>',
+    '<w:r><w:fldChar w:fldCharType="begin"/><w:instrText>PAGE</w:instrText><w:fldChar w:fldCharType="separate"/><w:t>37</w:t></w:r>',
+    '<w:r><w:fldChar w:fldCharType="begin"/><w:instrText>IF</w:instrText><w:fldChar w:fldCharType="begin"/><w:instrText>PAGE</w:instrText><w:fldChar w:fldCharType="separate"/><w:t>37</w:t><w:fldChar w:fldCharType="end"/><w:fldChar w:fldCharType="end"/></w:r>',
+  ])('leaves unsupported footer fields inert', async (field) => {
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<Types><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>')
+    zip.file('word/document.xml', '<w:document xmlns:w="w" xmlns:r="r"><w:body><w:p><w:r><w:t>Body</w:t></w:r></w:p><w:sectPr><w:footerReference w:type="default" r:id="f"/></w:sectPr></w:body></w:document>')
+    zip.file('word/_rels/document.xml.rels', '<Relationships><Relationship Id="f" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/></Relationships>')
+    zip.file('word/footer1.xml', `<w:ftr><w:p>${field}</w:p></w:ftr>`)
+    const result = await importOfficeDocument(await zip.generateAsync({ type: 'nodebuffer' }), { artifactId: id(60), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Inert footer' })
+    expect(result.ok).toBe(true)
+    if (result.snapshot?.family !== 'document') throw new Error('document required')
+    expect(result.snapshot.sections[0].showPageNumber).toBe(false)
+    expect(result.snapshot.sections[0].footer.map(run => run.text).join('')).toBe('37')
+  })
+
   it('exports, safely reparses, and preserves canonical semantics plus layout', async () => {
     const source = completeDocumentSnapshot()
     const exported = await exportOfficeDocument(source, resolveFixtureResource)

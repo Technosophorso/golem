@@ -39,6 +39,8 @@ describe("[COMP:app-web/office-iteration-panel] Office file actions", () => {
     expect(html).toContain("Download");
     expect(html).toContain("Move to Trash");
     expect(html).toContain("Preview document PDF");
+    expect(html).toContain("preview a PDF");
+    expect(html).not.toContain("invoice PDF");
     expect(html).not.toContain(">Present<");
     expect(html).not.toContain(">Share<");
     expect(html).not.toContain(">Publish<");

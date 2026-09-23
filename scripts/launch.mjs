@@ -45,6 +45,7 @@ import { createRequire } from 'node:module'
 import { createInterface } from 'node:readline/promises'
 import { resolveMessageStoreLaunch } from './message-store-launch.mjs'
 import { bridgeEnv } from './bridge-env.mjs'
+import { resolveApiPort } from './launch-ports.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const CONFIG_DIR = join(homedir(), '.usebrian')
@@ -132,7 +133,7 @@ function reserveAvailablePort(preferredPort) {
 
 // The embedded brain uses a distinctive high port so it never collides with a
 // developer's local Postgres on the default 5432 (verified failure mode).
-const PORTS = { pglite: 54329, api: 4000, docSync: 8080, appWeb: 3003, discordConnector: 8090, waConnector: 8091, messageStore: 8092, wechatConnector: 8093, feishuConnector: 8095 }
+const PORTS = { pglite: 54329, api: resolveApiPort(process.env.USEBRIAN_API_PORT), docSync: 8080, appWeb: 3003, discordConnector: 8090, waConnector: 8091, messageStore: 8092, wechatConnector: 8093, feishuConnector: 8095 }
 
 // ── config (ChatGPT sign-in OR one API credential) ──────────────────
 mkdirSync(CONFIG_DIR, { recursive: true })
@@ -542,7 +543,7 @@ if (useLocalBrowserRelay) {
   await waitForPort(browserRelayPort, 'browser relay')
 }
 
-console.log('[launch] starting api (:4000), doc-sync (:8080), app-web (:3003) ...')
+console.log(`[launch] starting api (:${PORTS.api}), doc-sync (:${PORTS.docSync}), app-web (:${PORTS.appWeb}) ...`)
 run('api', 'pnpm', ['--filter', '@use-brian/api-open', 'exec', 'tsx', 'src/index.ts'])
 run('doc-sync', 'pnpm', ['--filter', '@use-brian/doc-sync', 'exec', 'tsx', 'src/index.ts'],
   { PORT: String(PORTS.docSync) })

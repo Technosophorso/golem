@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { createTokens } from '../auth/jwt.js'
 import { findOrCreateUser, type User } from '../db/users.js'
 import { deploymentCapabilities, isOssEdition } from '../edition.js'
+import { authSessionClientInfo, authSessionStore, type AuthSessionStore } from '../db/auth-session-store.js'
 
 export { isOssEdition } from '../edition.js'
 
@@ -54,15 +55,17 @@ export type LocalSessionDeps = {
   createUser?: typeof findOrCreateUser
   /** Injectable for unit tests; defaults to the real local + oss gate. */
   isEnabled?: () => boolean
+  sessions?: Pick<AuthSessionStore, 'create'>
 }
 
 export function localSessionRoutes(deps: LocalSessionDeps): Router {
   const createUser = deps.createUser ?? findOrCreateUser
   const isEnabled = deps.isEnabled ?? isSelfHostedOssEnv
+  const sessions = deps.sessions ?? authSessionStore
   const router = Router()
 
   const handler = async (
-    _req: import('express').Request,
+    req: import('express').Request,
     res: import('express').Response,
   ): Promise<void> => {
     if (!isEnabled()) {
@@ -84,7 +87,9 @@ export function localSessionRoutes(deps: LocalSessionDeps): Router {
         name,
       })
 
-      const tokens = createTokens(user.id, deps.jwtSecret)
+      const session = await sessions.create(user.id, authSessionClientInfo(req))
+      if (!session) throw new Error('auth_session_user_missing')
+      const tokens = createTokens(user.id, deps.jwtSecret, session)
 
       // Same response shape as the OAuth + dev-login routes so the web trigger
       // route reuses the exact cookie-setting logic.

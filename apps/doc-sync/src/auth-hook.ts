@@ -12,14 +12,17 @@
  * [COMP:doc-sync/auth]
  */
 
-import { verifyAccessToken } from '@use-brian/api/auth/jwt.js'
+import {
+  verifyAccessTokenClaims,
+  type VerifiedAuthToken,
+} from '@use-brian/api/auth/jwt.js'
 
 export type AuthResult =
-  | { kind: 'user'; userId: string; drawingProtocol?: string }
+  | ({ kind: 'user'; drawingProtocol?: string } & VerifiedAuthToken)
   | { kind: 'service' }
   | { kind: 'reject'; reason: string }
 
-export type VerifyFn = (token: string, secret: string) => string | null
+export type VerifyFn = (token: string, secret: string) => VerifiedAuthToken | string | null
 
 export function resolveAuth(params: {
   token: string | undefined
@@ -31,9 +34,10 @@ export function resolveAuth(params: {
   const token = (params.token ?? '').trim()
   if (!token) return { kind: 'reject', reason: 'missing_token' }
   if (params.syncSecret && token === params.syncSecret) return { kind: 'service' }
-  const verify = params.verify ?? verifyAccessToken
+  const verify = params.verify ?? verifyAccessTokenClaims
   const capability = token.match(/^(brian-drawing-v\d+:)(.+)$/)
-  const userId = verify(capability?.[2] ?? token, params.jwtSecret)
-  if (!userId) return { kind: 'reject', reason: 'invalid_token' }
-  return { kind: 'user', userId, ...(capability ? { drawingProtocol: capability[1] } : {}) }
+  const verified = verify(capability?.[2] ?? token, params.jwtSecret)
+  if (!verified) return { kind: 'reject', reason: 'invalid_token' }
+  const claims = typeof verified === 'string' ? { userId: verified } : verified
+  return { kind: 'user', ...claims, ...(capability ? { drawingProtocol: capability[1] } : {}) }
 }

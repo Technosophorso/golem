@@ -91,6 +91,7 @@ export function OfficeJobActivity({
           if (nextJob.status === "completed") {
             const proposed = nextEvents.some((event) => event.code === "office.job.completed" && event.params.proposal === true);
             setFeedback(proposed ? "proposal" : "applied");
+            setInstruction("");
             await onRevisionCompletedRef.current();
           } else setFeedback("failed");
         }
@@ -105,7 +106,7 @@ export function OfficeJobActivity({
   }, [revisionJobId, trackedJobId]);
 
   const active = Boolean(job && !TERMINAL.has(job.status));
-  const revisionActive = active && trackedJobId === revisionJobId;
+  const revisionActive = Boolean(revisionJobId && trackedJobId === revisionJobId && (!job || job.id !== trackedJobId || active));
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -131,7 +132,6 @@ export function OfficeJobActivity({
       setFeedback(result.mode === "proposal" ? "proposal" : "queued");
       setRevisionJobId(result.jobId);
       setTrackedJobId(result.jobId);
-      setInstruction("");
     } catch {
       setFeedback("failed");
     } finally {
@@ -188,7 +188,7 @@ export function OfficeJobActivityView({
   const steering = active && !revisionActive;
   const failureKind = officeJobFailureKind(job?.errorCode);
   const failureTitle = failureKind === "presentation_fit" ? t.presentationFitFailed : failureKind === "presentation_plan" ? t.presentationPlanFailed : failureKind === "fit" ? t.fitFailed : t.failed;
-  const failureBody = failureKind === "presentation_fit" ? t.presentationFitFailedBody : failureKind === "presentation_plan" ? t.presentationPlanFailedBody : failureKind === "fit" ? t.fitFailedBody : revisionActive || feedback === "failed" ? t.brianRevisionFailed : t.generationFailedBody;
+  const failureBody = failureKind === "presentation_fit" ? t.presentationFitFailedBody : failureKind === "presentation_plan" ? t.presentationPlanFailedBody : failureKind === "fit" ? t.fitFailedBody : job?.errorCode === "revision_failed" || revisionActive || feedback === "failed" ? t.brianRevisionFailed : t.generationFailedBody;
   const scopeLabel = scope.kind === "slide" ? t.brianScopeSlide.replace("{slide}", String(scope.slide))
     : scope.kind === "slides" ? t.brianScopeSlides.replace("{count}", String(scope.count))
     : scope.kind === "object" ? t.brianScopeObject.replace("{slide}", String(scope.slide))
@@ -241,7 +241,7 @@ export function OfficeJobActivityView({
         <textarea id="office-brian-instruction" value={instruction} onChange={(event) => onInstructionChange(event.target.value)} disabled={revisionActive} placeholder={t.iterationPlaceholder} className="min-h-24 w-full resize-y rounded-lg border bg-background p-2.5 text-[16px] disabled:cursor-not-allowed disabled:opacity-60 md:text-sm" />
         <button type="submit" disabled={disabled} className="mt-2 h-11 rounded-md bg-action px-3 text-xs font-medium text-action-foreground disabled:opacity-50 sm:h-8">{submitting ? t.queued : t.askBrian}</button>
         {!steering && (revisionActive ? t.brianRevisionInFlight : !canRequestRevision ? requestDisabledReason : undefined) ? <p className="mt-2 text-xs text-muted-foreground">{revisionActive ? t.brianRevisionInFlight : requestDisabledReason}</p> : null}
-        {feedbackLabel ? <p role={feedback === "failed" || feedback === "conflict" ? "alert" : "status"} className={feedback === "failed" || feedback === "conflict" ? "mt-2 text-xs text-destructive" : "mt-2 text-xs text-muted-foreground"}>{feedbackLabel}</p> : null}
+        {feedbackLabel && !(failed && feedback === "failed") ? <p role={feedback === "failed" || feedback === "conflict" ? "alert" : "status"} className={feedback === "failed" || feedback === "conflict" ? "mt-2 text-xs text-destructive" : "mt-2 text-xs text-muted-foreground"}>{feedbackLabel}</p> : null}
       </form>
     </div>
     {job ? <details className="border-t px-3 py-2">

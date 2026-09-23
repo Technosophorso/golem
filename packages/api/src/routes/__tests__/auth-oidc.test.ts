@@ -11,6 +11,14 @@ const BRIDGE_SECRET = 'bridge-secret-that-is-at-least-32-chars'
 const ISSUER = 'https://id.example.com/tenant'
 const WORKSPACE_ONE = '11111111-1111-4111-8111-111111111111'
 const WORKSPACE_TWO = '22222222-2222-4222-8222-222222222222'
+const sessions = {
+  create: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a4', authVersion: 0 }),
+  validateAccess: vi.fn().mockResolvedValue(true),
+  validateRefresh: vi.fn().mockResolvedValue({ id: '00000000-0000-4000-a000-0000000000a4', authVersion: 0 }),
+  listForUser: vi.fn().mockResolvedValue([]),
+  revokeForUser: vi.fn().mockResolvedValue(true),
+  revokeAllForUser: vi.fn().mockResolvedValue(true),
+}
 
 const findOrCreateUser = vi.fn()
 const findUserByEmail = vi.fn()
@@ -77,7 +85,7 @@ function makeApp(overrides: Partial<OidcAuthDeps> = {}) {
   }
   const app = express()
   app.use(express.json())
-  app.use('/auth', authRoutes(JWT_SECRET, undefined, undefined, undefined, undefined, undefined, deps))
+  app.use('/auth', authRoutes(JWT_SECRET, undefined, undefined, undefined, undefined, undefined, deps, sessions))
   return app
 }
 
@@ -102,7 +110,7 @@ describe('[COMP:api/auth] POST /auth/oidc/session', () => {
   it('is unavailable without enabled Outpost OIDC dependencies', async () => {
     const app = express()
     app.use(express.json())
-    app.use('/auth', authRoutes(JWT_SECRET))
+    app.use('/auth', authRoutes(JWT_SECRET, undefined, undefined, undefined, undefined, undefined, undefined, sessions))
     expect((await request(app).post('/auth/oidc/session').send(identity())).status).toBe(404)
   })
 

@@ -76,6 +76,64 @@ export async function removeAvatar(): Promise<boolean> {
   return res.ok;
 }
 
+// ── Revocable device sessions ──────────────────────────────────
+
+export type AccountSession = {
+  id: string;
+  deviceLabel: string;
+  userAgent: string | null;
+  ipAddress: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  current: boolean;
+};
+
+export async function listAccountSessions(): Promise<AccountSession[] | null> {
+  try {
+    const res = await authFetch(`${API_URL}/api/account/sessions`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { sessions?: AccountSession[] };
+    return body.sessions ?? [];
+  } catch {
+    return null;
+  }
+}
+
+export async function revokeAccountSession(sessionId: string): Promise<boolean> {
+  try {
+    const res = await authFetch(
+      `${API_URL}/api/account/sessions/${encodeURIComponent(sessionId)}`,
+      { method: "DELETE" },
+    );
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function revokeCurrentAccountSession(): Promise<boolean> {
+  try {
+    const res = await authFetch(`${API_URL}/api/account/sessions/current`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export async function revokeAllAccountSessions(): Promise<boolean> {
+  try {
+    const res = await authFetch(`${API_URL}/api/account/sessions`, {
+      method: "DELETE",
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 // ── Connected accounts (Telegram / Slack / WhatsApp / Feishu linking) ──
 // Settings → Account → Connected accounts. Wire contracts:
 // - `GET    /api/account/linked-accounts` lists linked provider identities.

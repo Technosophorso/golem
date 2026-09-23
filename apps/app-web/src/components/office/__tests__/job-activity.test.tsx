@@ -1,18 +1,19 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { I18nProvider } from "@/lib/i18n/client";
 import { en } from "@/lib/i18n/dictionaries/en";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 import { OfficeJobActivity, OfficeJobActivityView, officeBrianScope } from "../job-activity";
 import { presentationFixture, uid } from "./editor-fixtures";
-import type { OfficeJob } from "@/lib/office/api";
+import { getOfficeJob, listOfficeJobEvents, type OfficeJob } from "@/lib/office/api";
 
 vi.mock("@/lib/office/api", async (importOriginal) => ({
   ...await importOriginal<typeof import("@/lib/office/api")>(),
   getOfficeJob: vi.fn(() => new Promise(() => undefined)),
+  listOfficeJobEvents: vi.fn(async () => []),
 }));
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -44,6 +45,32 @@ const job = (status: OfficeJob["status"]): OfficeJob => ({
 });
 
 describe("[COMP:app-web/office-iteration-panel] Office iteration panel", () => {
+  beforeEach(() => {
+    vi.mocked(getOfficeJob).mockReset().mockImplementation(() => new Promise(() => undefined));
+    vi.mocked(listOfficeJobEvents).mockReset().mockResolvedValue([]);
+  });
+
+  it("uses family-neutral guidance and an accurate revision recovery path", () => {
+    const html = render(job("completed"), { scope: { kind: "none" }, feedback: "applied" });
+    expect(html).not.toContain("Select a slide");
+    expect(html).not.toContain("Make slide 2");
+    expect(html).not.toContain("Use Undo");
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    expect(host.textContent).toContain(en.office.brianRevisionApplied);
+  });
+
+  it("shows one failure alert for a failed revision", () => {
+    const html = render(job("failed"), { feedback: "failed" });
+    expect(html.match(/role="alert"/g)).toHaveLength(1);
+    expect(html.split(en.office.brianRevisionFailed)).toHaveLength(2);
+  });
+
+  it("identifies a persisted revision failure after reloading", () => {
+    const html = render({ ...job("failed"), errorCode: "revision_failed" });
+    expect(html).toContain(en.office.brianRevisionFailed);
+    expect(html).not.toContain(en.office.generationFailedBody);
+  });
   it("puts the plain-language Brian composer before collapsed run telemetry", () => {
     const html = render(job("running"), { events: [{ id: "event-1", seq: 1, code: "office.job.objects_constructed", params: {}, safeNarration: null, createdAt: "2026-08-05T00:00:00.000Z" }] });
     expect(html).toContain(en.office.editWithBrian);
@@ -91,8 +118,35 @@ describe("[COMP:app-web/office-iteration-panel] Office iteration panel", () => {
     await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     expect(onRequestRevision).toHaveBeenCalledWith("Make this title shorter");
     expect(host.textContent).toContain(en.office.brianRevisionQueued);
+    expect(input.value).toBe("Make this title shorter");
+    expect(input.disabled).toBe(true);
+    await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    expect(onRequestRevision).toHaveBeenCalledTimes(1);
     act(() => root.unmount());
     host.remove();
+  });
+
+  it.each(["failed", "completed"] as const)("retains failed instructions but clears successful ones: %s", async (status) => {
+    vi.mocked(getOfficeJob).mockResolvedValue({ ...job(status), id: "revision-job" });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onRevisionCompleted = vi.fn();
+    const onRequestRevision = vi.fn(async () => ({ jobId: "revision-job", mode: "direct" as const }));
+    try {
+      await act(async () => root.render(<I18nProvider locale="en" dict={en as unknown as Dictionary}><OfficeJobActivity snapshot={presentationFixture()} targetIds={[uid(70)]} canRequestRevision onRequestRevision={onRequestRevision} onRevisionCompleted={onRevisionCompleted} /></I18nProvider>));
+      const input = host.querySelector<HTMLTextAreaElement>("textarea")!;
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+      await act(async () => { setter.call(input, "Clarify the key points"); input.dispatchEvent(new Event("input", { bubbles: true })); });
+      await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+      expect(input.value).toBe(status === "failed" ? "Clarify the key points" : "");
+      expect(input.disabled).toBe(false);
+      expect(onRevisionCompleted).toHaveBeenCalledTimes(status === "completed" ? 1 : 0);
+      expect(host.querySelectorAll('[role="alert"]')).toHaveLength(status === "failed" ? 1 : 0);
+    } finally {
+      act(() => root.unmount());
+      host.remove();
+    }
   });
 
   it("explains a typed presentation-fit failure with an actionable reason", () => {

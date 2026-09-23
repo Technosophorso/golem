@@ -6180,6 +6180,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       const doc = snapshotToYDoc(loaded.snapshot)
       const restored = await officeArtifactStore.restoreVersion({
         ...params,
+        snapshotTitle: loaded.snapshot.title,
         liveUpdate: encodeOfficeState(doc),
         liveStateVector: officeStateVector(doc),
         liveCanonicalHash: loaded.source.snapshotHash,
@@ -6208,7 +6209,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       const saved = await filesApi.writeBytes({ workspaceId: shell.workspaceId, userId, assistantKind: 'standard', clearance: 'confidential', writeCompartments: shell.compartments, writeProjectIds: shell.projectIds }, { path: `/office/artifacts/${shell.id}/versions/1-${hash}.json`, bytes, mime: 'application/json', sensitivity: shell.sensitivity })
       if (!saved.ok) throw new Error(`Office version copy save failed: ${saved.error.kind}`)
       const doc = snapshotToYDoc(snapshot)
-      const version = await officeArtifactStore.commitVersion({ userId, artifactId: shell.id, expectedVersion: 0, snapshotFileId: saved.value.id, snapshotHash: hash, operationClock: officeStateVector(doc), schemaVersion: snapshot.schemaVersion, capabilityVersion: snapshot.capabilityVersion, origin: 'manual', authorType: 'user', authorUserId: userId, summary: `Copied from version ${versionId}`, checkpointKind: 'named' })
+      const version = await officeArtifactStore.commitVersion({ userId, artifactId: shell.id, snapshotTitle: snapshot.title, expectedVersion: 0, snapshotFileId: saved.value.id, snapshotHash: hash, operationClock: officeStateVector(doc), schemaVersion: snapshot.schemaVersion, capabilityVersion: snapshot.capabilityVersion, origin: 'manual', authorType: 'user', authorUserId: userId, summary: `Copied from version ${versionId}`, checkpointKind: 'named' })
       if (!version) throw new Error('Office version copy conflict')
       await Promise.all([
         officeLiveStore.initialize({ userId, artifactId: shell.id, snapshot }),
@@ -6372,6 +6373,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     const committed = await officeArtifactStore.commitVersion({
       userId: params.job.initiatedByUserId,
       artifactId: params.job.artifactId,
+      snapshotTitle: params.snapshot.title,
       expectedVersion: params.expectedVersion,
       snapshotFileId: saved.value.id,
       snapshotHash: hash,
@@ -6678,7 +6680,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       const fileContext = { workspaceId: artifact.workspaceId, userId: artifact.ownerUserId, assistantKind: 'standard' as const, clearance: 'confidential' as const, writeCompartments: artifact.compartments, writeProjectIds: artifact.projectIds }
       const saved = await filesApi.writeBytes(fileContext, { path: `/office/artifacts/${artifactId}/versions/${casVersion + 1}-${canonicalHash}.json`, bytes, mime: 'application/json', sensitivity: 'confidential' })
       if (!saved.ok) throw new Error(`Office checkpoint save failed: ${saved.error.kind}`)
-      const version = await officeArtifactStore.commitVersion({ userId: artifact.ownerUserId, artifactId, expectedVersion: casVersion, snapshotFileId: saved.value.id, snapshotHash: canonicalHash, operationClock: live.stateVector, schemaVersion: live.snapshot.schemaVersion, capabilityVersion: live.snapshot.capabilityVersion, origin: 'manual', authorType: 'system', summary: 'Collaborative editing checkpoint' })
+      const version = await officeArtifactStore.commitVersion({ userId: artifact.ownerUserId, artifactId, snapshotTitle: live.snapshot.title, expectedVersion: casVersion, snapshotFileId: saved.value.id, snapshotHash: canonicalHash, operationClock: live.stateVector, schemaVersion: live.snapshot.schemaVersion, capabilityVersion: live.snapshot.capabilityVersion, origin: 'manual', authorType: 'system', summary: 'Collaborative editing checkpoint' })
       if (!version) {
         await filesApi.delete(fileContext, saved.value.id).catch(() => undefined)
         return 'conflict'
@@ -6775,7 +6777,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       const saved = await filesApi!.writeBytes({ workspaceId: shell.workspaceId, userId, assistantKind: 'standard', clearance: 'confidential', writeCompartments: shell.compartments, writeProjectIds: shell.projectIds }, { path: `/office/artifacts/${shell.id}/versions/1-${hash}.json`, bytes, mime: 'application/json', sensitivity })
       if (!saved.ok) throw new Error(`Office derivative snapshot save failed: ${saved.error.kind}`)
       const doc = snapshotToYDoc(snapshot)
-      const version = await officeArtifactStore.commitVersion({ userId, artifactId: shell.id, expectedVersion: 0, snapshotFileId: saved.value.id, snapshotHash: hash, operationClock: officeStateVector(doc), schemaVersion: snapshot.schemaVersion, capabilityVersion: snapshot.capabilityVersion, origin: 'manual', authorType: 'user', authorUserId: userId, summary: `Reviewed derivative of ${source.artifact.id}`, checkpointKind: 'release' })
+      const version = await officeArtifactStore.commitVersion({ userId, artifactId: shell.id, snapshotTitle: snapshot.title, expectedVersion: 0, snapshotFileId: saved.value.id, snapshotHash: hash, operationClock: officeStateVector(doc), schemaVersion: snapshot.schemaVersion, capabilityVersion: snapshot.capabilityVersion, origin: 'manual', authorType: 'user', authorUserId: userId, summary: `Reviewed derivative of ${source.artifact.id}`, checkpointKind: 'release' })
       if (!version) throw new Error('Office derivative version conflict')
       await Promise.all([
         officeLiveStore.initialize({ userId, artifactId: shell.id, snapshot }),

@@ -36,6 +36,14 @@ const mockUpdateUserTimezone = vi.mocked(updateUserTimezone)
 const mockPool = vi.mocked(getPool)
 
 describe('[COMP:api/account-route] Account routes', () => {
+  const authSessions = {
+    create: vi.fn(),
+    validateAccess: vi.fn(),
+    validateRefresh: vi.fn(),
+    listForUser: vi.fn(),
+    revokeForUser: vi.fn(),
+    revokeAllForUser: vi.fn(),
+  }
   const linkedAccountStore = {
     findByProvider: vi.fn(),
     create: vi.fn(),
@@ -46,6 +54,75 @@ describe('[COMP:api/account-route] Account routes', () => {
   beforeEach(() => {
     vi.resetAllMocks()
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 } as never)
+  })
+
+  // ── Revocable device sessions ───────────────────────────────
+
+  it('lists owned auth sessions and marks the current device', async () => {
+    authSessions.listForUser.mockResolvedValueOnce([
+      {
+        id: '00000000-0000-4000-a000-000000000011',
+        deviceLabel: 'Chrome on macOS',
+        userAgent: 'Chrome',
+        ipAddress: '203.0.113.10',
+        createdAt: new Date('2026-09-01T00:00:00Z'),
+        lastSeenAt: new Date('2026-09-23T00:00:00Z'),
+        expiresAt: new Date('2026-10-23T00:00:00Z'),
+      },
+    ])
+    const app = createTestApp(
+      '/api/account',
+      accountRoutes({ authSessions: authSessions as never }),
+      {
+        userId: 'u_1',
+        authSessionId: '00000000-0000-4000-a000-000000000011',
+      },
+    )
+    const res = await request(app).get('/api/account/sessions').expect(200)
+    expect(res.body.sessions[0]).toMatchObject({
+      id: '00000000-0000-4000-a000-000000000011',
+      current: true,
+    })
+    expect(authSessions.listForUser).toHaveBeenCalledWith('u_1')
+  })
+
+  it('revokes only an owned device session', async () => {
+    authSessions.revokeForUser.mockResolvedValueOnce(true)
+    const app = createTestApp(
+      '/api/account',
+      accountRoutes({ authSessions: authSessions as never }),
+      { userId: 'u_1' },
+    )
+    await request(app)
+      .delete('/api/account/sessions/00000000-0000-4000-a000-000000000012')
+      .expect(200)
+    expect(authSessions.revokeForUser).toHaveBeenCalledWith(
+      'u_1',
+      '00000000-0000-4000-a000-000000000012',
+    )
+  })
+
+  it('returns 404 instead of revealing another account session', async () => {
+    authSessions.revokeForUser.mockResolvedValueOnce(false)
+    const app = createTestApp(
+      '/api/account',
+      accountRoutes({ authSessions: authSessions as never }),
+      { userId: 'u_1' },
+    )
+    await request(app)
+      .delete('/api/account/sessions/00000000-0000-4000-a000-000000000099')
+      .expect(404)
+  })
+
+  it('increments account auth version and revokes every device', async () => {
+    authSessions.revokeAllForUser.mockResolvedValueOnce(true)
+    const app = createTestApp(
+      '/api/account',
+      accountRoutes({ authSessions: authSessions as never }),
+      { userId: 'u_1' },
+    )
+    await request(app).delete('/api/account/sessions').expect(200)
+    expect(authSessions.revokeAllForUser).toHaveBeenCalledWith('u_1')
   })
 
   // ── GET /linked-accounts ────────────────────────────────────

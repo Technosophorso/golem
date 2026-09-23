@@ -596,6 +596,38 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     await act(async () => upload.dispatchEvent(new Event('change', { bubbles: true })));
     await vi.waitFor(() => expect(onEdit).toHaveBeenCalledWith([expect.objectContaining({ replacement: [expect.objectContaining({ attrs: expect.objectContaining({ references: [{ fileId }] }) })] })]));
   });
+  it('renders workspace image references as authenticated previews without exposing file UUIDs', async () => {
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:reference-image') }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    state.image.mockResolvedValue(new Blob(['fixture'], { type: 'image/png' }));
+    const fileId = crypto.randomUUID(); const url = 'https://example.com/reference';
+    const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image', references: [{ fileId }, { url }] };
+    const controls = generationControls();
+    await act(async () => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={controls} onEdit={vi.fn()} onSelect={vi.fn()} />));
+    await click(en.feedGeneration.openDetails);
+    await vi.waitFor(() => expect(document.querySelector<HTMLImageElement>('[data-feed-reference-image] img')?.src).toBe('blob:reference-image'));
+    expect(document.body.textContent).not.toContain(fileId);
+    expect(document.body.textContent).toContain(url);
+    expect(document.querySelector<HTMLImageElement>('[data-feed-reference-image] img')?.alt).toBe(en.feedGeneration.imagePreview);
+    expect(state.image).toHaveBeenCalledWith(controls.workspaceId, fileId);
+  });
+  it('renders durable workspace images as picker thumbnails instead of UUID filenames', async () => {
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:picker-image') }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    state.image.mockResolvedValue(new Blob(['fixture'], { type: 'image/png' }));
+    const fileId = crypto.randomUUID(); const fileName = `${fileId}.png`; const onEdit = vi.fn(); const controls = generationControls();
+    const previous = state.messages.data;
+    (state.messages as unknown as { data: unknown }).data = { rows: [{ id: fileId, kind: 'files', name: fileName }], nextCursor: null };
+    try {
+      act(() => root.render(<GenerationPlaceholder slot={{ ...generationSlot(), kind: 'image' }} segmentId={crypto.randomUUID()} controls={controls} onEdit={onEdit} onSelect={vi.fn()} />));
+      await click(en.feedGeneration.openDetails); await click(en.feedGeneration.chooseReference);
+      const label = en.feedGeneration.imageOptionPosition.replace('{current}', '1').replace('{total}', '1');
+      await vi.waitFor(() => expect(document.querySelector<HTMLImageElement>(`button[aria-label="${label}"] img`)?.src).toBe('blob:picker-image'));
+      expect(document.body.textContent).not.toContain(fileId); expect(document.body.textContent).not.toContain(fileName);
+      await act(async () => document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click());
+      expect(onEdit).toHaveBeenCalledWith([expect.objectContaining({ replacement: [expect.objectContaining({ attrs: expect.objectContaining({ references: [{ fileId }] }) })] })]);
+    } finally {
+      (state.messages as unknown as { data: unknown }).data = previous;
+    }
+  });
   it('shows a configured hosted image provider as information instead of a disabled picker', async () => {
     state.edition = 'hosted'; const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' };
     act(() => root.render(<GenerationPlaceholder slot={slot} segmentId={crypto.randomUUID()} controls={generationControls()} onEdit={vi.fn()} onSelect={vi.fn()} />));
@@ -603,6 +635,35 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     const provider = document.querySelector<HTMLElement>(`[aria-label="${en.feedGeneration.imageProvider}"]`)!;
     expect(provider.tagName).toBe('DIV');
     expect(provider.textContent).toBe(en.feedGeneration.imageGemini);
+  });
+  it('shows the first pending image in the draft and reviews image options from a top carousel with revision instructions', async () => {
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:generated-image') }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    state.image.mockResolvedValue(new Blob(['fixture'], { type: 'image/png' }));
+    const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' }; const segmentId = crypto.randomUUID(); const controls = generationControls(); const onEdit = vi.fn();
+    const makeCandidate = (label: string) => ({ id: crypto.randomUUID(), sourceRunId: crypto.randomUUID(), sourceRevision: controls.revision, edits: [{ kind: 'replaceBlock' as const, segmentId, blockId: slot.id, preimage: { type: 'generationPlaceholder' as const, attrs: slot }, replacement: [{ type: 'image' as const, attrs: { id: slot.id, fileId: crypto.randomUUID(), mimeType: 'image/png' as const, alt: label, placement: 'attachment' as const } }] }], rationale: `${label} rationale`, status: 'proposed' as const, threadId: null, parentId: null, authorUserId: 'fixture', authorKind: 'assistant' as const });
+    const first = makeCandidate('First option'); const second = makeCandidate('Second option'); controls.snapshot = { copy: null, threads: [], suggestions: [first, second] };
+    await act(async () => root.render(<GenerationPlaceholder slot={slot} segmentId={segmentId} controls={controls} onEdit={onEdit} onSelect={vi.fn()} />));
+    await vi.waitFor(() => expect(host.querySelector<HTMLImageElement>('[data-feed-pending-image] img')?.alt).toBe('First option'));
+    await click(en.feedGeneration.openDetails);
+    const carousel = document.querySelector<HTMLElement>('[data-feed-image-carousel]')!;
+    await vi.waitFor(() => expect(carousel.querySelector('img')?.alt).toBe('First option'));
+    expect(carousel.textContent).toContain('Image 1 of 2');
+    await click(en.feedGeneration.nextImage);
+    await vi.waitFor(() => expect(carousel.querySelector('img')?.alt).toBe('Second option'));
+    expect(carousel.textContent).toContain('Image 2 of 2');
+    const swipeStart = new Event('touchstart', { bubbles: true }); Object.defineProperty(swipeStart, 'touches', { value: [{ clientX: 100 }] });
+    const swipeEnd = new Event('touchend', { bubbles: true }); Object.defineProperty(swipeEnd, 'changedTouches', { value: [{ clientX: 180 }] });
+    await act(async () => { carousel.querySelector('div')!.dispatchEvent(swipeStart); carousel.querySelector('div')!.dispatchEvent(swipeEnd); });
+    expect(carousel.querySelector('img')?.alt).toBe('First option');
+    await click(en.feedGeneration.nextImage);
+    expect(document.querySelectorAll('[data-feed-image-carousel]')).toHaveLength(1);
+    const instruction = carousel.querySelector<HTMLTextAreaElement>(`textarea[placeholder="${en.feedGeneration.iterationPlaceholder}"]`)!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(instruction, 'Use a blue background.'); instruction.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(en.feedGeneration.prepareIteration);
+    expect(onEdit).toHaveBeenCalledWith([expect.objectContaining({ replacement: [expect.objectContaining({ attrs: expect.objectContaining({ brief: `${slot.brief}\n\n${en.feedGeneration.revisionPrefix}: Use a blue background.`, briefRevision: 1 }) })] })]);
+    await click(en.feedCollaboration.accept);
+    expect(controls.onCommand).toHaveBeenCalledWith([{ kind: 'decide', suggestionId: second.id, outcome: 'accepted' }]);
+    expect(state.http).not.toHaveBeenCalled();
   });
   it('scenarios 5 and 8: stale candidates remain visible with Keep for later and cannot overwrite a changed slot', async () => {
     const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();

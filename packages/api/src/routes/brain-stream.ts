@@ -44,7 +44,8 @@ import {
   subscribeToBrainChanges,
   type BrainChangePayload,
 } from '../brain-stream/sse-fanout.js'
-import { verifyAccessToken } from '../auth/jwt.js'
+import { verifyAccessTokenClaims, type VerifiedAuthToken } from '../auth/jwt.js'
+import { authSessionStore, type AuthSessionStore } from '../db/auth-session-store.js'
 
 type BrainStreamRouteOptions = {
   workspaceStore: WorkspaceStore
@@ -53,6 +54,7 @@ type BrainStreamRouteOptions = {
   /** Test seam. Production always runs the derived defaults below. */
   maxLifetimeMs?: number
   heartbeatMs?: number
+  authSessions?: Pick<AuthSessionStore, 'validateAccess'>
 }
 
 /**
@@ -67,16 +69,16 @@ const HEARTBEAT_MS = 25_000
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-function extractUserId(req: Request, jwtSecret: string): string | null {
+function extractClaims(req: Request, jwtSecret: string): VerifiedAuthToken | null {
   const header = req.headers.authorization
   if (header?.startsWith('Bearer ')) {
-    const id = verifyAccessToken(header.slice(7), jwtSecret)
-    if (id && UUID_RE.test(id)) return id
+    const claims = verifyAccessTokenClaims(header.slice(7), jwtSecret)
+    if (claims && UUID_RE.test(claims.userId)) return claims
   }
   const qToken = req.query.access_token
   if (typeof qToken === 'string' && qToken.length > 0) {
-    const id = verifyAccessToken(qToken, jwtSecret)
-    if (id && UUID_RE.test(id)) return id
+    const claims = verifyAccessTokenClaims(qToken, jwtSecret)
+    if (claims && UUID_RE.test(claims.userId)) return claims
   }
   return null
 }
@@ -85,13 +87,15 @@ export function brainStreamRoutes(options: BrainStreamRouteOptions): Router {
   const router = Router()
   const maxLifetimeMs = options.maxLifetimeMs ?? SSE_MAX_LIFETIME_MS
   const heartbeatMs = options.heartbeatMs ?? HEARTBEAT_MS
+  const sessions = options.authSessions ?? authSessionStore
 
   router.get('/', async (req, res) => {
-    const userId = extractUserId(req, options.jwtSecret)
-    if (!userId) {
+    const claims = extractClaims(req, options.jwtSecret)
+    if (!claims || !(await sessions.validateAccess(claims))) {
       res.status(401).json({ error: 'Unauthorized' })
       return
     }
+    const userId = claims.userId
     const workspaceId = typeof req.query.workspaceId === 'string' ? req.query.workspaceId : null
     if (!workspaceId || !UUID_RE.test(workspaceId)) {
       res.status(400).json({ error: 'workspaceId query param is required' })
@@ -122,11 +126,17 @@ export function brainStreamRoutes(options: BrainStreamRouteOptions): Router {
 
     const heartbeat = setInterval(() => {
       if (!isOpen) return
-      try {
-        sendComment(res, 'ping')
-      } catch {
-        cleanup() // socket already torn down
-      }
+      void sessions.validateAccess(claims).then((valid) => {
+        if (!valid) {
+          cleanup()
+          return
+        }
+        try {
+          sendComment(res, 'ping')
+        } catch {
+          cleanup() // socket already torn down
+        }
+      }).catch(() => cleanup())
     }, heartbeatMs)
 
     // ±20% per-connection jitter so streams opened together (session

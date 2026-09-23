@@ -72,7 +72,57 @@ describe('[COMP:api/office-generation] Office generation worker', () => {
     expect(JSON.stringify(generated)).not.toContain('{{')
     expect(generated.sections[0]?.nodes[0]).toMatchObject({ kind: 'table', columnWidthsPt: [80, 160], widthPt: 240, layout: 'fixed', margins: { leftPt: 4 }, borders: { bottom: { color: '#34D3FF', widthPt: 1.125, style: 'solid' } } })
     expect(requests[0]?.systemPrompt).toContain('every supplied placeholder key exactly once')
+    expect(requests[0]).toMatchObject({ responseFormat: 'json', maxTokens: 6000,
+      responseSchema: { type: 'object', required: ['title', 'values'],
+        properties: { values: { required: ['CUSTOMER_NAME', 'INVOICE_NUMBER', 'OPTIONAL_NOTE', 'TOTAL'] } } } })
+    expect(JSON.stringify(requests[0])).not.toContain('additionalProperties')
     expect(JSON.stringify(requests[0]?.messages)).toContain('CUSTOMER_NAME')
+  })
+
+  it('preserves mixed runs, metadata and blank layout while replacing split and adjacent fields', async () => {
+    const uid = (n: number) => `39000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+    const style = { fontFamily: 'Arial', fontSizePt: 11, bold: false, italic: false, underline: false, strike: false, color: '#111111' }
+    const runs = [
+      { id: uid(100), text: 'Label ', style, paragraphStart: { id: uid(200), alignment: 'start' as const, spacingAfterPt: 7 } },
+      { id: uid(101), text: '{{NA', style: { ...style, bold: true } },
+      { id: uid(102), text: 'ME}}{{EMPTY}}', style: { ...style, italic: true } },
+      { id: uid(103), text: '\nTail {{NAME}} / {{COUNT}}.', style, href: 'https://example.com' },
+    ]
+    const copiedRuns = (n: number) => runs.map((run, index) => ({ ...run, id: uid(n + index), ...(run.paragraphStart ? { paragraphStart: { ...run.paragraphStart, id: uid(n + 20) } } : {}) }))
+    const paragraph = (n: number, text: string) => ({ id: uid(n), kind: 'paragraph' as const, runs: [{ id: uid(n + 1000), text, style }], styleName: 'Body', alignment: 'start' as const })
+    const snapshot: DocumentSnapshot = {
+      schemaVersion: 1, capabilityVersion: 1, artifactId: uid(1), workspaceId: uid(2), family: 'document', locale: 'en-US', defaultLanguage: 'en-US', templateVersionId: null, rootId: uid(3), title: 'Fixture', resources: [], accessibility: { title: 'Fixture' },
+      sections: [{ id: uid(4), page: { widthPt: 595.3, heightPt: 841.9, marginTopPt: 72, marginRightPt: 62, marginBottomPt: 68, marginLeftPt: 62, orientation: 'portrait' },
+        header: copiedRuns(300), footer: copiedRuns(400), showPageNumber: false,
+        nodes: [
+          { ...paragraph(10, ''), runs },
+          { ...paragraph(11, ''), runs: [{ id: uid(500), text: 'Unchanged ', style }, { id: uid(501), text: 'emphasis', style: { ...style, italic: true } }] },
+          paragraph(12, ''), paragraph(13, '{{EMPTY}}'),
+          { id: uid(14), kind: 'list', ordered: false, level: 0, items: [{ id: uid(15), runs: copiedRuns(600) }] },
+          { id: uid(16), kind: 'table', headerRows: 0, columnWidthsPt: [400], rows: [{ id: uid(17), cells: [{ id: uid(18), runs: copiedRuns(700), rowSpan: 1, colSpan: 1 }] }] },
+        ],
+      }],
+    }
+    const original = structuredClone(snapshot)
+    const template = { id: uid(21), workspaceId: uid(2), family: 'document' as const, version: 1, status: 'admitted' as const, name: 'Fixture', description: 'Mixed text', tags: [], locales: ['en-US'], whenToUse: ['documents'], whenNotToUse: [], exampleRequests: [], fields: [], slideRecipes: [], snapshot, resources: [], lockedObjectIds: [], allowedRepeatTargetIds: [], requiredEvidence: [], sensitivity: 'internal' as const, visibilityUserIds: [], capabilityVersion: 1, sourceHash: 'e'.repeat(64) }
+    const payload = JSON.stringify({ title: 'Completed fixture', values: { NAME: 'Example\nCompany', EMPTY: '', COUNT: '$10' } })
+    const provider = { async *stream() { yield { type: 'message_start' as const, model: 'test' }; yield { type: 'text_delta' as const, text: payload }; yield { type: 'message_end' as const, stopReason: 'end_turn' as const, usage: { inputTokens: 1, outputTokens: 1 } } } }
+    const generated = await generateDocumentFromTemplate({ provider: provider as never, model: 'test', artifactId: uid(20), workspaceId: uid(2), templateVersionId: uid(21), outcome: 'Fill the fixture', audience: 'Client', template })
+    const section = generated.sections[0]!
+    const node = section.nodes[0]!
+    const list = section.nodes.find((entry) => entry.kind === 'list')!
+    const table = section.nodes.find((entry) => entry.kind === 'table')!
+    const groups = [section.header, section.footer, 'runs' in node ? node.runs : [], list.kind === 'list' ? list.items[0]!.runs : [], table.kind === 'table' ? table.rows[0]!.cells[0]!.runs : []]
+    for (const group of groups) {
+      expect(group.map((run) => run.text)).toEqual(['Label ', 'Example\nCompany', '', '\nTail Example\nCompany / $10.'])
+      expect(group.map((run) => run.style)).toEqual(runs.map((run) => run.style))
+      expect(group[0]?.paragraphStart?.spacingAfterPt).toBe(7)
+      expect(group[3]?.href).toBe('https://example.com')
+    }
+    expect(section.nodes[1]).toEqual(snapshot.sections[0]!.nodes[1])
+    expect(section.nodes.find((entry) => entry.id === uid(12))).toEqual(snapshot.sections[0]!.nodes[2])
+    expect(section.nodes.some((entry) => entry.id === uid(13))).toBe(false)
+    expect(snapshot).toEqual(original)
   })
 
   it('fails generic document generation when the model omits an admitted placeholder', async () => {

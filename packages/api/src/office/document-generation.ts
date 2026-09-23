@@ -73,6 +73,36 @@ function replaceRuns(runs: OfficeRichTextRun[], text: string): OfficeRichTextRun
 
 const DOCUMENT_PLACEHOLDER = /\{\{([A-Z][A-Z0-9_]*)\}\}/g
 
+function replacePlaceholderRuns(runs: OfficeRichTextRun[], values: Record<string, string>): OfficeRichTextRun[] {
+  const text = runs.map((run) => run.text).join('')
+  const matches = [...text.matchAll(DOCUMENT_PLACEHOLDER)]
+  if (matches.length === 0) return runs
+  let offset = 0
+  const spans = runs.map((run) => {
+    const start = offset
+    offset += run.text.length
+    return { start, end: offset }
+  })
+  const result = runs.map((run) => ({ ...run }))
+  // Right-to-left keeps original offsets valid for remaining replacements,
+  // including multiple tokens within the same run. Do not scan inserted text.
+  for (const match of matches.reverse()) {
+    const value = values[match[1]!]
+    if (value === undefined) continue
+    const start = match.index!
+    const end = start + match[0].length
+    const first = spans.findIndex((span) => span.start <= start && start < span.end)
+    const last = spans.findIndex((span) => span.start < end && end <= span.end)
+    if (first < 0 || last < first) throw new Error('Invalid Office placeholder run range')
+    const prefix = result[first]!.text.slice(0, start - spans[first]!.start)
+    const suffix = result[last]!.text.slice(end - spans[last]!.start)
+    result[first]!.text = prefix + value + (first === last ? suffix : '')
+    for (let index = first + 1; index < last; index += 1) result[index]!.text = ''
+    if (last !== first) result[last]!.text = suffix
+  }
+  return result
+}
+
 function placeholdersInText(text: string): string[] {
   return [...text.matchAll(DOCUMENT_PLACEHOLDER)].map((match) => match[1]!)
 }
@@ -121,15 +151,14 @@ function replaceDocumentPlaceholders(params: {
   replacements: Record<string, string>
   bodyParagraphs?: string[]
 }): DocumentSnapshot {
-  const replace = (text: string): string => text.replace(DOCUMENT_PLACEHOLDER, (match, key: string) => params.replacements[key] ?? match)
   const next = structuredClone(params.snapshot)
   next.title = params.title
   next.accessibility.title = params.title
   for (const section of next.sections) {
     const headerText = section.header.map((run) => run.text).join('')
     const footerText = section.footer.map((run) => run.text).join('')
-    if (placeholdersInText(headerText).length > 0) section.header = replaceRuns(section.header, replace(headerText))
-    if (placeholdersInText(footerText).length > 0) section.footer = replaceRuns(section.footer, replace(footerText))
+    if (placeholdersInText(headerText).length > 0) section.header = replacePlaceholderRuns(section.header, params.replacements)
+    if (placeholdersInText(footerText).length > 0) section.footer = replacePlaceholderRuns(section.footer, params.replacements)
     const nodes: DocumentFlowNode[] = []
     for (const node of section.nodes) {
       const sourceText = textOfNode(node)
@@ -138,17 +167,18 @@ function replaceDocumentPlaceholders(params: {
           nodes.push({
             ...node,
             id: randomUUID(),
-            runs: replaceRuns(node.runs, sourceText.replace('{{LETTER_BODY}}', paragraph)),
+            runs: replacePlaceholderRuns(node.runs, { ...params.replacements, LETTER_BODY: paragraph }).map((run) => ({ ...run, id: randomUUID(), ...(run.paragraphStart ? { paragraphStart: { ...run.paragraphStart, id: randomUUID() } } : {}) })),
           })
         }
         continue
       }
-      if (node.kind === 'paragraph' || node.kind === 'heading') node.runs = replaceRuns(node.runs, replace(sourceText))
-      else if (node.kind === 'list') node.items = node.items.map((item) => ({ ...item, runs: replaceRuns(item.runs, replace(item.runs.map((run) => run.text).join(''))) }))
-      else if (node.kind === 'table') node.rows = node.rows.map((row) => ({ ...row, cells: row.cells.map((cell) => ({ ...cell, runs: replaceRuns(cell.runs, replace(cell.runs.map((run) => run.text).join(''))) })) }))
+      if (node.kind === 'paragraph' || node.kind === 'heading') node.runs = replacePlaceholderRuns(node.runs, params.replacements)
+      else if (node.kind === 'list') node.items = node.items.map((item) => ({ ...item, runs: replacePlaceholderRuns(item.runs, params.replacements) }))
+      else if (node.kind === 'table') node.rows = node.rows.map((row) => ({ ...row, cells: row.cells.map((cell) => ({ ...cell, runs: replacePlaceholderRuns(cell.runs, params.replacements) })) }))
+      if ((node.kind === 'paragraph' || node.kind === 'heading') && placeholdersInText(sourceText).length > 0 && !textOfNode(node).trim()) continue
       nodes.push(node)
     }
-    section.nodes = nodes.filter((node) => textOfNode(node).trim() || !['paragraph', 'heading'].includes(node.kind))
+    section.nodes = nodes
   }
   const unresolved = collectDocumentPlaceholders(next)
   if (unresolved.length > 0) throw new Error(`Office document template still contains unresolved fields: ${unresolved.join(', ')}`)
@@ -215,6 +245,15 @@ export async function generateDocumentFromTemplate(params: {
       ? `Outcome:\n${params.outcome}\n\nAudience:\n${params.audience}${additionalContext}\n\nTemplate guidance:\n${params.template.description}`
       : `Outcome:\n${params.outcome}\n\nAudience:\n${params.audience}${additionalContext}\n\nTemplate guidance:\n${params.template.description}\n\nAllowed placeholders:\n${JSON.stringify(placeholders)}\n\nTemplate text near placeholders:\n${JSON.stringify(documentTemplateContext(params.template.snapshot))}` }] as Message[],
     maxTokens: isLetter ? 3_000 : 6_000,
+    responseFormat: 'json',
+    ...(!isLetter ? { responseSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        values: { type: 'object', properties: Object.fromEntries(placeholders.map((key) => [key, { type: 'string' }])), required: placeholders },
+      },
+      required: ['title', 'values'],
+    } } : {}),
     temperature: 0.25,
   }))
   const source = structuredClone(params.template.snapshot)

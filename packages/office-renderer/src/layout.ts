@@ -88,6 +88,8 @@ export type OfficeFitBudget = {
   minimumFontSizePt?: number
   /** IDs whose sub-floor typography was admitted from an immutable template. */
   readabilityExemptObjectIds?: readonly string[]
+  /** Trusted committed base: preserve only identical inherited small objects. */
+  readabilityReference?: OfficeArtifactSnapshot
 }
 
 export type OfficeFitResult = {
@@ -408,12 +410,24 @@ export function fitOfficeArtifact(snapshot: OfficeArtifactSnapshot, budget: Offi
   }
   const floor = budget.minimumFontSizePt ?? 8
   const readabilityExemptObjectIds = new Set(budget.readabilityExemptObjectIds ?? [])
+  const inheritedSmallObjects = new Map<string, string>()
+  const collectInherited = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return
+    if (!Array.isArray(value)) {
+      const object = value as Record<string, unknown>
+      const style = object.style as Record<string, unknown> | undefined
+      if (typeof object.id === 'string' && typeof style?.fontSizePt === 'number' && style.fontSizePt < floor) inheritedSmallObjects.set(object.id, JSON.stringify(object))
+    }
+    for (const child of Object.values(value)) collectInherited(child)
+  }
+  if (budget.readabilityReference?.artifactId === snapshot.artifactId) collectInherited(budget.readabilityReference)
   const visitRuns = (value: unknown): void => {
     if (!value || typeof value !== 'object') return
     if (!Array.isArray(value)) {
       const object = value as Record<string, unknown>
       const style = object.style as Record<string, unknown> | undefined
-      if (style && typeof style.fontSizePt === 'number' && style.fontSizePt < floor && !(typeof object.id === 'string' && readabilityExemptObjectIds.has(object.id))) {
+      const unchangedInherited = typeof object.id === 'string' && inheritedSmallObjects.has(object.id) && inheritedSmallObjects.get(object.id) === JSON.stringify(object)
+      if (style && typeof style.fontSizePt === 'number' && style.fontSizePt < floor && !unchangedInherited && !(typeof object.id === 'string' && readabilityExemptObjectIds.has(object.id))) {
         issues.push({ code: 'readability', objectId: typeof object.id === 'string' ? object.id : snapshot.rootId, message: `Font size ${style.fontSizePt}pt is below the ${floor}pt readability floor` })
       }
       const max = typeof object.id === 'string' ? budget.maxTextCharsByObject?.[object.id] : undefined
