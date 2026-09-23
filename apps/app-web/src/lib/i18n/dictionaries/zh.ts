@@ -1426,8 +1426,8 @@ export const zh: Dictionary = {
       workflow: "正在詢問工作流程",
       approvals: "正在詢問審批",
     },
-    confirmationApprove: "核准",
     confirmationAlwaysAllow: "永遠允許",
+    confirmationApprove: "核准",
     confirmationDeny: "拒絕",
     confirmationDenyWithComment: "拒絕並附註",
     confirmationCommentPlaceholder: "留下說明讓助手可以修改（選填）",
@@ -7500,7 +7500,6 @@ export const zh: Dictionary = {
     },
   },
   feedPage: {
-    title: "Feed",
     actionPermissions: {
       title: "動作權限",
       description: "選擇此 Feed 助理可以自動執行或需要你批准的動作。工作區規則仍然適用。",
@@ -7508,6 +7507,7 @@ export const zh: Dictionary = {
       saveError: "無法儲存此偏好設定，請重試。",
       empty: "此助理沒有已連接的動作。",
     },
+    title: "Feed",
     description: "用品牌語氣為 Instagram、Threads、X、小紅書撰寫貼文,已連結的平台可一鍵發佈。",
     sectionsAriaLabel: "Feed 區塊",
     groups: {

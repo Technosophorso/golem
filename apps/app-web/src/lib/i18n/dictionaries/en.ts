@@ -1468,8 +1468,8 @@ export const en = {
       approvals: "Asking about Approvals",
     },
     // Tool-confirmation card (used when a tool needs explicit approval).
-    confirmationApprove: "Approve",
     confirmationAlwaysAllow: "Always allow",
+    confirmationApprove: "Approve",
     confirmationDeny: "Deny",
     confirmationDenyWithComment: "Deny with comment",
     confirmationCommentPlaceholder:
@@ -7803,7 +7803,6 @@ export const en = {
   },
   // ── Studio surface (ported from apps/web app consolidation §9 #5) ──
   feedPage: {
-    title: "Feed",
     actionPermissions: {
       title: "Action permissions",
       description: "Choose which actions this Feed assistant can run automatically or must ask you to approve. Workspace rules still apply.",
@@ -7811,6 +7810,7 @@ export const en = {
       saveError: "Could not save this preference. Try again.",
       empty: "No connected actions for this assistant.",
     },
+    title: "Feed",
     description: "Your brand voice: draft for Instagram, Threads, X, and XHS, then publish on connected platforms.",
     sectionsAriaLabel: "Feed sections",
     groups: {
