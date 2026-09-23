@@ -243,6 +243,7 @@ export const ja: Dictionary = {
     "low": "優先度: 低"
 },
   feedCollaboration: {
+    commentOrSuggest: 'コメント・変更提案',
     details: "詳細",
     postActions: "投稿の操作",
     openComments: "{n}件のコメントを開く",

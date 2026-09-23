@@ -44,7 +44,7 @@ export function DraftCommentPanel(props: FeedCommentPanelProps) {
     {props.pending ? <p role="status" className="text-sm text-muted-foreground">{t.pending}</p> : null}
     {props.error ? <div role="alert" className="text-sm"><p>{t.loadFailed}</p><Button variant="outline" size="sm" className="min-h-11 md:min-h-8 whitespace-normal" onClick={props.onRefresh}>{t.retry}</Button></div> : null}
     {props.loading && !props.snapshot ? <Skeleton className="h-36 w-full" /> : null}
-    {props.composer ? <CommentComposer key={`${props.composer.parentId ?? ''}:${props.composer.kind}`} {...props} composer={props.composer} /> : null}
+    {props.composer ? <CommentComposer key={`${props.composer.parentId ?? ''}:${props.composer.threadId ?? ''}:${JSON.stringify(props.composer.anchor.target)}`} {...props} composer={props.composer} /> : null}
     {!visible.length && props.snapshot ? <p className="text-sm text-muted-foreground">{t.noComments}</p> : null}
     {visible.map(thread => <article key={thread.id} data-feed-comment-id={thread.id} className={`space-y-3 ${props.focused ? '' : 'border-b border-border pb-4'}`}>
       <button type="button" aria-expanded={active?.id === thread.id} className="w-full min-h-11 rounded-md text-left text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => props.onThread(thread.id)}>
@@ -75,12 +75,14 @@ function CommentComposer(props: FeedCommentPanelProps & { composer: FeedCommentC
     setError(false);
     try {
       const identity = crypto.randomUUID();
-      const commands: FeedCommand[] = composer.kind === 'comment' ? [{ kind: 'comment', threadId: identity, target: composer.anchor.target, text }] : [{ kind: 'propose', suggestionId: identity, edits: proposeFeedReplacement(props.composition, composer.anchor.target, text), rationale: reason, parentId: composer.parentId, threadId: composer.threadId }];
-      if (await props.onCommand(commands)) { props.onComposer(null); if (composer.kind === 'comment') props.onThread(identity); } else setError(true);
+      const commands: FeedCommand[] = composer.kind === 'comment' ? [composer.threadId ? { kind: 'reply', threadId: composer.threadId, text } : { kind: 'comment', threadId: identity, target: composer.anchor.target, text }] : [{ kind: 'propose', suggestionId: identity, edits: proposeFeedReplacement(props.composition, composer.anchor.target, text), rationale: reason, parentId: composer.parentId, threadId: composer.threadId }];
+      if (await props.onCommand(commands)) { props.onComposer(null); if (composer.kind === 'comment') props.onThread(composer.threadId ?? identity); } else setError(true);
     } catch { setError(true); }
   }
   return <form className="space-y-3" onSubmit={event => { event.preventDefault(); void submit(); }}>
-    <p className="text-sm font-medium">{composer.kind === 'comment' ? t.comment : t.suggest}</p>
+    <div role="group" aria-label={t.commentOrSuggest} className="flex gap-1 rounded-lg border p-1">
+      {(['comment', 'suggest'] as const).map(kind => <Button key={kind} type="button" variant="ghost" size="sm" className="min-h-11 md:min-h-8 flex-1 aria-pressed:bg-muted" aria-pressed={composer.kind === kind} onClick={() => props.onComposer({ ...composer, kind })}>{t[kind]}</Button>)}
+    </div>
     <blockquote className="max-h-32 overflow-y-auto whitespace-pre-wrap border-l-2 pl-2 text-sm" aria-label={t.selection}>{composer.anchor.quote || t.post}</blockquote>
     <textarea autoFocus className="w-full min-h-28 rounded-md border bg-background p-2 text-base" aria-label={composer.kind === 'comment' ? t.commentPlaceholder : t.replacementPlaceholder} placeholder={composer.kind === 'comment' ? t.commentPlaceholder : t.replacementPlaceholder} value={text} onChange={event => setText(event.target.value)} />
     {composer.kind === 'suggest' ? <textarea className="w-full min-h-20 rounded-md border bg-background p-2 text-base" aria-label={t.reasonPlaceholder} placeholder={t.reasonPlaceholder} value={reason} onChange={event => setReason(event.target.value)} /> : null}

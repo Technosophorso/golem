@@ -2,7 +2,7 @@
 
 /** Compact, selection-preserving editing controls. [COMP:app-web/feed-editor-toolbar] */
 import { useRef } from 'react';
-import { ArrowDown, ArrowUp, Bold, ChevronDown, CopyPlus, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, MoreHorizontal, MessageSquarePlus, PencilLine, Sparkles, Plus, Quote, Replace, TextCursorInput, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Bold, ChevronDown, CopyPlus, Heading2, ImagePlus, Italic, Link2, List, ListOrdered, MoreHorizontal, MessageSquarePlus, Sparkles, Plus, Quote, Replace, TextCursorInput, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tooltip } from '@/components/ui/tooltip';
@@ -67,7 +67,7 @@ export function FeedEditorToolbar(props: {
     <DropdownMenu onOpenChange={open => { if (open) applied.current = false; }}>
       <DropdownMenuTrigger render={<Button type="button" variant="ghost" size="icon" aria-label={t.documentActions} title={t.documentActions} disabled={props.disabled} className="size-11 md:size-8 text-muted-foreground" />}><MessageSquarePlus className="size-4" aria-hidden /></DropdownMenuTrigger>
       <DropdownMenuContent finalFocus={() => !applied.current} className="max-w-[calc(100vw-2rem)]">
-        {([['comment', MessageSquarePlus], ['suggest', PencilLine], ['ask', Sparkles]] as const).map(([action, Icon]) => <DropdownMenuItem key={action} className={menuItem} onClick={() => { applied.current = true; props.onAction(action); }}><Icon aria-hidden />{action === 'ask' ? t.askBrian : t[action]}</DropdownMenuItem>)}
+        {([['comment', MessageSquarePlus], ['ask', Sparkles]] as const).map(([action, Icon]) => <DropdownMenuItem key={action} className={menuItem} onClick={() => { applied.current = true; props.onAction(action); }}><Icon aria-hidden />{action === 'ask' ? t.askBrian : t.commentOrSuggest}</DropdownMenuItem>)}
       </DropdownMenuContent>
     </DropdownMenu>
     <DropdownMenu onOpenChange={open => { if (open) applied.current = false; }}>
@@ -86,8 +86,7 @@ export function FeedEditorToolbar(props: {
 export function FeedSelectionActions({ onAction }: { onAction: (action: 'comment' | 'suggest' | 'ask') => void }) {
   const t = useT().feedCollaboration;
   return <div role="group" aria-label={t.documentActions} className="flex w-fit max-w-full flex-wrap items-center gap-1 rounded-lg border border-border bg-background p-1 shadow-lg" data-feed-selection-actions>
-    <Button type="button" variant="ghost" size="sm" className="min-h-11 md:min-h-8" onMouseDown={event => event.preventDefault()} onClick={() => onAction('comment')}><MessageSquarePlus aria-hidden />{t.comment}</Button>
-    <Button type="button" variant="ghost" size="sm" className="min-h-11 md:min-h-8" aria-label={t.suggest} onMouseDown={event => event.preventDefault()} onClick={() => onAction('suggest')}><PencilLine aria-hidden />{t.suggestShort}</Button>
+    <Button type="button" variant="ghost" size="sm" className="min-h-11 md:min-h-8" onMouseDown={event => event.preventDefault()} onClick={() => onAction('comment')}><MessageSquarePlus aria-hidden />{t.commentOrSuggest}</Button>
     <Button type="button" size="sm" className="min-h-11 md:min-h-8" onMouseDown={event => event.preventDefault()} onClick={() => onAction('ask')}><Sparkles aria-hidden />{t.askBrian}</Button>
   </div>;
 }

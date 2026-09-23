@@ -73,7 +73,34 @@ try {
     results.push({ name, failures, ...row });
     await page.locator('[data-fixture-rail]').screenshot({ path: join(output, `${name}.png`) });
   }
-  for (const locale of ['en', 'ja', 'zh', 'zh-cn']) for (const width of [320, 360, 390]) {
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: 844 });
+    await page.goto(`http://127.0.0.1:${port}/scripts/fixtures/feed-composer-browser.html?comment=1`, { waitUntil: 'domcontentloaded', timeout: 90_000 });
+    await page.locator('[contenteditable=true]').waitFor();
+    await page.locator('[contenteditable=true] p').nth(12).evaluate(el => el.scrollIntoView({ block: 'center' }));
+    await page.locator('[contenteditable=true] p').nth(12).dblclick({ position: { x: 45, y: 10 } });
+    const anchorTop = await page.locator('main > header button').evaluate(el => el.getBoundingClientRect().top);
+    assert.ok(anchorTop < 0, 'The fixture must reproduce a scrolled-off header opener');
+    await page.locator('[data-feed-selection-actions] button').first().click();
+    const panel = page.locator('[data-feed-editor-panel]');
+    await panel.waitFor({ state: 'visible' });
+    await page.waitForTimeout(150);
+    const rect = await panel.boundingBox();
+    assert.ok(rect && rect.x >= 0 && rect.y >= 0 && rect.x + rect.width <= width && rect.y + rect.height <= 844, 'Comment panel must remain inside the viewport');
+    const input = page.getByRole('textbox', { name: 'Discuss this passage' });
+    await input.fill('A concrete example would help.');
+    await panel.getByRole('button', { name: 'Suggest change', exact: true }).click();
+    assert.equal(await panel.locator('textarea').first().inputValue(), 'A concrete example would help.');
+    await panel.getByRole('group', { name: 'Comment or suggest', exact: true }).getByRole('button', { name: 'Comment', exact: true }).click();
+    assert.equal(await input.inputValue(), 'A concrete example would help.');
+    await panel.screenshot({ path: join(output, `comment-${width}.png`) });
+    await panel.getByRole('button', { name: 'Send', exact: true }).click();
+    const commands = await page.evaluate(() => window.feedCommentFixture.commands);
+    assert.equal(commands[0][0].kind, 'comment');
+    assert.equal(commands[0][0].text, 'A concrete example would help.');
+    results.push({ name: `comment-${width}`, failures: [], width, anchorTop, rect, submitted: true });
+  }
+  if (!process.env.FEED_COMMENT_ONLY) for (const locale of ['en', 'ja', 'zh', 'zh-cn']) for (const width of [320, 360, 390]) {
     const phone = width === 390;
     await page.setViewportSize({ width: phone ? 390 : 1440, height: 844 });
     for (const long of [false, true]) {

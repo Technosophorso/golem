@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import React, { act } from 'react';
+import React, { act, useState } from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
@@ -190,7 +190,7 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     let pos = 0; view.state.doc.forEach((child, offset, index) => { if (index === 2) pos = offset + 1; });
     act(() => { view.focus(); view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos + 4, pos + 15))); });
     expect(selected).toEqual({ kind: 'range', spans: [{ segmentId: doc.segments[0]!.id, blockId: doc.segments[0]!.content[2]!.attrs.id, from: 4, to: 15 }] });
-    await click(text.comment); expect(onAction).toHaveBeenCalledWith('comment');
+    await click(text.commentOrSuggest); expect(onAction).toHaveBeenCalledWith('comment');
     act(() => root.render(<CompositionEditor {...props} draftAnchor={createFeedAnchor(doc, selected!, 2)} />));
     expect(host.querySelector('[data-feed-thread=draft]')?.textContent).toBe('same phrase');
     expect(host.querySelectorAll('[data-feed-thread=draft]')).toHaveLength(1);
@@ -206,7 +206,7 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     act(() => view.dom.blur());
     expect(host.querySelector('[data-feed-selection-actions]')).toBeNull();
     await click(text.documentActions);
-    const action = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node => node.textContent === text.comment)!;
+    const action = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node => node.textContent === text.commentOrSuggest)!;
     await act(async () => action.click());
     expect(onAction).toHaveBeenCalledWith('comment');
   });
@@ -261,6 +261,34 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     await act(async () => input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     expect(props.onCommand).toHaveBeenCalledWith([expect.objectContaining({ kind: 'comment', target, text: 'A human discussion' })]);
     expect(host.querySelector('[data-chat-session]')).toBeNull();
+  });
+  it('combines comment and suggestion composition while retaining typed text and the selected anchor', async () => {
+    const props = panel(); const segment = props.composition.segments[0]!;
+    const target = { kind: 'block' as const, segmentId: segment.id, blockId: segment.content[0]!.attrs.id };
+    function Harness() {
+      const [composer, setComposer] = useState<FeedCommentPanelProps['composer']>({ kind: 'comment', anchor: createFeedAnchor(props.composition, target, 2) });
+      return <DraftCommentPanel {...props} composer={composer} onComposer={setComposer} />;
+    }
+    act(() => root.render(<Harness />));
+    const input = host.querySelector('textarea')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'A more concrete opening.'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => host.querySelector<HTMLButtonElement>(`[role="group"][aria-label="${text.commentOrSuggest}"] button:last-child`)!.click());
+    expect(host.querySelector('textarea')!.value).toBe('A more concrete opening.');
+    expect(host.querySelector('blockquote')!.textContent).toBe('First paragraph.');
+    await act(async () => host.querySelector<HTMLButtonElement>(`[role="group"][aria-label="${text.commentOrSuggest}"] button:first-child`)!.click());
+    expect(host.querySelector('textarea')!.value).toBe('A more concrete opening.');
+    expect(props.onCommand).not.toHaveBeenCalled();
+    await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(props.onCommand).toHaveBeenCalledWith([expect.objectContaining({ kind: 'comment', target, text: 'A more concrete opening.' })]);
+  });
+  it('posts a comment-mode message in the existing suggestion thread', async () => {
+    const props = panel(); const threadId = crypto.randomUUID();
+    act(() => root.render(<DraftCommentPanel {...props} composer={{ kind: 'comment', threadId, anchor: createFeedAnchor(props.composition, { kind: 'post' }, 2) }} />));
+    const input = host.querySelector('textarea')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Keep this discussion together.'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(props.onCommand).toHaveBeenCalledWith([{ kind: 'reply', threadId, text: 'Keep this discussion together.' }]);
+    expect(props.onThread).toHaveBeenCalledWith(threadId);
   });
   it('scenarios 1 and 3: before/after decisions never edit until Accept and retain Undo after acceptance', async () => {
     const props = panel(); const suggestionId = crypto.randomUUID(); const edits = proposeFeedReplacement(props.composition, { kind: 'post' }, 'Proposed body');

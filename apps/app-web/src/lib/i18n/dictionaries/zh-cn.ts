@@ -254,6 +254,7 @@ export const zhCN: Dictionary = {
     "low": "低优先级"
 },
   feedCollaboration: {
+    commentOrSuggest: '评论或建议修改',
     details: "详细信息",
     postActions: "帖子操作",
     openComments: "打开 {n} 条评论",

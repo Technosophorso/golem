@@ -558,6 +558,39 @@ describe('[COMP:feed/draft-generation] scoped tools and decision provenance', ()
     ] }], 3)).rejects.toMatchObject({ code: 'placeholder_brief_revision_conflict' })
   })
 
+  it.each([false, true])('resumes a known image slot from whole-post chat (explicit post target: %s)', async explicitPost => {
+    const f = await generationFixture()
+    const imageSlot = { type: 'generationPlaceholder' as const, attrs: { ...f.slot, kind: 'image' as const, briefRevision: 1 } }
+    await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [imageSlot] }] }])
+    const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 4, ...(explicitPost ? { target: { kind: 'post' } } : {}) })
+    const tool = buildFeedCollaborationTools(context!, undefined, f.service).find(item => item.name === 'editFeedPlaceholder')!
+    const target = { kind: 'block' as const, segmentId: f.segmentId, blockId: f.slotId }
+    const input = { mutationId: randomUUID(), action: 'update', target, patch: { brief: 'Simplify the diagram to three shapes.' } }
+    expect(tool.requiresConfirmation).toBe(true)
+    expect(tool.inputSchema.parse(input)).toEqual(input)
+    await tool.execute(input, {} as ToolContext)
+    const snapshot = await getFeedCollaboration(f.actor)
+    expect(snapshot.copy!.revision).toBe(5)
+    expect(snapshot.copy!.content.composition!.segments[0]!.content[1]).toMatchObject({ type: 'generationPlaceholder', attrs: { id: f.slotId, kind: 'image', briefRevision: 2, brief: input.patch.brief } })
+    expect(snapshot.runs).toHaveLength(0)
+    expect(f.call).not.toHaveBeenCalled()
+    await expect(tool.execute({ ...input, mutationId: randomUUID() }, {} as ToolContext)).rejects.toMatchObject({ code: 'draft_context_changed' })
+    await f.command([{ kind: 'undo', revision: 5 }], 5)
+    expect((await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[1]).toEqual(imageSlot)
+  })
+  it.each(['block', 'range'] as const)('does not let an explicit placeholder target widen an attached %s context', async kind => {
+    const f = await generationFixture()
+    const paragraph = (await getFeedCollaboration(f.actor)).copy!.content.composition!.segments[0]!.content[0]!
+    const target = kind === 'block' ? { kind, segmentId: f.segmentId, blockId: paragraph.attrs.id } : { kind, spans: [{ segmentId: f.segmentId, blockId: paragraph.attrs.id, from: 0, to: 7 }] }
+    const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 3, target })
+    const tool = buildFeedCollaborationTools(context!, undefined, f.service).find(item => item.name === 'editFeedPlaceholder')!
+    await expect(tool.execute({ mutationId: randomUUID(), action: 'update', target: { kind: 'block', segmentId: f.segmentId, blockId: f.slotId }, patch: { brief: 'Outside attached context.' } }, {} as ToolContext)).rejects.toMatchObject({ code: 'selection_scope_mismatch' })
+    const snapshot = await getFeedCollaboration(f.actor)
+    expect(snapshot.copy!.revision).toBe(3)
+    expect(snapshot.copy!.content.composition!.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: f.slot })
+    expect(snapshot.runs).toHaveLength(0)
+    expect(f.call).not.toHaveBeenCalled()
+  })
   it('scenarios 6 and 7: Brian edits the selected slot through shared commands and duplicates never inherit a run', async () => {
     const f = await generationFixture()
     const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 3, target: { kind: 'block', segmentId: f.segmentId, blockId: f.slotId } })
@@ -607,7 +640,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 const imageBytes = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aXioAAAAASUVORK5CYII='
 describe('[COMP:feed/draft-generation] durable image and output integration', () => {
-  it('lets the Feed agent convert a selected fixed image into a patched generation slot with Undo', async () => {
+  it.each([false, true])('lets the Feed agent convert a fixed image into a patched generation slot with Undo (whole post: %s)', async wholePost => {
     const f = await generationFixture(); const dir = await mkdtemp(join(tmpdir(), 'feed-image-convert-'))
     try {
       const files = createFilesApi({ store: createDbWorkspaceFilesStore(), auditStore: createWorkspaceAuditStore(), resolver: createSingletonFilesClientResolver(createLocalFilesClient({ baseDir: dir }), 'feed-convert-fixture', 'file') })
@@ -615,10 +648,11 @@ describe('[COMP:feed/draft-generation] durable image and output integration', ()
       if (!uploaded.ok) throw new Error('Fixture image required')
       const fixed = { type: 'image' as const, attrs: { id: f.slotId, fileId: uploaded.value.id, mimeType: 'image/png' as const, placement: 'attachment' as const, alt: 'Detailed orchard diagram' } }
       await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [fixed] }] }])
-      const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 4, target: { kind: 'block', segmentId: f.segmentId, blockId: f.slotId } })
+      const target = { kind: 'block' as const, segmentId: f.segmentId, blockId: f.slotId }
+      const context = await resolveFeedTurnContext(f.actor.userId, f.actor.assistantId, { id: f.actor.sessionId, mode: 'draft', channelType: 'web' }, { sessionId: f.actor.sessionId, revision: 4, ...(wholePost ? {} : { target }) })
       const tool = buildFeedCollaborationTools(context!, undefined, f.service).find(item => item.name === 'editFeedPlaceholder')!
       expect(tool.description).toContain('selected fixed image')
-      await tool.execute({ mutationId: randomUUID(), action: 'convert', kind: 'image', patch: { brief: 'Use a simplified visual with three shapes.' } }, {} as ToolContext)
+      await tool.execute({ mutationId: randomUUID(), action: 'convert', kind: 'image', ...(wholePost ? { target } : {}), patch: { brief: 'Use a simplified visual with three shapes.' } }, {} as ToolContext)
       const converted = (await getFeedCollaboration(f.actor)).copy!
       expect(converted.revision).toBe(5)
       expect(converted.content.composition!.segments[0]!.content[1]).toEqual({ type: 'generationPlaceholder', attrs: { id: f.slotId, kind: 'image', brief: 'Use a simplified visual with three shapes.', briefRevision: 0, references: [], altIntent: fixed.attrs.alt } })

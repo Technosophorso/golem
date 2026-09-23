@@ -40,6 +40,7 @@ import {
   useMessageStream,
   type Message,
   type MessageAttachment,
+  type ReplyTo,
 } from "@use-brian/chat-ui";
 import { cn } from "@/lib/utils";
 import { authFetch } from "@/lib/auth-fetch";
@@ -80,7 +81,8 @@ import {
   SelectItem,
   SelectTrigger,
 } from "@/components/ui/select";
-import { ChevronDownIcon } from "lucide-react";
+import { buildReplyTarget, canReplyToMessage, condenseQuote, selectionTextWithin } from "@/components/chat-app/message-reply";
+import { ChevronDownIcon, Reply, X } from "lucide-react";
 import { useT } from "@/lib/i18n/client";
 import { format } from "@/lib/i18n/format";
 import {
@@ -248,6 +250,8 @@ export const TuningChatPanel = forwardRef<
      */
     sessionId?: string;
     feedTarget?: import('@use-brian/shared').FeedChatTarget;
+    feedSelection?: import('@use-brian/shared').FeedAnchor;
+    onClearFeedSelection?: () => void;
     /** Fired when a turn finishes, so a host can re-read what it produced. */
     onTurnComplete?: () => void;
     /** Mirror safe live activity into the collapsed floating launcher. */
@@ -302,12 +306,17 @@ export const TuningChatPanel = forwardRef<
   const t = useT().feedPage.tuningChat;
   const tChat = useT().chat;
   const tGoal = useT().chatApp;
+  const tc = useT().feedCollaboration;
   const tQueue = useT().chat.queue;
   const session = useChatSession();
   const stream = useMessageStream();
   const sessionStateRef = useRef(session.state);
   sessionStateRef.current = session.state;
   const appliedInputIdsRef = useRef(new Set<string>());
+  // A retry must reproduce the original scope, never the current editor state.
+  // Hydrated Feed messages do not carry that reference, so only locally known
+  // requests can be replayed directly; Reply remains available for older rows.
+  const sentTargetsRef = useRef(new Map<string, import('@use-brian/shared').FeedChatTarget | undefined>());
   const [input, setInput] = useState("");
   const [turn, setTurn] = useState(newFeedChatTurn);
   const turnRef = useRef(turn);
@@ -449,6 +458,8 @@ export const TuningChatPanel = forwardRef<
     sessionIdRef.current = null;
     session.setSession(null);
     session.loadMessages([]);
+    session.setReplyTo(null);
+    sentTargetsRef.current.clear();
     session.clearConfirmations();
     session.dispatch({ type: "stream/abort" });
     setPendingQuestion(null);
@@ -504,7 +515,7 @@ export const TuningChatPanel = forwardRef<
   });
   /** `sendMessage` is called from inside its own `onDone` (the flush). */
   const sendMessageRef = useRef<
-    ((text: string, fileIds: string[], truncateFromMessageId?: string, localAttachments?: MessageAttachment[]) => Promise<boolean>) | null
+    ((text: string, fileIds: string[], truncateFromMessageId?: string, localAttachments?: MessageAttachment[], reply?: ReplyTo | null, attachSelection?: boolean, retryTarget?: import('@use-brian/shared').FeedChatTarget) => Promise<boolean>) | null
   >(null);
 
   /**
@@ -686,7 +697,7 @@ export const TuningChatPanel = forwardRef<
   recoverSessionRef.current = recoverSession;
 
   const sendMessage = useCallback(
-    async (text: string, fileIds: string[], truncateFromMessageId?: string, localAttachments?: MessageAttachment[]) => {
+    async (text: string, fileIds: string[], truncateFromMessageId?: string, localAttachments?: MessageAttachment[], reply?: ReplyTo | null, attachSelection = false, retryTarget?: import('@use-brian/shared').FeedChatTarget) => {
       if (!ready || !initialized || busyRef.current) return false;
       const trimmed = text.trim();
       if (!trimmed && fileIds.length === 0) return false;
@@ -697,8 +708,13 @@ export const TuningChatPanel = forwardRef<
       appliedInputIdsRef.current.clear();
       followBottomRef.current = true;
       const attachments = localAttachments ?? fileIds.map(id => ({ id, fileName: t.voiceNote, mimeType: "audio/webm" }));
-      const userMessage: Message = { id: `local-${Date.now()}`, role: "user", text: trimmed, timestamp: new Date(), ...(attachments.length ? { attachments } : {}) };
+      const selectedPassage = attachSelection ? props.feedSelection : undefined;
+      const feedTarget = retryTarget ?? (props.feedTarget && { ...props.feedTarget, ...(selectedPassage ? { target: selectedPassage.target, revision: selectedPassage.sourceRevision } : {}) });
+      const userMessage: Message = { ...(reply ? { replyTo: reply } : {}), id: `local-${Date.now()}`, role: "user", text: trimmed, timestamp: new Date(), ...(attachments.length ? { attachments } : {}) };
+      sentTargetsRef.current.set(userMessage.id, feedTarget);
       session.appendMessage(userMessage);
+      if (reply && attachSelection) session.setReplyTo(null);
+      if (selectedPassage) props.onClearFeedSelection?.();
       setInput(""); if (localAttachments) att.detach(); setError(null); setErrorCode(null); setNotice(null); setAcceptedGoal(null);
       setStatusMessage(null); setReconnecting(false);
       updateTurn(newFeedChatTurn());
@@ -706,7 +722,8 @@ export const TuningChatPanel = forwardRef<
       await stream.start({
         url: `${API_URL}/api/chat`, authFetch: (input, init) => authFetch(input.toString(), init),
         body: {
-          message: trimmed, ...(props.feedTarget ? { feedTarget: props.feedTarget } : {}), assistantId,
+          message: trimmed, ...(feedTarget ? { feedTarget } : {}), assistantId,
+          ...(reply?.id ? { replyTo: { id: reply.id, text: reply.text } } : {}),
           sessionId: fixedSessionId ?? sessionIdRef.current ?? undefined,
           ...(fixedSessionId ? {} : { channelId }), model, ...(researchMode ? { mode: "research" } : {}),
           ...(workspaceId ? { workspaceId } : {}), ...(fileIds.length ? { fileIds } : {}),
@@ -719,6 +736,8 @@ export const TuningChatPanel = forwardRef<
             sessionIdRef.current = payload.sessionId;
             session.setSession(payload.sessionId);
           } else if (event === "user_message_saved" && typeof payload.id === "string") {
+            sentTargetsRef.current.set(payload.id, sentTargetsRef.current.get(userMessage.id));
+            sentTargetsRef.current.delete(userMessage.id);
             session.dispatch({ type: "message/rekey", messageId: userMessage.id, id: payload.id });
           } else consumeEventRef.current(event, payload);
         },
@@ -749,7 +768,7 @@ export const TuningChatPanel = forwardRef<
     },
     // Async events read fresh UI handlers through refs; transport ownership uses the epoch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [assistantId, initialized, session, stream, model, researchMode, workspaceId, t, updateTurn, ready, props.feedTarget, fixedSessionId, channelId, att.detach],
+    [assistantId, initialized, session, stream, model, researchMode, workspaceId, t, updateTurn, ready, props.feedTarget, props.feedSelection, props.onClearFeedSelection, fixedSessionId, channelId, att.detach],
   );
 
   const resolveConfirmation = async (toolCallId: string, decision: "allow" | "always_allow" | "deny", comment?: string) => {
@@ -785,7 +804,7 @@ export const TuningChatPanel = forwardRef<
     // second one. Attachments remain staged for the next ordinary turn because
     // the mid-turn queue is deliberately text-only.
     if (busyRef.current || stream.inFlight()) {
-      if (fileIds.length > 0) return;
+      if (fileIds.length > 0 || session.state.replyTo || props.feedSelection) return;
       if (midTurn.queue(input, steer)) setInput("");
       return;
     }
@@ -793,8 +812,8 @@ export const TuningChatPanel = forwardRef<
       id: a.fileId!, fileName: a.fileName, mimeType: a.mimeType,
       ...(a.previewUrl ? { localPreviewUrl: a.previewUrl } : {}),
     }));
-    await sendMessage(input, fileIds, undefined, localAttachments);
-  }, [att.attachments, att.fileIds, att.uploading, initialized, input, midTurn, ready, recoveryFailed, sendMessage, session.state.isStreaming, stream]);
+    await sendMessage(input, fileIds, undefined, localAttachments, session.state.replyTo, true);
+  }, [att.attachments, att.fileIds, att.uploading, initialized, input, midTurn, ready, recoveryFailed, sendMessage, session.state.isStreaming, session.state.replyTo, props.feedSelection, stream]);
 
   // Feed hides the global chat chrome but keeps its recorder controller alive.
   // While this floating tuning panel owns the replacement dock, short captures
@@ -802,7 +821,7 @@ export const TuningChatPanel = forwardRef<
   useEffect(() => {
     if (!ownsDockRecorderTarget) return;
     return registerDockRecorderChatTarget({
-      sendVoiceClip: (fileId) => sendMessage("", [fileId]),
+      sendVoiceClip: (fileId) => sendMessage("", [fileId], undefined, undefined, sessionStateRef.current.replyTo, true),
       getSessionId: () => sessionIdRef.current ?? undefined,
     });
   }, [ownsDockRecorderTarget, sendMessage]);
@@ -827,25 +846,32 @@ export const TuningChatPanel = forwardRef<
     } catch { /* clipboard blocked */ }
   }, []);
 
-  const handleRetry = useCallback((messageId: string) => {
-    if (busyRef.current || stream.inFlight()) return;
+  const retrySource = (messageId: string) => {
     const msgs = session.state.messages;
-    const idx = msgs.findIndex((m) => m.id === messageId);
-    if (idx < 0) return;
-    const msg = msgs[idx];
-    if (msg.role === "user") {
-      if (msg.attachments?.length || msg.fileAttachments?.length) return;
-      session.loadMessages(msgs.slice(0, idx));
-      void sendMessage(msg.text, [], msg.id);
-    } else {
-      if (idx <= 0) return;
-      const prev = msgs[idx - 1];
-      if (prev.role !== "user" || prev.attachments?.length || prev.fileAttachments?.length) return;
-      session.loadMessages(msgs.slice(0, idx - 1));
-      void sendMessage(prev.text, [], prev.id);
-    }
-  }, [session, stream, sendMessage]);
+    const index = msgs.findIndex(message => message.id === messageId);
+    const message = msgs[index];
+    const source = message?.role === "user" ? message : msgs[index - 1];
+    if (!source || source.role !== "user" || source.attachments?.length || source.fileAttachments?.length) return null;
+    if (source.replyTo && !source.replyTo.id) return null;
+    if (props.feedTarget && !sentTargetsRef.current.has(source.id)) return null;
+    return source;
+  };
+  const handleRetry = (messageId: string) => {
+    if (busyRef.current || stream.inFlight()) return;
+    const source = retrySource(messageId);
+    if (!source) return;
+    const messages = session.state.messages;
+    session.loadMessages(messages.slice(0, messages.findIndex(message => message.id === source.id)));
+    void sendMessage(source.text, [], source.id, undefined, source.replyTo, false, sentTargetsRef.current.get(source.id));
+  };
 
+  const handleReply = (message: Message, container: HTMLElement | null) => {
+    const target = buildReplyTarget({ message, selection: selectionTextWithin(container, window.getSelection()), authorName: message.role === "assistant" ? assistantName : tGoal.replyAuthorYou });
+    if (!target) return;
+    session.setReplyTo(target);
+    inputRef.current?.focus();
+  };
+  const quotedMessage = (reply: ReplyTo | undefined) => reply ? <blockquote className="mb-1 border-l-2 border-primary/50 pl-2 text-xs text-muted-foreground" data-feed-reply-quote>{condenseQuote(reply.text)}</blockquote> : null;
   const messages = session.state.messages;
   const isStreaming = session.state.isStreaming;
   const streamingText = session.state.streamingText;
@@ -940,8 +966,9 @@ export const TuningChatPanel = forwardRef<
             const isLastAssistant = msg.id === lastAssistantId;
             if (msg.role === "user") {
               return (
-                <div key={msg.id} className="flex justify-end group">
+                <div key={msg.id} className="flex justify-end group" data-feed-message>
                   <div className="max-w-[85%] space-y-1">
+                    {quotedMessage(msg.replyTo)}
                     {msg.text && (
                       <div className="inline-block max-w-full rounded-2xl rounded-br-md bg-secondary px-3.5 py-2 text-[14px] leading-[1.5] text-secondary-foreground shadow-sm whitespace-pre-wrap break-words">
                         {msg.text}
@@ -949,10 +976,11 @@ export const TuningChatPanel = forwardRef<
                     )}
                     {msg.attachments?.length ? <MessageAttachments workspaceId={workspaceId} attachments={msg.attachments.map(file => ({ id: file.id, name: file.fileName, mime: file.mimeType, ...(file.localPreviewUrl ? { dataUrl: file.localPreviewUrl } : {}) }))} /> : null}
                     <div className="flex items-center gap-0.5 justify-end opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity -mr-1">
+                      <span onMouseDown={event => event.preventDefault()}>{canReplyToMessage(msg) ? <ActionButton tooltip={tGoal.reply} onClick={(event) => handleReply(msg, event.currentTarget.closest("[data-feed-message]"))}><Reply className="size-3.5" aria-hidden /></ActionButton> : null}</span>
                       <ActionButton tooltip={copiedMessageId === msg.id ? t.copied : t.copy} onClick={() => void handleCopy(msg.id, msg.text)}>
                         {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
                       </ActionButton>
-                      {!isStreaming && !msg.attachments?.length && !msg.fileAttachments?.length && (
+                      {!isStreaming && retrySource(msg.id) && (
                         <ActionButton tooltip={t.retry} onClick={() => handleRetry(msg.id)}>
                           <RetryIcon />
                         </ActionButton>
@@ -963,7 +991,7 @@ export const TuningChatPanel = forwardRef<
               );
             }
             return (
-              <div key={msg.id} className="flex gap-2.5 group">
+              <div key={msg.id} className="flex gap-2.5 group" data-feed-message>
                 <span className="mt-0.5 shrink-0" aria-hidden>
                   <AssistantAvatar
                     id={assistantId}
@@ -973,6 +1001,7 @@ export const TuningChatPanel = forwardRef<
                   />
                 </span>
                 <div className="flex-1 min-w-0 text-[14px] leading-[1.6] text-foreground break-words pt-0.5 space-y-1.5">
+                  {quotedMessage(msg.replyTo)}
                   <ChatActivitySummary tools={msg.toolsUsed ?? []} durationMs={msg.activityDurationMs} />
                   {msg.text && (
                     <div className="chat-markdown prose prose-sm dark:prose-invert max-w-none">
@@ -983,10 +1012,11 @@ export const TuningChatPanel = forwardRef<
                   {msg.citations?.length ? <ChatCitationList citations={msg.citations} label={tChat.citationLabel} /> : null}
                   {msg.documents?.map(document => <ChatDocumentCard key={document.id} document={document} onOpen={setOpenDocument} />)}
                   <div className="flex items-center gap-0.5 -ml-2 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
-                    <ActionButton tooltip={copiedMessageId === msg.id ? t.copied : t.copy} onClick={() => void handleCopy(msg.id, msg.text)}>
+                    <span onMouseDown={event => event.preventDefault()}>{canReplyToMessage(msg) ? <ActionButton tooltip={tGoal.reply} onClick={(event) => handleReply(msg, event.currentTarget.closest("[data-feed-message]"))}><Reply className="size-3.5" aria-hidden /></ActionButton> : null}</span>
+                      <ActionButton tooltip={copiedMessageId === msg.id ? t.copied : t.copy} onClick={() => void handleCopy(msg.id, msg.text)}>
                       {copiedMessageId === msg.id ? <CheckIcon /> : <CopyIcon />}
                     </ActionButton>
-                    {isLastAssistant && !isStreaming && (
+                    {isLastAssistant && !isStreaming && retrySource(msg.id) && (
                       <ActionButton tooltip={t.retry} onClick={() => handleRetry(msg.id)}>
                         <RetryIcon />
                       </ActionButton>
@@ -1035,6 +1065,7 @@ export const TuningChatPanel = forwardRef<
           {session.state.pendingConfirmations.filter(c => c.status === "pending" || c.status === "approving").map(confirmation => (
             <ChatConfirmationCard key={confirmation.toolCallId} confirmation={confirmation}
               approveLabel={tChat.confirmationApprove} denyLabel={tChat.confirmationDeny} approvingLabel={tChat.confirmationApproving}
+              onAlwaysAllow={id => void resolveConfirmation(id, "always_allow")}
               onApprove={id => void resolveConfirmation(id, "allow")} onDeny={(id, comment) => void resolveConfirmation(id, "deny", comment)} />
           ))}
           {pendingQuestion ? <PendingQuestionPanel sessionId={pendingQuestion.sessionId} approvalId={pendingQuestion.approvalId} dict={tChat.pendingQuestion}
@@ -1065,7 +1096,6 @@ export const TuningChatPanel = forwardRef<
             <DockRecorderRecovery rec={dockRecorder} className="mb-1.5" />
             <DockRecorderNotice rec={dockRecorder} className="mb-1.5" />
             <DockRecorderStrip rec={dockRecorder} className="mb-1.5" />
-              onAlwaysAllow={id => void resolveConfirmation(id, "always_allow")}
           </>
         ) : null}
 
@@ -1100,6 +1130,14 @@ export const TuningChatPanel = forwardRef<
             commands={slashCommands}
             className="mx-2.5 mt-2.5"
           />
+          {session.state.replyTo ? <div className="mx-2.5 mt-2.5 flex items-start gap-2" data-feed-reply-context>
+            <div className="min-w-0 flex-1 border-l-2 border-primary/60 pl-2"><p className="text-xs font-medium text-muted-foreground">{tGoal.replyingToMessage}</p><p className="truncate text-xs text-muted-foreground">{condenseQuote(session.state.replyTo.text)}</p></div>
+            <Button type="button" variant="ghost" size="icon" className="size-11 md:size-8 shrink-0" aria-label={tGoal.replyCancel} onClick={() => session.setReplyTo(null)}><X className="size-3.5" aria-hidden /></Button>
+          </div> : null}
+          {props.feedSelection ? <div className="mx-2.5 mt-2.5 flex items-start gap-2 rounded-md border bg-muted/30 p-2" data-feed-selection-attachment>
+            <div className="min-w-0 flex-1"><p className="text-xs font-medium">{tc.selection}</p><blockquote className="line-clamp-3 whitespace-pre-wrap break-words text-xs text-muted-foreground">{props.feedSelection.quote || tc.post}</blockquote></div>
+            <Button type="button" variant="ghost" size="icon" className="size-11 md:size-8 shrink-0" aria-label={tc.post} onClick={props.onClearFeedSelection}><X className="size-3.5" aria-hidden /></Button>
+          </div> : null}
           <AttachmentChips
             attachments={att.attachments}
             onRemove={att.remove}
@@ -1198,7 +1236,7 @@ export const TuningChatPanel = forwardRef<
                   (muted to mark the difference). See mid-turn-input.md. */}
               <button
                 onClick={() => void onSend()}
-                disabled={!ready || !initialized || recoveryFailed || att.uploading || (busyRef.current && !isStreaming) || (isStreaming && att.hasReady) || (!input.trim() && !att.hasReady)}
+                disabled={!ready || !initialized || recoveryFailed || att.uploading || (busyRef.current && !isStreaming) || (isStreaming && (att.hasReady || !!session.state.replyTo || !!props.feedSelection)) || (!input.trim() && !att.hasReady)}
                 className={cn(
                   "inline-flex size-11 items-center justify-center rounded-xl transition-colors shadow-sm shrink-0 md:size-8",
                   "disabled:opacity-30 disabled:cursor-not-allowed",
@@ -1353,7 +1391,7 @@ function ActionButton({
   children,
 }: {
   tooltip: string;
-  onClick: () => void;
+  onClick: React.MouseEventHandler<HTMLButtonElement>;
   children: React.ReactNode;
 }) {
   return (

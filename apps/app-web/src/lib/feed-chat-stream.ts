@@ -147,6 +147,7 @@ export function mapFeedTranscript(rows: DocSessionMessage[], dict: NarrationDict
   return coalesceAssistantRunMessages(rows.filter(row => row.role === "user" || row.role === "assistant").map(row => ({
     id: row.id, role: row.role as "user" | "assistant", text: extractMessageText(row.content), timestamp: new Date(row.timestamp),
     senderAssistantId: row.senderAssistantId,
+    ...(row.replyToText ? { replyTo: { text: row.replyToText } } : {}),
     attachments: row.role === "user" ? parseMessageAttachments(row.content).attachments.map(file => ({ id: file.id, fileName: file.name, mimeType: file.mime, localPreviewUrl: file.dataUrl })) : [],
     toolsUsed: row.role === "assistant" ? extractToolUses(row.content).map(tool => ({ id: tool.id, name: tool.name, status: "done" as const, ...describeToolFromInput(tool.name, tool.input, dict) })) : [],
     documents: extractPresentedDocuments(row.content), fileAttachments: row.attachments,

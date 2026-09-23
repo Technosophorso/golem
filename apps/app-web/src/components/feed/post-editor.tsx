@@ -481,6 +481,8 @@ function PostPane({
   const [chatThreadIds, setChatThreadIds] = useState<string[]>([]);
   const commentsRef = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<FeedEditorSelection | null>(null);
+  const [chatSelection, setChatSelection] = useState<ReturnType<typeof createFeedAnchor> | null>(null);
+  useEffect(() => { setChatSelection(null); }, [sessionId]);
   const [composer, setComposer] = useState<FeedCommentComposer | null>(null);
   const [selectedThread, setSelectedThread] = useState<string | null>(null);
   const mainChatRef = useRef<TuningChatPanelHandle>(null);
@@ -682,6 +684,7 @@ function PostPane({
     if (!localPost?.content.composition) return;
     const target = selection?.target ?? { kind: 'post' as const };
     if (action === 'ask') {
+      setChatSelection(target.kind === 'post' ? null : createFeedAnchor(localPost.content.composition, target, localPost.revision));
       setChatThreadId(null); setChatCollapsed(false); setRefineOpen(true); setEditorPanel(null);
       requestAnimationFrame(() => mainChatRef.current?.insertPrompt(''));
       return;
@@ -1362,7 +1365,9 @@ function PostPane({
             <TuningChatPanel
               ref={mainChatRef}
               ready={!structured || !remoteBlocked}
-              feedTarget={structured && localPost ? { sessionId, revision: localPost.revision, ...(selection ? { target: selection.target } : {}) } : undefined}
+              feedTarget={structured && localPost ? { sessionId, revision: localPost.revision } : undefined}
+              feedSelection={chatSelection ?? undefined}
+              onClearFeedSelection={() => setChatSelection(null)}
               docked
               assistantId={assistantId}
               assistantName={assistantName}
@@ -1389,9 +1394,9 @@ function PostPane({
         const refinePanel = <FeedPostChat workspaceId={workspaceId} assistantId={assistantId} assistantName={assistantName}
           sessionId={sessionId} revision={localPost?.revision ?? 0} ready={!readOnly && !remoteBlocked}
           threads={collaboration.data?.threads ?? []} openedThreadIds={chatThreadIds} activeThreadId={chatThreadId}
-          selectionQuote={selection?.quote} mainChat={conversationPanel}
+          mainChat={conversationPanel}
           dockRecorder={dockRecorder ?? undefined}
-          onWholePost={() => { setChatThreadId(null); setSelection(null); }} onRefresh={() => void collaboration.refresh()} />;
+          onWholePost={() => { setChatThreadId(null); }} onRefresh={() => void collaboration.refresh()} />;
         return isLg ? (
           <aside hidden={chatCollapsed} inert={chatCollapsed} data-feed-chat-rail className="relative min-w-0 border-border/60 lg:h-auto lg:min-h-0 lg:border-l">
             <PeekResizeHandle resizing={railResizing} {...railHandleProps} />

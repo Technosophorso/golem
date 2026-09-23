@@ -19,7 +19,6 @@ export function FeedPostChat(props: {
   threads: FeedCommentThread[];
   openedThreadIds: string[];
   activeThreadId: string | null;
-  selectionQuote?: string;
   mainChat: ReactNode;
   dockRecorder?: DockRecorderApi;
   onWholePost: () => void;
@@ -28,11 +27,11 @@ export function FeedPostChat(props: {
   const t = useT().feedCollaboration;
   const te = useT().feedPage.postEditor;
   const active = props.threads.find(thread => thread.id === props.activeThreadId);
-  const quote = active ? active.anchor.quote || t.post : props.selectionQuote;
+  const quote = active ? active.anchor.quote || t.post : undefined;
   return <div className="flex h-full min-h-0 flex-col" data-feed-chat-panel>
     {quote ? <div className="shrink-0 border-b bg-muted/20 px-4 py-3 text-sm">
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">{active ? t.commentConversation : t.selection}</span>
+        <span className="font-medium">{t.commentConversation}</span>
         <Button type="button" variant="secondary" size="sm" className="min-h-11 md:min-h-8 shrink-0" onClick={props.onWholePost}><ArrowLeft aria-hidden />{t.post}</Button>
       </div>
       <blockquote className="h-20 overflow-y-auto overscroll-contain whitespace-pre-wrap break-words border-l-2 pl-2 text-muted-foreground">{quote}</blockquote>

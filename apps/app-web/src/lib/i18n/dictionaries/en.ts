@@ -256,6 +256,7 @@ export const en = {
     "low": "Low priority"
 },
   feedCollaboration: {
+    commentOrSuggest: 'Comment or suggest',
     details: "Details",
     postActions: "Post actions",
     openComments: "Open {n} comments",

@@ -243,6 +243,7 @@ export const zh: Dictionary = {
     "low": "低優先度"
 },
   feedCollaboration: {
+    commentOrSuggest: '留言或建議修改',
     details: "詳細資料",
     postActions: "貼文操作",
     openComments: "開啟 {n} 則留言",
