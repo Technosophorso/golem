@@ -330,3 +330,37 @@ describe('[COMP:api/crm-integration-auth] Route isolation and shared adapters', 
     expect(unknown.body.error).toBe('invalid_input')
   })
 })
+
+describe('[COMP:api/association-media] integration read', () => {
+  const mediaId = randomUUID()
+  function mediaApp(grants: CrmIntegrationPrincipal['grants']) {
+    const signedReadUrl = vi.fn(async () => 'https://acct.blob.core.windows.net/files/k?sig=x')
+    const store = { list: vi.fn(async () => []), get: vi.fn(async (ws: string, id: string) => (ws === workspaceId && id === mediaId
+      ? { id, name: 'a.jpg', title: 'a.jpg', mime: 'image/jpeg', sizeBytes: 1, storageUri: `az://files/${workspaceId}/${id}`, updatedAt: '2026-09-24T00:00:00.000Z' }
+      : null)) }
+    const resolver = { forWorkspace: vi.fn(), forUri: vi.fn(async () => ({ signedReadUrl })) }
+    const app = express()
+    app.use('/api/crm/integration', crmIntegrationRoutes({ credentials: { authenticate: vi.fn().mockResolvedValue({ ...principal, grants }) },
+      service: {} as CrmOperationsServicePort, association: {} as AssociationServicePort,
+      websiteMedia: { store, resolver: resolver as never } }))
+    return { app, store, signedReadUrl }
+  }
+
+  it('redirects to the signed URL for a key holding association.read, scoped to its workspace', async () => {
+    const { app, store } = mediaApp([{ operation: 'association.read', selectors: {} }])
+    const res = await request(app).get(`/api/crm/integration/association/media/${mediaId}`).set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(302)
+    expect(res.headers.location).toContain('blob.core.windows.net')
+    expect(store.get).toHaveBeenCalledWith(workspaceId, mediaId)
+  })
+
+  it('refuses a key without association.read and 404s unknown ids', async () => {
+    const denied = mediaApp([{ operation: 'crm.catalog.configure', selectors: {} }])
+    const res = await request(denied.app).get(`/api/crm/integration/association/media/${mediaId}`).set('Authorization', `Bearer ${token}`)
+    expect(res.status).toBe(403)
+    expect(denied.signedReadUrl).not.toHaveBeenCalled()
+    const allowed = mediaApp([{ operation: 'association.read', selectors: {} }])
+    const missing = await request(allowed.app).get(`/api/crm/integration/association/media/${randomUUID()}`).set('Authorization', `Bearer ${token}`)
+    expect(missing.status).toBe(404)
+  })
+})

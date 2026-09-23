@@ -470,6 +470,18 @@ export const zh: Dictionary = {
       "audienceOrder": "對象頁面",
       "audienceOrderHelp": "每個對象頁面的主圖相片集及課程次序（每行一個 slug）；未列出的課程按顯示次序排列。"
     },
+    media: {
+      "title": "網站圖片和檔案",
+      "help": "網站可以顯示的圖片和 PDF。在這裡上傳，然後在網站內容中選用。刪除仍在使用的檔案，已發佈頁面會失去該圖片。",
+      "upload": "上傳圖片或 PDF",
+      "limits": "JPEG、PNG、WebP、GIF、AVIF 或 PDF，每個最多 15 MB。",
+      "empty": "尚未有網站圖片。",
+      "rejected": "未上傳",
+      "copyId": "複製檔案 ID",
+      "copied": "已複製",
+      "remove": "刪除",
+      "removeHelp": "使用此檔案的已發佈頁面會沒有圖片，直至你發佈替代版本。"
+    },
     ux: {
       "keepEditing": "繼續編輯",
       "workspace": "協會工作台",

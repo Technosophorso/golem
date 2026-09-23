@@ -470,6 +470,18 @@ export const ja: Dictionary = {
       "audienceOrder": "対象別ページ",
       "audienceOrderHelp": "各対象ページのヒーロー写真セットとプログラムの順序（1行に1スラッグ）。未記載のプログラムは表示順に続きます。"
     },
+    media: {
+      "title": "ウェブサイトの画像とファイル",
+      "help": "ウェブサイトで表示できる画像とPDFです。ここでアップロードし、ウェブサイト内容で選択します。使用中のファイルを削除すると、公開中のページに表示されなくなります。",
+      "upload": "画像またはPDFをアップロード",
+      "limits": "JPEG、PNG、WebP、GIF、AVIF、PDF（各15 MBまで）。",
+      "empty": "ウェブサイト用の画像はまだありません。",
+      "rejected": "アップロードされませんでした",
+      "copyId": "ファイルIDをコピー",
+      "copied": "コピーしました",
+      "remove": "削除",
+      "removeHelp": "このファイルを使っている公開ページは、差し替えを公開するまで画像が表示されません。"
+    },
     ux: {
       "keepEditing": "編集を続ける",
       "workspace": "協会の管理",

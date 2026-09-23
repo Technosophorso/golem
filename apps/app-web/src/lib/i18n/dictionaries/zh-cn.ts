@@ -481,6 +481,18 @@ export const zhCN: Dictionary = {
       "audienceOrder": "对象页面",
       "audienceOrderHelp": "每个对象页面的主图照片集及课程顺序（每行一个 slug）；未列出的课程按显示顺序排列。"
     },
+    media: {
+      "title": "网站图片和文件",
+      "help": "网站可以显示的图片和 PDF。在这里上传，然后在网站内容中选用。删除仍在使用的文件，已发布页面会失去该图片。",
+      "upload": "上传图片或 PDF",
+      "limits": "JPEG、PNG、WebP、GIF、AVIF 或 PDF，每个最多 15 MB。",
+      "empty": "尚未有网站图片。",
+      "rejected": "未上传",
+      "copyId": "复制文件 ID",
+      "copied": "已复制",
+      "remove": "删除",
+      "removeHelp": "使用此文件的已发布页面会没有图片，直至你发布替代版本。"
+    },
     ux: {
       "keepEditing": "继续编辑",
       "workspace": "协会工作台",

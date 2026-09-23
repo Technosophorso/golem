@@ -667,6 +667,8 @@ import { createAssociationWorkspaceModulesStore } from './association/workspace-
 import { createCrmIntegrationStore } from './db/crm-integration-store.js'
 import { crmIntegrationRoutes, crmIntegrationCredentialRoutes } from './routes/crm-integration.js'
 import { crmAssociationRoutes, associationMemberContext, workspaceModuleRoutes } from './routes/crm-association.js'
+import { websiteMediaMemberRoutes } from './routes/association-media.js'
+import { createWebsiteMediaStore } from './db/website-media-store.js'
 import { createStoreToolResolver } from './home-apps/store-tools-resolver.js'
 import { appsShopifyRoutes } from './routes/apps-shopify.js'
 import { agentAllowedToolsFor } from './brain-mcp/store-tools.js'
@@ -5082,10 +5084,12 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     }),
     entityLinks: entityLinksStore,
   })
+  const websiteMediaStore = createWebsiteMediaStore()
   app.use('/api/crm/integration', crmIntegrationRoutes({
     deliveries: crmDeliveries,
     credentials: crmIntegrationStore, service: crmOperationsService, association: associationService,
     imports: crmProductionImports, importSources: crmImportSources,
+    ...(filesResolver ? { websiteMedia: { store: websiteMediaStore, resolver: filesResolver } } : {}),
   }))
 
   app.use('/api/brain/mcp', brainMcpRoutes({
@@ -6836,6 +6840,21 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     emailDraftStore: crmEmailDraftStore,
     crmOperationsService,
   }))
+  if (filesApi && filesResolver) {
+    const mediaFilesApi = filesApi
+    app.use('/api/crm/:workspaceId/association/media', requireAuth(env.JWT_SECRET), websiteMediaMemberRoutes({
+      store: websiteMediaStore,
+      filesApi: mediaFilesApi,
+      resolver: filesResolver,
+      membership: async (userId, workspaceId) => {
+        const [role, member] = await Promise.all([
+          workspaceStore.getRole(userId, workspaceId),
+          getWorkspaceMembershipWithClearanceSystem(userId, workspaceId),
+        ])
+        return role && member ? { role, clearance: member.clearance } : null
+      },
+    }))
+  }
   app.use('/api/crm/:workspaceId/association', requireAuth(env.JWT_SECRET), crmAssociationRoutes({
     service: associationService, context: associationMemberContext(workspaceStore),
   }))
