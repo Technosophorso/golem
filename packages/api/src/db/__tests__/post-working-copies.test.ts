@@ -9,6 +9,7 @@ let created: boolean
 beforeEach(() => {
   vi.clearAllMocks(); previous = undefined; created = true
   db.query.mockImplementation(async (sql: string) => {
+    if (sql.includes('SELECT feed_draft_audience_allowed')) return { rows: [{ allowed: true }] }
     if (sql.startsWith('INSERT INTO sessions')) return { rows: created ? [{ id: 'session-1' }] : [] }
     if (sql.includes('FOR UPDATE')) return { rows: [{ userId: 'user-1', title: '[threads] Launch notes' }] }
     if (sql.includes('SELECT revision')) return { rows: previous ? [previous] : [] }

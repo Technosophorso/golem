@@ -12,6 +12,10 @@ const inputSchema = z.object({
   baseTitle: z.string().max(240).optional(),
   create: z.object({ platform: z.enum(['instagram', 'threads', 'twitter', 'xhs', 'linkedin', 'email']) }).optional(),
   content: z.object({
+    sourceSensitivity: z.enum(['public', 'internal', 'confidential']).optional(),
+    sourceCompartments: z.array(z.string()).max(100).optional(), sourceProjectIds: z.array(uuid).max(100).optional(),
+    sourceFileIds: z.array(uuid).max(1000).optional(), sourceMemoryIds: z.array(uuid).max(1000).optional(),
+    selectedMemoryIds: z.array(uuid).max(100).optional(),
     title: z.string().max(200), privateBrief: z.string().max(20_000),
     text: z.string().max(100_000), textEdited: z.boolean().optional(), postFormat: z.enum(['post', 'thread', 'article']),
     threadSegments: z.array(z.string().max(100_000)).max(100),

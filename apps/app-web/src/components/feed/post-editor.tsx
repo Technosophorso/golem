@@ -1,4 +1,5 @@
 "use client";
+import { FeedSources } from './feed-sources';
 
 /**
  * One post, edited in place (feed-revamp.md §8a, D15-D18).
@@ -632,12 +633,14 @@ function PostPane({
       setLocalPost(next); setLocalSaveError(false);
       await flushFeedWorkingCopies();
       const current = await readLocalFeedPost(assistantId, sessionId);
-      if (current?.error) { setError(te.syncConflict); return false; }
+      if (current) setLocalPost(current);
+      if (current?.error) { setError(current.errorCode?.includes('source') || current.errorCode?.includes('available_to_draft') ? te.sourceAccessBlocked : current.error === 'conflict' ? te.syncConflict : te.syncBlocked); return false; }
+      if (current?.dirty) return false;
       if (current && !current.dirty) void collaboration.refresh();
       return true;
     } catch { setLocalSaveError(true); return false; }
     finally { setLocalSaving(n => n - 1); }
-  }, [assistantId, sessionId, collaboration.refresh, te.syncConflict]);
+  }, [assistantId, sessionId, collaboration.refresh, te.syncConflict, te.syncBlocked, te.sourceAccessBlocked]);
   const upgradeAttempt = useRef<string | null>(null);
   useEffect(() => {
     if (offline) { upgradeAttempt.current = null; return; }
@@ -743,6 +746,10 @@ function PostPane({
         variant: "destructive",
       });
       if (!ok) return;
+    }
+    if (kind === 'approve' && platform !== 'email' && localPost?.content.sourceSensitivity && localPost.content.sourceSensitivity !== 'public') {
+      const confirmed = await confirmDialog({ title: te.releaseTitle, description: te.releaseBody, confirmLabel: te.releaseConfirm });
+      if (!confirmed || !await runCommands([{ kind: 'release', audience: 'public' }])) return;
     }
     let permalink = "";
     if (kind === "posted") {
@@ -1036,7 +1043,7 @@ function PostPane({
                       ? format(te.replyingTo, { handle: session.replyTarget.authorHandle })
                       : t.platformLabels[platform]}
                     <span className="mx-1.5" aria-hidden>·</span>
-                    <span role="status">{localSaveError ? te.localSaveFailed : localSaving ? te.saving : localPost?.error === "conflict" ? te.syncConflict : localPost?.error ? te.syncBlocked : localPost?.dirty ? te.savedLocally : te.synced}</span>
+                    <span role="status">{localSaveError ? te.localSaveFailed : localSaving ? te.saving : localPost?.error === "conflict" ? te.syncConflict : localPost?.error ? (localPost.errorCode?.includes('source') || localPost.errorCode?.includes('available_to_draft') ? te.sourceAccessBlocked : te.syncBlocked) : localPost?.dirty ? te.savedLocally : te.synced}</span>
                   </p>
                 </div>
               </div>
@@ -1129,6 +1136,7 @@ function PostPane({
               </div>
             </header>
 
+            {structured && localPost ? <FeedSources workspaceId={workspaceId} assistantId={assistantId} sessionId={sessionId} selected={localPost.content.selectedMemoryIds ?? []} disabled={Boolean(remoteBlocked) || readOnly} onCommand={runCommands} /> : null}
             {missingSlots.length ? <div role="status" className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"><span>{tg.draftSlots}</span>{missingSlots.map((id, index) => <button key={id} className="min-h-11 rounded-md px-2 text-xs underline decoration-dotted underline-offset-4 hover:bg-muted" onClick={() => { setViewMode('edit'); requestAnimationFrame(() => { const target = document.querySelector<HTMLElement>(`[data-placeholder-id="${id}"]`); target?.scrollIntoView({ block: 'center' }); target?.querySelector<HTMLInputElement>('input')?.focus(); }); }}>{tg.openSlot} {index + 1}</button>)}</div> : null}
             {localPost?.error && !readOnly && workspace.canDraft ? <Button type="button" variant="outline" disabled={offline || localSaving > 0} onClick={() => void retrySync()}>{te.retrySync}</Button> : null}
             {(localPost?.error || (readOnly && localPost?.dirty)) && workspace.canDraft ? <Button type="button" variant="outline" onClick={() => void saveAsNewPost()}>{te.saveAsNewPost}</Button> : null}

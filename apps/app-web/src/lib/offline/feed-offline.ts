@@ -12,6 +12,8 @@ import { FEED_API_URL, feedCachedJson, feedOwner } from "./feed-cache";
 
 export const FEED_LOCAL_CHANGED = "feed:local-changed";
 export type FeedWorkingContent = {
+  sourceSensitivity?: 'public' | 'internal' | 'confidential'; selectedMemoryIds?: string[];
+  sourceCompartments?: string[]; sourceProjectIds?: string[]; sourceFileIds?: string[]; sourceMemoryIds?: string[];
   schemaVersion?: 2; composition?: FeedComposition; goalId?: string | null; reviewMonth?: string;
   title: string; privateBrief: string; text: string; textEdited?: boolean; postFormat: FeedPostFormat;
   threadSegments: string[]; article: FeedArticleFields; media: PostMedia[];
@@ -22,7 +24,7 @@ export type LocalFeedPost = FeedWorkingCopy & {
   inFlight?: FeedWorkingCopy & { baseTitle?: string; create?: { platform: FeedPlatform } };
   collaborationQueue?: Array<{ mutationId: string; commands: FeedCommand[] }>;
   commandFlight?: FeedCommandRequest;
-  dirty: boolean; newSession: boolean; error?: "conflict" | "blocked";
+  dirty: boolean; newSession: boolean; error?: "conflict" | "blocked"; errorCode?: string;
 };
 type Records = Record<string, LocalFeedPost>;
 const key = (owner: string) => `feed:working:${owner}`;
@@ -60,7 +62,7 @@ export async function createLocalFeedPost(assistantId: string, platform: FeedPla
     const edits = diffFeedComposition(base, target);
     const commands: FeedCommand[] = [{ kind: 'upgrade', seed }];
     for (let i = 0; i < edits.length; i += 100) commands.push({ kind: 'edit', edits: edits.slice(i, i + 100) });
-    if (content.goalId !== undefined || content.reviewMonth !== undefined) commands.push({ kind: 'context', goalId: content.goalId, reviewMonth: content.reviewMonth });
+    if (content.goalId !== undefined || content.reviewMonth !== undefined || content.selectedMemoryIds !== undefined) commands.push({ kind: 'context', goalId: content.goalId, reviewMonth: content.reviewMonth, selectedMemoryIds: content.selectedMemoryIds });
     record.content = { ...content, composition: target };
     record.collaborationQueue = [{ mutationId: crypto.randomUUID(), commands }];
   }
@@ -213,7 +215,7 @@ async function replay() {
         const current = old?.[id];
         if (!current || current.inFlight?.mutationId !== flight.mutationId) return old ?? {};
         return { ...old, [id]: { ...current, revision: copy.revision, newSession: false, inFlight: undefined,
-          dirty: current.mutationId !== flight.mutationId || Boolean(current.collaborationQueue?.length), error: undefined } };
+          dirty: current.mutationId !== flight.mutationId || Boolean(current.collaborationQueue?.length), error: undefined, errorCode: undefined } };
       });
       changed(); notifyFeedPostsChanged();
     } catch { /* Durable work remains pending. Other posts may still sync. */ }
@@ -229,7 +231,7 @@ export async function retryFeedWorkingCopy(assistantId: string, sessionId: strin
     if (feedOwner() !== owner) throw new Error('Local identity changed');
     const current = old?.[id];
     if (!current?.dirty || !current.error) return old ?? {};
-    return { ...old, [id]: { ...current, error: undefined } };
+    return { ...old, [id]: { ...current, error: undefined, errorCode: undefined } };
   });
   changed();
   await flushFeedWorkingCopies();
@@ -289,22 +291,23 @@ async function replayFeedCommands(post: LocalFeedPost, owner: string) {
     });
     if (feedOwner() !== owner) return;
     if (!response.ok) {
+      const detail = await response.json().catch(() => null) as { code?: string; error?: string } | null;
       if ([400,403,404,409].includes(response.status)) {
         await idbUpdate<Records>(key(owner), old => {
           if (feedOwner() !== owner) throw new Error('Local identity changed');
           const current = old?.[id]; if (!current || current.commandFlight?.mutationId !== flight.mutationId) return old ?? {};
-          return { ...old, [id]: { ...current, error: response.status === 409 ? 'conflict' : 'blocked' } };
+          return { ...old, [id]: { ...current, error: response.status === 409 ? 'conflict' : 'blocked', errorCode: detail?.code ?? detail?.error } };
         }); changed();
       }
       return;
     }
-    const { receipt } = await response.json() as { receipt: FeedCollaborationReceipt };
+    const { receipt, sourceSensitivity, sourceAuthority } = await response.json() as { receipt: FeedCollaborationReceipt; sourceSensitivity?: FeedWorkingContent['sourceSensitivity']; sourceAuthority?: Pick<FeedWorkingContent, 'sourceFileIds' | 'sourceMemoryIds' | 'sourceCompartments' | 'sourceProjectIds'> };
     if (receipt.mutationId !== flight.mutationId || receipt.revision < flight.expectedRevision) return;
     await idbUpdate<Records>(key(owner), old => {
       if (feedOwner() !== owner) throw new Error('Local identity changed');
       const current = old?.[id]; if (!current || current.commandFlight?.mutationId !== flight.mutationId) return old ?? {};
       const remaining = (current.collaborationQueue ?? []).slice(1);
-      return { ...old, [id]: { ...current, revision: receipt.revision, commandFlight: undefined, collaborationQueue: remaining, dirty: remaining.length > 0, error: undefined } };
+      return { ...old, [id]: { ...current, content: { ...current.content, ...sourceAuthority, ...(sourceSensitivity ? { sourceSensitivity } : {}) }, revision: receipt.revision, commandFlight: undefined, collaborationQueue: remaining, dirty: remaining.length > 0, error: undefined, errorCode: undefined } };
     });
     changed(); notifyFeedPostsChanged();
   }
@@ -353,8 +356,8 @@ function applyQueuedFeedCommands(current: LocalFeedPost, commands: FeedCommand[]
 function feedPatchCommands(content: FeedWorkingContent, patch: Partial<FeedWorkingContent>): FeedCommand[] {
   if (!content.composition) throw new Error('Upgrade required');
   const commands: FeedCommand[] = [];
-  const { title, privateBrief, goalId, reviewMonth, postFormat, article } = patch;
-  const context = Object.fromEntries(Object.entries({ title, privateBrief, goalId, reviewMonth, postFormat, article }).filter(([, value]) => value !== undefined));
+  const { title, privateBrief, goalId, reviewMonth, postFormat, article, selectedMemoryIds } = patch;
+  const context = Object.fromEntries(Object.entries({ title, privateBrief, goalId, reviewMonth, postFormat, article, selectedMemoryIds }).filter(([, value]) => value !== undefined));
   if (Object.keys(context).length && postFormat !== 'post' && postFormat !== 'article') commands.push({ kind: 'context', ...context });
   let composition = content.composition;
   if (patch.text !== undefined) { const edits = proposeFeedReplacement(composition, { kind: 'post' }, patch.text); commands.push({ kind: 'edit', edits }); composition = applyFeedEdits(composition, edits).composition; }

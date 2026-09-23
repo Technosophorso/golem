@@ -16,7 +16,7 @@ vi.mock('@/lib/auth-fetch', () => ({ authFetch: (...args: unknown[]) => state.ht
 vi.mock('@/lib/use-post-media', () => ({ usePostMedia: () => ({ upload: state.upload, resolve: vi.fn(), uploading: false }) }));
 vi.mock('@/lib/i18n/client', () => ({ useT: () => en, useLocale: () => 'en' }));
 vi.mock('@/lib/surface-cache', () => ({ useCachedResource: () => state.messages }));
-vi.mock('@/lib/surface-prefetch', () => ({ feedCollaborationCacheKey: () => 'fixture-collaboration', goalsCacheKey: () => 'fixture-goals' }));
+vi.mock('@/lib/surface-prefetch', () => ({ feedCollaborationCacheKey: () => 'fixture-collaboration', feedSourcesCacheKey: () => 'fixture-sources', goalsCacheKey: () => 'fixture-goals' }));
 vi.mock('../tuning-chat-panel', () => ({ TuningChatPanel: (props: { sessionId: string }) => <div data-chat-session={props.sessionId} /> }));
 import { GenerationPlaceholder, FeedGenerationResults, type FeedGenerationControls } from '../generation-placeholder';
 import { CompositionEditor, FeedCompositionPreview } from '../composition-editor';

@@ -32,6 +32,11 @@ export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMess
   }
   const common = { requiresCapability: 'feed', homeAppToolSet: { app: 'feed' as const, set: 'write' as const }, isConcurrencySafe: false, timeoutMs: 15_000 }
   return [
+    buildTool({ ...common, name: 'selectFeedSources', description: 'Select exact memories for this draft. All collaborators must be authorized. This does not change source sensitivity, ambient access, or authorize public release.', inputSchema: z.object({ mutationId: z.string().uuid(), memoryIds: z.array(z.string().uuid()).max(100) }).strict(), isReadOnly: false, requiresConfirmation: true,
+      async execute(input) { await live(); return { data: await feedCommand({ ...context.actor, kind: 'user' }, { mutationId: input.mutationId, expectedRevision: context.reference.revision, commands: [{ kind: 'context', selectedMemoryIds: input.memoryIds }] }) } } }),
+    buildTool({ ...common, name: 'authorizeFeedPublicRelease', description: 'After the member reviews final text and attachments, authorize this exact revision for Public release. This does not publish or release private references, discussion, other versions, or customer records.', inputSchema: z.object({ mutationId: z.string().uuid() }).strict(), isReadOnly: false, requiresConfirmation: true,
+      async execute(input) { await live(); if (context.reference.target && context.reference.target.kind !== 'post') throw new FeedCollaborationError(403, 'selection_scope_mismatch'); return { data: await feedCommand({ ...context.actor, kind: 'user' }, { mutationId: input.mutationId, expectedRevision: context.reference.revision, commands: [{ kind: 'release', audience: 'public' }] }) } } }),
+
     buildTool({ ...common, name: 'readFeedLearning', description: 'Inspect authorized post confirmations, decision summaries, learned rules/voice, source decisions, scope and synthesis status. Private lessons unavailable to this shared Feed context are omitted with an access-limit flag. Reading never creates a rule or confirms a post.', inputSchema: z.object({}).strict(), isReadOnly: true, requiresConfirmation: false,
       async execute() { await live(); return { data: await readFeedLearnedDecisions(context.actor) } } }),
     buildTool({ ...common, name: 'confirmFeedPost', description: 'After explicit final editorial approval, confirm this exact saved whole-post revision and enqueue its bounded decision synthesis. Requires confirmation. This records editorial approval even if subsequent delivery fails; it does not publish the post. Single-suggestion acceptance, Review, copying and saving never authorize this action.', inputSchema: feedConfirmationRequestSchema, isReadOnly: false, requiresConfirmation: true,
@@ -90,6 +95,7 @@ export function buildFeedCollaborationTools(context: FeedTurnContext, sourceMess
       async execute(input) {
         const current = await live()
         for (const command of input.commands) {
+          if (command.kind === 'release') throw new FeedCollaborationError(403, 'dedicated_release_required')
           if (command.kind === 'edit' || command.kind === 'propose') selectedEdits(context, command.edits)
           if (command.kind === 'decide') { const suggestion = current.suggestions.find(s => s.id === command.suggestionId); if (!suggestion) throw new FeedCollaborationError(404, 'suggestion_not_found'); selectedEdits(context, suggestion.edits) }
           if (context.reference.target?.kind === 'range' && ['undo', 'context', 'upgrade'].includes(command.kind)) throw new FeedCollaborationError(403, 'selection_scope_mismatch')

@@ -1,3 +1,4 @@
+import { guardFeedStream } from '../content-planning/source-authority.js'
 import { FeedCollaborationError } from '../db/feed-collaboration-store.js'
 /**
  * Open content-planning HTTP surface.
@@ -518,6 +519,7 @@ export function contentPlanningRoutes(
         res.status(404).json({ error: 'Draft session not found' })
         return
       }
+      if (!(await query('SELECT feed_draft_audience_allowed($1) AS allowed', [session.id])).rows[0]?.allowed) { res.status(403).json({ error: 'draft_source_access_required' }); return }
       const user = await findUserById(ctx.userId)
       res.set({
         'Content-Type': 'text/event-stream',
@@ -562,7 +564,7 @@ export function contentPlanningRoutes(
         sessionId: req.params.sessionId,
         userId: ctx.userId,
         name: user?.name ?? null,
-        cb: (event: SessionEvent) => send(event.kind, event.payload),
+        cb: guardFeedStream<SessionEvent>({ query }, req.params.sessionId, ctx.userId, event => send(event.kind, event.payload), () => close()),
       })
       const keepalive = setInterval(() => res.write(': keepalive\n\n'), 25_000)
       keepalive.unref?.()

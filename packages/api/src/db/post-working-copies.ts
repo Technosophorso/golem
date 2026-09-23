@@ -1,9 +1,17 @@
 /** Durable unfinished Feed compositions. [COMP:feed/post-working-copies] */
+import { maxSensitivity } from '@use-brian/core'
 import type { CampaignEmailMetadata, FeedComposition } from '@use-brian/shared'
 import { getPool, query } from './client.js'
 import { seedFirstContentDraftMessage, withPlatformTitlePrefix, type ContentPlanningPlatform, type PostMedia } from './content-planning-store.js'
 
 export type PostWorkingContent = {
+  /** Server-stamped, monotonic classification of selected source material. */
+  sourceSensitivity?: 'public' | 'internal' | 'confidential'
+  selectedMemoryIds?: string[]
+  sourceCompartments?: string[]
+  sourceProjectIds?: string[]
+  sourceFileIds?: string[]
+  sourceMemoryIds?: string[]
   schemaVersion?: 2
   composition?: FeedComposition
   goalId?: string | null
@@ -29,12 +37,13 @@ export const postWorkingCopiesStore = {
     const result = await query<PostWorkingCopy>(
       `SELECT w.revision, w.mutation_id AS "mutationId", w.content
        FROM feed_post_working_copies w JOIN sessions s ON s.id = w.session_id
-       WHERE s.id = $1 AND s.assistant_id = $2 AND s.mode = 'draft'`,
+       WHERE s.id = $1 AND s.assistant_id = $2 AND s.mode = 'draft' AND feed_draft_audience_allowed(s.id)`,
       [sessionId, assistantId],
     )
     return result.rows[0] ?? null
   },
   async put(assistantId: string, sessionId: string, userId: string, input: WorkingCopyInput): Promise<PostWorkingCopy> {
+    input = { ...input, content: structuredClone(input.content) }
     const client = await getPool().connect()
     try {
       await client.query('BEGIN')
@@ -95,6 +104,16 @@ export const postWorkingCopiesStore = {
           [sessionId, `${platformPrefix} ${input.content.title.trim() || 'New draft'}`],
         )
       }
+      input.content = { ...input.content, sourceSensitivity: maxSensitivity(previous?.content.sourceSensitivity ?? 'public', input.content.sourceSensitivity ?? 'public'),
+        sourceFileIds: [...new Set([...(previous?.content.sourceFileIds ?? []), ...(input.content.sourceFileIds ?? [])])],
+        sourceMemoryIds: [...new Set([...(previous?.content.sourceMemoryIds ?? []), ...(input.content.sourceMemoryIds ?? [])])],
+        sourceCompartments: [...new Set([...(previous?.content.sourceCompartments ?? []), ...(input.content.sourceCompartments ?? [])])],
+        sourceProjectIds: [...new Set([...(previous?.content.sourceProjectIds ?? []), ...(input.content.sourceProjectIds ?? [])])] }
+      const sourceRows = (await client.query<{ sensitivity: 'public' | 'internal' | 'confidential'; compartments: string[]; project_ids: string[] }>(`SELECT sensitivity,compartments,project_ids FROM workspace_files WHERE workspace_id=(SELECT workspace_id FROM sessions WHERE id=$1) AND id=ANY($2::uuid[])
+        UNION ALL SELECT sensitivity,compartments,project_ids FROM memories WHERE workspace_id=(SELECT workspace_id FROM sessions WHERE id=$1) AND id=ANY($3::uuid[])`, [sessionId, input.content.sourceFileIds, input.content.sourceMemoryIds])).rows
+      input.content.sourceSensitivity = maxSensitivity(input.content.sourceSensitivity ?? 'public', ...sourceRows.map(row => row.sensitivity))
+      input.content.sourceCompartments = [...new Set([...(input.content.sourceCompartments ?? []), ...sourceRows.flatMap(row => row.compartments)])]
+      input.content.sourceProjectIds = [...new Set([...(input.content.sourceProjectIds ?? []), ...sourceRows.flatMap(row => row.project_ids)])]
       const copy = { revision: input.revision + 1, mutationId: input.mutationId, content: input.content }
       await client.query(
         `INSERT INTO feed_post_working_copies (session_id, revision, mutation_id, content)
@@ -103,6 +122,7 @@ export const postWorkingCopiesStore = {
              content = EXCLUDED.content, updated_at = now()`,
         [sessionId, copy.revision, copy.mutationId, JSON.stringify(copy.content)],
       )
+      if (!(await client.query('SELECT feed_draft_audience_allowed($1) AS allowed', [sessionId])).rows[0]?.allowed) throw new WorkingCopyError(403)
       await client.query('COMMIT')
       return copy
     } catch (error) {

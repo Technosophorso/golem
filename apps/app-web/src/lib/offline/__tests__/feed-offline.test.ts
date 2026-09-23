@@ -292,3 +292,26 @@ describe('[COMP:app-web/feed-offline] structured collaboration replay', () => {
     expect(updated.collaborationQueue?.[0]?.commands).toEqual([{ kind: 'context', title: 'A renamed post', privateBrief: 'Context only' }]);
   });
 });
+
+
+describe('[COMP:app-web/feed-offline] selected-source recovery', () => {
+  it('retains the source error and retries the identical mutation with server sensitivity', async () => {
+    const post = await structuredPost();
+    await queueFeedCommands(assistant, post.session.id, [{ kind: 'context', title: 'Selected reference draft' }]);
+    vi.mocked(authFetch).mockReset().mockResolvedValue(reply({ error: 'file_not_available_to_draft' }, 403));
+    await flushFeedWorkingCopies();
+    const rejected = vi.mocked(authFetch).mock.calls[0][1]!.body;
+    expect(await readLocalFeedPost(assistant, post.session.id)).toMatchObject({ dirty: true, error: 'blocked', errorCode: 'file_not_available_to_draft' });
+    vi.mocked(authFetch).mockImplementation(async (_url, init) => {
+      const request = JSON.parse(init!.body as string);
+      return reply({ receipt: { mutationId: request.mutationId, revision: request.expectedRevision + 1, sequence: 0, threadIds: [], suggestionIds: [] }, sourceSensitivity: 'internal' });
+    });
+    await retryFeedWorkingCopy(assistant, post.session.id);
+    expect(vi.mocked(authFetch).mock.calls[1][1]!.body).toBe(rejected);
+    const synced = await readLocalFeedPost(assistant, post.session.id);
+    expect(synced).toMatchObject({ dirty: false, content: { title: 'Selected reference draft', sourceSensitivity: 'internal' } });
+    expect(synced?.errorCode).toBeUndefined();
+    const fork = await forkLocalFeedPost(synced!);
+    expect(fork.content.sourceSensitivity).toBe('internal');
+  });
+});

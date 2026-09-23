@@ -1,3 +1,4 @@
+import { feedSelectedFiles, readFeedSelectedSources, feedSourceFloor } from '../content-planning/source-authority.js'
 /** Atomic Feed content, discussion and decision history. [COMP:feed/draft-comments] [COMP:feed/draft-suggestions] [COMP:feed/editorial-decisions] */
 import { createHash, randomUUID } from 'node:crypto'
 import type pg from 'pg'
@@ -11,7 +12,6 @@ import { canMemberDraftRole } from './workspace-store.js'
 import { appendDecisionEvent } from './decision-event-store.js'
 import { appendDecisionDerivation, type DecisionDerivationRelation } from './decision-provenance-store.js'
 import type { PostWorkingContent, PostWorkingCopy } from './post-working-copies.js'
-import { buildAccessPredicate } from './access-predicate.js'
 
 export class FeedCollaborationError extends Error {
   constructor(public status: number, public code: string) { super(code) }
@@ -20,7 +20,7 @@ export type FeedActor = { userId: string; assistantId: string; sessionId: string
 export type StructuredFeedContent = PostWorkingContent & { schemaVersion: 2; composition: FeedComposition }
 export type FeedThread = { id: string; transcriptSessionId: string; anchor: FeedAnchor; resolved: boolean; authorUserId: string; authorName?: string | null; authorKind: 'user' | 'assistant'; createdAt: Date }
 export type FeedSuggestion = { sourceRunId?: string | null; id: string; sourceRevision: number; edits: FeedEdit[]; rationale: string; status: string; threadId: string | null; parentId: string | null; authorUserId: string; authorName?: string | null; authorKind: 'user' | 'assistant'; acceptanceReceipt: FeedCollaborationReceipt | null; applicationId: string | null }
-export type FeedScope = { workspaceId: string; clearance: string; compartments: string[] | null; role: 'owner' | 'admin' | 'member'; canDraft: boolean; memberClearance: string }
+export type FeedScope = { workspaceId: string; clearance: string; compartments: string[] | null; role: 'owner' | 'admin' | 'member'; canDraft: boolean; memberClearance: string; memberCompartments?: string[] | null }
 export async function lockFeedAccess(client: pg.PoolClient, actor: FeedActor, write = true): Promise<FeedScope> {
   const row = (await client.query<FeedScope>(
     `SELECT a.workspace_id AS "workspaceId", a.clearance, a.compartments FROM sessions s JOIN assistants a ON a.id=s.assistant_id
@@ -29,11 +29,12 @@ export async function lockFeedAccess(client: pg.PoolClient, actor: FeedActor, wr
     [actor.sessionId, actor.assistantId],
   )).rows[0]
   if (!row) throw new FeedCollaborationError(404, 'draft_not_found')
-  const member = (await client.query<Pick<FeedScope, 'role' | 'canDraft' | 'memberClearance'>>(
-    `SELECT role,can_draft AS "canDraft",clearance AS "memberClearance" FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE`,
+  const member = (await client.query<Pick<FeedScope, 'role' | 'canDraft' | 'memberClearance' | 'memberCompartments'>>(
+    `SELECT role,can_draft AS "canDraft",clearance AS "memberClearance",effective_member_team_compartments(user_id,workspace_id) AS "memberCompartments" FROM workspace_members WHERE workspace_id=$1 AND user_id=$2 FOR SHARE`,
     [row.workspaceId, actor.userId],
   )).rows[0]
   if (!member || (write && !canMemberDraftRole(member.role, member.canDraft))) throw new FeedCollaborationError(403, 'draft_access_required')
+  if (!(await client.query('SELECT feed_draft_audience_allowed($1) AS allowed', [actor.sessionId])).rows[0]?.allowed) throw new FeedCollaborationError(403, 'draft_source_access_required')
   return { ...row, ...member }
 }
 export async function withFeedTransaction<T>(actor: FeedActor, work: (client: pg.PoolClient, scope: FeedScope) => Promise<T>, write = true): Promise<T> {
@@ -56,19 +57,23 @@ async function threads(client: pg.PoolClient, sessionId: string): Promise<FeedTh
 }
 const SUGGESTION_COLUMNS = 'id,source_run_id AS "sourceRunId",source_proposal AS "sourceProposal",source_revision AS "sourceRevision",edits,rationale,status,thread_id AS "threadId",parent_id AS "parentId",author_user_id AS "authorUserId",author_kind AS "authorKind",acceptance_receipt AS "acceptanceReceipt",application_id AS "applicationId"'
 export async function assertFeedFiles(client: pg.PoolClient, actor: FeedActor, scope: FeedScope, composition: FeedComposition, historicalFileIds: readonly string[] = []): Promise<void> {
-  const ids = new Map<string, string | null>(historicalFileIds.map(id => [id, null]))
-  for (const { node } of walkFeed(composition)) {
-    if (node.type === 'image') ids.set(node.attrs.fileId, node.attrs.mimeType)
-    if (node.type === 'generationPlaceholder') for (const ref of node.attrs.references) if ('fileId' in ref) ids.set(ref.fileId, null)
-  }
-  if (!ids.size) return
-  const ap = buildAccessPredicate({ workspaceId: scope.workspaceId, userId: actor.userId, assistantId: actor.assistantId, assistantKind: 'app', clearance: scope.clearance as 'public' | 'internal' | 'confidential', compartments: scope.compartments })
-  const files = (await client.query<{ id: string; mime: string }>(`SELECT id,mime FROM workspace_files WHERE ${ap.sql} AND workspace_id=$${ap.nextIdx} AND id=ANY($${ap.nextIdx + 1}::uuid[]) AND valid_to IS NULL AND retracted_at IS NULL
-    AND NOT EXISTS (SELECT 1 FROM workspace_members viewer WHERE viewer.workspace_id=workspace_files.workspace_id AND
-      ((workspace_files.user_id IS NOT NULL AND workspace_files.user_id<>viewer.user_id)
-       OR sensitivity_rank(workspace_files.sensitivity)>sensitivity_rank(viewer.clearance)
-       OR (viewer.compartments IS NOT NULL AND NOT workspace_files.compartments <@ viewer.compartments))) FOR SHARE`, [...ap.params, scope.workspaceId, [...ids.keys()]])).rows
+  const ids = feedSelectedFiles(composition)
+  for (const id of historicalFileIds) if (!ids.has(id)) ids.set(id, null)
+  const files = await readFeedSelectedSources(client, actor, scope, 'file', [...ids.keys()])
   if (files.length !== ids.size || files.some(f => ids.get(f.id) !== null && ids.get(f.id) !== f.mime)) throw new FeedCollaborationError(403, 'file_not_available_to_draft')
+  if (actor.kind === 'assistant') {
+    const copy = await readFeedCopy(client, actor.sessionId)
+    const selected = copy?.content.composition ? feedSelectedFiles(copy.content.composition) : new Map()
+    const ranks = ['public', 'internal', 'confidential']
+    for (const file of files) {
+      if (ranks.indexOf(file.sensitivity) <= ranks.indexOf(scope.clearance) || selected.has(file.id)) continue
+      const generation = file.metadata?.feedGeneration as { sessionId?: string; runId?: string } | undefined
+      if (!generation?.runId || generation.sessionId !== actor.sessionId || !(await client.query(
+        "SELECT 1 FROM feed_editorial_runs WHERE id=$1 AND session_id=$2 AND kind='image_generation' AND result->'candidates' @> $3::jsonb",
+        [generation.runId, actor.sessionId, JSON.stringify([{ edits: [{ replacement: [{ type: 'image', attrs: { fileId: file.id } }] }] }])])).rows.length) throw new FeedCollaborationError(403, 'source_selection_required')
+    }
+  }
+
 }
 async function assertSameReference(client: pg.PoolClient, table: 'feed_comment_threads' | 'feed_draft_suggestions', sessionId: string, ref?: string): Promise<void> {
   if (ref && !(await client.query(`SELECT id FROM ${table} WHERE session_id=$1 AND id=$2`, [sessionId, ref])).rows.length) throw new FeedCollaborationError(404, 'reference_not_found')
@@ -114,6 +119,15 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
       if (structured.postFormat !== 'thread' && structured.composition.segments.length !== 1) throw new FeedCollaborationError(400, 'format_segment_mismatch')
       content = { ...structured, text: projection.text, threadSegments: projection.threadSegments, media: projection.media }
       await assertFeedFiles(client, actor, scope, structured.composition)
+      const files = await readFeedSelectedSources(client, actor, scope, 'file', [...feedSelectedFiles(structured.composition).keys()])
+      const memories = await readFeedSelectedSources(client, actor, scope, 'memory', structured.selectedMemoryIds ?? [])
+      if (memories.length !== new Set(structured.selectedMemoryIds ?? []).size) throw new FeedCollaborationError(403, 'memory_not_available_to_draft')
+      content = { ...content, sourceSensitivity: feedSourceFloor(content.sourceSensitivity, [...files, ...memories]),
+        sourceCompartments: [...new Set([...(content.sourceCompartments ?? []), ...[...files, ...memories].flatMap(source => source.compartments ?? [])])],
+        sourceFileIds: [...new Set([...(content.sourceFileIds ?? []), ...files.map(source => source.id)])],
+        sourceMemoryIds: [...new Set([...(content.sourceMemoryIds ?? []), ...memories.map(source => source.id)])],
+        sourceProjectIds: [...new Set([...(content.sourceProjectIds ?? []), ...[...files, ...memories].flatMap(source => source.projectIds ?? [])])] }
+      await client.query(`UPDATE sessions SET effective_clearance=CASE WHEN sensitivity_rank(COALESCE(effective_clearance,'public'))<sensitivity_rank($2) THEN $2 ELSE effective_clearance END WHERE id=$1 OR id IN(SELECT transcript_session_id FROM feed_comment_threads WHERE session_id=$1)`, [actor.sessionId, content.sourceSensitivity])
       currentRevision++
       await client.query(`INSERT INTO feed_post_revisions(session_id,revision,workspace_id,assistant_id,actor_user_id,actor_kind,mutation_id,content,forward_commands,inverse_commands) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`, [actor.sessionId, currentRevision, scope.workspaceId, actor.assistantId, actor.userId, actor.kind, input.mutationId, JSON.stringify(content), JSON.stringify(forward), JSON.stringify(inverse)])
       if (capture && actor.kind === 'user') {
@@ -210,7 +224,14 @@ export async function executeFeedCommands(actor: FeedActor, raw: FeedCommandRequ
         await editContent(history.inverse, undefined, undefined, true)
         const accepted = (await client.query<FeedSuggestion>(`SELECT ${SUGGESTION_COLUMNS} FROM feed_draft_suggestions WHERE session_id=$1 AND status='accepted' AND (acceptance_receipt->>'revision')::int=$2`, [actor.sessionId, command.revision])).rows
         for (const suggestion of accepted) await proposalDecision(suggestion, 'undone')
+      } else if (command.kind === 'release') {
+        if (actor.kind !== 'user') throw new FeedCollaborationError(403, 'member_release_required')
+        if (input.commands.length !== 1) throw new FeedCollaborationError(400, 'release_requires_exact_revision')
+        await assertFeedFiles(client, actor, scope, structured.composition)
+        await client.query('UPDATE feed_post_working_copies SET public_release=$2 WHERE session_id=$1', [actor.sessionId, JSON.stringify({ revision: currentRevision, audience: 'public', actorUserId: actor.userId, mutationId: input.mutationId })])
+        sequence++
       } else if (command.kind === 'context') {
+        if (command.selectedMemoryIds && actor.kind !== 'user' && command.selectedMemoryIds.some(id => !structured.selectedMemoryIds?.includes(id))) throw new FeedCollaborationError(403, 'source_selection_required')
         if (command.goalId && !(await client.query('SELECT id FROM goals WHERE id=$1 AND workspace_id=$2', [command.goalId, scope.workspaceId])).rows.length) throw new FeedCollaborationError(403, 'goal_scope_mismatch')
         const { kind: _kind, ...patch } = command
         content = { ...structured, ...patch }
