@@ -18,7 +18,7 @@ vi.mock("@/components/chrome/chat-activity", () => ({
   ChatCitationList: ({ citations }: { citations: { title: string }[] }) => <div data-sources>{citations.map(c => c.title).join(" ")}</div>,
 }));
 vi.mock("@/components/chrome/chat-file-attachment", () => ({ ChatFileAttachments: ({ attachments }: { attachments: { name: string }[] }) => <div data-files>{attachments.map(f => f.name).join(" ")}</div> }));
-vi.mock("@/components/chrome/chat-confirmation-card", () => ({ ChatConfirmationCard: ({ confirmation, onApprove, onDeny }: { confirmation: { toolCallId: string }; onApprove: (id: string) => void; onDeny: (id: string, comment: string) => void }) => <div data-confirmation><button onClick={() => onApprove(confirmation.toolCallId)}>approve</button><button onClick={() => onDeny(confirmation.toolCallId, "Keep the draft")}>deny</button></div> }));
+vi.mock("@/components/chrome/chat-confirmation-card", () => ({ ChatConfirmationCard: ({ confirmation, onApprove, onDeny, onAlwaysAllow }: { confirmation: { toolCallId: string; allowPersistentApproval?: boolean }; onApprove: (id: string) => void; onDeny: (id: string, comment: string) => void; onAlwaysAllow?: (id: string) => void }) => <div data-confirmation><button onClick={() => onApprove(confirmation.toolCallId)}>approve</button><button onClick={() => onDeny(confirmation.toolCallId, "Keep the draft")}>deny</button>{confirmation.allowPersistentApproval && <button onClick={() => onAlwaysAllow?.(confirmation.toolCallId)}>always</button>}</div> }));
 vi.mock("@/components/chrome/pending-question-panel", () => ({ PendingQuestionPanel: ({ approvalId }: { approvalId: string }) => <div data-question>{approvalId}</div> }));
 vi.mock("@/lib/recorder/dock-recorder-bridge", () => ({ registerDockRecorderChatTarget: () => () => {} }));
 let root: Root, host: HTMLDivElement;
@@ -166,7 +166,7 @@ describe("[COMP:app-web/feed-chat-stream] Feed panel", () => {
     expect(host.querySelector('[data-question]')?.textContent).toBe("question");
     expect(host.querySelectorAll('[data-confirmation]')).toHaveLength(1);
     await act(async () => host.querySelector<HTMLButtonElement>('[data-confirmation] button')!.click());
-    expect(mocks.approval).toHaveBeenCalledWith({ id: "approval", kind: "tool_invocation" }, "approved", undefined);
+    expect(mocks.approval).toHaveBeenCalledWith({ id: "approval", kind: "tool_invocation" }, "approved", undefined, undefined);
   });
   it("retains typed input while the initial status probe is unresolved", async () => {
     const probe = source(); mocks.fetch.mockResolvedValueOnce(probe.response);
@@ -176,6 +176,27 @@ describe("[COMP:app-web/feed-chat-stream] Feed panel", () => {
     expect(host.querySelector("textarea")!.value).toBe("Keep this typed request");
     await act(async () => { probe.send("status", { status: "idle" }); probe.send("done"); probe.close(); });
     expect(host.querySelector<HTMLButtonElement>(`button[title="${en.feedPage.tuningChat.send}"]`)!.disabled).toBe(false);
+  });
+  it("persists a live Always allow decision through the canonical resolver", async () => {
+    const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response).mockResolvedValue(new Response("{}"));
+    await send("Run the action");
+    await act(async () => direct.send("tool_confirmation_required", { toolCallId: "tool", toolName: "writeExample", allowPersistentApproval: true }));
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-confirmation] button:nth-child(3)")!.click());
+    expect(JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body)).toEqual({ sessionId: "draft", toolCallId: "tool", decision: "always_allow" });
+  });
+  it("retains a failed Always allow card for retry", async () => {
+    const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response).mockResolvedValue(new Response("{}", { status: 403 }));
+    await send("Run the action");
+    await act(async () => direct.send("tool_confirmation_required", { toolCallId: "tool", toolName: "writeExample", allowPersistentApproval: true }));
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-confirmation] button:nth-child(3)")!.click());
+    expect(host.querySelector("[data-confirmation]")).not.toBeNull();
+    expect(host.textContent).toContain(en.chatApp.confirmNotAllowed);
+  });
+  it("persists Always allow for a restored approval", async () => {
+    mocks.pending.mockResolvedValue({ pending: null, toolConfirmation: { approvalId: "approval", toolName: "writeExample", input: {}, displayLines: [], allowPersistentApproval: true } });
+    await mount("restored-draft");
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-confirmation] button:nth-child(3)")!.click());
+    expect(mocks.approval).toHaveBeenCalledWith({ id: "approval", kind: "tool_invocation" }, "approved", undefined, { grantAlways: true });
   });
   it("does not let a late old transcript overwrite a new draft", async () => {
     let resolve!: (rows: DocSessionMessage[]) => void;

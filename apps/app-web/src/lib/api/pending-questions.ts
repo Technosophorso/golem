@@ -53,6 +53,7 @@ export function toRestoredConfirmation(
     toolCallId: `approval:${row.approvalId}`,
     approvalId: row.approvalId,
     restored: true,
+    allowPersistentApproval: row.allowPersistentApproval === true,
     toolName: row.toolName,
     input: row.input,
     description: row.description ?? undefined,

@@ -124,6 +124,7 @@ export function ChatConfirmationCard({
   denyLabel,
   approvingLabel,
   onApprove,
+  onAlwaysAllow,
   onDeny,
 }: {
   confirmation: PendingConfirmation;
@@ -131,6 +132,7 @@ export function ChatConfirmationCard({
   denyLabel: string;
   approvingLabel: string;
   onApprove: (toolCallId: string) => void;
+  onAlwaysAllow?: (toolCallId: string) => void;
   /** A denial with an optional note. The note reaches the model via
    *  `declinedToolResult` so the assistant revises rather than re-asks. */
   onDeny: (toolCallId: string, comment?: string) => void;
@@ -261,6 +263,13 @@ export function ChatConfirmationCard({
             >
               {isInFlight ? effectiveApprovingLabel : effectiveApproveLabel}
             </button>
+            {confirmation.allowPersistentApproval && onAlwaysAllow ? (
+              <button type="button" disabled={isInFlight}
+                onClick={() => onAlwaysAllow(confirmation.toolCallId)}
+                className="min-h-11 rounded-md border border-border bg-background px-3 text-[12px] font-medium transition-colors hover:bg-muted disabled:opacity-50 md:min-h-8">
+                {t.confirmationAlwaysAllow}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={() => onDeny(confirmation.toolCallId)}

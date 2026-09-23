@@ -1429,6 +1429,7 @@ export const ja: Dictionary = {
       approvals: "承認について質問中",
     },
     confirmationApprove: "承認",
+    confirmationAlwaysAllow: "常に許可",
     confirmationDeny: "拒否",
     confirmationDenyWithComment: "コメントを付けて拒否",
     confirmationCommentPlaceholder: "アシスタントが修正できるようメモを追加（任意）",
@@ -7557,6 +7558,13 @@ export const ja: Dictionary = {
   },
   feedPage: {
     title: "フィード",
+    actionPermissions: {
+      title: "アクションの権限",
+      description: "この Feed アシスタントが自動で実行できる操作と、承認が必要な操作を選びます。ワークスペースのルールも適用されます。",
+      loadError: "アクションの権限を読み込めませんでした。",
+      saveError: "設定を保存できませんでした。もう一度お試しください。",
+      empty: "このアシスタントに接続されたアクションはありません。",
+    },
     description: "ブランドの声で Instagram・Threads・X・XHS 向けに下書きし、接続済みプラットフォームには直接投稿できます。",
     sectionsAriaLabel: "フィードのセクション",
     groups: {

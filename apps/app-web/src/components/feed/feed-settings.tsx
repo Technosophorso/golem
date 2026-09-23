@@ -9,6 +9,7 @@
  * [COMP:app-web/feed-settings]
  */
 
+import { FeedActionPermissions } from "./feed-action-permissions";
 import { useParams } from "next/navigation";
 import Link from "next/link";
 import { useFeedWorkspace } from "@/contexts/feed-profiles-context";
@@ -56,6 +57,8 @@ export function FeedSettings() {
         </h2>
         <FeedConnection embedded />
       </section>
+
+      <FeedActionPermissions />
 
       <section className="grid gap-3 sm:grid-cols-2">
         <SettingCard

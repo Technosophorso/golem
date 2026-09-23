@@ -137,7 +137,7 @@ export function feedTurnMessage(turn: FeedChatTurn, now = Date.now()): Message |
 export function feedConfirmation(data: Record<string, unknown>, sessionId: string): PendingConfirmation | null {
   const toolCallId = str(data.toolCallId);
   if (!toolCallId || !sessionId) return null;
-  return { toolCallId, sessionId, approvalId: str(data.approvalId) || undefined,
+  return { toolCallId, sessionId, allowPersistentApproval: data.allowPersistentApproval === true, approvalId: str(data.approvalId) || undefined,
     toolName: str(data.toolName), displayName: str(data.displayName) || undefined,
     input: feedEventPayload(data.input), description: str(data.description) || undefined,
     displayLines: Array.isArray(data.displayLines) ? data.displayLines.filter((line): line is string => typeof line === "string") : undefined, status: "pending" };

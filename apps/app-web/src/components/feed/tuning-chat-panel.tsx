@@ -752,18 +752,18 @@ export const TuningChatPanel = forwardRef<
     [assistantId, initialized, session, stream, model, researchMode, workspaceId, t, updateTurn, ready, props.feedTarget, fixedSessionId, channelId, att.detach],
   );
 
-  const resolveConfirmation = async (toolCallId: string, decision: "allow" | "deny", comment?: string) => {
+  const resolveConfirmation = async (toolCallId: string, decision: "allow" | "always_allow" | "deny", comment?: string) => {
     const confirmation = session.state.pendingConfirmations.find(item => item.toolCallId === toolCallId);
-    if (!confirmation) return;
+    if (!confirmation || confirmation.status !== "pending" || (decision === "always_allow" && !confirmation.allowPersistentApproval)) return;
     const epoch = epochRef.current;
     session.updateConfirmation(toolCallId, { status: "approving" });
     try {
       const result = confirmation.restored && confirmation.approvalId
-        ? await respondByKind({ id: confirmation.approvalId, kind: "tool_invocation" }, decision === "allow" ? "approved" : "rejected", comment)
+        ? await respondByKind({ id: confirmation.approvalId, kind: "tool_invocation" }, decision !== "deny" ? "approved" : "rejected", comment, decision === "always_allow" ? { grantAlways: true } : undefined)
         : await authFetch(`${API_URL}/api/chat/confirm`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: confirmation.sessionId, toolCallId, decision, ...(comment ? { comment } : {}) }) });
       if (epoch !== epochRef.current) return;
       if (!result.ok) throw new Error(tGoal.confirmNotAllowed);
-      session.updateConfirmation(toolCallId, { status: decision === "allow" ? "approved" : "denied" });
+      session.updateConfirmation(toolCallId, { status: decision !== "deny" ? "approved" : "denied" });
       if (workspaceId) requestApprovalsRefresh(workspaceId);
       if (!stream.inFlight()) recoverSessionRef.current(confirmation.sessionId);
     } catch {
@@ -1065,6 +1065,7 @@ export const TuningChatPanel = forwardRef<
             <DockRecorderRecovery rec={dockRecorder} className="mb-1.5" />
             <DockRecorderNotice rec={dockRecorder} className="mb-1.5" />
             <DockRecorderStrip rec={dockRecorder} className="mb-1.5" />
+              onAlwaysAllow={id => void resolveConfirmation(id, "always_allow")}
           </>
         ) : null}
 
