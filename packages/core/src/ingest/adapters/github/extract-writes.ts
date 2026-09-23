@@ -14,6 +14,7 @@
  * [COMP:brain/source-adapters/github]
  */
 
+import { stableExternalIdentityFromCrmRef } from '../../../decision-learning/types.js'
 import type { CompositionWrite } from '../../../classification/compose.js'
 import type { DerivedEdge, DerivedEntity } from '../../../classification/types.js'
 import type { GithubNormalizedEvent } from './types.js'
@@ -41,16 +42,24 @@ function repoEntity(repo: string): DerivedEntity {
   }
 }
 
-function actorEntity(login: string, isBot: boolean): DerivedEntity | null {
-  // Skip bot accounts — they're system identities, not persons.
-  if (isBot) return null
-  if (!login) return null
+/** Verified adapter identity shared by composition and Pipeline B. */
+export function githubActorIdentity(event: GithubNormalizedEvent) {
+  const { id, login, is_bot: isBot } = event.actor
+  if (isBot || !login.trim() || !Number.isSafeInteger(id) || (id ?? 0) <= 0) return null
+  const externalRef = { provider: 'github', host: 'github.com', id: String(id), login }
+  const stableIdentity = stableExternalIdentityFromCrmRef(externalRef)
+  return stableIdentity ? { name: login, externalRef, stableIdentity } : null
+}
+
+function actorEntity(event: GithubNormalizedEvent): DerivedEntity | null {
+  const identity = githubActorIdentity(event)
+  if (!identity) return null
   return {
     ref: 'actor',
     kind: PERSON_KIND,
-    display_name: login,
-    canonical_id: `https://github.com/${login}`,
-    attributes: { github_login: login },
+    display_name: identity.name,
+    canonical_id: `https://github.com/${identity.name}`,
+    attributes: { github_login: identity.name },
   }
 }
 
@@ -59,14 +68,14 @@ function actorEntity(login: string, isBot: boolean): DerivedEntity | null {
  * deterministically produce. Returns null when there's nothing to write
  * (e.g. push from a bot account that we deliberately skip).
  *
- * Composition executor handles dedup by canonical_id, so repeated PR
- * webhooks on the same repo are idempotent.
+ * Repositories resolve by canonical_id. Callers must pass githubActorIdentity
+ * through CompositionContext.personIdentities.actor for stable person reuse.
  */
 export function extractWritesFromGithubEvent(
   event: GithubNormalizedEvent,
 ): CompositionWrite | null {
   const repo = repoEntity(event.repo)
-  const actor = actorEntity(event.actor.login, event.actor.is_bot)
+  const actor = actorEntity(event)
 
   const entities: DerivedEntity[] = []
   const edges: DerivedEdge[] = []

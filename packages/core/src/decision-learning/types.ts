@@ -50,6 +50,14 @@ export function stableExternalIdentityFromCrmRef(
   let providerInstanceKey = ''
   let subjectId = ''
   switch (provider) {
+    case 'github':
+      // GitHub.com account ids are stable across login/repository changes.
+      // Other hosts have independent namespaces and are not supported here.
+      if (ref.host !== 'github.com') return null
+      subjectId = str(ref.id)
+      if (!/^[1-9]\d*$/.test(subjectId) || !Number.isSafeInteger(Number(subjectId))) return null
+      providerInstanceKey = 'github.com'
+      break
     case 'slack':
       providerInstanceKey = str(ref.team_id)
       subjectId = str(ref.id)

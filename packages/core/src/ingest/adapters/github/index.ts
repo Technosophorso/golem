@@ -51,7 +51,7 @@ export {
   toEpisodeEnvelope,
   verifyGithubSignature,
 }
-export { extractWritesFromGithubEvent } from './extract-writes.js'
+export { extractWritesFromGithubEvent, githubActorIdentity } from './extract-writes.js'
 export {
   GITHUB_TASK_STATUS_RANK,
   githubTaskIntent,

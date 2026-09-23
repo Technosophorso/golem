@@ -32,6 +32,17 @@ function base(eventKind: string, payload: unknown) {
 }
 
 describe('[COMP:brain/decision-event-schema] typed decision event registry', () => {
+  it('accepts only GitHub.com numeric account references', () => {
+    expect(stableExternalIdentityFromCrmRef({ provider: 'github', host: 'github.com', id: '101', login: 'example' })).toEqual({
+      provider: 'github', providerInstanceKey: 'github.com', subjectId: '101',
+    })
+    for (const id of ['example', 'https://github.com/example', '0', '-1', '1.5', '01', '9007199254740992']) {
+      expect(stableExternalIdentityFromCrmRef({ provider: 'github', host: 'github.com', id })).toBeNull()
+    }
+    expect(stableExternalIdentityFromCrmRef({ provider: 'github', id: '101' })).toBeNull()
+    expect(stableExternalIdentityFromCrmRef({ provider: 'github', host: 'git.example', id: '101' })).toBeNull()
+  })
+
   it('keeps the event-kind registry closed and versioned', () => {
     expect(DECISION_EVENT_KINDS).toEqual([
       'feed.draft_revised', 'feed.proposal_decided', 'feed.post_confirmed', 'feed.confirmation_revoked',

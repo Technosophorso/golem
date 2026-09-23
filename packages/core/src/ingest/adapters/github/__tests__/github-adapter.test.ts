@@ -74,6 +74,18 @@ function normalize(opts: { fixture: string; event: string; delivery?: string }) 
 }
 
 describe('[COMP:brain/source-adapters/github] GitHub source adapter', () => {
+  it('preserves verified webhook account ids while tolerating missing or invalid ids', () => {
+    for (const id of [101, undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+      const input = makeInput({ fixture: 'push-default.json', event: 'push' })
+      const body = JSON.parse(input.rawBody)
+      body.sender = { login: 'example-actor', type: 'User', id }
+      input.rawBody = JSON.stringify(body)
+      const normalized = normalizeGithubWebhook(input, RECEIVED_AT)
+      expect(normalized).not.toBeNull()
+      expect(normalized?.actor.id).toBe(id === 101 ? 101 : undefined)
+    }
+  })
+
   describe('signature verification', () => {
     it('accepts a valid HMAC-SHA256 signature', () => {
       const body = 'hello'

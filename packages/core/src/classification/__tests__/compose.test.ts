@@ -170,13 +170,12 @@ describe('[COMP:classification/compose] createComposeExecutor', () => {
     })
   })
 
-  it('routes person kind through CRM.createContact and resolves entity id', async () => {
+  it('uses the returned contact id even when a same-name person already exists', async () => {
     const entities = makeEntityStoreStub()
     const links = makeLinksStoreStub()
     const crm = makeCrmStub()
 
-    // Pre-seed the byName map so resolveCrmEntityId finds the entity row that
-    // the CRM tool would have written atomically alongside the contact.
+    // A pre-existing namesake must never steal the newly written relationship.
     const ent = makeEntity({ id: 'ent-person-1', kind: 'person', displayName: 'Alice Chen', canonicalId: 'alice@acme.com' })
     entities.byName.set('person:alice chen', ent)
     entities.byCanonical.set('person:alice@acme.com', ent)
@@ -191,9 +190,25 @@ describe('[COMP:classification/compose] createComposeExecutor', () => {
       },
     }
     const out = await exec.write(writes, baseCtx())
-    expect(out.entityIds.primary).toBe('ent-person-1')
+    expect(out.entityIds.primary).toBe('contact-1')
+    expect(entities.stub.findByNameSystem).not.toHaveBeenCalled()
+    expect(entities.stub.findByCanonicalIdSystem).not.toHaveBeenCalled()
     expect(crm.calls.find((c) => c.method === 'createContact')).toBeDefined()
     expect(entities.created).toHaveLength(0)  // CRM path, not direct EntityStore.create
+  })
+
+  it('accepts person authority only from trusted context, never derived attributes', async () => {
+    const entities = makeEntityStoreStub()
+    const links = makeLinksStoreStub()
+    const crm = makeCrmStub()
+    const exec = createComposeExecutor({ entities: entities.stub, links: links.stub, crm: crm.stub })
+    const stableIdentity = { provider: 'github', providerInstanceKey: 'github.com', subjectId: '101' }
+    const externalRef = { provider: 'github', host: 'github.com', id: '101' }
+    const writes: CompositionWrite = { primary: { ref: 'primary', kind: 'person', display_name: 'Example', attributes: { stableIdentity, external_ref: externalRef } } }
+    await exec.write(writes, baseCtx())
+    expect(crm.calls[0]?.params).toMatchObject({ stableIdentity: undefined, externalRef: undefined })
+    await exec.write(writes, baseCtx({ personIdentities: { primary: { stableIdentity, externalRef } } }))
+    expect(crm.calls[1]?.params).toMatchObject({ stableIdentity, externalRef })
   })
 
   it('writes composed entities + edge with resolved refs', async () => {
@@ -219,11 +234,11 @@ describe('[COMP:classification/compose] createComposeExecutor', () => {
       ],
     }
     const out = await exec.write(writes, baseCtx())
-    expect(out.entityIds.primary).toBe('ent-person')
+    expect(out.entityIds.primary).toBe('contact-1')
     expect(out.entityIds.employer).toBe('ent-company')
     expect(out.edgeIds).toHaveLength(1)
     expect(links.created[0]?.edgeType).toBe('works_at')
-    expect(links.created[0]?.sourceId).toBe('ent-person')
+    expect(links.created[0]?.sourceId).toBe('contact-1')
     expect(links.created[0]?.targetId).toBe('ent-company')
   })
 

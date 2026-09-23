@@ -17,7 +17,7 @@ import { createComposeExecutor } from '../../../../classification/compose.js'
 import type {
   CompositionContext,
 } from '../../../../classification/compose.js'
-import { extractWritesFromGithubEvent } from '../extract-writes.js'
+import { extractWritesFromGithubEvent, githubActorIdentity } from '../extract-writes.js'
 import type { GithubNormalizedEvent } from '../types.js'
 import type { CrmStore } from '../../../../crm/types.js'
 import type {
@@ -38,14 +38,16 @@ function baseEvent(overrides: Partial<GithubNormalizedEvent> = {}): GithubNormal
     occurred_at: NOW,
     repo: 'whatever/belvedere',
     branch: 'feature/x',
-    actor: { login: 'alice', is_bot: false },
+    actor: { id: 101, login: 'alice', is_bot: false },
     payload: {},
     ...overrides,
   }
 }
 
-function baseCtx(): CompositionContext {
+function baseCtx(event = baseEvent()): CompositionContext {
+  const identity = githubActorIdentity(event)
   return {
+    personIdentities: identity ? { actor: identity } : undefined,
     actorUserId: 'user-1',
     workspaceId: 'ws-1',
     sensitivity: 'internal',
@@ -162,28 +164,25 @@ function makeStores() {
     }),
   }
 
-  // CRM stub — simulates the real createContact/Company behavior
-  // (dedup by email/domain; atomic entity+specialization write).
+  // Match production: only a stable provider binding can reuse a person.
+  const peopleByIdentity = new Map<string, EntityRecord>()
   const crm = {
-    createContact: vi.fn(async (params: { workspaceId: string; name: string; email?: string | null }) => {
-      // Dedup by email if present
-      if (params.email) {
-        const existing = byCanonical.get(`person:${params.email}`)
-        if (existing) return { id: `contact-${existing.id}`, entityId: existing.id }
-      }
-      // Dedup by name
-      const byNameExisting = byName.get(`person:${params.name.toLowerCase()}`)
-      if (byNameExisting) return { id: `contact-${byNameExisting.id}`, entityId: byNameExisting.id }
+    createContact: vi.fn(async (params: Parameters<CrmStore['createContact']>[0]) => {
+      const key = params.stableIdentity ? JSON.stringify([params.workspaceId, params.stableIdentity]) : null
+      const existing = key ? peopleByIdentity.get(key) : null
+      if (existing) return { id: existing.id }
       const rec = makeEntity({
         id: `ent-${created.length + 1}`,
         kind: 'person',
         displayName: params.name,
         canonicalId: params.email ?? null,
+        attributes: { external_ref: params.externalRef },
         workspaceId: params.workspaceId,
       })
       created.push(rec)
       indexEntity(rec)
-      return { id: `contact-${created.length}`, entityId: rec.id }
+      if (key) peopleByIdentity.set(key, rec)
+      return { id: rec.id }
     }),
     createCompany: vi.fn(async (params: { workspaceId: string; name: string; domain?: string | null }) => {
       if (params.domain) {
@@ -229,13 +228,7 @@ describe('[COMP:brain/source-adapters/github/extract-writes] e2e integration', (
     expect(repo.displayName).toBe('belvedere')
     expect(repo.canonicalId).toBe('https://github.com/whatever/belvedere')
     expect(actor.displayName).toBe('alice')
-    // Note: compose.writeCrmEntity for `person` only preserves canonical_id
-    // when it's email-shaped. GitHub URL canonical_ids are dropped during
-    // the CRM atomic write (CRM tools don't know about URL canonical_ids).
-    // The github_login attribute survives in derived.attributes via the
-    // rule output, so the actor IS de-duplicatable by name within a
-    // workspace. Preserving canonical_id through the CRM path is a future
-    // CRM-contract change — see classifier framework follow-on work.
+    expect(actor.attributes.external_ref).toMatchObject({ provider: 'github', host: 'github.com', id: '101' })
     expect(actor.canonicalId).toBeNull()
 
     // One edge: documented_by(repo, actor)
@@ -266,12 +259,28 @@ describe('[COMP:brain/source-adapters/github/extract-writes] e2e integration', (
     await exec.write(extractWritesFromGithubEvent(baseEvent({ delivery_id: 'd-2' }))!, baseCtx())
 
     // CompositionExecutor.findByCanonicalId dedups the repository (which has
-    // canonical_id). Person dedup uses name fallback via the CRM stub.
+    // canonical_id). People reuse the verified account binding only.
     expect(stores.created).toHaveLength(2)
     // Edges are NOT deduped at this layer (intentional — same repo+actor on
     // separate events is still a distinct documented_by, e.g. two PRs by the
     // same person produce two link rows).
     expect(stores.links).toHaveLength(2)
+  })
+
+  it('reuses the account after a login change but separates different accounts with the same login', async () => {
+    const stores = makeStores()
+    const exec = createComposeExecutor({ entities: stores.entityStore, links: stores.linksStore, crm: stores.crm })
+    const original = baseEvent()
+    const renamed = baseEvent({ actor: { id: 101, login: 'alice-renamed', is_bot: false } })
+    const namesake = baseEvent({ actor: { id: 202, login: 'alice', is_bot: false } })
+    const first = await exec.write(extractWritesFromGithubEvent(original)!, baseCtx(original))
+    const second = await exec.write(extractWritesFromGithubEvent(renamed)!, baseCtx(renamed))
+    const third = await exec.write(extractWritesFromGithubEvent(namesake)!, baseCtx(namesake))
+    expect(second.entityIds.actor).toBe(first.entityIds.actor)
+    expect(third.entityIds.actor).not.toBe(first.entityIds.actor)
+    expect(stores.created.filter((e) => e.kind === 'person')).toHaveLength(2)
+    expect(stores.links[2]?.targetId).toBe(third.entityIds.actor)
+    expect(stores.entityStore.findByNameSystem).not.toHaveBeenCalled()
   })
 
   it('skips actor + edge entirely when actor is a bot', async () => {

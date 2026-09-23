@@ -1682,6 +1682,19 @@ describe('[COMP:brain/pipeline-b] processEpisode', () => {
     ])
   })
 
+  it('reuses the adapter GitHub account identity for a model-extracted actor', async () => {
+    const crm = spyCrm()
+    const entities = spyEntities()
+    const extraction = JSON.stringify({ summary: 'Repository activity', entities: [{ kind: 'person', display_name: 'example-actor', canonical_id: null }], edges: [], memories: [], tags: [] })
+    const provider = sequencedProvider([extraction, JSON.stringify({ inferred_sensitivity: 'internal', brief_reason: 'routine' })])
+    const externalRef = { provider: 'github', host: 'github.com', id: '101', login: 'example-actor' }
+    await processEpisode(baseEpisode({ personExternalRefs: [{ name: 'example-actor', externalRef }] }), 'example-actor updated a repository', makeDeps({ provider, crm: crm.store, entities: entities.store }))
+    expect(crm.contacts).toEqual([{
+      name: 'example-actor', email: null, externalRef,
+      stableIdentity: { provider: 'github', providerInstanceKey: 'github.com', subjectId: '101' },
+    }])
+  })
+
   it('takes the phone from the adapter ref, never from the extraction', async () => {
     const crm = spyCrm()
     const entities = spyEntities()

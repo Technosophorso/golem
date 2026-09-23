@@ -531,7 +531,7 @@ export async function getBranchHead(
 export type GitHubEvent = {
   id: string
   type: string
-  actor: { login: string } | null
+  actor: { id?: number; login: string } | null
   repo: { name: string }
   payload: Record<string, unknown>
   created_at: string

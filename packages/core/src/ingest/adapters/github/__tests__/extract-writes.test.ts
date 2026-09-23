@@ -10,7 +10,7 @@ function event(overrides: Partial<GithubNormalizedEvent> = {}): GithubNormalized
     occurred_at: new Date('2026-05-28T10:00:00Z'),
     repo: 'whatever/belvedere',
     branch: 'feature/x',
-    actor: { login: 'alice', is_bot: false },
+    actor: { id: 101, login: 'alice', is_bot: false },
     payload: {},
     ...overrides,
   }
@@ -29,7 +29,7 @@ describe('[COMP:brain/source-adapters/github/extract-writes] extractWritesFromGi
   })
 
   it('produces a derived person entity for the actor', () => {
-    const writes = extractWritesFromGithubEvent(event({ actor: { login: 'alice', is_bot: false } }))
+    const writes = extractWritesFromGithubEvent(event({ actor: { id: 101, login: 'alice', is_bot: false } }))
     expect(writes!.entities).toHaveLength(1)
     const actor = writes!.entities![0]
     expect(actor?.kind).toBe('person')
@@ -56,6 +56,13 @@ describe('[COMP:brain/source-adapters/github/extract-writes] extractWritesFromGi
     expect(writes!.primary?.kind).toBe('repository')
     expect(writes!.entities).toHaveLength(0)
     expect(writes!.edges).toHaveLength(0)
+  })
+
+  it.each([undefined, 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('skips unverified actor id %s without losing the repository', (id) => {
+    const writes = extractWritesFromGithubEvent(event({ actor: { id, login: 'alice', is_bot: false } }))!
+    expect(writes.primary?.kind).toBe('repository')
+    expect(writes.entities).toEqual([])
+    expect(writes.edges).toEqual([])
   })
 
   it('handles push events the same way', () => {
