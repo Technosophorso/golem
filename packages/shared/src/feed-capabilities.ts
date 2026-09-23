@@ -2,7 +2,7 @@
 export type FeedImageRates = { version: string; inputPerMillion: number; textPerMillion: number; imagePerMillion: number; imageTokens: number }
 export const FEED_IMAGE_CAPABILITY = {
   version: 1, callTimeoutMs: 300_000, model: 'gemini-3.1-flash-image', size: '1K', candidates: 1,
-  inputCharacters: 32_000, outputTokens: 4096, maxImageBytes: 20 * 1024 * 1024, maxImagePixels: 16_777_216,
+  inputCharacters: 32_000, outputTokens: 4096, maxImageBytes: 20 * 1024 * 1024, maxSourceImageBytes: 14 * 1024 * 1024, maxImagePixels: 16_777_216,
   rates: { version: 'google-ai-studio-standard:2026-09-11:1K', inputPerMillion: 0.50, textPerMillion: 3, imagePerMillion: 60, imageTokens: 1120 },
   source: 'https://ai.google.dev/gemini-api/docs/pricing',
 } as const

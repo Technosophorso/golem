@@ -181,6 +181,10 @@ export function crmRegionCacheKey(
  *    because a workspace can hold several brand voices, each with its own
  *    calendar.
  */
+export function feedPermissionsCacheKey(workspaceId: string, assistantId: string, connectorId?: string): string {
+  return `feed-permissions:${workspaceId}${viewerSuffix()}:${assistantId}${connectorId ? `:${connectorId}` : ""}`;
+}
+
 export function feedWorkspaceCacheKey(workspaceId: string): string {
   return `feed-workspace:${workspaceId}${viewerSuffix()}`;
 }

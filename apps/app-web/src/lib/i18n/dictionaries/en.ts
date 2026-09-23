@@ -212,8 +212,8 @@ export const en = {
     "imageOptionPosition": "Image {current} of {total}",
     "iterationInstruction": "Change this image",
     "iterationPlaceholder": "Describe what should change...",
-    "prepareIteration": "Add to new attempt",
-    "iterationHint": "This updates the brief. Review the request and cost before generating again.",
+    "prepareIteration": "Regenerate",
+    "iterationHint": "Edit this image using your comments. Review the cost before confirming.",
     "revisionPrefix": "Revision request"
 },
   feedReview: {
@@ -256,6 +256,7 @@ export const en = {
     "low": "Low priority"
 },
   feedCollaboration: {
+    commentOrSuggest: 'Comment or suggest',
     details: "Details",
     postActions: "Post actions",
     openComments: "Open {n} comments",
@@ -1467,6 +1468,7 @@ export const en = {
       approvals: "Asking about Approvals",
     },
     // Tool-confirmation card (used when a tool needs explicit approval).
+    confirmationAlwaysAllow: "Always allow",
     confirmationApprove: "Approve",
     confirmationDeny: "Deny",
     confirmationDenyWithComment: "Deny with comment",
@@ -7801,6 +7803,13 @@ export const en = {
   },
   // ── Studio surface (ported from apps/web app consolidation §9 #5) ──
   feedPage: {
+    actionPermissions: {
+      title: "Action permissions",
+      description: "Choose which actions this Feed assistant can run automatically or must ask you to approve. Workspace rules still apply.",
+      loadError: "Could not load action permissions.",
+      saveError: "Could not save this preference. Try again.",
+      empty: "No connected actions for this assistant.",
+    },
     title: "Feed",
     description: "Your brand voice: draft for Instagram, Threads, X, and XHS, then publish on connected platforms.",
     sectionsAriaLabel: "Feed sections",

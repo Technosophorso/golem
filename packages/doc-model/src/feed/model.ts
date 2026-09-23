@@ -21,7 +21,7 @@ export const feedSchema = new Schema({
     blockquote: { group: 'block', content: 'block+', attrs: { id: { default: null } }, toDOM: n => ['blockquote', { 'data-block-id': n.attrs.id }, 0] },
     text: { group: 'inline' }, hardBreak: { group: 'inline', inline: true, toDOM: () => ['br'] },
     image: { group: 'block', atom: true, attrs: { id: { default: null }, fileId: {}, mimeType: {}, alt: { default: '' }, placement: { default: 'inline' } }, toDOM: n => ['figure', { 'data-file-id': n.attrs.fileId, 'data-block-id': n.attrs.id }, ['figcaption', n.attrs.alt]] },
-    generationPlaceholder: { group: 'block', atom: true, attrs: { id: { default: null }, kind: {}, brief: {}, briefRevision: { default: 0 }, references: { default: [] }, intent: { default: null }, length: { default: null }, aspectRatio: { default: null }, style: { default: null }, altIntent: { default: null } }, toDOM: n => ['aside', { 'data-placeholder-id': n.attrs.id, 'data-block-id': n.attrs.id }, n.attrs.brief] },
+    generationPlaceholder: { group: 'block', atom: true, attrs: { id: { default: null }, kind: {}, brief: {}, briefRevision: { default: 0 }, references: { default: [] }, intent: { default: null }, length: { default: null }, aspectRatio: { default: null }, style: { default: null }, altIntent: { default: null }, baseImageFileId: { default: null } }, toDOM: n => ['aside', { 'data-placeholder-id': n.attrs.id, 'data-block-id': n.attrs.id }, n.attrs.brief] },
   },
   marks: { bold: { toDOM: () => ['strong', 0] }, italic: { toDOM: () => ['em', 0] }, link: { attrs: { href: {} }, toDOM: m => ['a', { href: m.attrs.href, rel: 'noopener noreferrer' }, 0] } },
 })
@@ -423,6 +423,7 @@ export function insertFeedPlaceholder(composition: FeedComposition, selection: {
     if (before.type === 'image') {
       if (kind !== 'image') throw new FeedCompositionError('invalid_target')
       node.attrs.brief = initial?.brief ?? before.attrs.alt ?? ''
+      node.attrs.baseImageFileId = initial?.baseImageFileId ?? before.attrs.fileId
       if (node.attrs.altIntent === undefined && before.attrs.alt) node.attrs.altIntent = before.attrs.alt
     } else if (!isFeedTextBlock(before)) throw new FeedCompositionError('invalid_target')
     node.attrs.id = before.attrs.id

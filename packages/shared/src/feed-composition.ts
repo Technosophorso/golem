@@ -27,7 +27,7 @@ export const feedPlaceholderAttrsSchema = z.object({
   id: feedIdSchema, kind: z.enum(['text', 'image']), brief: z.string().max(20_000),
   briefRevision: revision, intent: z.string().max(1000).optional(), length: z.number().int().min(1).max(100_000).optional(),
   aspectRatio: z.enum(['1:1', '16:9', '9:16', '4:3', '3:4']).optional(), style: z.string().max(2000).optional(),
-  altIntent: z.string().max(1000).optional(), references: z.array(z.union([
+  altIntent: z.string().max(1000).optional(), baseImageFileId: feedIdSchema.optional(), references: z.array(z.union([
     z.object({ fileId: feedIdSchema }).strict(), z.object({ url: safeUrl }).strict(),
   ])).max(20),
 }).strict()

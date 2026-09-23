@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import React, { act } from "react";
+import React, { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { beforeEach, afterEach, describe, it, expect, vi } from "vitest";
 import { en } from "@/lib/i18n/dictionaries/en";
@@ -18,7 +18,7 @@ vi.mock("@/components/chrome/chat-activity", () => ({
   ChatCitationList: ({ citations }: { citations: { title: string }[] }) => <div data-sources>{citations.map(c => c.title).join(" ")}</div>,
 }));
 vi.mock("@/components/chrome/chat-file-attachment", () => ({ ChatFileAttachments: ({ attachments }: { attachments: { name: string }[] }) => <div data-files>{attachments.map(f => f.name).join(" ")}</div> }));
-vi.mock("@/components/chrome/chat-confirmation-card", () => ({ ChatConfirmationCard: ({ confirmation, onApprove, onDeny }: { confirmation: { toolCallId: string }; onApprove: (id: string) => void; onDeny: (id: string, comment: string) => void }) => <div data-confirmation><button onClick={() => onApprove(confirmation.toolCallId)}>approve</button><button onClick={() => onDeny(confirmation.toolCallId, "Keep the draft")}>deny</button></div> }));
+vi.mock("@/components/chrome/chat-confirmation-card", () => ({ ChatConfirmationCard: ({ confirmation, onApprove, onDeny, onAlwaysAllow }: { confirmation: { toolCallId: string; allowPersistentApproval?: boolean }; onApprove: (id: string) => void; onDeny: (id: string, comment: string) => void; onAlwaysAllow?: (id: string) => void }) => <div data-confirmation><button onClick={() => onApprove(confirmation.toolCallId)}>approve</button><button onClick={() => onDeny(confirmation.toolCallId, "Keep the draft")}>deny</button>{confirmation.allowPersistentApproval && <button onClick={() => onAlwaysAllow?.(confirmation.toolCallId)}>always</button>}</div> }));
 vi.mock("@/components/chrome/pending-question-panel", () => ({ PendingQuestionPanel: ({ approvalId }: { approvalId: string }) => <div data-question>{approvalId}</div> }));
 vi.mock("@/lib/recorder/dock-recorder-bridge", () => ({ registerDockRecorderChatTarget: () => () => {} }));
 let root: Root, host: HTMLDivElement;
@@ -45,6 +45,80 @@ beforeEach(async () => {
 });
 afterEach(() => { act(() => root.unmount()); host.remove(); });
 describe("[COMP:app-web/feed-chat-stream] Feed panel", () => {
+  it("quotes selected text from a persisted message, sends its reference and restores saved quotes", async () => {
+    const id = crypto.randomUUID();
+    mocks.messages.mockResolvedValue([row(id, "Keep the orchard diagram, simplify its labels.")]);
+    await mount("reply-session");
+    const content = host.querySelector('[data-feed-message] .chat-markdown p')!;
+    const range = document.createRange(); range.setStart(content.firstChild!, 9); range.setEnd(content.firstChild!, 24);
+    window.getSelection()!.removeAllRanges(); window.getSelection()!.addRange(range);
+    await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${en.chatApp.reply}"]`)!.click());
+    expect(host.querySelector('[data-feed-reply-context]')?.textContent).toContain('orchard diagram');
+    expect(document.activeElement).toBe(host.querySelector('textarea'));
+    const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response);
+    await send('Use this direction');
+    expect(JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body)).toMatchObject({ sessionId: 'reply-session', replyTo: { id, text: 'orchard diagram' } });
+    expect(host.querySelector('[data-feed-reply-context]')).toBeNull();
+    expect(host.querySelector('[data-feed-reply-quote]')?.textContent).toBe('orchard diagram');
+    await act(async () => { direct.send('done'); direct.close(); });
+    mocks.messages.mockResolvedValue([{ ...row('saved', 'Use this direction', 'user'), replyToText: 'orchard diagram' }]);
+    await mount('reloaded-reply');
+    expect(host.querySelector('[data-feed-reply-quote]')?.textContent).toBe('orchard diagram');
+  });
+  it("attaches explicit passage context beside the composer for one turn and can remove it", async () => {
+    const anchor = { target: { kind: 'block' as const, segmentId: crypto.randomUUID(), blockId: crypto.randomUUID() }, quote: 'Selected opening', sourceRevision: 4, state: 'attached' as const };
+    function Attached() {
+      const [selected, setSelected] = useState<typeof anchor | undefined>(anchor);
+      return <TuningChatPanel sessionId="passage" assistantId="writer" assistantName="Writer" workspaceId="workspace" ready feedTarget={{ sessionId: 'passage', revision: 5 }} feedSelection={selected} onClearFeedSelection={() => setSelected(undefined)} />;
+    }
+    await act(async () => root.render(<Attached />));
+    const chip = host.querySelector('[data-feed-selection-attachment]')!;
+    expect(chip.parentElement?.querySelector('textarea')).toBeTruthy();
+    expect(chip.textContent).toContain(anchor.quote);
+    mocks.fetch.mockImplementation(async () => new Response(frame('done')));
+    await send('Tighten this');
+    expect(JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body).feedTarget).toEqual({ sessionId: 'passage', revision: 4, target: anchor.target });
+    expect(host.querySelector('[data-feed-selection-attachment]')).toBeNull();
+    await send('Back to the image');
+    expect(JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body).feedTarget).toEqual({ sessionId: 'passage', revision: 5 });
+    await act(async () => root.render(<Attached key="remove" />));
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-feed-selection-attachment] button')!.click());
+    await send('Whole post instead');
+    expect(JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body).feedTarget.target).toBeUndefined();
+  });
+  it("retries with the original attached scope and quote, never a later composer selection", async () => {
+    const quotedId = crypto.randomUUID(); const userId = crypto.randomUUID();
+    mocks.messages.mockResolvedValue([row(quotedId, 'Earlier image direction')]);
+    const anchor = { target: { kind: 'block' as const, segmentId: crypto.randomUUID(), blockId: crypto.randomUUID() }, quote: 'First passage', sourceRevision: 4, state: 'attached' as const };
+    const render = async (selection: typeof anchor | undefined) => act(async () => root.render(<TuningChatPanel sessionId="retry-scope" assistantId="writer" assistantName="Writer" workspaceId="workspace" ready feedTarget={{ sessionId: 'retry-scope', revision: 4 }} feedSelection={selection} />));
+    await render(anchor);
+    await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${en.chatApp.reply}"]`)!.click());
+    const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response);
+    await send('Refine this');
+    await act(async () => { direct.send('user_message_saved', { id: userId }); direct.send('text_delta', { text: 'Refined' }); direct.send('done'); direct.close(); });
+    await render({ ...anchor, target: { ...anchor.target, blockId: crypto.randomUUID() }, quote: 'Different passage' });
+    const retry = source(); mocks.fetch.mockResolvedValueOnce(retry.response);
+    const buttons = host.querySelectorAll<HTMLButtonElement>(`button[aria-label="${en.feedPage.tuningChat.retry}"]`);
+    await act(async () => buttons[buttons.length - 1]!.click());
+    expect(JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body)).toMatchObject({ truncateFromMessageId: userId, feedTarget: { sessionId: 'retry-scope', revision: 4, target: anchor.target }, replyTo: { id: quotedId, text: 'Earlier image direction' } });
+    expect(host.querySelector('[data-feed-selection-attachment]')?.textContent).toContain('Different passage');
+    await act(async () => { retry.send('done'); retry.close(); });
+  });
+  it("keeps quoted replies staged while a turn runs instead of silently queuing plain text", async () => {
+    mocks.messages.mockResolvedValue([row(crypto.randomUUID(), 'Earlier image direction')]);
+    await mount('busy-reply');
+    const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response);
+    await send('First question');
+    await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${en.chatApp.reply}"]`)!.click());
+    const before = mocks.fetch.mock.calls.length;
+    await send('About that image');
+    expect(mocks.fetch.mock.calls).toHaveLength(before);
+    expect(host.querySelector('textarea')?.value).toBe('About that image');
+    expect(host.querySelector('[data-feed-reply-context]')).toBeTruthy();
+    await act(async () => { direct.send('done'); direct.close(); });
+    await act(async () => host.querySelector<HTMLButtonElement>(`button[aria-label="${en.chatApp.replyCancel}"]`)!.click());
+    expect(host.querySelector('textarea')?.value).toBe('About that image');
+  });
   it("stages a pasted clipboard image and sends an image-only turn with its real metadata", async () => {
     Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:clipboard-image") });
     Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
@@ -102,6 +176,27 @@ describe("[COMP:app-web/feed-chat-stream] Feed panel", () => {
     expect(host.textContent).toContain("Full persisted answer");
     expect(host.textContent).not.toContain("Complete preview");
     expect(mocks.fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+  it("persists a live Always allow decision through the canonical resolver", async () => {
+    const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response).mockResolvedValue(new Response("{}"));
+    await send("Run the action");
+    await act(async () => direct.send("tool_confirmation_required", { toolCallId: "tool", toolName: "writeExample", allowPersistentApproval: true }));
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-confirmation] button:nth-child(3)")!.click());
+    expect(JSON.parse(mocks.fetch.mock.calls.at(-1)![1].body)).toEqual({ sessionId: "draft", toolCallId: "tool", decision: "always_allow" });
+  });
+  it("retains a failed Always allow card for retry", async () => {
+    const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response).mockResolvedValue(new Response("{}", { status: 403 }));
+    await send("Run the action");
+    await act(async () => direct.send("tool_confirmation_required", { toolCallId: "tool", toolName: "writeExample", allowPersistentApproval: true }));
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-confirmation] button:nth-child(3)")!.click());
+    expect(host.querySelector("[data-confirmation]")).not.toBeNull();
+    expect(host.textContent).toContain(en.chatApp.confirmNotAllowed);
+  });
+  it("persists Always allow for a restored approval", async () => {
+    mocks.pending.mockResolvedValue({ pending: null, toolConfirmation: { approvalId: "approval", toolName: "writeExample", input: {}, displayLines: [], allowPersistentApproval: true } });
+    await mount("restored-draft");
+    await act(async () => host.querySelector<HTMLButtonElement>("[data-confirmation] button:nth-child(3)")!.click());
+    expect(mocks.approval).toHaveBeenCalledWith({ id: "approval", kind: "tool_invocation" }, "approved", undefined, { grantAlways: true });
   });
   it.each(["approve", "deny"])("submits %s for the exact live resolver and session", async decision => {
     const direct = source(); mocks.fetch.mockResolvedValueOnce(direct.response).mockResolvedValue(new Response("{}"));
@@ -166,7 +261,7 @@ describe("[COMP:app-web/feed-chat-stream] Feed panel", () => {
     expect(host.querySelector('[data-question]')?.textContent).toBe("question");
     expect(host.querySelectorAll('[data-confirmation]')).toHaveLength(1);
     await act(async () => host.querySelector<HTMLButtonElement>('[data-confirmation] button')!.click());
-    expect(mocks.approval).toHaveBeenCalledWith({ id: "approval", kind: "tool_invocation" }, "approved", undefined);
+    expect(mocks.approval).toHaveBeenCalledWith({ id: "approval", kind: "tool_invocation" }, "approved", undefined, undefined);
   });
   it("retains typed input while the initial status probe is unresolved", async () => {
     const probe = source(); mocks.fetch.mockResolvedValueOnce(probe.response);

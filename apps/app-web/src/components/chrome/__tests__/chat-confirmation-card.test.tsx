@@ -79,6 +79,7 @@ function confirmation(
 
 function renderCard(conf: PendingConfirmation, handlers?: {
   onApprove?: (id: string) => void;
+  onAlwaysAllow?: (id: string) => void;
   onDeny?: (id: string, comment?: string) => void;
 }) {
   render(
@@ -87,6 +88,7 @@ function renderCard(conf: PendingConfirmation, handlers?: {
       approveLabel="Approve"
       denyLabel="Deny"
       approvingLabel="Approving"
+      onAlwaysAllow={handlers?.onAlwaysAllow}
       onApprove={handlers?.onApprove ?? (() => {})}
       onDeny={handlers?.onDeny ?? (() => {})}
     />,
@@ -94,6 +96,24 @@ function renderCard(conf: PendingConfirmation, handlers?: {
 }
 
 describe("[COMP:app-web/chat-confirmation-card] ChatConfirmationCard", () => {
+  it("offers persistent approval only when the server and host both support it", () => {
+    const onAlwaysAllow = vi.fn();
+    renderCard(confirmation({ allowPersistentApproval: true }), { onAlwaysAllow });
+    const button = [...host!.querySelectorAll("button")].find(item => item.textContent === "Always allow")!;
+    act(() => button.click());
+    expect(onAlwaysAllow).toHaveBeenCalledWith("call-1");
+  });
+
+  it("does not offer a permanent bypass for required one-time reviews", () => {
+    renderCard(confirmation({ allowPersistentApproval: false }), { onAlwaysAllow: vi.fn() });
+    expect(host!.textContent).not.toContain("Always allow");
+  });
+
+  it("disables persistent approval while a decision is being saved", () => {
+    renderCard(confirmation({ allowPersistentApproval: true, status: "approving" }), { onAlwaysAllow: vi.fn() });
+    expect([...host!.querySelectorAll("button")].find(item => item.textContent === "Always allow")!.disabled).toBe(true);
+  });
+
   it("renders an email send as a proofreadable email, not the tool description", () => {
     renderCard(confirmation());
     const text = host!.textContent ?? "";

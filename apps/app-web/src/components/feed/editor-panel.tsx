@@ -17,7 +17,7 @@ export function FeedEditorPanel({ open, title, anchor, passage = false, onClose,
   const heading = useRef<HTMLHeadingElement>(null);
   return <Popover.Root open={open} onOpenChange={next => { if (!next) onClose(); }}>
     <Popover.Portal keepMounted>
-      <Popover.Positioner anchor={anchor} side={passage && isLg ? 'left' : 'bottom'} align="start" sideOffset={8} className="z-40">
+      <Popover.Positioner sticky anchor={anchor} side={passage && isLg ? 'left' : 'bottom'} align="start" sideOffset={8} className="z-40">
         <Popover.Popup initialFocus={heading} finalFocus={() => anchor?.isConnected ? anchor : false}
           aria-label={title} hidden={!open} inert={!open}
           className="flex w-96 max-w-[calc(100vw-1.5rem)] max-h-[min(76dvh,var(--available-height))] flex-col overflow-hidden rounded-xl border border-border bg-background shadow-xl outline-none" data-feed-editor-panel>

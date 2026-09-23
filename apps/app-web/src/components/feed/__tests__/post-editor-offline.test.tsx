@@ -4,14 +4,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { en } from "@/lib/i18n/dictionaries/en";
 
-const state = vi.hoisted(() => ({ data: new Map<string, unknown>(), push: vi.fn(), canDraft: true, offline: true }));
+const state = vi.hoisted(() => ({ data: new Map<string, unknown>(), push: vi.fn(), canDraft: true, offline: true, chatProps: null as Record<string, unknown> | null }));
 vi.mock("@/lib/user", () => ({ getUserInfo: () => ({ id: "viewer-a" }) }));
 vi.mock("@/lib/auth-fetch", () => ({ authFetch: vi.fn(async () => { throw new Error("offline"); }) }));
 vi.mock("@/lib/i18n/client", async () => { const { en } = await import("@/lib/i18n/dictionaries/en"); return { useT: () => en, useLocale: () => "en" }; });
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: state.push }) }));
 vi.mock("@/lib/offline/use-offline-sync", () => ({ useIsOffline: () => state.offline }));
 vi.mock("@/lib/recorder/dock-recorder-bridge", () => ({ useGlobalDockRecorder: () => null }));
-vi.mock("@/components/feed/tuning-chat-panel", () => ({ TuningChatPanel: () => null }));
+vi.mock("@/components/feed/tuning-chat-panel", () => ({ TuningChatPanel: (props: Record<string, unknown>) => { state.chatProps = props; return null; } }));
 vi.mock("@/components/feed/post-media-tray", () => ({ PostMediaTray: () => null }));
 vi.mock("@/contexts/feed-profiles-context", () => ({ useFeedWorkspace: () => ({
   workspaceId: "workspace-1", name: "Demo", profiles: [], assistants: [{ id: "assistant-1", name: "Writer" }],
@@ -26,6 +26,8 @@ vi.mock("@/lib/offline/idb", () => ({
     state.data.set(key, structuredClone(next)); return next;
   },
 }));
+import { EditorView } from '@tiptap/pm/view';
+import { TextSelection } from '@tiptap/pm/state';
 import { PostEditor } from "../post-editor";
 import { blankFeedContent, createLocalFeedPost, readLocalFeedPost, readFeedNewPostForm } from "@/lib/offline/feed-offline";
 import { authFetch } from "@/lib/auth-fetch";
@@ -92,6 +94,26 @@ describe('[COMP:app-web/feed-post-editor] automatic legacy upgrade', () => {
     });
   }
   const commands = () => vi.mocked(authFetch).mock.calls.filter(([url, init]) => String(url).endsWith('/commands') && init?.method === 'POST');
+  it('keeps passive editor selection out of chat and pins only Ask Brian context', async () => {
+    const viewProps = vi.spyOn(EditorView.prototype, 'setProps');
+    try {
+      const post = await legacyPost(); goOnline(post); await render(post.session.id);
+      const view = (viewProps.mock.contexts as EditorView[]).find(item => item.dom === container.querySelector('[contenteditable]'))!;
+      expect(view).toBeTruthy();
+      await act(async () => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1, 5))));
+      expect(state.chatProps?.feedTarget).not.toHaveProperty('target');
+      expect(state.chatProps?.feedSelection).toBeUndefined();
+      await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${en.feedCollaboration.documentActions}"]`)!.click());
+      const ask = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(item => item.textContent === en.feedCollaboration.askBrian)!;
+      await act(async () => ask.click());
+      expect(state.chatProps?.feedSelection).toMatchObject({ quote: 'Keep', target: { kind: 'range' } });
+      await act(async () => view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 6, 9))));
+      expect(state.chatProps?.feedSelection).toMatchObject({ quote: 'Keep' });
+      await act(async () => (state.chatProps?.onClearFeedSelection as () => void)());
+      expect(state.chatProps?.feedSelection).toBeUndefined();
+      expect(state.chatProps?.feedTarget).not.toHaveProperty('target');
+    } finally { viewProps.mockRestore(); }
+  });
   it('opens an existing writable post in the composition editor without an enable action', async () => {
     const post = await legacyPost(); goOnline(post);
     await render(post.session.id);

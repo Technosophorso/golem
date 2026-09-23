@@ -137,7 +137,7 @@ export function feedTurnMessage(turn: FeedChatTurn, now = Date.now()): Message |
 export function feedConfirmation(data: Record<string, unknown>, sessionId: string): PendingConfirmation | null {
   const toolCallId = str(data.toolCallId);
   if (!toolCallId || !sessionId) return null;
-  return { toolCallId, sessionId, approvalId: str(data.approvalId) || undefined,
+  return { toolCallId, sessionId, allowPersistentApproval: data.allowPersistentApproval === true, approvalId: str(data.approvalId) || undefined,
     toolName: str(data.toolName), displayName: str(data.displayName) || undefined,
     input: feedEventPayload(data.input), description: str(data.description) || undefined,
     displayLines: Array.isArray(data.displayLines) ? data.displayLines.filter((line): line is string => typeof line === "string") : undefined, status: "pending" };
@@ -147,6 +147,7 @@ export function mapFeedTranscript(rows: DocSessionMessage[], dict: NarrationDict
   return coalesceAssistantRunMessages(rows.filter(row => row.role === "user" || row.role === "assistant").map(row => ({
     id: row.id, role: row.role as "user" | "assistant", text: extractMessageText(row.content), timestamp: new Date(row.timestamp),
     senderAssistantId: row.senderAssistantId,
+    ...(row.replyToText ? { replyTo: { text: row.replyToText } } : {}),
     attachments: row.role === "user" ? parseMessageAttachments(row.content).attachments.map(file => ({ id: file.id, fileName: file.name, mimeType: file.mime, localPreviewUrl: file.dataUrl })) : [],
     toolsUsed: row.role === "assistant" ? extractToolUses(row.content).map(tool => ({ id: tool.id, name: tool.name, status: "done" as const, ...describeToolFromInput(tool.name, tool.input, dict) })) : [],
     documents: extractPresentedDocuments(row.content), fileAttachments: row.attachments,

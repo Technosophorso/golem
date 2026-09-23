@@ -1,19 +1,21 @@
 /** Configured generation providers and cheap, bounded reference reads. [COMP:feed/draft-generation] */
-import { calculateCost, createGeminiImageProvider, aiStudioTransport, type GeneratedImageReceipt, type CodexImageProvider, type GoogleTransport, type FilesApi, type FilesContext, type UsageStore } from '@use-brian/core'
+import { calculateCost, createGeminiImageProvider, validateFeedImageSource, aiStudioTransport, type GeneratedImageReceipt, type CodexImageProvider, type GoogleTransport, type FilesApi, type FilesContext, type UsageStore } from '@use-brian/core'
 import { FEED_IMAGE_CAPABILITY, feedImageCost, type FeedImageConfig, type FeedMedia } from '@use-brian/shared'
-import { withFeedTransaction, FeedCollaborationError } from '../db/feed-collaboration-store.js'
+import { withFeedTransaction, FeedCollaborationError, type FeedActor } from '../db/feed-collaboration-store.js'
 import { editorialActor, type FeedEditorialRun } from '../db/feed-editorial-runs-store.js'
 import { registryRow } from '@use-brian/shared/model-registry'
 import { FEED_GENERATION_LIMITS, type FeedGenerationPrice, type FeedPlaceholderAttrs } from '@use-brian/shared'
 import type { FeedEditorialModel, FeedEditorialModelResolver, FeedModelIdentity } from './editorial-model.js'
 import { feedEditorialHash } from '../db/feed-editorial-runs-store.js'
 import { query } from '../db/client.js'
-import { walkFeed } from '@use-brian/doc-model'
 import type { FeedGenerationContext } from './generation.js'
+import { readFeedSelectedSources, feedSelectedFiles } from './source-authority.js'
 import { createPublicCustomLlmFetch } from '../custom-llm-public-fetch.js'
+export type FeedGenerationImage = { fileId: string; hash: string; inputTokens: number; image: NonNullable<GeneratedImageReceipt['image']> }
 export type FeedGenerationSource = { id: string; title: string; body: string; hash: string }
-export type FeedGenerationResolved = Omit<FeedEditorialModel, 'call'> & { identity: string; price(inputCharacters: number): FeedGenerationPrice; call(input: Parameters<FeedEditorialModel['call']>[0] & { slot?: FeedPlaceholderAttrs }): Promise<{ text: string; imageReceipt?: GeneratedImageReceipt; usage?: unknown }> }
+export type FeedGenerationResolved = Omit<FeedEditorialModel, 'call'> & { identity: string; price(inputCharacters: number): FeedGenerationPrice; call(input: Parameters<FeedEditorialModel['call']>[0] & { slot?: FeedPlaceholderAttrs; sourceImage?: NonNullable<GeneratedImageReceipt['image']> }): Promise<{ text: string; imageReceipt?: GeneratedImageReceipt; usage?: unknown }> }
 export type FeedGenerationPort = {
+  readImage?: (actor: FeedActor, fileId: string) => Promise<FeedGenerationImage>;
   billing?: FeedGenerationBilling;
   persistImage?: (run: FeedEditorialRun, receipt: GeneratedImageReceipt) => Promise<FeedMedia>;
   resolve(actor: FeedModelIdentity, kind: 'text' | 'image', tier: string, imageProvider?: 'gemini' | 'openai-codex'): Promise<FeedGenerationResolved>;
@@ -22,6 +24,7 @@ export type FeedGenerationPort = {
 export function createFeedGenerationPort(resolveText: FeedEditorialModelResolver, image: FeedImagePortOptions = {}): FeedGenerationPort {
   return {
     billing: image.billing,
+    readImage: (actor, fileId) => readFeedGenerationImage(image, actor, fileId),
     persistImage: (run, receipt) => persistFeedImage(image, run, receipt),
     async resolve(actor, kind, tier, imageProvider) {
       if (kind === 'image') return imageProvider === 'openai-codex' ? resolveCodexFeedImage(image, actor) : resolveFeedImage(image, actor)
@@ -99,7 +102,7 @@ async function resolveFeedImage(options: FeedImagePortOptions, actor: FeedModelI
   return { model: config.model, tier: 'image', providerKeySource: byok ? 'user' : 'platform', identity, inputCharacters: FEED_IMAGE_CAPABILITY.inputCharacters, maxTokens: FEED_IMAGE_CAPABILITY.outputTokens,
     price(inputCharacters) { const maximumUsd = feedImageCost(config.rates, inputCharacters, FEED_IMAGE_CAPABILITY.outputTokens); return { currency: 'USD', maximumUsd, rateVersion: config.rates.version, billing: byok ? 'byo' : options.billing ? 'metered' : 'included', ...(!byok && options.billing ? { credits: options.billing.quote(maximumUsd) } : {}) } },
     async call(input) {
-      const imageReceipt = await createGeminiImageProvider(transport, options.fetcher).generate({ model: config.model, prompt: `${input.systemPrompt}\n\n${input.prompt}`, aspectRatio: input.slot?.aspectRatio, signal: input.signal })
+      const imageReceipt = await createGeminiImageProvider(transport, options.fetcher).generate({ model: config.model, prompt: `${input.systemPrompt}\n\n${input.prompt}`, aspectRatio: input.slot?.aspectRatio, sourceImage: input.sourceImage, signal: input.signal })
       const actualCostUsd = imageReceipt.status && imageReceipt.status >= 400 && imageReceipt.status < 500 ? 0 : feedImageCost(config.rates, imageReceipt.usage.inputTokens, imageReceipt.usage.outputTokens, imageReceipt.usage.imageTokens)
       let usageRecorded = !options.usageStore
       if (options.usageStore) { try { await options.usageStore.recordUsage({ userId: actor.userId, assistantId: actor.assistantId, sessionId: actor.sessionId, model: config.model, modelTier: 'standard', inputTokens: imageReceipt.usage.inputTokens, outputTokens: imageReceipt.usage.outputTokens, actualCostUsd: byok ? 0 : actualCostUsd, source: 'included', triggerKey: 'feed_image_generation', providerKeySource: byok ? 'user' : 'platform' }); usageRecorded = true } catch { /* Keep measured usage in the durable receipt. */ } }
@@ -115,7 +118,7 @@ async function resolveCodexFeedImage(options: FeedImagePortOptions, actor: FeedM
     inputCharacters: FEED_IMAGE_CAPABILITY.inputCharacters, maxTokens: FEED_IMAGE_CAPABILITY.outputTokens,
     price() { return { currency: 'USD', maximumUsd: null, rateVersion: `codex-subscription:${snapshot.model}`, billing: 'subscription' } },
     async call(input) {
-      const imageReceipt = await options.codex!.generate({ snapshot, prompt: `${input.systemPrompt}\n\n${input.prompt}`, signal: input.signal })
+      const imageReceipt = await options.codex!.generate({ snapshot, prompt: `${input.systemPrompt}\n\n${input.prompt}`, sourceImage: input.sourceImage, signal: input.signal })
       let usageRecorded = !options.usageStore
       if (options.usageStore) { try {
         await options.usageStore.recordUsage({ userId: actor.userId, assistantId: actor.assistantId, sessionId: actor.sessionId,
@@ -133,7 +136,7 @@ async function persistFeedImage(options: FeedImagePortOptions, run: FeedEditoria
   const actor = editorialActor(run); const context = run.context as FeedGenerationContext
   const authority = await withFeedTransaction(actor, async (client, scope) => {
     const publicAudience = (await client.query("SELECT 1 FROM workspace_members WHERE workspace_id=$1 AND clearance='public' LIMIT 1", [scope.workspaceId])).rowCount
-    const sourceFiles = walkFeed(context.content.composition).flatMap(({ node }) => node.type === 'image' ? [node.attrs.fileId] : node.type === 'generationPlaceholder' ? node.attrs.references.flatMap(ref => 'fileId' in ref ? [ref.fileId] : []) : [])
+    const sourceFiles = [...feedSelectedFiles(context.content.composition).keys(), ...(context.baseImage ? [context.baseImage.fileId] : [])]
     const ids = (kind: string) => context.sources.filter(source => source.id.startsWith(`${kind}:`)).map(source => source.id.split(':')[1]!)
     const rows = (await client.query<{ sensitivity: FilesContext['clearance']; compartments: string[]; project_ids: string[] }>(`
       SELECT sensitivity,compartments,project_ids FROM workspace_files WHERE workspace_id=$1 AND id=ANY($2::uuid[])
@@ -161,4 +164,22 @@ async function persistFeedImage(options: FeedImagePortOptions, run: FeedEditoria
   const tagged = await options.files.setMeta(ctx, file.value.id, { metadata: { ...file.value.metadata, feedGeneration: { runId: run.id, sessionId: run.sessionId, slotId: context.slot.id, sourceRevision: run.revision, providerResponseId: receipt.responseId ?? null } } })
   if (!tagged.ok) throw new FeedCollaborationError(409, 'generation_file_conflict')
   return { fileId: file.value.id, mimeType: receipt.image.mimeType, alt: context.slot.altIntent ?? '' }
+}
+
+/** This exact selected-resource read never raises the assistant's ambient clearance. */
+async function readFeedGenerationImage(options: FeedImagePortOptions, actor: FeedActor, fileId: string): Promise<FeedGenerationImage> {
+  if (!options.files) throw new FeedCollaborationError(503, 'image_storage_unavailable')
+  const ctx = await withFeedTransaction(actor, async (client, scope): Promise<FilesContext> => {
+    const source = (await readFeedSelectedSources(client, actor, scope, 'file', [fileId]))[0]
+    if (!source) throw new FeedCollaborationError(403, 'file_not_available_to_draft')
+    return { workspaceId: scope.workspaceId, userId: actor.userId, assistantId: actor.assistantId, assistantKind: 'app', clearance: source.sensitivity, compartments: source.compartments, projectIds: source.projectIds }
+  })
+  const metadata = await options.files.stat(ctx, fileId)
+  if (!metadata.ok) throw new FeedCollaborationError(403, 'file_not_available_to_draft')
+  if (metadata.value.sizeBytes > FEED_IMAGE_CAPABILITY.maxSourceImageBytes || !['image/png', 'image/jpeg', 'image/webp'].includes(metadata.value.mime)) throw new FeedCollaborationError(422, 'image_source_invalid')
+  const read = await options.files.readBytes(ctx, fileId)
+  if (!read.ok) throw new FeedCollaborationError(403, 'file_not_available_to_draft')
+  let source: Awaited<ReturnType<typeof validateFeedImageSource>>
+  try { source = await validateFeedImageSource(read.value.bytes, read.value.file.mime) } catch { throw new FeedCollaborationError(422, 'image_source_invalid') }
+  return { fileId, hash: feedEditorialHash(source.image), ...source }
 }

@@ -60,18 +60,15 @@ describe('[COMP:app-web/feed-post-chat] persistent post and thread conversations
     expect(host.querySelector<HTMLTextAreaElement>('[aria-label="post"]')!.value).toBe('An unfinished post question');
     expect(lifecycle.unmount).not.toHaveBeenCalled();
   });
-  it('returns from selected passage or comment context through the same Whole post action', () => {
+  it('only shows a context header for an explicitly opened comment conversation', () => {
     const base = props();
-    act(() => root.render(<FeedPostChat {...base} selectionQuote="A selected phrase" />));
-    expect(host.querySelector('blockquote')?.textContent).toBe('A selected phrase');
-    act(() => host.querySelector<HTMLButtonElement>('button')!.click());
-    expect(base.onWholePost).toHaveBeenCalledOnce();
+    act(() => root.render(<FeedPostChat {...base} />));
+    expect(host.querySelector('blockquote')).toBeNull();
     act(() => root.render(<FeedPostChat {...base} openedThreadIds={['first']} activeThreadId="first" />));
     expect(host.textContent).toContain(en.feedCollaboration.commentConversation);
     expect(host.querySelector('blockquote')?.textContent).toBe(en.feedCollaboration.post);
     act(() => host.querySelector<HTMLButtonElement>('button')!.click());
-    expect(base.onWholePost).toHaveBeenCalledTimes(2);
-    expect(host.querySelector('[role=tablist]')).toBeNull();
+    expect(base.onWholePost).toHaveBeenCalledOnce();
   });
   it('disables thread input when the working copy cannot send and falls back to post chat after access data is evicted', () => {
     const base = props();

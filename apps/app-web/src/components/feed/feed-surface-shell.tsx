@@ -23,6 +23,7 @@
  * [COMP:app-web/feed-surface-shell]
  */
 
+import { FeedActionPermissionsButton } from "./feed-action-permissions";
 import { useEffect, type ReactNode } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { MessageSquareText, Plus } from "lucide-react";
@@ -71,6 +72,7 @@ export function FeedSurfaceShell(props: {
             <>
               <FeedNewPostTopbarAction />
               <FeedChatTopbarAction />
+              <FeedActionPermissionsButton />
             </>
           }
         />

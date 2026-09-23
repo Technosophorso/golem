@@ -199,8 +199,8 @@ export const ja: Dictionary = {
     "imageOptionPosition": "画像 {current} / {total}",
     "iterationInstruction": "この画像を変更",
     "iterationPlaceholder": "変更したい点を入力...",
-    "prepareIteration": "新しい試行に追加",
-    "iterationHint": "生成指示を更新します。再生成する前にリクエストと費用を確認してください。",
+    "prepareIteration": "再生成",
+    "iterationHint": "コメントに沿ってこの画像を編集します。費用を確認してから実行してください。",
     "revisionPrefix": "修正リクエスト"
 },
   feedReview: {
@@ -243,6 +243,7 @@ export const ja: Dictionary = {
     "low": "優先度: 低"
 },
   feedCollaboration: {
+    commentOrSuggest: 'コメント・変更提案',
     details: "詳細",
     postActions: "投稿の操作",
     openComments: "{n}件のコメントを開く",
@@ -1428,6 +1429,7 @@ export const ja: Dictionary = {
       workflow: "ワークフローについて質問中",
       approvals: "承認について質問中",
     },
+    confirmationAlwaysAllow: "常に許可",
     confirmationApprove: "承認",
     confirmationDeny: "拒否",
     confirmationDenyWithComment: "コメントを付けて拒否",
@@ -7556,6 +7558,13 @@ export const ja: Dictionary = {
     },
   },
   feedPage: {
+    actionPermissions: {
+      title: "アクションの権限",
+      description: "この Feed アシスタントが自動で実行できる操作と、承認が必要な操作を選びます。ワークスペースのルールも適用されます。",
+      loadError: "アクションの権限を読み込めませんでした。",
+      saveError: "設定を保存できませんでした。もう一度お試しください。",
+      empty: "このアシスタントに接続されたアクションはありません。",
+    },
     title: "フィード",
     description: "ブランドの声で Instagram・Threads・X・XHS 向けに下書きし、接続済みプラットフォームには直接投稿できます。",
     sectionsAriaLabel: "フィードのセクション",

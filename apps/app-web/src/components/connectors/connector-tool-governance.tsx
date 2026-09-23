@@ -75,6 +75,8 @@ export function ConnectorToolGovernance({
   onPolicyChange,
   workspaceId,
   instanceId,
+  onPolicyError,
+  onPolicySaved,
 }: {
   assistantId: string;
   connectorId: string;
@@ -90,6 +92,8 @@ export function ConnectorToolGovernance({
    *  shared policy routes are keyed by. */
   workspaceId?: string | null;
   instanceId?: string;
+  onPolicyError?: () => void;
+  onPolicySaved?: () => void;
 }) {
   const t = useT();
   const [allowed, setAllowed] = useState<Set<string>>(new Set());
@@ -165,10 +169,14 @@ export function ConnectorToolGovernance({
       );
       if (!res.ok) {
         setWsPolicies(prev);
+        onPolicyError?.();
         if (res.status === 403) setWsPolicyReadOnly(true);
+      } else {
+        onPolicySaved?.();
       }
     } catch {
       setWsPolicies(prev);
+      onPolicyError?.();
     }
   }
 

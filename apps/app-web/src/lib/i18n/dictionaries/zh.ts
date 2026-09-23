@@ -199,8 +199,8 @@ export const zh: Dictionary = {
     "imageOptionPosition": "圖片 {current} / {total}",
     "iterationInstruction": "修改這張圖片",
     "iterationPlaceholder": "描述要修改的內容...",
-    "prepareIteration": "加入新的嘗試",
-    "iterationHint": "這會更新生成指示。再次生成前，請確認請求與費用。",
+    "prepareIteration": "重新生成",
+    "iterationHint": "根據你的意見修改這張圖片。確認費用後再開始。",
     "revisionPrefix": "修改要求"
 },
   feedReview: {
@@ -243,6 +243,7 @@ export const zh: Dictionary = {
     "low": "低優先度"
 },
   feedCollaboration: {
+    commentOrSuggest: '留言或建議修改',
     details: "詳細資料",
     postActions: "貼文操作",
     openComments: "開啟 {n} 則留言",
@@ -1425,6 +1426,7 @@ export const zh: Dictionary = {
       workflow: "正在詢問工作流程",
       approvals: "正在詢問審批",
     },
+    confirmationAlwaysAllow: "永遠允許",
     confirmationApprove: "核准",
     confirmationDeny: "拒絕",
     confirmationDenyWithComment: "拒絕並附註",
@@ -7498,6 +7500,13 @@ export const zh: Dictionary = {
     },
   },
   feedPage: {
+    actionPermissions: {
+      title: "動作權限",
+      description: "選擇此 Feed 助理可以自動執行或需要你批准的動作。工作區規則仍然適用。",
+      loadError: "無法載入動作權限。",
+      saveError: "無法儲存此偏好設定，請重試。",
+      empty: "此助理沒有已連接的動作。",
+    },
     title: "Feed",
     description: "用品牌語氣為 Instagram、Threads、X、小紅書撰寫貼文,已連結的平台可一鍵發佈。",
     sectionsAriaLabel: "Feed 區塊",

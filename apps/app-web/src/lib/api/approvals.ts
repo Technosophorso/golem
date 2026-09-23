@@ -335,8 +335,8 @@ export async function respondToSkillApproval(
 }
 
 /** Kind-aware respond dispatch — the queue's single action entry point.
- *  `grantAlways` applies only to `browser_skill_send` rows: approve AND mint
- *  the standing block+profile grant (R2-2's third button). */
+ *  `grantAlways` also preserves a tool invocation's persistent decision on
+ *  resume; browser skill sends mint the standing block+profile grant. */
 export function respondByKind(
   row: Pick<PendingApprovalRow, "id" | "kind">,
   decision: "approved" | "rejected",

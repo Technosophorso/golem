@@ -207,6 +207,8 @@ export type Session = {
 }
 
 export type PendingConfirmation = {
+  /** Server capability: this approval can persist an action preference. */
+  allowPersistentApproval?: boolean
   toolCallId: string
   /** Durable pending_approvals row id, when this confirmation was persisted. */
   approvalId?: string

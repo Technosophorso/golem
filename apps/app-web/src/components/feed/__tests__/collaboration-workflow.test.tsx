@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import React, { act } from 'react';
+import React, { act, useState } from 'react';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createRoot, type Root } from 'react-dom/client';
@@ -190,7 +190,7 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     let pos = 0; view.state.doc.forEach((child, offset, index) => { if (index === 2) pos = offset + 1; });
     act(() => { view.focus(); view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, pos + 4, pos + 15))); });
     expect(selected).toEqual({ kind: 'range', spans: [{ segmentId: doc.segments[0]!.id, blockId: doc.segments[0]!.content[2]!.attrs.id, from: 4, to: 15 }] });
-    await click(text.comment); expect(onAction).toHaveBeenCalledWith('comment');
+    await click(text.commentOrSuggest); expect(onAction).toHaveBeenCalledWith('comment');
     act(() => root.render(<CompositionEditor {...props} draftAnchor={createFeedAnchor(doc, selected!, 2)} />));
     expect(host.querySelector('[data-feed-thread=draft]')?.textContent).toBe('same phrase');
     expect(host.querySelectorAll('[data-feed-thread=draft]')).toHaveLength(1);
@@ -206,7 +206,7 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     act(() => view.dom.blur());
     expect(host.querySelector('[data-feed-selection-actions]')).toBeNull();
     await click(text.documentActions);
-    const action = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node => node.textContent === text.comment)!;
+    const action = [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find(node => node.textContent === text.commentOrSuggest)!;
     await act(async () => action.click());
     expect(onAction).toHaveBeenCalledWith('comment');
   });
@@ -261,6 +261,34 @@ describe('[COMP:app-web/feed-composition-editor] authoring and collaboration wor
     await act(async () => input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
     expect(props.onCommand).toHaveBeenCalledWith([expect.objectContaining({ kind: 'comment', target, text: 'A human discussion' })]);
     expect(host.querySelector('[data-chat-session]')).toBeNull();
+  });
+  it('combines comment and suggestion composition while retaining typed text and the selected anchor', async () => {
+    const props = panel(); const segment = props.composition.segments[0]!;
+    const target = { kind: 'block' as const, segmentId: segment.id, blockId: segment.content[0]!.attrs.id };
+    function Harness() {
+      const [composer, setComposer] = useState<FeedCommentPanelProps['composer']>({ kind: 'comment', anchor: createFeedAnchor(props.composition, target, 2) });
+      return <DraftCommentPanel {...props} composer={composer} onComposer={setComposer} />;
+    }
+    act(() => root.render(<Harness />));
+    const input = host.querySelector('textarea')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'A more concrete opening.'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => host.querySelector<HTMLButtonElement>(`[role="group"][aria-label="${text.commentOrSuggest}"] button:last-child`)!.click());
+    expect(host.querySelector('textarea')!.value).toBe('A more concrete opening.');
+    expect(host.querySelector('blockquote')!.textContent).toBe('First paragraph.');
+    await act(async () => host.querySelector<HTMLButtonElement>(`[role="group"][aria-label="${text.commentOrSuggest}"] button:first-child`)!.click());
+    expect(host.querySelector('textarea')!.value).toBe('A more concrete opening.');
+    expect(props.onCommand).not.toHaveBeenCalled();
+    await act(async () => host.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(props.onCommand).toHaveBeenCalledWith([expect.objectContaining({ kind: 'comment', target, text: 'A more concrete opening.' })]);
+  });
+  it('posts a comment-mode message in the existing suggestion thread', async () => {
+    const props = panel(); const threadId = crypto.randomUUID();
+    act(() => root.render(<DraftCommentPanel {...props} composer={{ kind: 'comment', threadId, anchor: createFeedAnchor(props.composition, { kind: 'post' }, 2) }} />));
+    const input = host.querySelector('textarea')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Keep this discussion together.'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    await act(async () => input.closest('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })));
+    expect(props.onCommand).toHaveBeenCalledWith([{ kind: 'reply', threadId, text: 'Keep this discussion together.' }]);
+    expect(props.onThread).toHaveBeenCalledWith(threadId);
   });
   it('scenarios 1 and 3: before/after decisions never edit until Accept and retain Undo after acceptance', async () => {
     const props = panel(); const suggestionId = crypto.randomUUID(); const edits = proposeFeedReplacement(props.composition, { kind: 'post' }, 'Proposed body');
@@ -664,6 +692,48 @@ describe('[COMP:app-web/feed-generation-placeholder] slot workflow', () => {
     await click(en.feedCollaboration.accept);
     expect(controls.onCommand).toHaveBeenCalledWith([{ kind: 'decide', suggestionId: second.id, outcome: 'accepted' }]);
     expect(state.http).not.toHaveBeenCalled();
+  });
+  it.each([false, true])('regenerates after saving and invalidates a pending estimate on navigation (%s)', async (navigateDuringEstimate) => {
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => 'blob:refinement') }); Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    state.image.mockResolvedValue(new Blob(['fixture'], { type: 'image/png' }));
+    const slot: FeedPlaceholderAttrs = { ...generationSlot(), kind: 'image' }; const segmentId = crypto.randomUUID(); const controls = generationControls(); const onEdit = vi.fn();
+    const fileId = crypto.randomUUID();
+    const candidate = { id: crypto.randomUUID(), sourceRunId: crypto.randomUUID(), sourceRevision: 1, edits: [{ kind: 'replaceBlock' as const, segmentId, blockId: slot.id, preimage: { type: 'generationPlaceholder' as const, attrs: { ...slot, brief: 'An older brief' } }, replacement: [{ type: 'image' as const, attrs: { id: slot.id, fileId, mimeType: 'image/png' as const, alt: 'Prior image', placement: 'inline' as const } }] }], rationale: '', status: 'proposed' as const, threadId: null, parentId: null, authorUserId: 'fixture', authorKind: 'assistant' as const };
+    const second = structuredClone(candidate); second.id = crypto.randomUUID(); second.edits[0]!.replacement[0]!.attrs.fileId = crypto.randomUUID();
+    controls.snapshot = { copy: null, threads: [], suggestions: [candidate, second] };
+    const render = (current: FeedPlaceholderAttrs, pending: boolean, revision: number) => act(() => root.render(<GenerationPlaceholder slot={current} segmentId={segmentId} controls={{ ...controls, pending, revision }} onEdit={onEdit} onSelect={vi.fn()} />));
+    render(slot, false, 2);
+    // An older-brief preview remains visible, but it cannot be accepted over current content.
+    await vi.waitFor(() => expect(host.querySelector('[data-feed-pending-image] img')).not.toBeNull());
+    await act(async () => host.querySelector<HTMLButtonElement>('[data-feed-pending-image]')!.click());
+    expect(button(en.feedCollaboration.accept).disabled).toBe(true);
+    const instruction = document.querySelector<HTMLTextAreaElement>(`textarea[placeholder="${en.feedGeneration.iterationPlaceholder}"]`)!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(instruction, 'Make the background blue.'); instruction.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(en.feedGeneration.prepareIteration);
+    const edited = onEdit.mock.calls[0]![0][0].replacement[0].attrs as FeedPlaceholderAttrs;
+    expect(edited).toMatchObject({ baseImageFileId: fileId, briefRevision: 1 });
+    expect(edited.brief).toContain('Make the background blue.');
+    expect(state.http).not.toHaveBeenCalled();
+    render(edited, true, 2);
+    expect(state.http).not.toHaveBeenCalled();
+    const estimate: FeedGenerationEstimate = { id: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), revision: 3, segmentId, slot: edited, count: 1, model: 'gemini-3.1-flash-image', tier: 'image', price: { currency: 'USD', maximumUsd: 0.02, rateVersion: 'fixture', billing: 'included' }, inputCharacters: 500, maxTokens: 1000, sources: [], omissions: [], confirmationRequired: true };
+    let respond!: () => void;
+    state.http.mockReturnValueOnce(new Promise(resolve => { respond = () => resolve({ ok: true, json: async () => ({ estimate }) }); }));
+    render(edited, false, 3);
+    if (navigateDuringEstimate) { await click(en.feedGeneration.nextImage); await click(en.feedGeneration.previousImage); }
+    await act(async () => respond());
+    if (navigateDuringEstimate) {
+      expect(document.querySelector('[aria-label="' + en.feedGeneration.estimateTitle + '"]')).toBeNull();
+      expect(state.http).toHaveBeenCalledTimes(1); return;
+    }
+    await vi.waitFor(() => expect(document.body.textContent).toContain('$0.02'));
+    expect(state.http).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(state.http.mock.calls[0]![1].body)).toMatchObject({ expectedRevision: 3, slotId: slot.id });
+    expect(document.querySelector('[aria-label="' + en.feedGeneration.estimateTitle + '"]')?.closest('details')).toBeNull();
+    state.http.mockResolvedValueOnce({ ok: true, json: async () => ({ run: {} }) });
+    await click(en.feedGeneration.confirm);
+    expect(state.http).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(state.http.mock.calls[1]![1].body)).toMatchObject({ estimateId: estimate.id, confirmed: true });
   });
   it('scenarios 5 and 8: stale candidates remain visible with Keep for later and cannot overwrite a changed slot', async () => {
     const slot = generationSlot(); const controls = generationControls(); const segmentId = crypto.randomUUID();
