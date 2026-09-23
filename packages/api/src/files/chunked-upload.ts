@@ -65,6 +65,8 @@ export type ChunkedUploadStart = {
   chunkSizeBytes: number
   expiresAt: string
   parts: ChunkedUploadPart[]
+  /** Extra headers every part PUT must carry (Azure Blob: `x-ms-blob-type`). */
+  uploadHeaders?: Record<string, string>
 }
 
 export type ChunkedFileUploadService = {
@@ -242,6 +244,7 @@ export function createChunkedFileUploadService(
           chunkSizeBytes: CHUNKED_UPLOAD_PART_BYTES,
           expiresAt: expiresAt.toISOString(),
           parts,
+          ...(resolved.gcs.signedWriteHeaders ? { uploadHeaders: { ...resolved.gcs.signedWriteHeaders } } : {}),
         }
       } catch (err) {
         await deps.uploadsStore.markAborted(ctx.userId, uploadId).catch(() => undefined)
