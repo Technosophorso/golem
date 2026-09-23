@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { Message } from '@use-brian/core'
 import { applyOfficeCommand, type DocumentSnapshot, type PresentationSnapshot, type SpreadsheetSnapshot } from '@use-brian/office-model'
-import { generateAssistantOfficeCommands } from '../command-revision.js'
+import { generateAssistantOfficeCommands, officeRevisionFitRepairScope } from '../command-revision.js'
 
 const uid = (n: number) => `38000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const style = { fontFamily: 'Arial', fontSizePt: 11, bold: false, italic: false, underline: false, strike: false, color: '#111111' }
@@ -43,9 +43,10 @@ describe('[COMP:api/office-generation] Brian-native Office command planning', ()
     expect(userMessage).toContain(`Existing editable text-container IDs for updateText.targetId:\n["${uid(11)}"]`)
     expect(userMessage).toContain('never a run ID or paragraphStart ID')
     expect(prompt).toContain('Individual header/footer run IDs are not updateText or deleteObject targets')
-    const catalogLine = prompt.split('\n').find((line) => line.startsWith('[{"kind":"updateText"'))
+    const catalogLine = prompt.split('\n').find((line) => line.startsWith('[{"kind":'))
     const catalog = JSON.parse(catalogLine ?? '[]')
-    expect(catalog).toHaveLength(16)
+    expect(catalog).toHaveLength(17)
+    expect(catalog).toContainEqual({ kind: 'appendSpreadsheetRecords', required: ['sheetId', 'tableId', 'records'], optional: ['prototypeRow'] })
     expect(catalog).toContainEqual({ kind: 'updateText', required: ['targetId', 'runs'], optional: [] })
     expect(catalog).toContainEqual({ kind: 'deleteObject', required: ['targetId'], optional: [] })
     expect(catalog).toContainEqual({ kind: 'insertDocumentNode', required: ['sectionId', 'node'], optional: ['index', 'beforeNodeId', 'afterNodeId'] })
@@ -106,6 +107,33 @@ describe('[COMP:api/office-generation] Brian-native Office command planning', ()
     expect(commands[2]).not.toHaveProperty(location)
     const result = commands.reduce((state, command) => applyOfficeCommand(state, command) as DocumentSnapshot, snapshot)
     expect(result.sections[0].nodes.map((node) => node.kind)).toEqual(location === 'beforeNodeId' ? ['paragraph', 'pageBreak', 'heading'] : ['paragraph', 'heading', 'pageBreak'])
+  })
+
+  it('retries anchored sequential insertions from the original context after render rejection', async () => {
+    const snapshot = document()
+    const original = structuredClone(snapshot)
+    snapshot.sections[0].nodes.push({ id: uid(13), kind: 'heading', level: 1, styleName: 'Heading1', alignment: 'start', runs: [{ id: uid(14), text: 'Signatures', style }] })
+    const model = provider({ commands: [
+      { kind: 'deleteObject', targetId: uid(11) },
+      { kind: 'insertDocumentNode', sectionId: uid(10), beforeNodeId: uid(13), node: { id: uid(97), kind: 'paragraph', alignment: 'start', runs: [{ id: uid(98), text: 'Introduction', style }] } },
+      { kind: 'insertDocumentNode', sectionId: uid(10), afterNodeId: uid(13), node: { id: uid(99), kind: 'pageBreak' } },
+    ] })
+    let renders = 0
+    const commands = await generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(10)]), provider: model as never, validateCandidate: async candidate => {
+      expect(candidate.family === 'document' && candidate.sections[0].nodes.map(node => node.kind)).toEqual(['paragraph', 'heading', 'pageBreak'])
+      if (++renders === 1) throw Error('Rendered candidate rejected')
+    } })
+    expect(renders).toBe(2)
+    expect(model.requests).toHaveLength(2)
+    expect(commands[2]).toMatchObject({ kind: 'insertDocumentNode', index: 2 })
+    for (const request of model.requests) {
+      expect(request).toMatchObject({ responseFormat: 'json' })
+      expect(request.systemPrompt).toContain('Prefer beforeNodeId/afterNodeId')
+      expect(String(request.messages?.[0]?.content)).toContain('nodePositions')
+    }
+    expect(String(model.requests[1].messages?.[1]?.content)).toContain('ORIGINAL context')
+    expect(snapshot.sections[0].nodes[0]).toEqual(original.sections[0].nodes[0])
+    expect(snapshot.sections[0].nodes).toHaveLength(2)
   })
 
   it('keeps true section indices in a filtered selection context', async () => {
@@ -181,5 +209,187 @@ describe('[COMP:api/office-generation] Brian-native Office command planning', ()
     const snapshot = document()
     const protectedPlan = provider({ commands: [{ kind: 'setObjectProperty', targetId: snapshot.rootId, path: ['workspaceId'], value: uid(99) }] })
     await expect(generateAssistantOfficeCommands({ provider: protectedPlan as never, model: 'test', snapshot, baseVersion: 1, assistantId: uid(90), targetIds: [uid(10)], instruction: 'Move this document' })).rejects.toThrow('protected canonical state')
+  })
+})
+
+function tableSpreadsheet() {
+  const snapshot = spreadsheet(), sheet = snapshot.worksheets[0]!
+  sheet.cells[0]!.address = 'A2'
+  sheet.cells[1]!.address = 'B2'; sheet.cells[1]!.formula = 'A2*2'
+  sheet.tables = [{ id: uid(45), name: 'Records', ref: 'A1:B2', autoFilter: true, columns: [{ id: 1, name: 'Amount' }, { id: 2, name: 'Total' }], style: { name: '', showFirstColumn: false, showLastColumn: false, showRowStripes: true, showColumnStripes: false } }]
+  return snapshot
+}
+const planParams = (snapshot: ReturnType<typeof document> | ReturnType<typeof spreadsheet> | ReturnType<typeof presentation>, targetIds: string[]) => ({ snapshot, baseVersion: 1, assistantId: uid(90), targetIds, instruction: 'Apply requested edit', model: 'test' })
+
+describe('[COMP:office/spreadsheet-tables] revision authority and shared repair budget', () => {
+  it('discovers table prototype context and permits only selected table or worksheet append', async () => {
+    const snapshot = tableSpreadsheet()
+    const append = { kind: 'appendSpreadsheetRecords', sheetId: uid(42), tableId: uid(45), records: [{ '1': { valueType: 'number', value: 3 } }] }
+    for (const target of [uid(45), uid(42)]) {
+      const model = provider({ commands: [append] })
+      const commands = await generateAssistantOfficeCommands({ ...planParams(snapshot, [target]), provider: model as never, validateCandidate: async candidate => {
+        expect(candidate.family === 'spreadsheet' && candidate.worksheets[0]!.tables![0]!.ref).toBe('A1:B3')
+      } })
+      expect(commands[0]?.kind).toBe('appendSpreadsheetRecords')
+      expect(JSON.stringify(model.requests[0])).toContain('prototypeCells')
+      expect(JSON.stringify(model.requests[0])).toContain('Amount')
+    }
+    const denied = provider({ commands: [append] })
+    await expect(generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(43)]), provider: denied as never })).rejects.toThrow('selected table')
+    expect(denied.requests).toHaveLength(3)
+    expect(snapshot.worksheets[0]!.tables![0]!.ref).toBe('A1:B2')
+  })
+
+  it('rejects identity/address aliases and generic table/header/collection bypasses', async () => {
+    const snapshot = tableSpreadsheet()
+    for (const op of [
+      { kind: 'setSpreadsheetCell', sheetId: uid(42), cellId: uid(43), address: 'B2', valueType: 'number', value: 7 },
+      { kind: 'setSpreadsheetCell', sheetId: uid(42), cellId: uid(99), address: 'A1', valueType: 'string', value: 'Different header' },
+      { kind: 'setObjectProperty', targetId: uid(45), path: ['ref'], value: 'A1:B3' },
+      { kind: 'setObjectProperty', targetId: uid(42), path: ['tables'], value: [] },
+      { kind: 'setObjectProperty', targetId: uid(42), path: ['merges'], value: ['A1:B3'] },
+    ]) await expect(generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(42)]), provider: provider({ commands: [op] }) as never })).rejects.toThrow()
+  })
+
+  it('retries malformed plans, and rejects failed rendered candidates before returning commands', async () => {
+    const snapshot = document()
+    const broken = provider({ commands: [{ kind: 'notACommand' }] })
+    await expect(generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(11)]), provider: broken as never })).rejects.toThrow()
+    expect(broken.requests).toHaveLength(3)
+    const model = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(11), path: ['alignment'], value: 'center' }] })
+    let renders = 0
+    await expect(generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(11)]), provider: model as never, validateCandidate: async () => { renders++; throw Error('conversion unavailable') } })).rejects.toThrow('conversion unavailable')
+    expect(renders).toBe(3)
+    expect(snapshot.sections[0]!.nodes[0]).toMatchObject({ alignment: 'start' })
+  })
+
+  it('[COMP:office/fit-repair] emits bounded font repairs as replayable commands within the same three candidates', async () => {
+    const snapshot = presentation()
+    snapshot.slides[0]!.objects[0]!.geometry.heightPt = 13
+    const text = snapshot.slides[0]!.objects[0]!
+    if (text.kind !== 'text') throw Error()
+    text.runs[0]!.style = { ...text.runs[0]!.style, fontSizePt: 12 }
+    const model = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(26), path: ['geometry', 'xPt'], value: 20 }] })
+    const { applyOfficeCommand } = await import('@use-brian/office-model')
+    const commands = await generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(26)]), provider: model as never, fitRepair: { eligibleTargetIds: [uid(26)], minimumFontSizePt: 8 }, validateCandidate: async candidate => {
+      expect(candidate.family === 'presentation' && candidate.slides[0]!.objects[0]).toMatchObject({ runs: [{ text: 'Original', style: { fontSizePt: 11 } }] })
+    } })
+    expect(model.requests).toHaveLength(1)
+    expect(commands).toContainEqual(expect.objectContaining({ kind: 'setObjectProperty', targetId: uid(28), path: ['style', 'fontSizePt'], value: 11 }))
+    const replay = commands.reduce((s, c) => applyOfficeCommand(s, c), snapshot as import('@use-brian/office-model').OfficeArtifactSnapshot)
+    expect(replay.family).toBe('presentation')
+    expect(snapshot.slides[0]!.objects[0]).toMatchObject({ runs: [{ style: { fontSizePt: 12 } }] })
+  })
+})
+
+it('[COMP:office/fit-repair] exhausts repair candidates without multiplying LLM retries', async () => {
+  const snapshot = presentation()
+  snapshot.slides[0]!.objects[0]!.geometry.heightPt = 1
+  const model = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(26), path: ['geometry', 'xPt'], value: 20 }] })
+  let rendered = false
+  await expect(generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(26)]), provider: model as never, fitRepair: { eligibleTargetIds: [uid(26)], minimumFontSizePt: 8 }, validateCandidate: async () => { rendered = true } })).rejects.toThrow('failed fit')
+  expect(model.requests).toHaveLength(1)
+  expect(rendered).toBe(false)
+})
+
+it('[COMP:api/office-generation] exposes native tables as semantic getOfficeArtifact targets', async () => {
+  const { createOfficeService } = await import('../service.js')
+  const snapshot = tableSpreadsheet()
+  const service = createOfficeService({
+    getArtifact: async () => ({ id: snapshot.artifactId, family: 'spreadsheet', title: snapshot.title, headVersion: 1, lifecycleState: 'active', sensitivity: 'internal', compartments: [], projectIds: [] }),
+    resolveAccess: async () => ({ role: 'edit' }), latestJob: async () => null, getSnapshot: async () => ({ snapshot }),
+  } as never)
+  const result = await service.get({ userId: uid(90), artifactId: snapshot.artifactId })
+  expect(result?.targets).toContainEqual(expect.objectContaining({ id: uid(45), kind: 'spreadsheetTable', parentId: uid(42), label: 'Records A1:B2; columns 1:Amount, 2:Total' }))
+})
+
+
+describe('default selection-scoped fit repair', () => {
+  it.each(['object', 'slide'] as const)('repairs a selected %s without an instruction prefix or explicit repair option', async selected => {
+    const snapshot = presentation()
+    const object = snapshot.slides[0].objects[0]
+    if (object.kind !== 'text') throw Error('fixture')
+    object.geometry.heightPt = 13
+    object.runs[0].style = { ...style, fontSizePt: 12 }
+    const other = structuredClone(snapshot.slides[0])
+    other.id = uid(201); other.readingOrder = [uid(202)]
+    other.objects = [{ ...structuredClone(object), id: uid(202), geometry: { ...object.geometry, heightPt: 50 }, runs: [{ ...structuredClone(object.runs[0]), id: uid(203) }] }]
+    snapshot.slides.push(other)
+    const model = provider({ commands: [{ kind: 'setObjectProperty', targetId: object.id, path: ['geometry', 'xPt'], value: 20 }] })
+    const commands = await generateAssistantOfficeCommands({ ...planParams(snapshot, [selected === 'slide' ? uid(25) : object.id]), instruction: 'Move this right and keep it readable', provider: model as never })
+    expect(commands).toContainEqual(expect.objectContaining({ targetId: uid(28), path: ['style', 'fontSizePt'], value: 11 }))
+    expect(commands.some(command => 'targetId' in command && [uid(202), uid(203), uid(27)].includes(command.targetId))).toBe(false)
+    expect(model.requests).toHaveLength(1)
+  })
+
+  it('carries inherited small-font readability through repair and a render-gate retry within the shared budget', async () => {
+    const snapshot = presentation()
+    const object = snapshot.slides[0].objects[0]
+    if (object.kind !== 'text') throw Error('fixture')
+    object.geometry.heightPt = 13
+    object.runs[0].style = { ...style, fontSizePt: 12 }
+    snapshot.slides[0].objects.push({ ...structuredClone(object), id: uid(401), geometry: { ...object.geometry, yPt: 200, heightPt: 50 }, runs: [{ id: uid(402), text: 'Inherited brand', style: { ...style, fontSizePt: 7.5 } }] })
+    snapshot.slides[0].readingOrder.push(uid(401))
+    // First LLM candidate requires one repair (candidate 2); the render gate
+    // rejects it. The final LLM plan must fit without another repair attempt.
+    const first = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(26), path: ['geometry', 'xPt'], value: 20 }] })
+    const last = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(26), path: ['geometry', 'heightPt'], value: 50 }] })
+    let calls = 0
+    const model = { stream: (request: Parameters<typeof first.stream>[0]) => (++calls === 1 ? first : last).stream(request) }
+    let renders = 0
+    const commands = await generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(26)]), provider: model as never, validateCandidate: async candidate => {
+      expect(candidate.family === 'presentation' && candidate.slides[0].objects[2]).toMatchObject({ runs: [{ text: 'Inherited brand', style: { fontSizePt: 7.5 } }] })
+      if (++renders === 1) {
+        expect(candidate.family === 'presentation' && candidate.slides[0].objects[0]).toMatchObject({ runs: [{ style: { fontSizePt: 11 } }] })
+        throw Error('Render rejected')
+      }
+    } })
+    expect(calls).toBe(2)
+    expect(renders).toBe(2)
+    expect(String(last.requests[0].messages?.[1]?.content)).toContain('2/3 attempts used')
+    expect(commands).toHaveLength(1)
+    expect(commands[0]).toMatchObject({ targetId: uid(26), path: ['geometry', 'heightPt'], value: 50 })
+    expect(object.runs[0].style.fontSizePt).toBe(12)
+  })
+
+  it('expands a selected section only to its text and excludes other sections', () => {
+    const snapshot = document()
+    snapshot.sections.push({ ...structuredClone(snapshot.sections[0]), id: uid(301), nodes: [{ ...structuredClone(snapshot.sections[0].nodes[0]), id: uid(302) }] })
+    const second = snapshot.sections[1].nodes[0]
+    if (second.kind !== 'paragraph') throw Error('fixture')
+    second.runs[0].id = uid(303)
+    expect(officeRevisionFitRepairScope(snapshot, [uid(10)]).eligibleTargetIds).toEqual([uid(12)])
+  })
+
+  it('does not grant global repair authority for a root selection or master-locked text', () => {
+    const snapshot = presentation()
+    expect(officeRevisionFitRepairScope(snapshot, [snapshot.rootId]).eligibleTargetIds).toEqual([])
+    snapshot.masters[0].lockedObjectIds.push(uid(26))
+    const scope = officeRevisionFitRepairScope(snapshot, [uid(25)])
+    expect(scope.eligibleTargetIds).not.toContain(uid(28))
+    expect(scope.lockedTargetIds).toContain(uid(28))
+  })
+
+  it('honors immutable template ancestor locks during section-scoped repair', async () => {
+    const snapshot = document()
+    const scope = officeRevisionFitRepairScope(snapshot, [uid(10)], [uid(11)])
+    expect(scope.eligibleTargetIds).toEqual([])
+    expect(scope.lockedTargetIds).toContain(uid(12))
+    const model = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(12), path: ['style', 'fontSizePt'], value: 9 }] })
+    await expect(generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(10)]), lockedTargetIds: [uid(11)], provider: model as never })).rejects.toThrow('locked')
+  })
+
+  it('cannot replace a selected owner to bypass an immutable child-run lock', async () => {
+    const snapshot = document()
+    const model = provider({ commands: [{ kind: 'updateText', targetId: uid(11), runs: [{ id: uid(12), text: 'Changed locked copy', style: { ...style, fontSizePt: 9 } }] }] })
+    await expect(generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(10)]), lockedTargetIds: [uid(12)], provider: model as never })).rejects.toThrow('locked content')
+  })
+
+  it('retains an explicitly requested smaller readable font without enlarging it', async () => {
+    const snapshot = presentation()
+    const model = provider({ commands: [{ kind: 'setObjectProperty', targetId: uid(28), path: ['style', 'fontSizePt'], value: 9 }] })
+    const commands = await generateAssistantOfficeCommands({ ...planParams(snapshot, [uid(26)]), instruction: 'Make this text 9pt', provider: model as never })
+    expect(commands).toHaveLength(1)
+    expect(commands[0]).toMatchObject({ targetId: uid(28), value: 9 })
   })
 })

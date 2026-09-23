@@ -1,10 +1,12 @@
+import { replaceTemplateRuns, templateFieldGuidance, validateTemplateFieldValues } from './template-fields.js'
 /** Model-backed document construction and targeted revision for Office jobs.
  * [COMP:api/office-generation] */
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import { collectStream, type LLMProvider, type Message } from '@use-brian/core'
+import { collectStream, type LLMProvider, type Message, type OfficeGenerationFitPolicy } from '@use-brian/core'
 import {
   assertOfficeArtifactSnapshot,
+  officeTemplateTokenTargets,
   type DocumentFlowNode,
   type DocumentSnapshot,
   type OfficeRichTextRun,
@@ -73,51 +75,12 @@ function replaceRuns(runs: OfficeRichTextRun[], text: string): OfficeRichTextRun
 
 const DOCUMENT_PLACEHOLDER = /\{\{([A-Z][A-Z0-9_]*)\}\}/g
 
-function replacePlaceholderRuns(runs: OfficeRichTextRun[], values: Record<string, string>): OfficeRichTextRun[] {
-  const text = runs.map((run) => run.text).join('')
-  const matches = [...text.matchAll(DOCUMENT_PLACEHOLDER)]
-  if (matches.length === 0) return runs
-  let offset = 0
-  const spans = runs.map((run) => {
-    const start = offset
-    offset += run.text.length
-    return { start, end: offset }
-  })
-  const result = runs.map((run) => ({ ...run }))
-  // Right-to-left keeps original offsets valid for remaining replacements,
-  // including multiple tokens within the same run. Do not scan inserted text.
-  for (const match of matches.reverse()) {
-    const value = values[match[1]!]
-    if (value === undefined) continue
-    const start = match.index!
-    const end = start + match[0].length
-    const first = spans.findIndex((span) => span.start <= start && start < span.end)
-    const last = spans.findIndex((span) => span.start < end && end <= span.end)
-    if (first < 0 || last < first) throw new Error('Invalid Office placeholder run range')
-    const prefix = result[first]!.text.slice(0, start - spans[first]!.start)
-    const suffix = result[last]!.text.slice(end - spans[last]!.start)
-    result[first]!.text = prefix + value + (first === last ? suffix : '')
-    for (let index = first + 1; index < last; index += 1) result[index]!.text = ''
-    if (last !== first) result[last]!.text = suffix
-  }
-  return result
-}
-
 function placeholdersInText(text: string): string[] {
   return [...text.matchAll(DOCUMENT_PLACEHOLDER)].map((match) => match[1]!)
 }
 
 function collectDocumentPlaceholders(snapshot: DocumentSnapshot): string[] {
-  const placeholders = new Set<string>()
-  const collect = (text: string) => {
-    for (const placeholder of placeholdersInText(text)) placeholders.add(placeholder)
-  }
-  for (const section of snapshot.sections) {
-    collect(section.header.map((run) => run.text).join(''))
-    collect(section.footer.map((run) => run.text).join(''))
-    for (const node of section.nodes) collect(textOfNode(node))
-  }
-  return [...placeholders].sort()
+  return [...officeTemplateTokenTargets(snapshot).keys()].sort()
 }
 
 function documentTemplateContext(snapshot: DocumentSnapshot): string[] {
@@ -150,15 +113,19 @@ function replaceDocumentPlaceholders(params: {
   title: string
   replacements: Record<string, string>
   bodyParagraphs?: string[]
+  onFilledRuns?: (before: OfficeRichTextRun[], after: OfficeRichTextRun[]) => void
 }): DocumentSnapshot {
+  const fill = (runs: OfficeRichTextRun[], replacements = params.replacements, freshIds = false) => {
+    const result = replaceTemplateRuns(runs, replacements).map(run => freshIds ? { ...run, id: randomUUID(), ...(run.paragraphStart ? { paragraphStart: { ...run.paragraphStart, id: randomUUID() } } : {}) } : run)
+    params.onFilledRuns?.(runs, result)
+    return result
+  }
   const next = structuredClone(params.snapshot)
   next.title = params.title
   next.accessibility.title = params.title
   for (const section of next.sections) {
-    const headerText = section.header.map((run) => run.text).join('')
-    const footerText = section.footer.map((run) => run.text).join('')
-    if (placeholdersInText(headerText).length > 0) section.header = replacePlaceholderRuns(section.header, params.replacements)
-    if (placeholdersInText(footerText).length > 0) section.footer = replacePlaceholderRuns(section.footer, params.replacements)
+    section.header = fill(section.header)
+    section.footer = fill(section.footer)
     const nodes: DocumentFlowNode[] = []
     for (const node of section.nodes) {
       const sourceText = textOfNode(node)
@@ -167,14 +134,15 @@ function replaceDocumentPlaceholders(params: {
           nodes.push({
             ...node,
             id: randomUUID(),
-            runs: replacePlaceholderRuns(node.runs, { ...params.replacements, LETTER_BODY: paragraph }).map((run) => ({ ...run, id: randomUUID(), ...(run.paragraphStart ? { paragraphStart: { ...run.paragraphStart, id: randomUUID() } } : {}) })),
+            runs: fill(node.runs, { ...params.replacements, LETTER_BODY: paragraph }, true),
           })
         }
         continue
       }
-      if (node.kind === 'paragraph' || node.kind === 'heading') node.runs = replacePlaceholderRuns(node.runs, params.replacements)
-      else if (node.kind === 'list') node.items = node.items.map((item) => ({ ...item, runs: replacePlaceholderRuns(item.runs, params.replacements) }))
-      else if (node.kind === 'table') node.rows = node.rows.map((row) => ({ ...row, cells: row.cells.map((cell) => ({ ...cell, runs: replacePlaceholderRuns(cell.runs, params.replacements) })) }))
+      if (node.kind === 'paragraph' || node.kind === 'heading') node.runs = fill(node.runs)
+      else if (node.kind === 'list') node.items = node.items.map((item) => ({ ...item, runs: fill(item.runs) }))
+      else if (node.kind === 'table') node.rows = node.rows.map((row) => ({ ...row, cells: row.cells.map((cell) => ({ ...cell, runs: fill(cell.runs) })) }))
+      // Remove emptied placeholder nodes, but retain authored blank layout nodes.
       if ((node.kind === 'paragraph' || node.kind === 'heading') && placeholdersInText(sourceText).length > 0 && !textOfNode(node).trim()) continue
       nodes.push(node)
     }
@@ -185,7 +153,7 @@ function replaceDocumentPlaceholders(params: {
   return next
 }
 
-function replaceLetterPlaceholders(snapshot: DocumentSnapshot, values: z.infer<typeof LetterContentSchema>): DocumentSnapshot {
+function replaceLetterPlaceholders(snapshot: DocumentSnapshot, values: z.infer<typeof LetterContentSchema>, onFilledRuns?: (before: OfficeRichTextRun[], after: OfficeRichTextRun[]) => void): DocumentSnapshot {
   const replacements: Record<string, string> = {
     LETTER_DATE: values.letterDate,
     RECIPIENT_NAME: values.recipientName,
@@ -199,7 +167,7 @@ function replaceLetterPlaceholders(snapshot: DocumentSnapshot, values: z.infer<t
     SIGNATORY_NAME: values.signatoryName,
     SIGNATORY_TITLE: values.signatoryTitle,
   }
-  return replaceDocumentPlaceholders({ snapshot, title: values.title, replacements, bodyParagraphs: values.bodyParagraphs })
+  return replaceDocumentPlaceholders({ snapshot, title: values.title, replacements, bodyParagraphs: values.bodyParagraphs, onFilledRuns })
 }
 
 
@@ -221,6 +189,7 @@ function withBrandVoice(systemPrompt: string, brandVoice?: string | null): strin
 }
 
 export async function generateDocumentFromTemplate(params: {
+  onFitPolicy?: (policy: OfficeGenerationFitPolicy) => void
   /** Brand voice fragment (`buildBrandVoiceFragment`). Absent → no brand instruction. */
   brandVoice?: string | null
   provider: LLMProvider
@@ -236,11 +205,14 @@ export async function generateDocumentFromTemplate(params: {
   if (params.template.family !== 'document' || params.template.snapshot.family !== 'document') throw new Error('Document generation requires a document template')
   const placeholders = collectDocumentPlaceholders(params.template.snapshot)
   if (placeholders.length === 0) throw new Error('Document template contains no fillable fields')
-  const isLetter = placeholders.includes('LETTER_BODY')
+  const guidance = templateFieldGuidance(params.template)
+  // Legacy letter shape is retained only when it can represent every token.
+  const letterKeys = new Set(['LETTER_BODY', 'LETTER_DATE', 'RECIPIENT_NAME', 'RECIPIENT_TITLE', 'RECIPIENT_ORGANISATION', 'RECIPIENT_ADDRESS_1', 'RECIPIENT_ADDRESS_2', 'SUBJECT', 'SALUTATION', 'CLOSING', 'SIGNATORY_NAME', 'SIGNATORY_TITLE'])
+  const isLetter = params.template.fields.length === 0 && placeholders.includes('LETTER_BODY') && placeholders.every((key) => letterKeys.has(key))
   const additionalContext = params.additionalContext?.trim() ? `\n\nAdditional context:\n${params.additionalContext.trim()}` : ''
   const response = await collectStream(params.provider.stream({
     model: params.model,
-    systemPrompt: withBrandVoice(isLetter ? LETTER_SYSTEM_PROMPT : GENERIC_DOCUMENT_SYSTEM_PROMPT, params.brandVoice),
+    systemPrompt: withBrandVoice(`${isLetter ? LETTER_SYSTEM_PROMPT : GENERIC_DOCUMENT_SYSTEM_PROMPT}\nField configuration:\n${guidance}`, params.brandVoice),
     messages: [{ role: 'user', content: isLetter
       ? `Outcome:\n${params.outcome}\n\nAudience:\n${params.audience}${additionalContext}\n\nTemplate guidance:\n${params.template.description}`
       : `Outcome:\n${params.outcome}\n\nAudience:\n${params.audience}${additionalContext}\n\nTemplate guidance:\n${params.template.description}\n\nAllowed placeholders:\n${JSON.stringify(placeholders)}\n\nTemplate text near placeholders:\n${JSON.stringify(documentTemplateContext(params.template.snapshot))}` }] as Message[],
@@ -264,15 +236,38 @@ export async function generateDocumentFromTemplate(params: {
     templateVersionId: params.templateVersionId,
     resources: params.template.resources,
   }
+  const locked = new Set([...params.template.lockedObjectIds, ...params.template.fields.filter(field => field.locked).flatMap(field => field.targetIds)])
+  const collectLocks = (value: unknown, inherited = false): void => {
+    if (!value || typeof value !== 'object') return
+    const object = value as Record<string, unknown>
+    const blocked = inherited || object.locked === true || typeof object.id === 'string' && locked.has(object.id)
+    if (blocked && typeof object.id === 'string') locked.add(object.id)
+    for (const child of Object.values(object)) collectLocks(child, blocked)
+  }
+  collectLocks(source)
+  const eligible = new Set<string>()
+  const onFilledRuns = (before: OfficeRichTextRun[], after: OfficeRichTextRun[]) => {
+    // Erasing tokens reveals authored text, including tokens split across runs.
+    const authored = replaceTemplateRuns(before, Object.fromEntries(placeholders.map(key => [key, ''])))
+    before.forEach((run, index) => {
+      if (run.text === after[index]?.text) return
+      if (locked.has(run.id)) throw new Error(`Document field ${run.id} is locked`)
+      // Mixed source/decorative text in a run is deliberately not shrunk.
+      // Split-token starts are eligible too; empty/deleted runs are not.
+      if (!authored[index]!.text.trim() && after[index]?.text.trim()) eligible.add(after[index].id)
+    })
+  }
   let snapshot: DocumentSnapshot
   if (isLetter) {
     const content = LetterContentSchema.parse(parseJsonObject(responseText(response)))
-    snapshot = replaceLetterPlaceholders(scopedSource, content)
+    snapshot = replaceLetterPlaceholders(scopedSource, content, onFilledRuns)
   } else {
     const content = GenericDocumentContentSchema.parse(parseJsonObject(responseText(response)))
     assertExactTemplateValues(placeholders, content.values)
-    snapshot = replaceDocumentPlaceholders({ snapshot: scopedSource, title: content.title, replacements: content.values })
+    validateTemplateFieldValues(params.template, content.values)
+    snapshot = replaceDocumentPlaceholders({ snapshot: scopedSource, onFilledRuns, title: content.title, replacements: content.values, bodyParagraphs: content.values.LETTER_BODY?.trim() ? content.values.LETTER_BODY.split(/\n\s*\n|\n/) : undefined })
   }
+  params.onFitPolicy?.({ eligibleTargetIds: [...eligible], lockedTargetIds: [...locked], maxAttempts: 3 })
   return assertOfficeArtifactSnapshot(snapshot) as DocumentSnapshot
 }
 

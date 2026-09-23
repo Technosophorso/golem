@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto'
 import {
   OfficeTemplateBundleSchema,
+  officeTemplateLockedTokenNames,
   officeCapabilityManifest,
   preflightOfficeCandidate,
   validateOfficeCapabilityManifest,
@@ -76,7 +77,8 @@ function collectIds(value: unknown, target = new Set<string>()): Set<string> {
 function fitBudget(bundle: OfficeTemplateBundle, authoringPath: OfficeTemplateAuthoringPath): OfficeFitBudget {
   const maxTextCharsByObject: Record<string, number> = {}
   for (const field of bundle.fields) {
-    if (field.maxLength === undefined) continue
+    // Token limits constrain replacement values, not the surrounding container.
+    if (bundle.family !== 'presentation' || field.maxLength === undefined) continue
     for (const targetId of field.targetIds) maxTextCharsByObject[targetId] = field.maxLength
   }
   return {
@@ -128,6 +130,7 @@ export async function compileOfficeTemplate(params: {
   diagnostics.push(...preflightOfficeCandidate(draft.snapshot).diagnostics)
   diagnostics.push(...resourceDiagnostics(draft, params.resources))
   diagnostics.push(...officeTemplateRoutingDiagnostics(draft.snapshot, { fields: draft.fields, slideRecipes: draft.slideRecipes }).map((message) => ({ severity: 'error' as const, code: 'template.routing_invalid', path: 'slideRecipes', message })))
+  if (draft.family !== 'presentation') for (const name of officeTemplateLockedTokenNames(draft.snapshot, draft.fields, draft.lockedObjectIds)) diagnostics.push({ severity: 'error', code: 'template.locked_token', path: 'fields', message: `Field ${name} targets locked content; locked token replacement is not supported` })
   if (params.brand) diagnostics.push(...reviewBrandTypography({ snapshot: draft.snapshot, brand: params.brand }))
 
   const ids = collectIds(draft.snapshot)

@@ -1,15 +1,21 @@
 /** Command-native, target-bounded Brian revision planning for Office artifacts.
  * [COMP:api/office-generation] */
 import { randomUUID } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { z } from 'zod'
-import { collectStream, fitOfficeArtifact, type LLMProvider, type Message } from '@use-brian/core'
+import { collectStream, fitOfficeArtifact, repairOfficeArtifactFit, type LLMProvider, type Message } from '@use-brian/core'
 import {
   DocumentFlowNodeSchema,
+  OfficeArtifactSnapshotSchema,
   OfficeCommandSchema,
   OfficeRichTextRunSchema,
   PresentationObjectSchema,
   PresentationSlideSchema,
   SpreadsheetCellValueSchema,
+  SpreadsheetRecordSchema,
+  normalizeCellAddress,
+  parseCellAddress,
+  tableBounds,
   SpreadsheetWorksheetSchema,
   applyOfficeCommand,
   preflightOfficeCandidate,
@@ -19,6 +25,7 @@ import {
 
 const OperationBase = z.object({})
 const AssistantOfficeOperationSchema = z.discriminatedUnion('kind', [
+  OperationBase.extend({ kind: z.literal('appendSpreadsheetRecords'), sheetId: z.string().uuid(), tableId: z.string().uuid(), prototypeRow: z.number().int().min(1).max(1048576).optional(), records: z.array(SpreadsheetRecordSchema).min(1).max(10000) }).strict(),
   OperationBase.extend({ kind: z.literal('updateText'), targetId: z.string().uuid(), runs: z.array(OfficeRichTextRunSchema).max(10_000) }).strict(),
   OperationBase.extend({ kind: z.literal('insertDocumentNode'), sectionId: z.string().uuid(), index: z.number().int().min(0).optional(), beforeNodeId: z.string().uuid().optional(), afterNodeId: z.string().uuid().optional(), node: DocumentFlowNodeSchema }).strict(),
   OperationBase.extend({ kind: z.literal('insertSlideObject'), slideId: z.string().uuid(), index: z.number().int().min(0), object: PresentationObjectSchema }).strict(),
@@ -59,14 +66,15 @@ const operationFieldCatalog = AssistantOfficeOperationSchema.options.map((operat
 
 const SYSTEM_PROMPT = `You are Brian's command planner for a canonical Office artifact. Return one JSON object and nothing else: {"commands":[...]}.
 
-Use only these operation kinds: updateText, insertDocumentNode, insertSlideObject, deleteObject, setObjectProperty, addSlide, reorderSlide, deleteSlide, reorderSlideObject, updateSpreadsheetImage, setSpreadsheetCell, setSpreadsheetDimension, addWorksheet, renameWorksheet, reorderWorksheet, deleteWorksheet. The server adds commandId, artifactId, baseVersion, actor, and origin; never include them. Do not return batch or attachResource.
+Use only these operation kinds: appendSpreadsheetRecords, updateText, insertDocumentNode, insertSlideObject, deleteObject, setObjectProperty, addSlide, reorderSlide, deleteSlide, reorderSlideObject, updateSpreadsheetImage, setSpreadsheetCell, setSpreadsheetDimension, addWorksheet, renameWorksheet, reorderWorksheet, deleteWorksheet. The server adds commandId, artifactId, baseVersion, actor, and origin; never include them. Do not return batch or attachResource.
 
 Operation payload fields (in addition to kind; no extra keys):
 ${JSON.stringify(operationFieldCatalog)}
 
 Source objects have id, but updateText, deleteObject and setObjectProperty identify their target with targetId, never id. updateText.runs is an array of canonical rich-text run objects, each with id, text, and style copied from the context; preserve the existing style and explicit line breaks unless the instruction changes them. Never put a bare text field on an operation. setObjectProperty.path is an array of property names, not a dotted string; value is the canonical property value. Inserted node/object/slide/worksheet payloads must use their complete canonical shapes from context. Use valid UUIDs for new run or object IDs; the server freshens new identities.
 
-The supplied target IDs are the user's authority boundary. Change only selected content and the owning section, slide, or worksheet structure needed by the explicit instruction. Never change stable IDs, artifact/workspace identity, schema/capability versions, locks, resources, or unrelated content. Never invent a resource. Existing resource IDs may be retained by supported inserted objects. Use canonical JSON shapes copied from the context. Preserve every fact, name, amount, date, identifier, term, and commitment unless the instruction explicitly changes it. Use the smallest command set that completes the instruction. Do not return a no-op.`
+The supplied target IDs are the user's authority boundary. Change only selected content and the owning section, slide, or worksheet structure needed by the explicit instruction. Never change stable IDs, artifact/workspace identity, schema/capability versions, locks, resources, or unrelated content. Never invent a resource. Existing resource IDs may be retained by supported inserted objects. Use canonical JSON shapes copied from the context. Preserve every fact, name, amount, date, identifier, term, and commitment unless the instruction explicitly changes it. Use the smallest command set that completes the instruction. Do not return a no-op.
+For appendSpreadsheetRecords select a table or its worksheet explicitly. Supply sheetId, tableId, optional prototypeRow (an existing data row; default last data row), and records keyed by stringified numeric table column IDs, each value {valueType,value}. Supply every input column; omit formula columns. Never use setObjectProperty to change tables or table headers. Totals rows, structured references, collisions and locks are unsupported. Context includes table refs, column IDs and prototype cells.`
 
 function responseText(response: { content: Array<{ type: string; text?: string }> }): string {
   return response.content.map((block) => block.type === 'text' ? block.text ?? '' : '').join('').trim()
@@ -139,11 +147,11 @@ type RevisionScope = {
   spreadsheetSheetIds: Set<string>
 }
 
-function revisionScope(snapshot: OfficeArtifactSnapshot, targetIds: string[]): RevisionScope {
+function revisionScope(snapshot: OfficeArtifactSnapshot, targetIds: string[], lockedTargetIds: readonly string[] = []): RevisionScope {
   const targets = new Set(targetIds)
   const found = new Set<string>()
   const scope: RevisionScope = {
-    directIds: new Set(), existingIds: idsIn(snapshot), lockedIds: new Set(),
+    directIds: new Set(), existingIds: idsIn(snapshot), lockedIds: new Set(lockedTargetIds),
     documentSections: new Set(), selectedDocumentSections: new Set(), documentContainers: new Set(), documentSectionIds: new Set(),
     presentationSlides: new Set(), selectedSlides: new Set(), presentationSlideIds: new Set(), presentationRootSelected: false,
     spreadsheetSheets: new Set(), selectedSheets: new Set(), spreadsheetSheetIds: new Set(),
@@ -192,7 +200,7 @@ function revisionScope(snapshot: OfficeArtifactSnapshot, targetIds: string[]): R
         found.add(sheet.id); scope.selectedSheets.add(sheet.id); scope.spreadsheetSheets.add(sheet.id)
         for (const id of idsIn(sheet)) scope.directIds.add(id)
       }
-      for (const candidate of [...sheet.cells, ...sheet.images]) {
+      for (const candidate of [...sheet.cells, ...sheet.images, ...(sheet.tables ?? [])]) {
         if ('locked' in candidate && candidate.locked) for (const id of idsIn(candidate)) scope.lockedIds.add(id)
         if (!containsId(candidate, targets)) continue
         for (const id of idsIn(candidate)) if (targets.has(id)) found.add(id)
@@ -201,22 +209,76 @@ function revisionScope(snapshot: OfficeArtifactSnapshot, targetIds: string[]): R
       }
     }
   }
+  // Locks on an ancestor/master-owned object cover its runs too, even when
+  // the user selected the whole slide and directIds includes all descendants.
+  const collectLocks = (value: unknown, inherited = false): void => {
+    if (!value || typeof value !== 'object') return
+    const object = value as Record<string, unknown>
+    const locked = inherited || object.locked === true || typeof object.id === 'string' && scope.lockedIds.has(object.id)
+    if (locked && typeof object.id === 'string') scope.lockedIds.add(object.id)
+    for (const child of Object.values(object)) collectLocks(child, locked)
+  }
+  collectLocks(snapshot, scope.lockedIds.has(snapshot.rootId))
   if (found.size !== targets.size) throw new Error('One or more Office revision targets no longer exist')
   return scope
 }
 
+/** Resolve only text directly authorized by revisionScope. Selecting a section
+ * or slide authorizes its unlocked text descendants, not sibling containers,
+ * masters, or the artifact globally. The renderer itself never expands scope.
+ */
+function scopedFitTargets(candidate: OfficeArtifactSnapshot, scope: RevisionScope, requested?: readonly string[]): string[] {
+  const eligible = new Set<string>()
+  const directIds = new Set(scope.directIds)
+  if (candidate.family === 'document') for (const section of candidate.sections) {
+    if (scope.selectedDocumentSections.has(section.id)) for (const id of idsIn(section)) directIds.add(id)
+  }
+  if (candidate.family === 'presentation') for (const slide of candidate.slides) {
+    if (scope.selectedSlides.has(slide.id)) for (const id of idsIn(slide)) directIds.add(id)
+  }
+  const allowed = requested ? new Set(requested) : undefined
+  visit(candidate, object => {
+    if (typeof object.id !== 'string' || scope.lockedIds.has(object.id) || object.locked === true) return
+    for (const key of ['runs', 'header', 'footer', ...(object.kind === 'shape' ? ['text'] : [])]) {
+      if (!Array.isArray(object[key])) continue
+      const ownerAllowed = directIds.has(object.id) && (!allowed || allowed.has(object.id))
+      for (const run of object[key] as Array<{ id: string }>) {
+        if (scope.lockedIds.has(run.id)) continue
+        if (ownerAllowed || directIds.has(run.id) && (!allowed || allowed.has(run.id))) eligible.add(run.id)
+      }
+    }
+  })
+  return [...eligible]
+}
+
+export function officeRevisionFitRepairScope(snapshot: OfficeArtifactSnapshot, targetIds: string[], lockedTargetIds: readonly string[] = []): { eligibleTargetIds: string[]; lockedTargetIds: string[] } {
+  const scope = revisionScope(snapshot, targetIds, lockedTargetIds)
+  return { eligibleTargetIds: scopedFitTargets(snapshot, scope), lockedTargetIds: [...scope.lockedIds] }
+}
+
 const forbiddenPropertyParts = new Set(['id', 'artifactId', 'workspaceId', 'schemaVersion', 'capabilityVersion', 'rootId', 'templateVersionId', 'family', 'resources', 'locked', 'lockedObjectIds', 'calculatedValue', 'error'])
-const forbiddenCollectionReplacement = new Set(['nodes', 'objects', 'slides', 'worksheets', 'cells', 'masters', 'layouts'])
+const forbiddenCollectionReplacement = new Set(['nodes', 'objects', 'slides', 'worksheets', 'cells', 'tables', 'columns', 'masters', 'layouts'])
 const spreadsheetCellValueParts = new Set(['address', 'formula', 'value', 'valueType'])
 
 function assertOperationAuthority(command: OfficeCommand, snapshot: OfficeArtifactSnapshot, scope: RevisionScope): void {
   if (command.kind === 'batch' || command.kind === 'attachResource' || command.kind === 'replaceTextRange') throw new Error(`Brian cannot emit ${command.kind} in the command planner`)
+  if (command.kind === 'appendSpreadsheetRecords') {
+    const table = snapshot.family === 'spreadsheet' ? snapshot.worksheets.find(s => s.id === command.sheetId)?.tables?.find(t => t.id === command.tableId) : undefined
+    if (!table || !scope.directIds.has(table.id)) throw new Error('Office append escaped the selected table or worksheet boundary')
+    return
+  }
   if (command.kind === 'updateText') {
+    if (snapshot.family === 'spreadsheet') throw new Error('Spreadsheet text requires setSpreadsheetCell')
     if (!scope.directIds.has(command.targetId) || scope.lockedIds.has(command.targetId)) throw new Error('Office text command escaped the selected target boundary')
     return
   }
   if (command.kind === 'setObjectProperty') {
     if (command.path.some((part) => forbiddenPropertyParts.has(part)) || forbiddenCollectionReplacement.has(command.path[0]!)) throw new Error('Office property command targets protected canonical state')
+    if (snapshot.family === 'spreadsheet') {
+      if (snapshot.worksheets.some(s => s.tables?.some(t => t.id === command.targetId))) throw new Error('Table metadata requires a dedicated canonical command')
+      const sheet = snapshot.worksheets.find(s => s.id === command.targetId)
+      if (sheet && !['name', 'visibility', 'rowDimensions', 'columnDimensions', 'freeze', 'print'].includes(command.path[0]!)) throw new Error('Worksheet collection replacement is unsafe for table integrity and locks')
+    }
     if (scope.lockedIds.has(command.targetId)) throw new Error('Office property command targets locked content')
     if (snapshot.family === 'spreadsheet' && snapshot.worksheets.some((sheet) => sheet.cells.some((cell) => cell.id === command.targetId)) && spreadsheetCellValueParts.has(command.path[0]!)) throw new Error('Office cell values and formulas require setSpreadsheetCell')
     if (command.targetId === snapshot.rootId) {
@@ -234,6 +296,7 @@ function assertOperationAuthority(command: OfficeCommand, snapshot: OfficeArtifa
     throw new Error('Office property command escaped the selected target boundary')
   }
   if (command.kind === 'deleteObject') {
+    if (snapshot.family === 'spreadsheet') throw new Error('Spreadsheet deletion requires a dedicated canonical command')
     if (!scope.directIds.has(command.targetId) || scope.lockedIds.has(command.targetId) || scope.documentSectionIds.has(command.targetId) || scope.presentationSlideIds.has(command.targetId) || scope.spreadsheetSheetIds.has(command.targetId)) throw new Error('Office delete command escaped the selected target boundary')
     return
   }
@@ -262,8 +325,15 @@ function assertOperationAuthority(command: OfficeCommand, snapshot: OfficeArtifa
     return
   }
   if (command.kind === 'setSpreadsheetCell') {
-    const existingCell = snapshot.family === 'spreadsheet' ? snapshot.worksheets.flatMap((sheet) => sheet.cells).find((cell) => cell.id === command.cellId) : undefined
-    if (!scope.spreadsheetSheets.has(command.sheetId) || existingCell && !scope.directIds.has(existingCell.id) || !existingCell && !scope.selectedSheets.has(command.sheetId) || scope.lockedIds.has(command.cellId)) throw new Error('Office cell command escaped the selected target boundary')
+    if (!command.formula) SpreadsheetRecordSchema.parse({ value: { valueType: command.valueType, value: command.value } })
+    const sheet = snapshot.family === 'spreadsheet' ? snapshot.worksheets.find(s => s.id === command.sheetId) : undefined
+    const address = normalizeCellAddress(command.address)
+    const parsed = address ? parseCellAddress(address) : null
+    const existingCell = sheet?.cells.find(c => c.id === command.cellId)
+    const occupant = sheet?.cells.find(c => c.address === address)
+    if (!sheet || !parsed || parsed.column > 16384 || parsed.row > 1048576 || existingCell && existingCell.address !== address || occupant && occupant.id !== command.cellId || !existingCell && scope.existingIds.has(command.cellId)) throw new Error('Office cell identity/address mismatch')
+    if (sheet.tables?.some(t => { const b = tableBounds(t.ref); return parsed.row === b.top && parsed.column >= b.left && parsed.column <= b.right })) throw new Error('Table header edits require a dedicated canonical command')
+    if (!scope.spreadsheetSheets.has(command.sheetId) || existingCell && !scope.directIds.has(existingCell.id) || !existingCell && !scope.selectedSheets.has(command.sheetId) || existingCell?.locked || occupant?.locked || scope.lockedIds.has(command.cellId)) throw new Error('Office cell command escaped the selected target boundary')
     return
   }
   if (command.kind === 'setSpreadsheetDimension') {
@@ -275,6 +345,7 @@ function assertOperationAuthority(command: OfficeCommand, snapshot: OfficeArtifa
     return
   }
   if (command.kind === 'renameWorksheet' || command.kind === 'reorderWorksheet' || command.kind === 'deleteWorksheet') {
+    if (command.kind === 'deleteWorksheet' && snapshot.family === 'spreadsheet' && snapshot.worksheets.find(s => s.id === command.sheetId)?.cells.some(c => c.locked)) throw new Error('Cannot delete a worksheet containing locked cells')
     if (!scope.selectedSheets.has(command.sheetId)) throw new Error('Office worksheet command escaped the selected worksheets')
   }
 }
@@ -315,7 +386,7 @@ function promptContext(snapshot: OfficeArtifactSnapshot, targetIds: string[]): u
   if (snapshot.family === 'presentation') {
     return { ...common, slideSize: snapshot.slideSize, themeId: snapshot.themeId, masters: snapshot.masters, layouts: snapshot.layouts, slides: snapshot.slides.filter((slide) => targets.has(slide.id) || containsId(slide, targets)), otherSlides: snapshot.slides.map((slide, index) => ({ id: slide.id, index, title: slide.title })) }
   }
-  return { ...common, calculationMode: snapshot.calculationMode, worksheets: snapshot.worksheets.filter((sheet) => targets.has(sheet.id) || containsId(sheet, targets)).map((sheet) => ({ ...sheet, cells: targets.has(sheet.id) ? sheet.cells.slice(0, 2_000) : sheet.cells.filter((cell) => targets.has(cell.id)).concat(sheet.cells.filter((cell) => Boolean(cell.formula)).slice(0, 500)) })), otherWorksheets: snapshot.worksheets.map((sheet, index) => ({ id: sheet.id, index, name: sheet.name, cellCount: sheet.cells.length })) }
+  return { ...common, appendTables: snapshot.worksheets.flatMap(sheet => (sheet.tables ?? []).filter(t => targets.has(t.id) || targets.has(sheet.id)).map(table => { const b = tableBounds(table.ref); return { sheetId: sheet.id, ...table, prototypeRow: b.bottom, prototypeCells: sheet.cells.filter(c => { const a = parseCellAddress(c.address)!; return a.row === b.bottom && a.column >= b.left && a.column <= b.right }) } })), calculationMode: snapshot.calculationMode, worksheets: snapshot.worksheets.filter((sheet) => targets.has(sheet.id) || containsId(sheet, targets)).map((sheet) => ({ ...sheet, cells: targets.has(sheet.id) ? sheet.cells.slice(0, 2_000) : sheet.cells.filter((cell) => targets.has(cell.id)).concat(sheet.cells.filter((cell) => Boolean(cell.formula)).slice(0, 500)) })), otherWorksheets: snapshot.worksheets.map((sheet, index) => ({ id: sheet.id, index, name: sheet.name, cellCount: sheet.cells.length })) }
 }
 
 export async function generateAssistantOfficeCommands(params: {
@@ -325,10 +396,22 @@ export async function generateAssistantOfficeCommands(params: {
   baseVersion: number
   assistantId: string
   targetIds: string[]
+  /** Immutable template locks, including ancestor IDs absent from node.locked. */
+  lockedTargetIds?: readonly string[]
   instruction: string
   brandVoice?: string | null
+  /** Enabled by default for selected unlocked text; false explicitly disables repair. */
+  fitRepair?: false | { eligibleTargetIds?: readonly string[]; minimumFontSizePt?: number; stepPt?: number }
+  /** Production passes the real native-export/LibreOffice gate; tests may inject a fake. */
+  validateCandidate?: (snapshot: OfficeArtifactSnapshot) => Promise<void>
 }): Promise<OfficeCommand[]> {
-  const scope = revisionScope(params.snapshot, params.targetIds)
+  const scope = revisionScope(params.snapshot, params.targetIds, params.lockedTargetIds)
+  // Replay schema-normalizes defaults and property ordering. Compare the same
+  // normalized shapes semantically, retaining every locked property and ID.
+  const lockedRecords = new Map<string, Record<string, unknown>>()
+  visit(OfficeArtifactSnapshotSchema.parse(params.snapshot), record => {
+    if (typeof record.id === 'string' && scope.lockedIds.has(record.id)) lockedRecords.set(record.id, record)
+  })
   const editableTextTargetIds: string[] = []
   visit(params.snapshot, (record) => {
     if (typeof record.id === 'string' && Array.isArray(record.runs) && scope.directIds.has(record.id) && !scope.lockedIds.has(record.id)) editableTextTargetIds.push(record.id)
@@ -338,31 +421,59 @@ export async function generateAssistantOfficeCommands(params: {
     ? 'This is a document. Use only updateText, insertDocumentNode, deleteObject, and setObjectProperty. Delete a document table row with deleteObject targeting the row ID. For header/footer text, use setObjectProperty on the selected section ID with path ["header"] or ["footer"] and value equal to the complete preserved run array. Individual header/footer run IDs are not updateText or deleteObject targets. Preserve every untouched run ID and style. Never use slide or worksheet operations.'
     : params.snapshot.family === 'presentation'
       ? 'This is a presentation. Use only updateText, insertSlideObject, deleteObject, setObjectProperty, addSlide, reorderSlide, deleteSlide, and reorderSlideObject. Never use document or worksheet operations.'
-      : 'This is a spreadsheet. Use only deleteObject, setObjectProperty, updateSpreadsheetImage, setSpreadsheetCell, setSpreadsheetDimension, addWorksheet, renameWorksheet, reorderWorksheet, and deleteWorksheet. Never use document or slide operations.'
+      : 'This is a spreadsheet. Use only appendSpreadsheetRecords, setObjectProperty, updateSpreadsheetImage, setSpreadsheetCell, setSpreadsheetDimension, addWorksheet, renameWorksheet, reorderWorksheet, and deleteWorksheet. Never use document or slide operations.'
   const insertionGuidance = params.snapshot.family === 'document' ? '\nFor insertDocumentNode supply exactly one of beforeNodeId, afterNodeId, or index. Prefer beforeNodeId/afterNodeId for a request relative to an existing flow node. Anchors must name a top-level node in that section, not a run, table row or cell. The server resolves anchors after earlier commands. If using index, use the zero-based section nodes array position, adjusting for earlier commands, never a flattened text-target position. nodePositions contains original section indices even when context is filtered.' : ''
   const systemPrompt = `${SYSTEM_PROMPT}\n\n${familyGuidance}${insertionGuidance}`
-  const response = await collectStream(params.provider.stream({
-    model: params.model,
-    systemPrompt: brandVoice ? `${systemPrompt}\n\n${brandVoice}` : systemPrompt,
-    messages: [{ role: 'user', content: `Instruction:\n${params.instruction.replace(/(^|\s)@Brian\b/gi, '$1').trim()}\n\nExisting editable text-container IDs for updateText.targetId:\n${JSON.stringify(editableTextTargetIds)}\nTarget the owning paragraph, heading, list item, table cell or text object that contains runs, never a run ID or paragraphStart ID.\n\nCanonical editable context:\n${JSON.stringify(promptContext(params.snapshot, params.targetIds))}` }] as Message[],
-    maxTokens: 12_000,
-    responseFormat: 'json',
-    temperature: 0.1,
-  }))
-  const plan = AssistantOfficePlanSchema.parse(parseJsonObject(responseText(response)))
+  const messages: Message[] = [{ role: 'user', content: `Instruction:\n${params.instruction.replace(/(^|\s)@Brian\b/gi, '$1').trim()}\n\nExisting editable text-container IDs for updateText.targetId:\n${JSON.stringify(editableTextTargetIds)}\nTarget the owning paragraph, heading, list item, table cell or text object that contains runs, never a run ID or paragraphStart ID.\n\nCanonical editable context:\n${JSON.stringify(promptContext(params.snapshot, params.targetIds))}` }]
   const envelope = { artifactId: params.snapshot.artifactId, baseVersion: params.baseVersion, actor: { type: 'assistant' as const, id: params.assistantId }, origin: 'ai' as const }
-  const commands: OfficeCommand[] = []
-  let candidate = params.snapshot
-  for (const operation of plan.commands) {
-    const command = hydrateOperation(operation, envelope, scope.existingIds, candidate)
-    assertOperationAuthority(command, params.snapshot, scope)
-    candidate = applyOfficeCommand(candidate, command)
-    commands.push(command)
+  let consumed = 0
+  let failure: unknown
+  while (consumed < 3) {
+    consumed++
+    try {
+      const response = await collectStream(params.provider.stream({ model: params.model, systemPrompt: brandVoice ? `${systemPrompt}\n\n${brandVoice}` : systemPrompt, messages, maxTokens: 12_000, responseFormat: 'json', temperature: 0.1 }))
+      const plan = AssistantOfficePlanSchema.parse(parseJsonObject(responseText(response)))
+      const commands: OfficeCommand[] = []
+      let candidate = params.snapshot
+      for (const operation of plan.commands) {
+        const command = hydrateOperation(operation, envelope, scope.existingIds, candidate)
+        assertOperationAuthority(command, candidate, scope)
+        candidate = applyOfficeCommand(candidate, command)
+        commands.push(command)
+      }
+      // Replacing an unlocked owner must not bypass a lock on a child run/cell.
+      const remainingLocks = new Map<string, Record<string, unknown>>()
+      visit(candidate, record => {
+        if (typeof record.id === 'string' && lockedRecords.has(record.id)) remainingLocks.set(record.id, record)
+      })
+      if ([...lockedRecords].some(([id, value]) => !isDeepStrictEqual(remainingLocks.get(id), value))) throw new Error('Office command plan changed or removed locked content')
+      let fit = fitOfficeArtifact(candidate, { readabilityReference: params.snapshot })
+      if (!fit.ok && params.fitRepair !== false && consumed < 3) {
+        const policy = params.fitRepair ?? {}
+        const eligibleTargetIds = scopedFitTargets(candidate, scope, policy.eligibleTargetIds)
+        const repair = repairOfficeArtifactFit(candidate, { ...policy, budget: { readabilityReference: params.snapshot }, eligibleTargetIds, lockedTargetIds: [...scope.lockedIds], maxAttempts: 1 + (3 - consumed) })
+        consumed += repair.history.length - 1
+        // Never promote the helper's raw clone: replay only authorized font changes.
+        const finalSizes = new Map(repair.changes.map(change => [change.runId, change.toPt]))
+        for (const [runId, fontSizePt] of finalSizes) {
+          const command = OfficeCommandSchema.parse({ ...envelope, commandId: randomUUID(), kind: 'setObjectProperty', targetId: runId, path: ['style', 'fontSizePt'], value: fontSizePt })
+          const repairScope = { ...scope, directIds: new Set([...scope.directIds, ...eligibleTargetIds]) }
+          assertOperationAuthority(command, candidate, repairScope)
+          candidate = applyOfficeCommand(candidate, command)
+          commands.push(command)
+        }
+        fit = fitOfficeArtifact(candidate, { readabilityReference: params.snapshot })
+      }
+      const preflight = preflightOfficeCandidate(candidate)
+      if (!preflight.ok) throw new Error(`Office command plan failed preflight: ${preflight.diagnostics.map(item => `${item.path}: ${item.message}`).join('; ')}`)
+      if (!fit.ok) throw new Error(`Office command plan failed fit: ${fit.issues.map(item => `${item.objectId}: ${item.message}`).join('; ')}`)
+      if (JSON.stringify(candidate) === JSON.stringify(params.snapshot)) throw new Error('Office command plan returned no changes')
+      await params.validateCandidate?.(structuredClone(candidate))
+      return commands
+    } catch (cause) {
+      failure = cause
+      messages.push({ role: 'user', content: `Candidate rejected (${consumed}/3 attempts used): ${String(cause).slice(0, 4000)}. Return a corrected complete command plan against the ORIGINAL context. Do not change facts or escape selection to repair errors.` })
+    }
   }
-  const preflight = preflightOfficeCandidate(candidate)
-  if (!preflight.ok) throw new Error(`Office command plan failed preflight: ${preflight.diagnostics.map((item) => `${item.path}: ${item.message}`).join('; ')}`)
-  const fit = fitOfficeArtifact(candidate, { readabilityReference: params.snapshot })
-  if (!fit.ok) throw new Error(`Office command plan failed fit: ${fit.issues.map((item) => `${item.objectId}: ${item.message}`).join('; ')}`)
-  if (JSON.stringify(candidate) === JSON.stringify(params.snapshot)) throw new Error('Office command plan returned no changes')
-  return commands
+  throw failure instanceof Error ? failure : new Error(String(failure))
 }

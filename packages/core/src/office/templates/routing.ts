@@ -3,6 +3,8 @@
 import {
   OfficeTemplateRoutingDraftSchema,
   presentationTextCapacity,
+  officeTemplateTokenTargets,
+  officeTemplateTokenDiagnostics,
   type OfficeArtifactSnapshot,
   type OfficeTemplateField,
   type OfficeTemplateRoutingDraft,
@@ -157,13 +159,18 @@ function inferPresentationRouting(snapshot: PresentationSnapshot, source: Office
 }
 
 export function inferOfficeTemplateRouting(snapshot: OfficeArtifactSnapshot, source: OfficeTemplateRoutingDraft['source'] = 'scratch'): OfficeTemplateRoutingDraft {
-  return snapshot.family === 'presentation' ? inferPresentationRouting(snapshot, source) : { source, fields: [], slideRecipes: [] }
+  if (snapshot.family === 'presentation') return inferPresentationRouting(snapshot, source)
+  return OfficeTemplateRoutingDraftSchema.parse({ source, slideRecipes: [], fields: [...officeTemplateTokenTargets(snapshot)].map(([name, targetIds]) => ({
+    id: stableOfficeUuid(`template-field:${snapshot.artifactId}:${name}`), name, label: name,
+    type: 'plainText', required: false, repeating: false, maxLength: 100_000,
+    targetIds, aiInstruction: `Fill ${name} using only supplied facts; leave blank when unavailable.`,
+  })) })
 }
 
 export function officeTemplateRoutingDiagnostics(snapshot: OfficeArtifactSnapshot, input: unknown): string[] {
   const parsed = OfficeTemplateRoutingDraftSchema.safeParse(input)
   if (!parsed.success) return parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`)
-  if (snapshot.family !== 'presentation') return parsed.data.slideRecipes.length === 0 ? [] : [`slideRecipes: ${snapshot.family === 'document' ? 'Document' : 'Spreadsheet'} templates cannot contain slide recipes`]
+  if (snapshot.family !== 'presentation') return parsed.data.slideRecipes.length === 0 ? officeTemplateTokenDiagnostics(snapshot, parsed.data.fields) : [`slideRecipes: ${snapshot.family === 'document' ? 'Document' : 'Spreadsheet'} templates cannot contain slide recipes`]
   const slideObjects = new Map(snapshot.slides.map((slide) => [slide.id, new Map(slide.objects.map((object) => [object.id, object]))]))
   const fields = new Map(parsed.data.fields.map((field) => [field.id, field]))
   const assigned = new Set<string>()
