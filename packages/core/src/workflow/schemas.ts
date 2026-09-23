@@ -231,7 +231,7 @@ const approvalSchema = z.object({
   required: z.boolean().optional(),
   // Approval pings have no custom-channel renderer yet (approvals are out of
   // the custom-channel v1 scope); the enum stays narrower than deliver's.
-  deliveryChannel: z.enum(['web', 'telegram', 'slack', 'whatsapp', 'msteams', 'feishu']).optional(),
+  deliveryChannel: z.enum(['recent', 'web', 'telegram', 'slack', 'whatsapp', 'msteams', 'feishu']).optional(),
   expiresAfterHours: z.number().int().min(1).max(24 * 30).optional(),
 })
 

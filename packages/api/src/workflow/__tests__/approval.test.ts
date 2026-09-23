@@ -334,7 +334,11 @@ function askPolicyTool(name: string, capture?: (i: unknown) => void): Tool {
 // ── Tests ────────────────────────────────────────────────────────────────
 
 describe('[COMP:workflow/approval] Phase C — pause + resume', () => {
-  it('pauses on ask-policy tool_call, dispatches delivery, emits audit', async () => {
+  it.each([
+    { requested: 'telegram' as const, target: null, concrete: 'telegram' },
+    { requested: 'recent' as const, target: null, concrete: 'web' },
+    { requested: 'recent' as const, target: { channelType: 'slack' as const, channelId: 'C123', threadRef: '123.456', channelIntegrationId: 'byo' }, concrete: 'slack' },
+  ])('pauses with $requested approval delivery resolved to $concrete', async ({ requested, target, concrete }) => {
     const stores = makeStores()
     const approvals = fakeApprovalsStore()
     const audit = fakeAuditStore()
@@ -356,7 +360,9 @@ describe('[COMP:workflow/approval] Phase C — pause + resume', () => {
       buildToolRegistry: async () => new Map([['gmailSendMessage', askTool]]),
     }
 
+    const resolveRecentChannel = vi.fn().mockResolvedValue(target)
     const bridgeDeps: ApprovalBridgeDeps = {
+      resolveRecentChannel,
       approvalsStore: approvals,
       auditStore: audit,
       workflowStore: stores.workflowStore,
@@ -376,7 +382,7 @@ describe('[COMP:workflow/approval] Phase C — pause + resume', () => {
           type: 'tool_call',
           toolName: 'gmailSendMessage',
           arguments: { to: 'me@example.com', body: 'hi' },
-          approval: { deliveryChannel: 'telegram' },
+          approval: { deliveryChannel: requested },
         },
       ],
     }
@@ -402,10 +408,19 @@ describe('[COMP:workflow/approval] Phase C — pause + resume', () => {
       '• From: sales@example.com',
       '• To: me@example.com',
     ])
-    expect(approvals.rows[0].deliveryChannelType).toBe('telegram')
+    expect(approvals.rows[0].deliveryChannelType).toBe(concrete)
+    expect(approvals.rows[0].deliveryChannelId).toBe(target?.channelId ?? null)
+    expect(approvals.rows[0].approvalPayload.deliveryTarget).toEqual(target ?? undefined)
+    if (requested === 'recent') {
+      expect(resolveRecentChannel).toHaveBeenCalledExactlyOnceWith({
+        workspaceId: WORKSPACE_ID, assistantId: PRIMARY_ASSISTANT_ID, approverUserId: USER_ID,
+      })
+    } else {
+      expect(resolveRecentChannel).not.toHaveBeenCalled()
+    }
     // Delivery dispatched.
     expect(dispatched).toHaveLength(1)
-    expect(dispatched[0].channel).toBe('telegram')
+    expect(dispatched[0].channel).toBe(concrete)
     // Audit event.
     expect(audit.events.find((e) => e.eventType === 'workflow.approval_requested')).toBeTruthy()
     // Run state = awaiting_input.

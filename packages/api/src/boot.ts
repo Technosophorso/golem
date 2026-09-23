@@ -497,6 +497,7 @@ import {
   sweepExpiredQuestions,
   type ApprovalBridgeDeps,
 } from './workflow/approval.js'
+import { resolveRecentApprovalChannel } from './workflow/recent-approval-channel.js'
 import { createApprovalDeliveryDispatcher } from './workflow/approval-deliveries.js'
 import { workflowApprovalsRoutes } from './routes/workflow-approvals.js'
 import { approvalsRoutes } from './routes/approvals.js'
@@ -3308,11 +3309,13 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   }
 
   const approvalDeliveries = createApprovalDeliveryDispatcher({
+    deliverToChannel: workflowExecutorDeps.deliverToChannel,
     webBaseUrl: env.APP_URL,
     telegramBotToken: env.TELEGRAM_BOT_TOKEN,
   })
 
   const approvalBridgeDeps: ApprovalBridgeDeps = {
+    resolveRecentChannel: resolveRecentApprovalChannel,
     approvalsStore: pendingApprovalsStore,
     auditStore: workspaceAuditStore,
     workflowStore,
