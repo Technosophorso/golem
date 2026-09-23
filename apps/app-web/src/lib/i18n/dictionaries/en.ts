@@ -483,6 +483,18 @@ export const en = {
       "audienceOrder": "Audience pages",
       "audienceOrderHelp": "Hero photo set and the order of programmes on each audience page (one slug per line); untitled programmes follow in display order."
     },
+    media: {
+      "title": "Website images and files",
+      "help": "Images and PDFs your websites can show. Upload here, then pick them in website content. Removing a file breaks any published page that still uses it.",
+      "upload": "Upload images or PDFs",
+      "limits": "JPEG, PNG, WebP, GIF, AVIF or PDF, up to 15 MB each.",
+      "empty": "No website images yet.",
+      "rejected": "Not uploaded",
+      "copyId": "Copy file ID",
+      "copied": "Copied",
+      "remove": "Remove",
+      "removeHelp": "Published pages that use this file will show no image until you publish a replacement."
+    },
     ux: {
       "keepEditing": "Keep editing",
       "workspace": "Your association, at a glance",

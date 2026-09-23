@@ -269,3 +269,30 @@ export function saveProgrammeCatalogueDraft(workspaceId:string,expectedVersion:n
 export function publishProgrammeCatalogue(workspaceId:string,expectedVersion:number) {
   return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/programme-catalogue/publish`,{expectedVersion});
 }
+
+/** Website media library: staff-uploaded images and PDFs the public sites render by id. */
+export type WebsiteMedia = { id: string; name: string; mime: string; sizeBytes: number; updatedAt: string };
+export const WEBSITE_MEDIA_ACCEPT = "image/jpeg,image/png,image/webp,image/gif,image/avif,application/pdf";
+export const WEBSITE_MEDIA_MAX_BYTES = 15 * 1024 * 1024;
+const mediaBase = (workspaceId: string) => `/api/crm/${encodeURIComponent(workspaceId)}/association/media`;
+export async function listWebsiteMedia(workspaceId: string): Promise<WebsiteMedia[]> {
+  return (await request<{ media: WebsiteMedia[] }>(mediaBase(workspaceId))).media;
+}
+export async function uploadWebsiteMedia(workspaceId: string, files: File[]): Promise<Array<{ name: string; media?: WebsiteMedia; error?: string }>> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+  const response = await authFetch(`${API_URL}${mediaBase(workspaceId)}`, { method: "POST", body: form });
+  const body = await response.json().catch(() => null);
+  if (!response.ok && !Array.isArray(body?.results)) throw new AssociationApiError(typeof body?.error === "string" ? body.error : "upload_failed", response.status);
+  return body.results;
+}
+export async function websiteMediaPreviewUrl(workspaceId: string, id: string): Promise<string> {
+  return (await request<{ url: string }>(`${mediaBase(workspaceId)}/${encodeURIComponent(id)}/url`)).url;
+}
+export async function deleteWebsiteMedia(workspaceId: string, id: string): Promise<void> {
+  const response = await authFetch(`${API_URL}${mediaBase(workspaceId)}/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new AssociationApiError(typeof body?.error === "string" ? body.error : "delete_failed", response.status);
+  }
+}
