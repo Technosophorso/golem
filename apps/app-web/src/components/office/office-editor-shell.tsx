@@ -239,7 +239,7 @@ function OfficeArtifactShell({ workspaceId, artifactId }: { workspaceId: string;
     return () => window.clearTimeout(timeout);
   }, [artifact?.family, artifact?.role, artifactId, live?.snapshot, offlineCopyAt]);
   useEffect(() => {
-    if (artifact?.mode === "template" && artifact.family === "presentation" && templateId) {
+    if (artifact?.mode === "template" && templateId) {
       setPanel("routing");
       setPanelOpen(true);
     }
@@ -402,7 +402,7 @@ function OfficeArtifactShell({ workspaceId, artifactId }: { workspaceId: string;
   }
   const editorRole = artifact.lifecycleState === "active" ? artifact.role : "view" as const;
   const editor = live?.snapshot.family === "document" ? <DocumentEditor snapshot={live.snapshot} baseVersion={live.baseVersion} role={editorRole} suggestMode={suggestMode} doc={collab.doc} provider={collab.provider} currentUser={currentUser} synced={collab.synced || Boolean(offlineCopyAt)} onCommand={(command) => void apply(command)} onSelectTargets={setTargets} onSelectCommentAnchor={setCommentAnchor} onSelectSuggestionRange={setSuggestionRange} commentThreads={commentThreads} suggestions={suggestions} /> : live?.snapshot.family === "presentation" ? <PresentationEditor snapshot={live.snapshot} baseVersion={live.baseVersion} role={editorRole} suggestMode={suggestMode} onCommand={(command) => void apply(command)} onSelectTargets={setTargets} /> : live?.snapshot.family === "spreadsheet" ? <SpreadsheetEditor snapshot={live.snapshot} baseVersion={live.baseVersion} role={editorRole} suggestMode={suggestMode} onCommand={(command) => void apply(command)} onSelectTargets={setTargets} onEditImageWithBrian={artifact.role !== "view" && artifact.lifecycleState === "active" && !offlineCopyAt && collab.status !== "disconnected" ? editSpreadsheetImageWithBrian : undefined} /> : snapshotPending ? <OfficeEditorSkeleton family={artifact.family} /> : <p className="m-auto text-sm text-muted-foreground">{t.running}</p>;
-  const showTemplateRouting = artifact.mode === "template" && live?.snapshot.family === "presentation" && Boolean(templateId);
+  const showTemplateRouting = artifact.mode === "template" && Boolean(live) && Boolean(templateId);
   const templateRoutingBlocked = showTemplateRouting && (!templateRoutingState.ready || templateRoutingState.dirty || templateRoutingState.saving);
   const brianRevisionDisabledReason = targets.length === 0 ? t.brianSelectionRequired
     : artifact.role === "view" ? t.brianViewUnavailable
@@ -450,7 +450,11 @@ function OfficeArtifactShell({ workspaceId, artifactId }: { workspaceId: string;
               <PanelButton active={panel === "sharing"} label={t.sharing} icon={<Share2 className="size-3" />} onClick={() => setPanel("sharing")} />
               <PanelButton active={panel === "review"} label={t.fileActions} icon={<FileCheck2 className="size-3" />} onClick={() => setPanel("review")} />
             </div>
-            {showTemplateRouting && live?.snapshot.family === "presentation" && templateId ? <div className={panel === "routing" ? "block" : "hidden"}><TemplateRoutingInspector templateId={templateId} snapshot={live.snapshot} selectedTargetIds={targets} onStateChange={setTemplateRoutingState} /></div> : null}
+          </> : null}
+          {/* Keep routing mounted when collapsed: pending edits and live binding
+              reconciliation must survive hiding the panel. */}
+          {showTemplateRouting && live && templateId ? <div className={panelOpen && panel === "routing" ? "block" : "hidden"}><TemplateRoutingInspector templateId={templateId} snapshot={live.snapshot} selectedTargetIds={targets} onStateChange={setTemplateRoutingState} /></div> : null}
+          {panelOpen ? <>
             {panel === "activity" ? <OfficeJobActivity jobId={artifact.job?.id} snapshot={live?.snapshot} targetIds={targets} canRequestRevision={canRequestBrianRevision} requestDisabledReason={brianRevisionDisabledReason} onRequestRevision={requestBrianRevision} onRevisionCompleted={refreshArtifact} /> : null}
             {panel === "comments" ? <div className="p-3"><OfficeComments artifactId={artifactId} workspaceId={workspaceId} version={artifact.version} targetIds={targets} selectionAnchor={artifact.family === "document" ? commentAnchor : null} anchorKind={artifact.family === "document" ? "block" : artifact.family === "spreadsheet" ? "table_cell" : "object"} canComment={artifact.role !== "view"} offline={collab.status === "disconnected" || Boolean(offlineCopyAt)} initialThreads={cachedComments ?? undefined} onRevisionCompleted={refreshArtifact} onThreadsChange={setCommentThreads} /></div> : null}
             {panel === "suggestions" ? <div className="p-3"><OfficeSuggestions artifactId={artifactId} canDecide={artifact.role === "edit" && artifact.lifecycleState === "active" && !offlineCopyAt} canSuggest={artifact.family === "document" && artifact.role !== "view" && artifact.lifecycleState === "active" && suggestMode} actorId={currentUser?.id} baseVersion={live?.baseVersion} expectedSeq={live?.seq} proposal={suggestionRange} offline={collab.status === "disconnected" || Boolean(offlineCopyAt)} onApplied={refreshArtifact} onSuggestionsChange={setSuggestions} /></div> : null}

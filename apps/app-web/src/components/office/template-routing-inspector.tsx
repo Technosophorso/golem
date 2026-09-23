@@ -2,11 +2,13 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Check, Route, Sparkles, Trash2 } from "lucide-react";
-import { presentationTextCapacity, type OfficeTemplateField, type OfficeTemplateRoutingDraft, type OfficeTemplateSlideRecipe, type PresentationObject, type PresentationSnapshot } from "@use-brian/office-model";
+import { presentationTextCapacity, type OfficeArtifactSnapshot, type OfficeTemplateField, type OfficeTemplateRoutingDraft, type OfficeTemplateSlideRecipe, type PresentationObject, type PresentationSnapshot } from "@use-brian/office-model";
 import { Select, SelectContent, SelectItem, SelectTrigger } from "@/components/ui/select";
 import { format, useT } from "@/lib/i18n/client";
 import { getOfficeTemplateRouting, saveOfficeTemplateRouting, type OfficeTemplateSlideRole } from "@/lib/office/api";
 import { cn } from "@/lib/utils";
+
+import { TokenTemplateRoutingInspector } from "./token-template-routing-inspector";
 
 const ROLES: OfficeTemplateSlideRole[] = ["cover", "agenda", "section", "narrative", "comparison", "metrics", "timeline", "process", "caseStudy", "team", "quote", "closing", "appendix"];
 const TEXT_TYPES: OfficeTemplateField["type"][] = ["plainText", "richText", "bulletList", "date", "number"];
@@ -66,7 +68,7 @@ function selectedObjectLabel(object: PresentationObject): string {
   return "Content";
 }
 
-export function TemplateRoutingInspector({ templateId, snapshot, selectedTargetIds, initialRouting, onStateChange }: {
+function PresentationTemplateRoutingInspector({ templateId, snapshot, selectedTargetIds, initialRouting, onStateChange }: {
   templateId: string;
   snapshot: PresentationSnapshot;
   selectedTargetIds: string[];
@@ -277,4 +279,17 @@ export function TemplateRoutingInspector({ templateId, snapshot, selectedTargetI
       </div>
     </div>
   );
+}
+
+/** Keep presentation recipes and literal token configuration on one editor tab. */
+export function TemplateRoutingInspector(props: {
+  templateId: string;
+  snapshot: OfficeArtifactSnapshot;
+  selectedTargetIds: string[];
+  initialRouting?: OfficeTemplateRoutingDraft;
+  onStateChange?: (state: TemplateRoutingInspectorState) => void;
+}) {
+  return props.snapshot.family === "presentation"
+    ? <PresentationTemplateRoutingInspector key={props.templateId} {...props} snapshot={props.snapshot} />
+    : <TokenTemplateRoutingInspector key={props.templateId} {...props} snapshot={props.snapshot} />;
 }
