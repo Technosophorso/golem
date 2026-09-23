@@ -38,6 +38,7 @@ import type {
 
 const userSchema = z
   .object({
+    id: z.number().int().positive().safe().optional().catch(undefined),
     login: z.string().min(1),
     type: z.string().optional(),
   })
@@ -216,6 +217,7 @@ function normalizePush(
     repo: payload.repository.full_name,
     branch,
     actor: {
+      id: payload.sender.id,
       login: payload.sender.login,
       is_bot: isBotLogin(payload.sender.login, payload.sender.type),
     },
@@ -248,6 +250,7 @@ function normalizePullRequest(
     repo: payload.repository.full_name,
     branch: payload.pull_request.base?.ref ?? null,
     actor: {
+      id: payload.sender.id,
       login: payload.sender.login,
       is_bot: isBotLogin(payload.sender.login, payload.sender.type),
     },
@@ -279,6 +282,7 @@ function normalizeIssues(
     repo: payload.repository.full_name,
     branch: null,
     actor: {
+      id: payload.sender.id,
       login: payload.sender.login,
       is_bot: isBotLogin(payload.sender.login, payload.sender.type),
     },
@@ -300,6 +304,7 @@ function normalizeRelease(
     repo: payload.repository.full_name,
     branch: null,
     actor: {
+      id: payload.sender.id,
       login: payload.sender.login,
       is_bot: isBotLogin(payload.sender.login, payload.sender.type),
     },
@@ -322,6 +327,7 @@ function normalizeSecurityAdvisory(
     repo: payload.repository.full_name,
     branch: null,
     actor: {
+      id: payload.sender?.id,
       login: payload.sender?.login ?? 'github',
       is_bot: true,
     },
@@ -342,6 +348,7 @@ function normalizeGenericAlert(
     repo: payload.repository.full_name,
     branch: null,
     actor: {
+      id: payload.sender?.id,
       login: payload.sender?.login ?? 'github',
       is_bot: true,
     },

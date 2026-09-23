@@ -9,6 +9,7 @@
  * Spec: docs/architecture/brain/classification/README.md §Composition executor
  */
 
+import type { StableExternalIdentity } from '../decision-learning/types.js'
 import type { CrmStore } from '../crm/types.js'
 import type {
   EntityCreateParams,
@@ -50,6 +51,11 @@ export type CompositionContext = {
   sourceEpisodeId?: string | null
   createdByRule: string
   boundary: ClassifierBoundary
+  /** Adapter-owned authority, never read from classifier-derived attributes. */
+  personIdentities?: Readonly<Record<string, {
+    stableIdentity: StableExternalIdentity
+    externalRef: Record<string, unknown>
+  }>>
 }
 
 export type CompositionResult = {
@@ -210,6 +216,8 @@ async function writeCrmEntity(
         workspaceId: ctx.workspaceId,
         name: ent.display_name,
         email,
+        stableIdentity: ctx.personIdentities?.[ent.ref]?.stableIdentity,
+        externalRef: ctx.personIdentities?.[ent.ref]?.externalRef,
         // Extraction provenance — previously omitted, so compose-written
         // CRM rows landed source='user' with no episode back-edge while the
         // non-CRM branch stamped both (2026-07-10 source audit).
@@ -217,7 +225,7 @@ async function writeCrmEntity(
         sourceEpisodeId: ctx.sourceEpisodeId ?? null,
         createdByAssistantId: ctx.assistantId ?? null,
       })
-      return resolveCrmEntityId(deps, ctx, ent.display_name, ent.canonical_id ?? null, 'person')
+      return contact.id
     }
     case 'company': {
       const domain =
@@ -256,16 +264,15 @@ async function writeCrmEntity(
 }
 
 /**
- * CRM tools return specialization records, not entity rows. We resolve
- * the entity id by name (and canonical_id when present) via the system
- * lookup. Best-effort — returns the first match.
+ * Legacy company/deal resolution by canonical id or name. Person writes
+ * must use their returned contact id directly and never enter this path.
  */
 async function resolveCrmEntityId(
   deps: ComposeExecutorDeps,
   ctx: CompositionContext,
   displayName: string,
   canonicalId: string | null,
-  kind: 'person' | 'company' | 'deal',
+  kind: 'company' | 'deal',
 ): Promise<string> {
   if (canonicalId) {
     const byCanonical = await deps.entities.findByCanonicalIdSystem(
