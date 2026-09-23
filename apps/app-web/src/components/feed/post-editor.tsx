@@ -24,6 +24,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
   Check,
+  CloudOff,
+  RotateCw,
   Copy,
   ClipboardCheck,
   FileDown,
@@ -465,6 +467,7 @@ function PostPane({
   const offline = useIsOffline();
   const [localPost, setLocalPost] = useState<LocalFeedPost | null>(null);
   const [localSaveError, setLocalSaveError] = useState(false);
+  const [retryingSync, setRetryingSync] = useState(false);
   const [chatCollapsed, setChatCollapsed] = useState(false);
   const [editorPanel, setEditorPanel] = useState<'comments' | 'thread' | 'details' | 'review' | 'learning' | null>(null);
   const lastPanel = useRef<typeof editorPanel>(null);
@@ -616,6 +619,10 @@ function PostPane({
   // posted would let the copy drift away from what was actually reviewed.
   const readOnly = status === "ready" || status === "posted" || !workspace.canDraft;
   const remoteBlocked = offline || !localPost || localPost.dirty || localSaveError || localSaving > 0;
+  const showSyncRecovery = Boolean(localPost?.error || retryingSync || (readOnly && localPost?.dirty));
+  const syncRecoveryReason = localPost?.errorCode?.includes('source') || localPost?.errorCode?.includes('available_to_draft')
+    ? te.sourceAccessBlocked
+    : localPost?.error === 'conflict' ? te.syncConflict : readOnly && workspace.canDraft ? te.syncReadOnly : te.syncBlocked;
   // D32. Media lives beside the caption, not inside formatData: saveDraft
   // rewrites formatData wholesale from postFormat, so a Post<->Thread switch
   // would silently erase it.
@@ -714,13 +721,13 @@ function PostPane({
 
   async function retrySync() {
     if (offline || readOnly || localSaving > 0) return;
-    setLocalSaving(count => count + 1); setError(null);
+    setRetryingSync(true); setLocalSaving(count => count + 1); setError(null);
     try {
       await retryFeedWorkingCopy(assistantId, sessionId!);
       setLocalPost(await readLocalFeedPost(assistantId, sessionId!));
       collaboration.refresh();
     } catch { setLocalSaveError(true); }
-    finally { setLocalSaving(count => count - 1); }
+    finally { setRetryingSync(false); setLocalSaving(count => count - 1); }
   }
 
   async function saveAsNewPost() {
@@ -1043,7 +1050,7 @@ function PostPane({
                       ? format(te.replyingTo, { handle: session.replyTarget.authorHandle })
                       : t.platformLabels[platform]}
                     <span className="mx-1.5" aria-hidden>·</span>
-                    <span role="status">{localSaveError ? te.localSaveFailed : localSaving ? te.saving : localPost?.error === "conflict" ? te.syncConflict : localPost?.error ? (localPost.errorCode?.includes('source') || localPost.errorCode?.includes('available_to_draft') ? te.sourceAccessBlocked : te.syncBlocked) : localPost?.dirty ? te.savedLocally : te.synced}</span>
+                    <span role="status">{localSaveError ? te.localSaveFailed : localSaving ? te.saving : showSyncRecovery ? te.syncPaused : localPost?.dirty ? te.savedLocally : te.synced}</span>
                   </p>
                 </div>
               </div>
@@ -1136,10 +1143,34 @@ function PostPane({
               </div>
             </header>
 
+            {showSyncRecovery ? (
+              <section aria-label={te.syncPaused} className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 @lg/feed-editor:p-4" data-feed-sync-recovery>
+                <div className="flex items-start gap-2.5">
+                  <CloudOff className="mt-0.5 size-4 shrink-0 text-amber-700 dark:text-amber-400" aria-hidden />
+                  <div className="min-w-0 flex-1 space-y-3">
+                    <div role="status" className="space-y-1">
+                      <p className="text-sm font-medium text-foreground">{retryingSync ? te.retryingSync : te.syncPaused}</p>
+                      <p className="text-xs leading-relaxed text-muted-foreground">{syncRecoveryReason}</p>
+                    </div>
+                    {workspace.canDraft ? (
+                      <div className="flex flex-col gap-2 @md/feed-editor:flex-row @md/feed-editor:flex-wrap">
+                        {!readOnly ? <Button type="button" size="sm" disabled={offline || localSaving > 0} onClick={() => void retrySync()} className="min-h-[44px] md:min-h-9 gap-2 bg-foreground px-3 text-background !shadow-none [background-image:none] hover:bg-foreground/90">
+                          <RotateCw className={cn("size-3.5", retryingSync && "animate-spin")} aria-hidden />
+                          {retryingSync ? te.retryingSync : te.retrySync}
+                        </Button> : null}
+                        <Button type="button" size="sm" variant="outline" disabled={localSaving > 0} onClick={() => void saveAsNewPost()} className="min-h-[44px] md:min-h-9 gap-2 bg-background/70 px-3 !shadow-none">
+                          <Copy className="size-3.5" aria-hidden />
+                          {te.saveAsNewPost}
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
             {structured && localPost ? <FeedSources workspaceId={workspaceId} assistantId={assistantId} sessionId={sessionId} selected={localPost.content.selectedMemoryIds ?? []} disabled={Boolean(remoteBlocked) || readOnly} onCommand={runCommands} /> : null}
             {missingSlots.length ? <div role="status" className="flex flex-wrap items-center gap-1 text-xs text-muted-foreground"><span>{tg.draftSlots}</span>{missingSlots.map((id, index) => <button key={id} className="min-h-11 rounded-md px-2 text-xs underline decoration-dotted underline-offset-4 hover:bg-muted" onClick={() => { setViewMode('edit'); requestAnimationFrame(() => { const target = document.querySelector<HTMLElement>(`[data-placeholder-id="${id}"]`); target?.scrollIntoView({ block: 'center' }); target?.querySelector<HTMLInputElement>('input')?.focus(); }); }}>{tg.openSlot} {index + 1}</button>)}</div> : null}
-            {localPost?.error && !readOnly && workspace.canDraft ? <Button type="button" variant="outline" disabled={offline || localSaving > 0} onClick={() => void retrySync()}>{te.retrySync}</Button> : null}
-            {(localPost?.error || (readOnly && localPost?.dirty)) && workspace.canDraft ? <Button type="button" variant="outline" onClick={() => void saveAsNewPost()}>{te.saveAsNewPost}</Button> : null}
 
             {error ? (
               <div role="alert" className="rounded-xl border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">

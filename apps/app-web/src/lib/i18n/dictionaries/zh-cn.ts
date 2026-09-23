@@ -7851,6 +7851,9 @@ export const zhCN: Dictionary = {
       dateLabel: "日期",
     },
     postEditor: {
+      syncPaused: "同步已暂停",
+      retryingSync: "正在重试同步...",
+      syncReadOnly: "此帖子为只读。尚未同步的编辑已保存在此设备。请另存为新帖子以继续编辑。",
       savedLocally: "已保存在此设备，等待同步。",
       synced: "工作草稿已同步",
       localSaveFailed: "无法保存在此设备。请保持编辑器打开并复制文字。",

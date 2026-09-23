@@ -7727,6 +7727,9 @@ export const zh: Dictionary = {
       dateLabel: "日期",
     },
     postEditor: {
+      syncPaused: "同步已暫停",
+      retryingSync: "正在重試同步...",
+      syncReadOnly: "此貼文為唯讀。尚未同步的編輯已儲存在此裝置。請另存為新貼文以繼續編輯。",
       savedLocally: "已儲存在此裝置，等待同步。",
       synced: "工作草稿已同步",
       localSaveFailed: "無法儲存在此裝置。請保持編輯器開啟並複製文字。",

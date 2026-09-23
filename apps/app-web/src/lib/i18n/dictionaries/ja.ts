@@ -7785,6 +7785,9 @@ export const ja: Dictionary = {
       dateLabel: "日付",
     },
     postEditor: {
+      syncPaused: "同期が一時停止中",
+      retryingSync: "同期を再試行中...",
+      syncReadOnly: "この投稿は読み取り専用です。未同期の編集内容はこの端末に保存されています。編集を続けるには、新しい投稿として保存してください。",
       savedLocally: "この端末に保存しました。同期待ちです。",
       synced: "作業中の原稿を同期しました",
       localSaveFailed: "この端末に保存できませんでした。エディターを開いたまま、文章をコピーしてください。",

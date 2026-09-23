@@ -8030,6 +8030,9 @@ export const en = {
       dateLabel: "Date",
     },
     postEditor: {
+      syncPaused: "Sync paused",
+      retryingSync: "Retrying sync...",
+      syncReadOnly: "This post is read-only. Your unsynced edits are saved on this device. Save them as a new post to keep working.",
       savedLocally: "Saved on this device. Sync pending.",
       synced: "Working copy synced",
       localSaveFailed: "Could not save on this device. Keep this editor open and copy your text.",
