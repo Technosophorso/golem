@@ -217,6 +217,7 @@ describeIf('[COMP:api/context-scope-store] context scope schema integration', ()
 
 describeIf('[COMP:api/context-scope-store] saved-page RLS after agent connection reuse', () => {
   let connection: pg.Client
+  let readerRole: string
 
   beforeEach(async () => {
     connection = new pg.Client({ connectionString })
@@ -238,11 +239,23 @@ describeIf('[COMP:api/context-scope-store] saved-page RLS after agent connection
     // Apply the real migration and create fixtures in one rolled-back
     // transaction. The test works against the old policy without permanently
     // migrating the developer's database, and cannot leave test rows behind.
-    await connection.query('BEGIN')
-    await connection.query(await readFile(
+    const migrationSql = await readFile(
       new URL('../../../migrations/537_saved_views_scope_guc_casts.sql', import.meta.url),
       'utf8',
-    ))
+    )
+    // The migration owns a transaction in production. Here the test owns it:
+    // strip only the outer wrapper, never commit the rollback-only fixtures.
+    const sql = migrationSql.replace(/^\s*--[^\n]*$/gm, '').trim()
+    expect(sql).toMatch(/^BEGIN;\s+[\s\S]*\s+COMMIT;$/)
+    const policySql = sql.replace(/^BEGIN;\s*/, '').replace(/\s*COMMIT;$/, '')
+    expect(policySql).not.toMatch(/\b(?:BEGIN|COMMIT|ROLLBACK)\s*;/i)
+    await connection.query('BEGIN')
+    await connection.query(policySql)
+    // Keep role setup rollback-only too; local rigs need not have app_user.
+    readerRole = `scope_test_${randomUUID().replaceAll('-', '')}`
+    await connection.query(`CREATE ROLE "${readerRole}" NOLOGIN NOSUPERUSER NOBYPASSRLS`)
+    await connection.query(`GRANT USAGE ON SCHEMA public TO "${readerRole}"`)
+    await connection.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO "${readerRole}"`)
   })
 
   afterEach(async () => {
@@ -332,7 +345,7 @@ describeIf('[COMP:api/context-scope-store] saved-page RLS after agent connection
 
   it('reads human pages after agent commit and keeps nonmembers excluded', async () => {
     const fixture = await pageFixture()
-    await connection.query('SET LOCAL ROLE app_user')
+    await connection.query(`SET LOCAL ROLE "${readerRole}"`)
     expect(await namesAs(fixture.owner, fixture.workspace)).toEqual(fixture.names)
     expect(await namesAs('00000000-0000-0000-0000-000000000000', fixture.workspace)).toEqual([])
     expect(await namesAs(randomUUID(), fixture.workspace)).toEqual([])
@@ -340,7 +353,7 @@ describeIf('[COMP:api/context-scope-store] saved-page RLS after agent connection
 
   it('preserves Team, Project, clearance and universe grants on the repaired policy', async () => {
     const fixture = await pageFixture()
-    await connection.query('SET LOCAL ROLE app_user')
+    await connection.query(`SET LOCAL ROLE "${readerRole}"`)
     const check = async (
       clearance: string, teams: string[] | null | undefined, projects: string[] | null,
       expected: string[],
