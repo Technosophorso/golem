@@ -1,5 +1,6 @@
 import { MembershipDraftSaveSchema, MembershipPublishSchema } from './membership-catalogue.js'
 import { ProgrammeDraftSaveSchema, ProgrammePublishSchema } from './programme-catalogue.js'
+import { SiteContentCollectionSchema, SiteContentDraftSaveSchema, SiteContentPublishSchema } from './site-content.js'
 /** Native adapters to the canonical commerce service. [COMP:crm/association-tools] */
 import { z } from 'zod'
 import { WorkspaceModuleError } from '@use-brian/shared'
@@ -55,12 +56,12 @@ export function createAssociationTools(service: AssociationServicePort) {
     })
     return tool
   }
-  type CatalogueKind = 'membership_catalogue_draft' | 'save_membership_catalogue' | 'publish_membership_catalogue' | 'programme_catalogue_draft' | 'save_programme_catalogue' | 'publish_programme_catalogue'
+  type CatalogueKind = 'membership_catalogue_draft' | 'save_membership_catalogue' | 'publish_membership_catalogue' | 'programme_catalogue_draft' | 'save_programme_catalogue' | 'publish_programme_catalogue' | 'site_content_draft' | 'save_site_content' | 'publish_site_content'
   function catalogueTool<Input extends z.ZodType>(name: string, description: string, schema: Input, kind: CatalogueKind) {
-    const readOnly = kind === 'membership_catalogue_draft' || kind === 'programme_catalogue_draft'
+    const readOnly = kind === 'membership_catalogue_draft' || kind === 'programme_catalogue_draft' || kind === 'site_content_draft'
     const tool = buildTool({ name, description, inputSchema: schema, requiresCapability: 'configure',
       homeAppToolSet: { app: 'association' as const, set: readOnly ? 'read' as const : 'write' as const },
-      isReadOnly: readOnly, requiresConfirmation: kind === 'publish_membership_catalogue' || kind === 'publish_programme_catalogue',
+      isReadOnly: readOnly, requiresConfirmation: kind === 'publish_membership_catalogue' || kind === 'publish_programme_catalogue' || kind === 'publish_site_content',
       async execute(input, context) {
         const missing = missingToolCapability(tool, context.activeCapabilities)
         if (missing) return { isError: true, data: { error: 'not_authorized', requiredCapability: missing } }
@@ -84,6 +85,9 @@ export function createAssociationTools(service: AssociationServicePort) {
     previewProgrammeCatalogue: catalogueTool('previewProgrammeCatalogue', 'Read the current website programme draft, published version, validation issues and website synchronization status. Show the admin the exact before/after changes for every affected programme and language before requesting publication.', z.object({}).strict(), 'programme_catalogue_draft'),
     saveProgrammeCatalogueDraft: catalogueTool('saveProgrammeCatalogueDraft', 'Save a complete website programme catalogue draft using the expected version from previewProgrammeCatalogue. Preserve unrelated programmes, locales and sections; never invent translations. This does not publish and changes no membership or ticket prices. Read and preview again after saving.', ProgrammeDraftSaveSchema, 'save_programme_catalogue'),
     publishProgrammeCatalogue: catalogueTool('publishProgrammeCatalogue', 'Publish the exact programme draft version the admin has reviewed and confirmed. Updates website programme pages only; no fee, order or subscription record changes. Report pending website synchronization until the website reader acknowledges this revision.', ProgrammePublishSchema, 'publish_programme_catalogue'),
+    previewWebsiteContent: catalogueTool('previewWebsiteContent', 'Read one website content collection (people, partners, settings, news, home-oasa or home-sea): the current draft, published version, validation issues and website synchronization status. Show the admin the exact before/after changes for every affected site and language before requesting publication.', z.object({ collection: SiteContentCollectionSchema }).strict(), 'site_content_draft'),
+    saveWebsiteContentDraft: catalogueTool('saveWebsiteContentDraft', 'Save a complete draft of one website content collection using the expected version from previewWebsiteContent. Preserve unrelated entries and languages; English is required, never invent translations. Images refer to website media library ids. This does not publish. Read and preview again after saving.', SiteContentDraftSaveSchema.extend({ collection: SiteContentCollectionSchema }), 'save_site_content'),
+    publishWebsiteContent: catalogueTool('publishWebsiteContent', 'Publish the exact website content draft version the admin has reviewed and confirmed for one collection. Updates website pages only. Report pending website synchronization until each website reader acknowledges this revision.', SiteContentPublishSchema.extend({ collection: SiteContentCollectionSchema }), 'publish_site_content'),
     getAssociationModuleStatus: command('getAssociationModuleStatus',
       'Read workspace Association module state and version. Module enablement is a human owner/admin action.',
       z.object({}).strict(), true, false, () => ({ kind: 'module_status' })),
