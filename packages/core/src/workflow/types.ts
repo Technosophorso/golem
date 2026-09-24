@@ -145,6 +145,10 @@ export type AssistantCallStep = WorkflowStepCommon & {
    * Feishu reply-in-thread; same channel on both steps — schema-enforced).
    * See `docs/architecture/engine/scheduled-jobs.md` → "Channel delivery".
    */
+  /** Authored structured question template. Interpolated independently of the callee. */
+  question?: import('../tools/base/ask-question.js').AssistantQuestion
+  /** Author-controlled response action. Never taken from the question/webhook payload. */
+  questionResponse?: { toolName: string; arguments: Record<string, unknown>; answerField: string }
   deliver?: WorkflowDelivery
   /**
    * Session continuity. `persistent` reuses one durable callee session

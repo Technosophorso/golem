@@ -1,3 +1,4 @@
+import { askQuestionSchema } from '../tools/base/ask-question.js'
 /**
  * Zod schemas for workflow definitions. These are the runtime source of
  * truth — validation gates both the authoring tool (`proposeWorkflow`) and
@@ -189,6 +190,13 @@ const assistantCallStepSchema = z.object({
    * outcome records `thread: 'parent_missing'`.
    * See docs/architecture/engine/scheduled-jobs.md → "Channel delivery".
    */
+  question: askQuestionSchema.optional(),
+  questionResponse: z.object({
+    toolName: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_.:-]{0,255}$/),
+    arguments: z.record(z.string(), z.unknown()),
+    answerField: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_]{0,127}$/)
+      .refine((v) => !['__proto__', 'prototype', 'constructor'].includes(v)),
+  }).strict().optional(),
   deliver: workflowDeliverySchema.optional(),
   /**
    * Session continuity. `per_run` (default) — each fire is a fresh consult.

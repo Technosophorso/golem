@@ -1,3 +1,7 @@
+import { createChannelQuestionStore, handleChannelQuestionReply, type ChannelQuestionStore } from '../workflow/channel-questions.js'
+import { dispatchQuestionResponse } from '../workflow/question-response.js'
+import { buildWorkflowToolRegistry } from '../workflow/mcp-bridge.js'
+import { resolveTurnScopeSystem } from '../context-scope/resolve-turn-scope.js'
 // REBRAND-CUTOVER: this file contains sidan.ai runtime values that must flip to usebrian.ai when DNS + Vercel domains + OAuth consoles + webhooks are cut over. Grep REBRAND-CUTOVER.
 /**
  * Telegram BYO webhook route — per-channel BYO credentials.
@@ -104,6 +108,7 @@ export type ChannelRecordingIngest = {
 // getConnectorUserId now used inside channel-pipeline.ts
 
 type TelegramByoRouteOptions = {
+  questionStore?: ChannelQuestionStore
   /** Servable background-lane model, resolved at boot; forwarded to the
    * channel pipeline so its background calls work without a Google key. */
   backgroundModel?: string
@@ -535,6 +540,18 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
       },
       onCallbackQuery: async (query) => {
         const parts = query.data.split(':')
+        if (parts[0] === 'wq') {
+          await adapter.answerCallbackQuery(query.id).catch(() => {})
+          const callback = (req.body as { callback_query?: { from?: { id: number; username?: string } } }).callback_query
+          try {
+            await handleIncoming({
+              channelId: query.chatId, userId: query.userId, text: '',
+              isGroupChat: query.chatId.startsWith('-'), messageId: `wq:${query.id}`,
+              timestamp: Date.now(), raw: { from: callback?.from },
+            }, undefined, { data: query.data, messageId: String(query.messageId) })
+          } catch (err) { reportIncomingFailure('message', query.chatId, err) }
+          return
+        }
         if (parts[0] === 'ask') {
           const pending = questions.take(query.data, integration.id, query.chatId, query.userId)
           await adapter.answerCallbackQuery(query.id, {
@@ -722,7 +739,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
     // wiring above can reference it before its declaration. Closes over
     // the bound aliases, `ownerId`, `channelId`, `credentials`,
     // `tgConfig`, and `adapter` from the enclosing request scope.
-    async function handleIncoming(incoming: IncomingMessage, questionBinding?: QuestionBinding): Promise<void> {
+    async function handleIncoming(incoming: IncomingMessage, questionBinding?: QuestionBinding, workflowCallback?: { data: string; messageId: string }): Promise<void> {
       // 4b. Sender access. A blocklist match is a hard denial. An allowlist
       //     match is carried through identity resolution because it is also an
       //     explicit conversation-only guest grant in private DMs and groups.
@@ -816,7 +833,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
       //       so only the owner can manage connectors here; non-owners get a
       //       polite refusal pointing them at the official shared bot.
       //       See docs/architecture/channels/telegram-mini-app.md → "/connect".
-      if (!questionBinding && /^\/connect(\b|$)/i.test((incoming.text ?? '').trim())) {
+      if (!questionBinding && !incoming.replyToMessageId && /^\/connect(\b|$)/i.test((incoming.text ?? '').trim())) {
         const telegramUserIdStr = incoming.userId
         const linked = options.linkedAccountStore
           ? await options.linkedAccountStore.findByProvider('telegram', telegramUserIdStr)
@@ -918,6 +935,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
       // own Telegram would have found.id === ownerId, which would otherwise
       // cause Step 2 to re-run and (in a private chat) incorrectly redirect
       // the owner to the shared @use_brian_bot.
+      let identityResolutionFailed = false
       let foundLinked = false
       let foundLinkedOwner = false
       const telegramUserId = incoming.userId
@@ -989,6 +1007,7 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
             }
           }
         } catch (err) {
+          identityResolutionFailed = true
           console.error('[telegram-byo] channel user resolution failed:', err)
           if (questionBinding) return
           // On resolution failure in a private chat, redirect rather than
@@ -1064,6 +1083,52 @@ export function telegramByoRoutes(options: TelegramByoRouteOptions): Router {
 
       if (questionBinding && (questionBinding.assistantId !== routedAssistantId
         || questionBinding.userId !== channelUserId)) return
+
+      const quoted = (incoming.raw as { reply_to_message?: { text?: string } })?.reply_to_message?.text
+      const referenceToken = quoted?.match(/Question reference: wq:([\w-]{24})\s*$/)?.[1]
+      // Durable workflow replies are intercepted AFTER identity/routing checks,
+      // BEFORE chat/tools/media. No LLM sees a bound answer, even on failure.
+      if (routedAssistant.workspaceId && !questionBinding) {
+        const reply = await handleChannelQuestionReply({
+          store: options.questionStore ?? createChannelQuestionStore(),
+          address: { integrationId: boundIntegration.id, channelId: incoming.channelId,
+            workspaceId: routedAssistant.workspaceId, assistantId: routedAssistantId, userId: channelUserId },
+          callback: workflowCallback, replyToMessageId: incoming.replyToMessageId, referenceToken, answerMessageId: incoming.messageId,
+          text: incoming.text ?? '',
+          authorized: async () => !!options.linkedAccountStore && !!options.channelUserStore
+            && !identityResolutionFailed && isIdentified && !externalGuest && !!await getWorkspaceRoleSystem(channelUserId, routedAssistant.workspaceId!),
+          dispatch: async (binding, answer, claim) => {
+            if (!options.connectorStore || !options.mcpSettingsStore) return 'Response actions are unavailable. No action was run.'
+            const scope = await resolveTurnScopeSystem({ userId: channelUserId, assistant: routedAssistant,
+              workspaceId: binding.workspaceId })
+            const registry = await buildWorkflowToolRegistry({
+              firstParty: new Map(), connectorStore: options.connectorStore, settingsStore: options.mcpSettingsStore,
+              assistantConnectorStore: options.assistantConnectorStore,
+              connectorGrantStore: options.connectorGrantStore, connectorInstanceStore: options.connectorInstanceStore,
+              workspaceToolPolicyStore: options.workspaceToolPolicyStore,
+            }, { workspaceId: binding.workspaceId, assistantId: binding.assistantId, userId: channelUserId, turnScope: scope })
+            return dispatchQuestionResponse(binding, answer, registry, {
+              userId: channelUserId, assistantId: binding.assistantId, workspaceId: binding.workspaceId,
+              sessionId: `question:${binding.token}`, appId: 'Use Brian', channelType: 'telegram', channelId: binding.channelId,
+              assistantKind: routedAssistant.kind, abortSignal: new AbortController().signal,
+              clearance: scope.access.clearance, compartments: scope.effectiveCompartments,
+              projectIds: scope.effectiveProjectIds, activeGroupId: scope.activeGroupId, activeProjectId: scope.activeProjectId,
+              assistantClearance: routedAssistant.clearance, assistantCompartments: scope.effectiveCompartments,
+              assistantDefaultCompartments: scope.writeCompartments, assistantProjectIds: scope.effectiveProjectIds,
+              assistantDefaultProjectIds: scope.writeProjectIds,
+            }, claim)
+          },
+        })
+        if (reply !== null) {
+          await adapter.sendMessage(incoming.channelId, { text: reply })
+          return
+        }
+      } else if (workflowCallback || referenceToken || (incoming.replyToMessageId
+        && await (options.questionStore ?? createChannelQuestionStore()).isQuestionMessage(
+          boundIntegration.id, incoming.channelId, incoming.replyToMessageId))) {
+        await adapter.sendMessage(incoming.channelId, { text: 'This question is unavailable.' })
+        return
+      }
 
       // 5b. Audio FILE → recording-to-brain pipeline instead of normal chat.
       //     A deliberate recording (msg.audio), routed to transcription + brain
