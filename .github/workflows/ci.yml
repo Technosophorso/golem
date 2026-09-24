@@ -1,11 +1,9 @@
-# Build + test the open core on every PR and on pushes to main/develop, so
-# contributor changes are validated before they land. Mirrors the local gate:
-# install -> build -> typecheck -> unit tests -> smoke. Build runs BEFORE
-# typecheck because some packages' script-level typechecks (e.g. core's
-# scripts/tsconfig.json eval scripts) reference the package's own built dist;
-# typechecking before build trips TS6305. Integration tests (test:integration)
-# are intentionally skipped here -- they require provider API keys and self-skip
-# when the key env var is absent, so they add nothing on a secret-less runner.
+# Build + test the open core on every PR and on pushes to main/develop. Build
+# runs before typecheck because some script-level typechecks reference their
+# package's built dist. The largest test suites run on isolated workers so
+# Turbo's package fan-out cannot multiply Vitest's own worker fan-out on one
+# runner. Integration tests are intentionally excluded because they require
+# provider credentials and self-skip on a secret-less runner.
 name: CI
 
 on:
@@ -13,7 +11,8 @@ on:
   push:
     branches: [main, develop]
 
-# A newer push to the same ref cancels an in-flight run.
+# A newer push to the same ref cancels an in-flight run. Push and PR refs differ,
+# so the job guards below separately suppress the duplicate develop -> main run.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -22,13 +21,15 @@ permissions:
   contents: read
 
 jobs:
-  build-test:
+  build-typecheck:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.head_ref != 'develop' ||
+      github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # pnpm before setup-node so the npm cache can resolve the pnpm store. The
-      # version comes from package.json `packageManager` (pnpm@10.33.0).
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -45,10 +46,154 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Unit tests
-        run: pnpm test
-
-      # One end-to-end queryLoop turn against an in-memory mock provider -- no DB,
-      # no network, no secrets required.
+      # One end-to-end queryLoop turn against an in-memory mock provider.
       - name: Smoke
         run: pnpm smoke
+
+  api-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.head_ref != 'develop' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    name: Unit tests (@use-brian/api ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/4", "2/4", "3/4", "4/4"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build test dependencies
+        run: pnpm exec turbo run build --filter="@use-brian/api^..."
+
+      - name: Unit tests
+        run: pnpm --filter @use-brian/api exec vitest run --shard=${{ matrix.shard }}
+
+  app-web-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.head_ref != 'develop' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    name: Unit tests (app-web ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/4", "2/4", "3/4", "4/4"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build test dependencies
+        run: pnpm exec turbo run build --filter="app-web^..."
+
+      - name: Unit tests
+        run: pnpm --filter app-web exec vitest run --shard=${{ matrix.shard }}
+
+  heavyweight-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.head_ref != 'develop' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    name: Unit tests (${{ matrix.package }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package:
+          - "@use-brian/core"
+          - "@use-brian/app-desktop"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Turbo builds this package's dependency closure before its test task.
+      - name: Unit tests
+        run: pnpm exec turbo run test --filter="${{ matrix.package }}"
+
+  remaining-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.head_ref != 'develop' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    name: Unit tests (remaining packages)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Unit tests
+        run: >-
+          pnpm exec turbo run test
+          --filter='!@use-brian/api'
+          --filter='!@use-brian/core'
+          --filter='!app-web'
+          --filter='!@use-brian/app-desktop'
+          --concurrency=4
+
+  # Preserve the historical required-check context while making it depend on
+  # every parallel lane. `always()` turns a failed dependency into a red
+  # aggregate check instead of leaving the required check skipped.
+  build-test:
+    if: >-
+      always() &&
+      (github.event_name != 'pull_request' ||
+      github.head_ref != 'develop' ||
+      github.event.pull_request.head.repo.full_name != github.repository)
+    needs: [build-typecheck, api-tests, app-web-tests, heavyweight-tests, remaining-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every CI lane
+        env:
+          BUILD_TYPECHECK_RESULT: ${{ needs.build-typecheck.result }}
+          API_TESTS_RESULT: ${{ needs.api-tests.result }}
+          APP_WEB_TESTS_RESULT: ${{ needs.app-web-tests.result }}
+          HEAVYWEIGHT_TESTS_RESULT: ${{ needs.heavyweight-tests.result }}
+          REMAINING_TESTS_RESULT: ${{ needs.remaining-tests.result }}
+        run: |
+          if [[ "$BUILD_TYPECHECK_RESULT" != "success" ||
+                "$API_TESTS_RESULT" != "success" ||
+                "$APP_WEB_TESTS_RESULT" != "success" ||
+                "$HEAVYWEIGHT_TESTS_RESULT" != "success" ||
+                "$REMAINING_TESTS_RESULT" != "success" ]]; then
+            echo "CI lane failure: build=$BUILD_TYPECHECK_RESULT api=$API_TESTS_RESULT app_web=$APP_WEB_TESTS_RESULT heavy=$HEAVYWEIGHT_TESTS_RESULT remaining=$REMAINING_TESTS_RESULT"
+            exit 1
+          fi

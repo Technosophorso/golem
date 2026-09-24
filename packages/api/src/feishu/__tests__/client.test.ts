@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { FeishuChannelFactory } from '../client.js'
 import {
   createFeishuApi,
+  FeishuApiError,
   feishuDomainForBrand,
   validateFeishuCredentials,
 } from '../client.js'
@@ -80,6 +81,55 @@ describe('[COMP:channels/feishu] official SDK client', () => {
     expect(chatId).toBe('oc_chat')
     expect(new TextDecoder().decode(downloaded.data)).toBe('hello')
     expect(downloaded.contentType).toBe('text/plain')
+  })
+
+  it('rethrows rejected SDK calls without credential-bearing request state', async () => {
+    const { factory, channel } = fakeFactory()
+    const transportError = Object.assign(new Error('Request failed with status code 400'), {
+      config: {
+        url: 'https://open.feishu.cn/open-apis/im/v1/messages/omt_topic/reply?tenant_access_token=query-secret',
+        headers: { Authorization: 'Bearer header-secret' },
+      },
+      response: {
+        status: 400,
+        data: {
+          code: 99992354,
+          msg: 'open_message_id is invalid',
+          log_id: '202609250001',
+        },
+      },
+    })
+    const rejected = Object.assign(new Error('open_message_id is invalid'), {
+      name: 'LarkChannelError',
+      code: 'format_error',
+      cause: transportError,
+      context: { to: 'oc_chat' },
+    })
+    channel.send.mockRejectedValueOnce(rejected)
+    const api = createFeishuApi({ appId: 'cli', appSecret: 'app-secret', brand: 'feishu' }, factory)
+
+    const error = await api.send('oc_chat', { text: 'hello' }, {
+      replyTo: 'om_current',
+      replyInThread: true,
+    }).catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(FeishuApiError)
+    expect(error).toMatchObject({
+      providerCode: 99992354,
+      httpStatus: 400,
+      logId: '202609250001',
+      operation: 'send',
+      endpoint: '/open-apis/im/v1/messages/:message_id/reply',
+      message: 'open_message_id is invalid',
+    })
+    const serialized = JSON.stringify(error)
+    expect(serialized).not.toContain('Authorization')
+    expect(serialized).not.toContain('header-secret')
+    expect(serialized).not.toContain('query-secret')
+    expect(serialized).not.toContain('app-secret')
+    expect(serialized).not.toContain('omt_topic')
+    expect(serialized).toContain('99992354')
+    expect(serialized).toContain('202609250001')
   })
 
   it('validates credentials with bot/v3/info and returns identity', async () => {

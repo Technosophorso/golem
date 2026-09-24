@@ -9780,6 +9780,8 @@ export const zhCN: Dictionary = {
         requireMentionHintFeishu: "关闭后，助理会回复飞书或 Lark 发送的每一则群组消息。私讯一律会收到回复。",
         requireMentionHintCustom: "关闭时，助理会回复桥接送来的所有群组消息。私讯一律会回复。",
         requireMentionHintTelegram: "打开: 提及、回复和 /ask。关闭: 所有已发送的群组消息。",
+        assistantConnectorTools: "允许助理连接器工具",
+        assistantConnectorToolsHint: "允许此飞书或 Lark 渠道接纳的用户使用已为路由助理启用的连接器工具。工作空间记忆与原生数据仍需成员资格。",
         ackLabel: "确认回应表情",
         ackHintSlack: "bot 开始处理时加到消息上的表情符号。留空则禁用。",
         ackHintTelegram: "Brian 处理时显示。",

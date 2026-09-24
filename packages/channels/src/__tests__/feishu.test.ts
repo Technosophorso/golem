@@ -83,17 +83,24 @@ describe('[COMP:channels/feishu] inbound normalization', () => {
     expect(adapter.parseIncoming(message({ senderId: 'ou_bot' }))).toBeNull()
   })
 
-  it('prefers thread then root then reply ids for the reply target', () => {
+  it('keeps provider ancestry separate from the outbound reply target', () => {
     const adapter = createFeishuAdapter({ api })
-    expect(adapter.parseIncoming(message({
-      threadId: 'omt_thread',
+    const incoming = adapter.parseIncoming(message({
+      messageId: 'om_current',
+      threadId: 'omt_topic',
       rootId: 'om_root',
       replyToMessageId: 'om_parent',
-    }))?.replyToMessageId).toBe('omt_thread')
-    expect(adapter.parseIncoming(message({ rootId: 'om_root', replyToMessageId: 'om_parent' }))
-      ?.replyToMessageId).toBe('om_root')
-    expect(adapter.parseIncoming(message({ replyToMessageId: 'om_parent' }))
-      ?.replyToMessageId).toBe('om_parent')
+    }))
+
+    expect(incoming).toMatchObject({
+      messageId: 'om_current',
+      replyToMessageId: 'om_parent',
+      raw: {
+        threadId: 'omt_topic',
+        rootId: 'om_root',
+        replyToMessageId: 'om_parent',
+      },
+    })
   })
 
   it('maps resources to opaque internal refs and media metadata', () => {

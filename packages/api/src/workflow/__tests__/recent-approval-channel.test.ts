@@ -31,6 +31,7 @@ describe('[COMP:workflow/recent-approval-channel] recent approval channel', () =
     ['telegram', '-100:topic:42', '-100:topic:42', undefined],
     ['slack', 'C123:thread:123.456', 'C123', '123.456'],
     ['feishu', 'oc_chat', 'oc_chat', 'om_message'],
+    ['feishu', 'oc_chat:thread:om_root', 'oc_chat', 'om_message'],
   ])('preserves %s conversation routing and pins the integration', async (channelType, stored, channelId, threadRef) => {
     db.mockResolvedValueOnce(rows([{ channelType, channelId: stored, messageId: 'om_message' }]))
       .mockResolvedValueOnce(rows([{ id: 'byo', observed: true }]))

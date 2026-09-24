@@ -235,6 +235,13 @@ export type ChannelIntegrationConfig = {
   ackReaction?: string         // default: '' — no reaction. e.g. 'eyes', 'brain', '👀'
   requireMention?: boolean     // default: true — only respond when @mentioned in groups
   /**
+   * Feishu/Lark only. When true (default), connector instances enabled for
+   * the routed assistant use assistant connector authority independent of
+   * whether the channel sender maps to a workspace member. All non-connector
+   * workspace data remains sender-scoped.
+   */
+  allowAssistantConnectorTools?: boolean
+  /**
    * Per-chat / per-topic overrides that flip the `requireMention` default.
    * Telegram BYO only. See RequireMentionOverride type.
    */

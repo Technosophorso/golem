@@ -63,6 +63,8 @@ export type ChannelIntegrationConfig = {
   replyInThread?: boolean;
   ackReaction?: string;
   requireMention?: boolean;
+  /** Feishu/Lark: expose the routed assistant's enabled connector tools. */
+  allowAssistantConnectorTools?: boolean;
   requireMentionOverrides?: RequireMentionOverride[];
   /** Webhook-populated, read-only — never sent in a config PATCH. */
   seenChats?: SeenChat[];

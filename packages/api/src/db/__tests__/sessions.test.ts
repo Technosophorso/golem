@@ -48,9 +48,11 @@ describe('[COMP:api/slack-route] Slack thread session identity', () => {
     expect(buildSlackSessionChannelId('C123', null)).toBe('C123')
   })
 
-  it('recovers provider destinations only for Slack thread-qualified ids', () => {
+  it('recovers provider destinations for Slack and Feishu thread-qualified ids', () => {
     expect(providerChannelIdFromSession('slack', 'C123:thread:100.001')).toBe('C123')
     expect(providerChannelIdFromSession('slack', 'C123')).toBe('C123')
+    expect(providerChannelIdFromSession('feishu', 'oc_chat:thread:om_root')).toBe('oc_chat')
+    expect(providerChannelIdFromSession('feishu', 'oc_chat')).toBe('oc_chat')
     expect(providerChannelIdFromSession('telegram', '-100:topic:42')).toBe('-100:topic:42')
   })
 

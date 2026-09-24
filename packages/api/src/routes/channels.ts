@@ -99,6 +99,7 @@ export const channelConfigSchema = z.object({
   replyInThread: z.boolean().optional(),
   ackReaction: z.string().max(50).optional(),
   requireMention: z.boolean().optional(),
+  allowAssistantConnectorTools: z.boolean().optional(),
   // Telegram BYO only — per-chat / per-topic overrides that flip the
   // `requireMention` default. A null topicId means "whole chat".
   requireMentionOverrides: z.array(requireMentionOverrideSchema).max(500).optional(),
@@ -637,7 +638,7 @@ export function channelsRoutes(opts: ChannelsRouteOptions): Router {
        LIMIT 200`,
       [workspaceId],
     )
-    // Slack sessions are thread-qualified in storage, but workflow delivery
+    // Slack and Feishu sessions are thread-qualified in storage, but workflow delivery
     // targets a provider channel (threading is a separate deliver option).
     // Normalize before validation and collapse several thread sessions from
     // the same channel to the newest destination row.

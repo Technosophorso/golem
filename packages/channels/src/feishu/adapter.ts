@@ -138,7 +138,6 @@ export function createFeishuAdapter(options: FeishuAdapterOptions): ChannelAdapt
       if (!text && files.length === 0) return null
 
       const first = payload.resources[0]
-      const replyTarget = payload.threadId ?? payload.rootId ?? payload.replyToMessageId
       return {
         userId: payload.senderId,
         senderDisplay: payload.senderName,
@@ -155,7 +154,10 @@ export function createFeishuAdapter(options: FeishuAdapterOptions): ChannelAdapt
           ? Math.max(0, Math.round(first.durationMs / 1000))
           : undefined,
         files: files.length > 0 ? files : undefined,
-        replyToMessageId: replyTarget,
+        // Provider ancestry is metadata, not the REST reply target. In
+        // particular, threadId is an omt_ topic id and cannot be passed to
+        // /messages/{open_message_id}/reply. The route replies to messageId.
+        replyToMessageId: payload.replyToMessageId,
         isGroupChat: isGroup,
         isMentioned: payload.mentionedBot,
         timestamp: payload.createTime,
