@@ -67,3 +67,21 @@ describe('[COMP:crm/programme-catalogue] cover photos', () => {
       .toEqual(['synthetic: cover photo must belong to the chosen gallery'])
   })
 })
+
+describe('[COMP:crm/programme-catalogue] library covers', () => {
+  it('accepts a media library cover with English alt text, and refuses it alongside a gallery cover or without a description', async () => {
+    const { ProgrammeCatalogueDocumentSchema, programmePublicationIssues } = await import('../programme-catalogue.js')
+    const MEDIA = '11111111-1111-4111-8111-111111111111'
+    const en = (coverAlt = '') => ({ name: 'Synthetic', tagline: 'T', kicker: 'K', summary: 'S', sections: [{ id: 'about', heading: 'About', paragraphs: ['Text'] }], coverAlt })
+    const doc = (programme: Record<string, unknown>) => ProgrammeCatalogueDocumentSchema.parse({ schemaVersion: 1,
+      audiences: { corporates: { gallery: 'spacebiz-dialogues', order: [] }, schools: { gallery: 'space-exchange-tour', order: [] }, students: { gallery: 'young-marco-polo', order: [] } },
+      programmes: [{ slug: 'synthetic', audiences: ['schools'], order: 0, ...programme }] })
+    expect(programmePublicationIssues(doc({ coverMediaId: MEDIA, i18n: { en: en('Students at a chapter meeting') } }))).toEqual([])
+    expect(programmePublicationIssues(doc({ coverMediaId: MEDIA, i18n: { en: en() } }))).toEqual(['synthetic: describe the cover image in English'])
+    expect(programmePublicationIssues(doc({ coverMediaId: MEDIA, cover: '/media/gallery/internship/internship-01.jpg', i18n: { en: en('Interns') } })))
+      .toEqual(['synthetic: choose either a library image or a gallery photo as the cover, not both'])
+    expect(() => doc({ coverMediaId: 'not-a-uuid', i18n: { en: en() } })).toThrow()
+    // Existing documents without the new fields stay valid.
+    expect(doc({ i18n: { en: { name: 'Synthetic', tagline: 'T', kicker: 'K', summary: 'S', sections: [{ id: 'about', heading: 'About', paragraphs: ['Text'] }] } } }).programmes[0].coverMediaId).toBeNull()
+  })
+})

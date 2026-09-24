@@ -253,9 +253,11 @@ export type ProgrammeSection = ProgrammeSubsection & { subsections:ProgrammeSubs
 export type ProgrammeCopy = { name:string;tagline:string;kicker:string;summary:string;audienceBlurbs:Partial<Record<ProgrammeAudience,string>>;sections:ProgrammeSection[];
   facts:{value:string;label:string}[];steps:{title:string;items:{title:string;text:string}[]}|null;feeUnit:string;feeNotes:string[];
   eligibility:{label:string;value:string}[];contacts:{label:string;name?:string;email:string}[];links:{label:string;href:string}[];
-  cta:{heading:string;text:string;href:string;label:string;secondary?:{label:string;href:string}}|null };
+  cta:{heading:string;text:string;href:string;label:string;secondary?:{label:string;href:string}}|null;
+  /** Describes a media library cover in this language. */
+  coverAlt?:string };
 export type WebsiteProgramme = { slug:string;audiences:ProgrammeAudience[];order:number;sites:MembershipSite[];status:"live"|"coming-soon"|"retired";
-  fee:{currency:"HKD";amountMinor:number}|null;gallery:ProgrammeGallery|null;cover:string|null;href:string|null;
+  fee:{currency:"HKD";amountMinor:number}|null;gallery:ProgrammeGallery|null;cover:string|null;coverMediaId?:string|null;href:string|null;
   i18n:{en:ProgrammeCopy;"zh-Hant"?:ProgrammeCopy;"zh-Hans"?:ProgrammeCopy} };
 export type ProgrammeCatalogueDocument = { schemaVersion:1;audiences:Record<ProgrammeAudience,{gallery:ProgrammeGallery;order:string[]}>;programmes:WebsiteProgramme[] };
 export type ProgrammeCatalogueDraft = { version:number;document:ProgrammeCatalogueDocument|null;publishedRevision:number;
