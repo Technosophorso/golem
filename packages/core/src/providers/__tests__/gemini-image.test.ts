@@ -57,6 +57,33 @@ describe('[COMP:core/gemini-image] native HTTP contract', () => {
     expect(receipt).toMatchObject({ error: 'image_malformed', responseId: 'fictional-response', usage: { imageTokens: 1120, measured: true } })
     expect(receipt.image).toBeUndefined(); expect(fetcher).toHaveBeenCalledTimes(1)
   })
+  it('retries when every socket cause proves the image request never connected', async () => {
+    vi.useFakeTimers()
+    try {
+      const causes = [Object.assign(new Error('connect timed out'), { code: 'ETIMEDOUT' }), Object.assign(new Error('route unavailable'), { code: 'ENETUNREACH' })]
+      const failure = new TypeError('fetch failed', { cause: new AggregateError(causes, 'connect failed') })
+      const fetcher = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(new Response(JSON.stringify(output())))
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const pending = createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: new AbortController().signal })
+      await vi.runAllTimersAsync()
+      await expect(pending).resolves.toMatchObject({ image: { mimeType: 'image/png' } })
+      expect(fetcher).toHaveBeenCalledTimes(2)
+      expect(warning).toHaveBeenCalledWith('[gemini-image] connection failed before provider dispatch; retrying', expect.objectContaining({ attempt: 1, maxAttempts: 3, causeCodes: ['ETIMEDOUT', 'ENETUNREACH'] }))
+    } finally { vi.useRealTimers() }
+  })
+  it('labels exhausted connection attempts as provably undispatched', async () => {
+    vi.useFakeTimers()
+    try {
+      const failure = new TypeError('fetch failed', { cause: Object.assign(new Error('connect timeout'), { code: 'UND_ERR_CONNECT_TIMEOUT' }) })
+      const fetcher = vi.fn().mockRejectedValue(failure)
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const pending = createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: new AbortController().signal })
+      const rejection = expect(pending).rejects.toMatchObject({ name: 'GoogleRequestNotDispatchedError', causeCodes: ['UND_ERR_CONNECT_TIMEOUT'] })
+      await vi.runAllTimersAsync()
+      await rejection
+      expect(fetcher).toHaveBeenCalledTimes(3)
+    } finally { vi.useRealTimers() }
+  })
   it('does not retry a transport timeout with an uncertain provider outcome', async () => {
     const fetcher = vi.fn().mockRejectedValue(new DOMException('Timeout', 'TimeoutError'))
     await expect(createGeminiImageProvider(aiStudioTransport('fixture-key'), fetcher).generate({ model: FEED_IMAGE_CAPABILITY.model, prompt: 'Square', signal: AbortSignal.timeout(1000) })).rejects.toThrow('Timeout')

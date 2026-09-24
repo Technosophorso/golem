@@ -2,6 +2,7 @@
 import { claimFeedRun, failFeedRun, renewFeedLease, type FeedEditorialKind, type FeedEditorialRun } from '../db/feed-editorial-runs-store.js'
 import { FeedCollaborationError } from '../db/feed-collaboration-store.js'
 import { notifyWorkspaceChange } from '../brain-stream/notify.js'
+import { GoogleRequestNotDispatchedError } from '@use-brian/core'
 
 // Provider exceptions can contain request bodies, image bytes or credentials.
 // Emit only known runtime names/codes, including bounded nested fetch causes.
@@ -11,7 +12,7 @@ const TRANSPORT_CODES = new Set([
   'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET', 'UND_ERR_ABORTED',
 ])
 const DATABASE_CODES = new Set(['08000', '08003', '08006', '22P02', '23502', '23503', '23505', '23514', '40001', '40P01', '42501', '53300', '57014', '57P01'])
-const ERROR_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AggregateError', 'AbortError', 'TimeoutError'])
+const ERROR_NAMES = new Set(['Error', 'TypeError', 'RangeError', 'SyntaxError', 'AggregateError', 'AbortError', 'TimeoutError', 'GoogleRequestNotDispatchedError'])
 function safeFailureDetails(error: unknown) {
   const pending: unknown[] = [error]; const seen = new Set<object>(); const causeCodes: string[] = []
   let errorName = 'UnknownError'
@@ -47,14 +48,18 @@ export function createFeedEditorialWorker(options: {
       // generation transport when fetch/Undici evidence identifies that lane.
       const providerTransportFailure = details.causeCodes.some(code => code.startsWith('UND_ERR_'))
         || (error instanceof TypeError && error.message === 'fetch failed' && details.causeCodes.some(code => TRANSPORT_CODES.has(code)))
+      const providerRequestNotDispatched = error instanceof GoogleRequestNotDispatchedError
       const category = error instanceof FeedCollaborationError ? error.code
+        : providerRequestNotDispatched ? 'provider_request_not_dispatched'
         : providerTransportFailure && run?.dispatchedPart === 'generation' && ['image_generation', 'text_generation'].includes(run.kind)
           ? 'generation_transport_failed' : 'editorial_run_failed'
       console.error('[feed-editorial] run failed', {
         runId: run?.id, workspaceId: run?.workspaceId, assistantId: run?.assistantId,
         sessionId: run?.sessionId, kind: run?.kind, ...details,
       })
-      if (run) await failFeedRun(run, category).catch(() => undefined)
+      if (run) await (providerRequestNotDispatched
+        ? failFeedRun(run, category, { providerRequest: 'not_dispatched' })
+        : failFeedRun(run, category)).catch(() => undefined)
     } finally {
       if (renewal) clearInterval(renewal)
       if (run) notifyWorkspaceChange(run.workspaceId, 'session', 'update', run.sessionId)

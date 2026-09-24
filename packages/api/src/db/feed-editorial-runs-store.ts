@@ -87,10 +87,28 @@ export async function finishFeedRun(run: FeedEditorialRun, coverage: Partial<Rec
   const changed = await client.query(`UPDATE feed_editorial_runs SET status='succeeded',coverage=$3,summary_thread_id=$4,lease_id=NULL,lease_until=NULL,last_error=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running' AND dispatched_part IS NULL`, [run.id, run.leaseId, JSON.stringify(coverage), summaryThreadId])
   if (changed.rowCount !== 1) throw new FeedCollaborationError(409, 'run_no_longer_active')
 }
-export async function failFeedRun(run: FeedEditorialRun, error: string) {
+function supersedeFeedDispatch(run: FeedEditorialRun, error: string) {
+  const result = structuredClone(run.result); const part = run.dispatchedPart
+  if (!part) return { result, part, dispatchId: null }
+  const dispatches = result.dispatches && typeof result.dispatches === 'object' && !Array.isArray(result.dispatches) ? result.dispatches as Record<string, unknown> : {}
+  const dispatchId = typeof dispatches[part] === 'string' ? dispatches[part] as string : null
+  const discarded = Array.isArray(result.discardedDispatches) ? result.discardedDispatches : []
+  discarded.push({ part, dispatchId, attempt: run.attempts, error })
+  delete dispatches[part]
+  result.dispatches = dispatches; result.discardedDispatches = discarded
+  return { result, part, dispatchId }
+}
+export async function failFeedRun(run: FeedEditorialRun, error: string, options?: { providerRequest?: 'not_dispatched' }) {
+  const boundedError = error.slice(0, 200)
+  if (options?.providerRequest === 'not_dispatched') {
+    const { result, part, dispatchId } = supersedeFeedDispatch(run, boundedError)
+    const changed = await query(`UPDATE feed_editorial_runs SET status=CASE WHEN attempts<$5 THEN 'pending' ELSE 'failed' END,last_error=$3,lease_id=NULL,lease_until=NULL,dispatched_part=NULL,result=$4,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running' AND (($6::text IS NULL AND dispatched_part IS NULL) OR (dispatched_part=$6 AND result->'dispatches'->>$6=$7))`, [run.id, run.leaseId, boundedError, JSON.stringify(result), FEED_EDITORIAL_LIMITS.attempts, part, dispatchId])
+    if (changed.rowCount === 1) { run.result = result; run.dispatchedPart = null }
+    return
+  }
   // Recovery only repeats work whose provider outcome is known. A saved part
   // can still be applied after a restart; an unanswered dispatch cannot resend.
-  await query(`UPDATE feed_editorial_runs SET status=CASE WHEN dispatched_part IS NOT NULL THEN 'unknown_outcome' ELSE 'failed' END,last_error=$3,lease_id=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running'`, [run.id, run.leaseId, error.slice(0, 200)])
+  await query(`UPDATE feed_editorial_runs SET status=CASE WHEN dispatched_part IS NOT NULL THEN 'unknown_outcome' ELSE 'failed' END,last_error=$3,lease_id=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running'`, [run.id, run.leaseId, boundedError])
 }
 export async function cancelFeedRun(actor: FeedActor, runId: string) {
   return withFeedTransaction(actor, async client => {
@@ -110,12 +128,7 @@ export async function retryFeedRun(actor: FeedActor, runId: string) {
       // The author explicitly supersedes one image attempt. Keep its dispatch
       // token for audit, then clear the active CAS fields so a late old receipt
       // cannot attach to the new attempt.
-      const result = structuredClone(run.result)
-      const dispatches = result.dispatches && typeof result.dispatches === 'object' && !Array.isArray(result.dispatches) ? result.dispatches as Record<string, unknown> : {}
-      const discarded = Array.isArray(result.discardedDispatches) ? result.discardedDispatches : []
-      discarded.push({ part: 'generation', dispatchId: typeof dispatches.generation === 'string' ? dispatches.generation : null, attempt: run.attempts, error: run.error ?? 'provider_outcome_unknown' })
-      delete dispatches.generation
-      result.dispatches = dispatches; result.discardedDispatches = discarded
+      const { result } = supersedeFeedDispatch(run, run.error ?? 'provider_outcome_unknown')
       await client.query('UPDATE feed_editorial_runs SET result=$2,dispatched_part=NULL WHERE id=$1', [run.id, JSON.stringify(result)])
       run.result = result; run.dispatchedPart = null
     }

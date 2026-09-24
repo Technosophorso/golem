@@ -499,6 +499,22 @@ describe('[COMP:feed/draft-generation] real database generation lifecycle', () =
     expect(retried.result.discardedDispatches).toEqual([expect.objectContaining({ part: 'generation', attempt: 1, error: 'generation_transport_failed', dispatchId: expect.any(String) })])
     expect((retried.result.dispatches as Record<string, unknown>).generation).toBeUndefined()
     await expect(saveFeedPart(active, 'generation', { imageReceipt: { image: { fileId: randomUUID() } } })).rejects.toMatchObject({ code: 'run_no_longer_active' })
+    const cleanup = (await claimFeedRun(['image_generation']))!; expect(cleanup.id).toBe(queued.id)
+    await failFeedRun(cleanup, 'fixture_complete')
+  })
+  it('scenario 8: automatically resumes an image request that provably never connected', async () => {
+    const f = await generationFixture()
+    await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [{ type: 'generationPlaceholder', attrs: { ...f.slot, kind: 'image', briefRevision: 1 } }] }] }])
+    const estimate = await f.service.estimate(f.actor, { ...f.request, mutationId: randomUUID(), expectedRevision: 4, count: 1, imageProvider: 'gemini' })
+    const queued = await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
+    const first = (await claimFeedRun(['image_generation']))!; await markFeedDispatch(first, 'generation', estimate)
+    await failFeedRun(first, 'provider_request_not_dispatched', { providerRequest: 'not_dispatched' })
+    const pending = await getFeedRun(f.actor, queued.id)
+    expect(pending).toMatchObject({ status: 'pending', dispatchedPart: null, attempts: 1, error: 'provider_request_not_dispatched' })
+    expect(pending.result.discardedDispatches).toEqual([expect.objectContaining({ part: 'generation', attempt: 1, error: 'provider_request_not_dispatched', dispatchId: expect.any(String) })])
+    const resumed = (await claimFeedRun(['image_generation']))!
+    expect(resumed).toMatchObject({ id: queued.id, status: 'running', attempts: 2, dispatchedPart: null })
+    await failFeedRun(resumed, 'fixture_complete')
   })
   it('scenarios 7 and 8: refuses changed estimates/configuration and revoked queued actors before any model call', async () => {
     const f = await generationFixture(); const estimate = await f.service.estimate(f.actor, f.request)

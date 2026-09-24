@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createFeedEditorialWorker } from '../feed-editorial-worker.js'
 import { claimFeedRun, failFeedRun, type FeedEditorialRun } from '../../db/feed-editorial-runs-store.js'
 import { FeedCollaborationError } from '../../db/feed-collaboration-store.js'
+import { GoogleRequestNotDispatchedError } from '@use-brian/core'
 
 vi.mock('../../db/feed-editorial-runs-store.js', () => ({ claimFeedRun: vi.fn(), failFeedRun: vi.fn(), renewFeedLease: vi.fn() }))
 vi.mock('../../db/feed-collaboration-store.js', () => ({
@@ -77,6 +78,14 @@ describe('[COMP:feed/draft-review] editorial worker failure diagnostics', () => 
     const error = Object.assign(new Error('private database URL'), { code: 'ECONNREFUSED' })
     await createFeedEditorialWorker({ handlers: { image_generation: vi.fn().mockRejectedValue(error) } }).tick()
     expect(failFeedRun).toHaveBeenCalledExactlyOnceWith(run, 'editorial_run_failed')
+  })
+  it('requeues a provider request that provably never left the host', async () => {
+    const run = claimedRun()
+    vi.mocked(claimFeedRun).mockResolvedValueOnce(run)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const cause = Object.assign(new Error('private route detail'), { code: 'ENETUNREACH' })
+    await createFeedEditorialWorker({ handlers: { image_generation: vi.fn().mockRejectedValue(new GoogleRequestNotDispatchedError(cause)) } }).tick()
+    expect(failFeedRun).toHaveBeenCalledExactlyOnceWith(run, 'provider_request_not_dispatched', { providerRequest: 'not_dispatched' })
   })
   it('retains a receipt-storage SQLSTATE without logging the query or confusing it with provider failure', async () => {
     const run = claimedRun(); vi.mocked(claimFeedRun).mockResolvedValueOnce(run)
