@@ -63,7 +63,29 @@ describe('[COMP:crm/association-service] Canonical authority and adapters', () =
       await expect(f.service.execute(context,command({kind:'publish_membership_catalogue',expectedVersion:1}))).rejects.toBeDefined();
       await expect(f.service.execute(context,command({kind:'programme_catalogue_draft'}))).rejects.toMatchObject({code:'not_authorized'});
       await expect(f.service.execute(context,command({kind:'publish_programme_catalogue',expectedVersion:1}))).rejects.toBeDefined();
+      await expect(f.service.execute(context,command({kind:'site_content_draft',collection:'people'}))).rejects.toMatchObject({code:'not_authorized'});
+      await expect(f.service.execute(context,command({kind:'publish_site_content',collection:'people',expectedVersion:1}))).rejects.toBeDefined();
     }
+  })
+
+  it('serves published website content to association.read keys, and lets only a website reader acknowledge it', async () => {
+    const siteContent = { draft: vi.fn(), save: vi.fn(), publish: vi.fn(),
+      read: vi.fn().mockResolvedValue({ collection: 'partners', revision: 2, document: { schemaVersion: 1, partners: [] } }),
+      observe: vi.fn().mockResolvedValue({ collection: 'partners', revision: 2, site: 'sea' }) }
+    const f = fixture()
+    const service = createAssociationService({ store: f.store as unknown as AssociationStore, crmService: f.crm as CrmOperationsServicePort,
+      modules: f.modules as unknown as WorkspaceModulesStore, siteContent: siteContent as never })
+    await expect(service.execute(integration(), command({ kind: 'published_site_content', collection: 'partners', site: 'sea' }))).resolves.toMatchObject({ record: { revision: 2 } })
+    expect(siteContent.read).toHaveBeenCalledWith(workspaceId, 'partners', 'sea')
+    const noGrant = { ...integration(), authority: { ...integration().authority, integration: { credentialId, grants: [] } } }
+    await expect(service.execute(noGrant, command({ kind: 'published_site_content', collection: 'partners', site: 'sea' }))).rejects.toBeDefined()
+    await expect(service.execute(member, command({ kind: 'observe_site_content', collection: 'partners', site: 'sea', revision: 2 }))).rejects.toMatchObject({ code: 'not_authorized' })
+    await service.execute(integration(), command({ kind: 'observe_site_content', collection: 'partners', site: 'sea', revision: 2 }))
+    expect(siteContent.observe).toHaveBeenCalledWith(workspaceId, 'partners', 'sea', 2)
+    const owner: AssociationContext = { ...member, authority: { ...member.authority, role: 'owner', canConfigure: true } }
+    siteContent.save.mockResolvedValue({ version: 1, issues: [] })
+    await service.execute(owner, command({ kind: 'save_site_content', collection: 'news', expectedVersion: 0, document: { schemaVersion: 1, items: [] } }))
+    expect(siteContent.save).toHaveBeenCalledWith(workspaceId, 'news', 0, { schemaVersion: 1, items: [] }, expect.anything())
   })
 
   it('keeps source membership assertions inside the matching owner/admin import job', async () => {

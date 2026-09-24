@@ -1515,6 +1515,18 @@ describe('[COMP:channels/telegram] forum-topic outbound threading', () => {
     }
   })
 
+  it('keeps correlated questions inside their topic instead of retrying in General', async () => {
+    const mock = vi.fn(async () => ({ ok: true, json: async () => ({
+      ok: false, error_code: 400, description: 'Bad Request: message thread not found',
+    }) } as Response))
+    vi.stubGlobal('fetch', mock)
+    try {
+      const adapter = createTelegramAdapter({ token: 'test-token', strictTopic: true })
+      await expect(adapter.sendMessage('-1001234567890:topic:9999', { text: 'Which?' })).rejects.toThrow('message thread not found')
+      expect(mock).toHaveBeenCalledTimes(1)
+    } finally { vi.unstubAllGlobals() }
+  })
+
   it('retries once without message_thread_id when Telegram rejects with "message thread not found"', async () => {
     const calls: Array<{ method: string; body: Record<string, unknown> }> = []
     let sendAttempts = 0

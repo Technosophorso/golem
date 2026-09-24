@@ -12,6 +12,7 @@ import {
 } from '@use-brian/core'
 import { createMembershipCatalogueStore } from '../db/membership-catalogue-store.js'
 import { createProgrammeCatalogueStore } from '../db/programme-catalogue-store.js'
+import { createSiteContentStore } from '../db/site-content-store.js'
 import { createAssociationStore, type AssociationStore } from '../db/association-store.js'
 import type { WorkspaceModulesStore } from '../db/workspace-modules-store.js'
 import {
@@ -32,12 +33,14 @@ export function createAssociationService(options: {
   store?: AssociationStore
   membershipCatalogue?: ReturnType<typeof createMembershipCatalogueStore>
   programmeCatalogue?: ReturnType<typeof createProgrammeCatalogueStore>
+  siteContent?: ReturnType<typeof createSiteContentStore>
   modules?: WorkspaceModulesStore
 }): AssociationServicePort & AssociationSourceOrderImportPort & AssociationPromotionImportPort & AssociationSourceMembershipImportPort {
   const store = options.store ?? createAssociationStore()
   // Resolve the default lazily so pure command tests never open a database.
   const membershipCatalogue = () => options.membershipCatalogue ?? createMembershipCatalogueStore()
   const programmeCatalogue = () => options.programmeCatalogue ?? createProgrammeCatalogueStore()
+  const siteContent = () => options.siteContent ?? createSiteContentStore()
   const modules = () => options.modules ?? createAssociationWorkspaceModulesStore()
   return {
     async importSourceMembership(rawContext, rawInput) {
@@ -160,6 +163,28 @@ export function createAssociationService(options: {
           if (!integration) throw new CrmOperationsError('not_authorized', 'Only a scoped website reader may acknowledge a publication.')
           requireCrmIntegrationOperation(integration, 'association.read')
           return { ...output, record: await programmeCatalogue().observe(workspaceId, command.site, command.revision) }
+        }
+        case 'site_content_draft':
+        case 'save_site_content':
+        case 'publish_site_content': {
+          if (!authority.canConfigure || (context.actor.kind === 'user' && !['owner', 'admin'].includes(authority.role)) || context.actor.kind === 'integration_key') {
+            throw new CrmOperationsError('not_authorized', 'Website content publishing requires workspace configuration authority.')
+          }
+          const store = siteContent()
+          const record = command.kind === 'site_content_draft' ? await store.draft(workspaceId, command.collection)
+            : command.kind === 'save_site_content' ? await store.save(workspaceId, command.collection, command.expectedVersion, command.document, dbActor)
+            : await store.publish(workspaceId, command.collection, command.expectedVersion, dbActor)
+          return { ...output, record }
+        }
+        case 'published_site_content': {
+          // Public website content: the generic Association read grant, no resource dimension.
+          if (integration) requireCrmIntegrationOperation(integration, 'association.read')
+          return { ...output, record: await siteContent().read(workspaceId, command.collection, command.site) }
+        }
+        case 'observe_site_content': {
+          if (!integration) throw new CrmOperationsError('not_authorized', 'Only a scoped website reader may acknowledge a publication.')
+          requireCrmIntegrationOperation(integration, 'association.read')
+          return { ...output, record: await siteContent().observe(workspaceId, command.collection, command.site, command.revision) }
         }
         case 'module_status': return { ...output, record: { ...(await modules().get(workspaceId, ASSOCIATION_MODULE_KEY)) } }
         case 'module_action': {
