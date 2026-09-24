@@ -443,3 +443,24 @@ describe('[COMP:workflow/channel-delivery] thread-reply pass-through', () => {
     expect(mockedCreateWhatsAppCloudAdapter).not.toHaveBeenCalled()
   })
 })
+
+
+describe('[COMP:workflow/channel-delivery] question fallback', () => {
+  it.each(['telegram', 'slack'] as const)('delivers all options on %s without requiring buttons', async (channelType) => {
+    sendMessage.mockResolvedValue('msg-42')
+    const question = { question: 'Which?', options: ['First', 'Second'] }
+    const deliver = createWorkflowChannelDelivery({ integrationStore })
+    expect(await deliver({ ...baseParams(), channelType, text: '', question }))
+      .toMatchObject({ status: 'delivered' })
+    expect(sendMessage.mock.calls.at(-1)?.[1]).toEqual({ text: 'Which?\n1. First\n2. Second', format: 'markdown' })
+  })
+
+  it('supports questions without choices and retains ordinary text delivery', async () => {
+    sendMessage.mockResolvedValue('msg-43')
+    const deliver = createWorkflowChannelDelivery({ integrationStore })
+    await deliver({ ...baseParams(), channelType: 'telegram', text: '', question: { question: 'Your thoughts?' } })
+    expect(sendMessage.mock.calls.at(-1)?.[1].text).toBe('Your thoughts?')
+    await deliver({ ...baseParams(), channelType: 'telegram' })
+    expect(sendMessage.mock.calls.at(-1)?.[1].text).toBe('per-person update')
+  })
+})

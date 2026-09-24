@@ -120,6 +120,12 @@ describe('[COMP:engine/askquestion-suspend] suspend branch', () => {
     expect(events.at(-1)?.type).toBe('turn_complete')
   })
 
+  it('emits a question without choices', async () => {
+    const events = await runLoop({ provider: scriptedProvider([askQuestionTurn('Your answer?')]) })
+    expect(events.at(-2)).toEqual({ type: 'question', question: 'Your answer?' })
+    expect(events.at(-1)?.type).toBe('turn_complete')
+  })
+
   it('never turns invalid options into actionable choices', async () => {
     const events = await runLoop({ provider: scriptedProvider([askQuestionTurn('Which?', 'invalid', ['A', 'A'])]) })
     expect(events.some((e) => e.type === 'question')).toBe(false)

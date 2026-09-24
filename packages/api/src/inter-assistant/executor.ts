@@ -37,6 +37,7 @@ import type {
 } from '@use-brian/core'
 import {
   queryLoop,
+  formatAssistantQuestion,
   buildMemoryContext,
   buildDeliveryConversationStateBlock,
   buildCalleeSystemPrompt,
@@ -427,6 +428,8 @@ export type CalleeQueryParams = {
   }
   /** In-process only: captures the application id out of band from model text. */
   onDecisionApplication?: (applicationId: string) => void
+  /** Question notification, not a suspended consult or tool approval. */
+  onQuestion?: (question: import('@use-brian/core').AssistantQuestion) => void
   /** In-process only: returns internal high-water evidence to the caller. */
   onScopeEvidence?: (evidence: import('@use-brian/core').ScopeEvidence) => void
   /**
@@ -1615,6 +1618,7 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
     let responseText = ''
     // Finalised per-turn text (post leak-sanitiser), one entry per turn that
     // produced visible text — the source of the returned consult text.
+    let surfacedQuestion: import('@use-brian/core').AssistantQuestion | undefined
     const turnTexts: string[] = []
     const abortController = new AbortController()
     // Liveness, not wall-clock (2026-08-19). The step is bounded by cost
@@ -1982,7 +1986,10 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
             }
           }
         }
-        if (event.type === 'text_delta') {
+        if (event.type === 'question') {
+          const { type: _, ...question } = event
+          surfacedQuestion = question
+        } else if (event.type === 'text_delta') {
           responseText += event.text
         } else if (event.type === 'error' && isStalledError(event.error)) {
           // The stall watchdog fired: typed below as a timeout-class exit
@@ -2243,7 +2250,7 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
     // step completed → downstream steps + chat asserted the send happened).
     // The typed reason is hoisted by the workflow run-loop catch into the
     // step-run error, so the run records `failed`/`empty_response` honestly.
-    const finalText = turnTexts.join('\n').trim()
+    const finalText = surfacedQuestion ? formatAssistantQuestion(surfacedQuestion) : turnTexts.join('\n').trim()
     if (!finalText) {
       throw Object.assign(
         new Error(
@@ -2264,6 +2271,7 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
     // the authoring warning covers that misconfiguration instead.
     if (
       params.blueprintId &&
+      !surfacedQuestion &&
       !synthesisHandled &&
       finalTools.has('saveBlueprintRecord') &&
       !boundRecordSaved
@@ -2275,6 +2283,7 @@ export function createCalleeExecutor(options: CalleeExecutorOptions): CalleeExec
         { reason: 'blueprint_record_missing', partialOutput: finalText },
       )
     }
+    if (surfacedQuestion) params.onQuestion?.(surfacedQuestion)
     params.onScopeEvidence?.(scopeAccumulator.evidence)
     return finalText
   }

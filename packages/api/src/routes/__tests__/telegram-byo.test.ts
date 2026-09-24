@@ -171,7 +171,8 @@ vi.mock('../channel-pipeline.js', () => ({
     if (pipelineError) {
       await params.hooks.sendError?.(pipelineError)
     } else {
-      await params.hooks.sendResponse(pipelineQuestion?.question ?? 'ok', pipelineDocuments, pipelineQuestion)
+      const { deliverChannelResponse } = await vi.importActual<typeof import('../channel-pipeline.js')>('../channel-pipeline.js')
+      await deliverChannelResponse(params.hooks, 'ok', pipelineDocuments, pipelineQuestion)
     }
   }),
 }))
@@ -2432,6 +2433,7 @@ describe('[COMP:api/telegram-byo-route] question buttons', () => {
     await settle()
     const actions = adapterSendCalls.at(-1)?.actions
     expect(actions?.map((a) => a.label)).toEqual(['A', '/connect'])
+    expect(adapterSendCalls.at(-1)?.text).toBe('Which?\n1. A\n2. /connect')
     pipelineQuestion = undefined
     return actions!
   }

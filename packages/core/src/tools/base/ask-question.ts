@@ -6,6 +6,8 @@ import { buildTool } from '../types.js'
  * Returns the question text, which the query loop surfaces to the user.
  * The user's response comes as the next message in the conversation.
  */
+export type AssistantQuestion = z.infer<typeof askQuestionSchema>
+
 export const askQuestionSchema = z.object({
   question: z.string().trim().min(1).describe('The question to ask the user'),
   options: z.array(z.string().trim().min(1).max(80)).min(2).max(8)
@@ -26,3 +28,9 @@ export const askQuestionTool = buildTool({
     return { data: `[Question for user]: ${input.question}` }
   },
 })
+
+/** Every delivery surface can render this fallback; no interactive renderer is required. */
+export function formatAssistantQuestion(question: AssistantQuestion): string {
+  const options = question.options?.map((label, index) => `${index + 1}. ${label}`) ?? []
+  return [question.question, ...options].join('\n')
+}
