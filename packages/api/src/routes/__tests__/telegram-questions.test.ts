@@ -8,17 +8,26 @@ const binding: QuestionBinding = {
 }
 
 describe('[COMP:api/telegram-questions] single-choice delivery and token security', () => {
-  it('delivers only the question, retains documents and passes choices to the hook', async () => {
+  it('delivers question and all choices, retains documents and passes structure to the hook', async () => {
     const sendResponse = vi.fn(async () => undefined)
     const question = { question: 'Which?', options: ['A', 'B'] }
     await deliverChannelResponse({ sendResponse }, 'Private intermediate narration', [], question)
-    expect(sendResponse).toHaveBeenCalledWith('Which?', [], question)
+    expect(sendResponse).toHaveBeenCalledWith('Which?\n1. A\n2. B', [], question)
     await deliverChannelResponse({ sendResponse }, '', undefined, question)
-    expect(sendResponse).toHaveBeenLastCalledWith('Which?', undefined, question)
+    expect(sendResponse).toHaveBeenLastCalledWith('Which?\n1. A\n2. B', undefined, question)
     await deliverChannelResponse({ sendResponse }, 'Normal reply')
     expect(sendResponse).toHaveBeenLastCalledWith('Normal reply', undefined, undefined)
     await deliverChannelResponse({ sendResponse }, 'Narration', undefined, question, 'Model fallback')
-    expect(sendResponse).toHaveBeenLastCalledWith('Model fallback\n\nWhich?', undefined, question)
+    expect(sendResponse).toHaveBeenLastCalledWith('Model fallback\n\nWhich?\n1. A\n2. B', undefined, question)
+  })
+
+  it('supports a text-only channel hook that ignores structured questions', async () => {
+    const texts: string[] = []
+    const hooks = { sendResponse: async (text: string) => { texts.push(text) } }
+    await deliverChannelResponse(hooks, 'Do not send narration', undefined,
+      { question: 'Choose for action 17:', options: ['Yes', 'No', 'Something else'] })
+    await deliverChannelResponse(hooks, '', undefined, { question: 'Anything else?' })
+    expect(texts).toEqual(['Choose for action 17:\n1. Yes\n2. No\n3. Something else', 'Anything else?'])
   })
 
   it('uses compact opaque callbacks even for Unicode labels and consumes once', () => {

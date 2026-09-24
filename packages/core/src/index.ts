@@ -145,3 +145,5 @@ export { AssociationWaitlistOfferInputSchema, associationWaitlistDefinition, ass
 
 export * from './association/membership-catalogue.js'
 export * from './association/programme-catalogue.js'
+
+export { askQuestionSchema, formatAssistantQuestion, type AssistantQuestion } from './tools/base/ask-question.js'

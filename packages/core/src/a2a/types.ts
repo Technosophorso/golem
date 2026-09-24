@@ -320,6 +320,8 @@ export type ConsultRequest = {
 }
 
 export type ConsultResponse = {
+  /** Notification completed; the human answer is a subsequent chat turn, not task resume. */
+  question?: import('../tools/base/ask-question.js').AssistantQuestion
   task: Task
   /** Internal high-water evidence from the callee's surfaced context/tools. */
   scopeEvidence?: import('../security/context-scope.js').ScopeEvidence

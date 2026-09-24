@@ -40,6 +40,8 @@ export type RunConsultParams = {
 }
 
 export type RunConsultResult = {
+  /** Notification completed; the human answer is a subsequent chat turn, not task resume. */
+  question?: import('../tools/base/ask-question.js').AssistantQuestion
   /** Response text from the destination's query loop. */
   text: string
   /** Optional structured artifacts (restricted-mode capability invocations may surface these). */
@@ -137,7 +139,7 @@ export function createInProcessTransport(deps: InProcessTransportDeps): ConsultT
         history: isFreeMode && responseMessage ? [responseMessage] : undefined,
       }
 
-      return { task, scopeEvidence: result.scopeEvidence }
+      return { task, scopeEvidence: result.scopeEvidence, question: result.question }
     },
   }
 }

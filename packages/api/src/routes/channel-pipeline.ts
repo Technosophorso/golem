@@ -32,7 +32,7 @@ import {
   latestWorkflowProposalReceipt,
   prepareSlashCommand, resolveNativeSlashCommand,
   buildSlashCommandBlock, buildWorkflowSlashCommandBlock,
-  buildEmailDraftAnchorPrompt, formatActiveEmailDraftContext,
+  buildEmailDraftAnchorPrompt, formatActiveEmailDraftContext, formatAssistantQuestion,
 } from '@use-brian/core'
 import type { FilesApi, OutboundAttachment, RealtimeThreadTarget } from '@use-brian/core'
 import { resolveBrandContext } from '../brand/prompt-context.js'
@@ -147,7 +147,9 @@ export function deliverChannelResponse(
   question?: ChannelQuestion,
   notice?: string | null,
 ) {
-  const body = question?.question ?? text
+  // Some hooks ignore the structured third argument. Always include every option
+  // in text; capable adapters may additionally render buttons.
+  const body = question ? formatAssistantQuestion(question) : text
   return hooks.sendResponse(notice ? `${notice}\n\n${body}` : body, documents, question)
 }
 

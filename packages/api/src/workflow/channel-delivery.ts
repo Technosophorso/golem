@@ -25,7 +25,7 @@
  * [COMP:workflow/channel-delivery]
  */
 
-import type { DeliverToChannel, DeliveryOutcome } from '@use-brian/core'
+import { formatAssistantQuestion, type DeliverToChannel, type DeliveryOutcome } from '@use-brian/core'
 import { sanitizeDeliveryText } from '@use-brian/shared'
 import {
   createSlackAdapter,
@@ -99,6 +99,7 @@ export function createWorkflowChannelDelivery(
     channelId,
     channelIntegrationId,
     text,
+    question,
     threadRef,
     replyToTrigger,
   }): Promise<DeliveryOutcome> => {
@@ -107,7 +108,9 @@ export function createWorkflowChannelDelivery(
     // echo a "Message body:" planning preamble and a duplicated body (see
     // sanitizeDeliveryText). Idempotent: the core executor already sanitized
     // for the workflow path; this defends every DeliverToChannel caller.
-    const deliverable = sanitizeDeliveryText(text)
+    // Buttons are an optional adapter enhancement, never the only representation.
+    // Keep every option in the portable fallback, including on non-interactive channels.
+    const deliverable = question ? formatAssistantQuestion(question) : sanitizeDeliveryText(text)
     if (!deliverable) return { status: 'skipped', channelType, reason: 'empty_text' }
 
     // Web is not a delivery target — drop it (see the file header). The web UI

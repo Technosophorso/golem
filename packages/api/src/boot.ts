@@ -3038,6 +3038,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const { createInProcessTransport } = await import('@use-brian/core')
   const consultTransport = createInProcessTransport({
     runConsult: async ({ request }) => {
+      let question: import('@use-brian/core').AssistantQuestion | undefined
       let decisionApplicationId: string | null = null
       let scopeEvidence: import('@use-brian/core').ScopeEvidence | undefined
       let liveGoalId: string | null = null
@@ -3088,12 +3089,14 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
           : undefined,
         onDecisionApplication: (id) => { decisionApplicationId = id },
         onScopeEvidence: (evidence) => { scopeEvidence = evidence },
+        onQuestion: (value) => { question = value },
         onActivity: liveGoalId
           ? (frame) => publishGoalActivity(liveGoalId!, frame)
           : undefined,
       })
       return {
         text,
+        question,
         scopeEvidence,
         ...(decisionApplicationId
           ? {

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import request from 'supertest'
 import { createTestApp } from './helpers.js'
 import { TelegramApiError } from '@use-brian/channels'
@@ -143,6 +143,15 @@ const pipelineCalls: Array<{
   userContentBlocks?: Array<{ type: string; mimeType?: string }>
 }> = []
 let pipelineError: Error | undefined
+let deliverChannelResponse: typeof import('../channel-pipeline.js')['deliverChannelResponse']
+
+beforeAll(async () => {
+  // Load before any webhook starts: importing inside the fire-and-forget
+  // handler can outlive a test and deliver into the next test's shared state.
+  const pipeline = await vi.importActual<typeof import('../channel-pipeline.js')>('../channel-pipeline.js')
+  deliverChannelResponse = pipeline.deliverChannelResponse
+})
+
 vi.mock('../channel-pipeline.js', () => ({
   processChannelMessage: vi.fn(async (params: {
     channelId: string
@@ -171,7 +180,7 @@ vi.mock('../channel-pipeline.js', () => ({
     if (pipelineError) {
       await params.hooks.sendError?.(pipelineError)
     } else {
-      await params.hooks.sendResponse(pipelineQuestion?.question ?? 'ok', pipelineDocuments, pipelineQuestion)
+      await deliverChannelResponse(params.hooks, 'ok', pipelineDocuments, pipelineQuestion)
     }
   }),
 }))
@@ -2432,6 +2441,7 @@ describe('[COMP:api/telegram-byo-route] question buttons', () => {
     await settle()
     const actions = adapterSendCalls.at(-1)?.actions
     expect(actions?.map((a) => a.label)).toEqual(['A', '/connect'])
+    expect(adapterSendCalls.at(-1)?.text).toBe('Which?\n1. A\n2. /connect')
     pipelineQuestion = undefined
     return actions!
   }
