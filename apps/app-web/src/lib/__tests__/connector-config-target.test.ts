@@ -17,7 +17,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { configTarget } from "../connector-config-target";
+import {
+  configTarget,
+  connectorHasWorkspaceContext,
+} from "../connector-config-target";
 
 const page = readFileSync(
   fileURLToPath(
@@ -76,6 +79,31 @@ describe("[COMP:web/connector-config-target] connector config target", () => {
     });
     expect(personal.key).not.toBe(shared.key);
   });
+
+  it("mounts connector context only after a personal instance is exposed", () => {
+    const row = { id: "custom-mcp", connectorInstanceId: "ci-personal" };
+    expect(connectorHasWorkspaceContext(row, {})).toBe(false);
+    expect(connectorHasWorkspaceContext(row, { "ci-personal": "grant-1" })).toBe(true);
+  });
+
+  it("recognizes workspace-owned and teammate-granted rows as exposed", () => {
+    expect(connectorHasWorkspaceContext({
+      id: "github",
+      connectorInstanceId: "ci-workspace",
+      readonly: true,
+      source: "team_native",
+    }, {})).toBe(true);
+    expect(connectorHasWorkspaceContext({
+      id: "notion",
+      connectorInstanceId: "ci-granted",
+      readonly: true,
+      source: "granted",
+    }, {})).toBe(true);
+  });
+
+  it("does not mount connector context for a placeholder without an instance", () => {
+    expect(connectorHasWorkspaceContext({ id: "github" }, {})).toBe(false);
+  });
 });
 
 describe("[COMP:web/connector-config-target] config editors reach both panels", () => {
@@ -98,5 +126,9 @@ describe("[COMP:web/connector-config-target] config editors reach both panels", 
   it("the workspace-owned panel reads and writes config through configTarget", () => {
     // Not the provider-keyed path: that one silently no-ops for these rows.
     expect(workspaceOwnedPanel()).toContain("configTarget(sel)");
+  });
+
+  it("gates the context editor on a live workspace exposure", () => {
+    expect(page).toContain("connectorHasWorkspaceContext(sel, exposedGrants)");
   });
 });

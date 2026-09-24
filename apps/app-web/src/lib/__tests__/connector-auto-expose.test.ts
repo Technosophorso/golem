@@ -15,6 +15,8 @@
  * master-detail Studio surface".
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   resolveAutoExpose,
@@ -24,6 +26,12 @@ import {
 
 const sharedWorkspace = { id: "ws-1", memberCount: 3 };
 const soloWorkspace = { id: "ws-solo", memberCount: 1 };
+const connectorsPage = readFileSync(
+  fileURLToPath(
+    new URL("../../app/w/[workspaceId]/studio/connectors/page.tsx", import.meta.url),
+  ),
+  "utf8",
+);
 
 /** A connected github instance row. */
 function row(overrides: Partial<AutoExposeConnector> = {}): AutoExposeConnector {
@@ -172,5 +180,13 @@ describe("[COMP:app-web/connector-auto-expose] resolveAutoExpose", () => {
     expect(
       resolveAutoExpose(base({ exposedGrants: { "inst-other": "grant-2" } })),
     ).toEqual({ expose: true, connectorInstanceId: "inst-1" });
+  });
+
+  it("arms a successful custom MCP probe with its exact instance UUID", () => {
+    expect(connectorsPage).toContain("connectorInstanceId: data.connectorInstanceId");
+    expect(connectorsPage).toContain("exposeOnSuccess: true");
+    expect(connectorsPage).toContain(
+      "setJustConnected({ slug: id, instanceId: options.connectorInstanceId })",
+    );
   });
 });

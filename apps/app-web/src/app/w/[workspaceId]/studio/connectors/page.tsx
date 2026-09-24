@@ -82,7 +82,11 @@ import {
   resolveConnectorAddAnotherFlow,
 } from "@/lib/connector-add-another";
 import { cn } from "@/lib/utils";
-import { configTarget, type ConfigTarget } from "@/lib/connector-config-target";
+import {
+  configTarget,
+  connectorHasWorkspaceContext,
+  type ConfigTarget,
+} from "@/lib/connector-config-target";
 import { GDRIVE_BYO_OAUTH_SCOPES, OFFICIAL_OAUTH_SCOPES, OFFICIAL_CONNECTOR_TOOLS, type ConnectorAuthType } from "@use-brian/shared/builtin-connectors";
 import { BUILTIN_PRIMITIVE_CONNECTOR_IDS, OFFICIAL_CONNECTORS } from "@use-brian/shared/connector-registry";
 import { useT } from "@/lib/i18n/client";
@@ -2295,7 +2299,7 @@ function ConnectorsList() {
     const wsOwned = cfg.path.startsWith("instances/");
     return (
       <>
-    {sel.connectorInstanceId && (
+    {connectorHasWorkspaceContext(sel, exposedGrants) && sel.connectorInstanceId && (
       <ConnectorContextBinding
         workspaceId={workspaceId}
         instanceId={sel.connectorInstanceId}
@@ -2349,7 +2353,13 @@ function ConnectorsList() {
         })()}
         <div className="flex items-center justify-end gap-2">
           <button
-            onClick={() => handleTestConnection(sel.id)}
+            onClick={() => handleTestConnection(sel.id, {
+              connectorInstanceId: sel.connectorInstanceId,
+              // A successful recovery from disconnected is a real connect.
+              // Retesting an already-connected connector must not undo a
+              // deliberate workspace revoke.
+              exposeOnSuccess: !sel.connected,
+            })}
             disabled={probeState[sel.id]?.status === "testing"}
             className="text-xs font-medium border border-border px-4 py-1.5 rounded-lg text-muted-foreground hover:bg-muted disabled:opacity-50 transition-colors min-h-11 sm:min-h-0"
           >
@@ -3270,9 +3280,13 @@ function ConnectorsList() {
         body: JSON.stringify(built.payload),
       });
       if (res.ok) {
-        const data = await res.json();
+        const data = await res.json() as {
+          id: string;
+          connectorInstanceId?: string;
+        };
         mutateConnectors((prev) => [...prev, {
           id: data.id,
+          connectorInstanceId: data.connectorInstanceId,
           name: newName.trim(),
           url: newUrl.trim(),
           connected: false,
@@ -3280,12 +3294,17 @@ function ConnectorsList() {
           authType: newAuthType,
           authHeaderName: newAuthType === "custom_header" ? newHeaderName.trim() : undefined,
         }]);
-        // The optimistic row has no instance UUID yet; the server's copy
-        // replaces it behind the paint.
-        void refreshConnectors();
         // Probe right away so the row shows a real connection state
-        // instead of a silent "Disconnected" the user has to chase.
-        void handleTestConnection(data.id);
+        // instead of a silent "Disconnected" the user has to chase. A
+        // successful first probe is the custom connector's connect event, so
+        // arm the same auto-expose path used by every other in-page connect.
+        await handleTestConnection(data.id, {
+          connectorInstanceId: data.connectorInstanceId,
+          exposeOnSuccess: true,
+        });
+        // Revalidate after the probe has persisted `connected`; starting this
+        // before the probe can let a stale disconnected row win the race.
+        void refreshConnectors();
       } else {
         setAddAuthError("saveFailed");
         return;
@@ -3297,13 +3316,19 @@ function ConnectorsList() {
     resetAddForm();
   }
 
-  async function handleTestConnection(id: string) {
+  async function handleTestConnection(
+    id: string,
+    options?: { connectorInstanceId?: string; exposeOnSuccess?: boolean },
+  ) {
     setProbeState((prev) => ({ ...prev, [id]: { status: "testing" } }));
     try {
       const res = await authFetch(`${API_URL}/api/connectors/custom/${id}/test`, { method: "POST" });
       if (!res.ok) throw new Error();
       const data = await res.json() as { ok: boolean; toolCount?: number; error?: string; connected: boolean };
       mutateConnectors((prev) => prev.map((c) => (c.id === id ? { ...c, connected: data.connected } : c)));
+      if (data.connected && options?.exposeOnSuccess) {
+        setJustConnected({ slug: id, instanceId: options.connectorInstanceId });
+      }
       setProbeState((prev) => ({
         ...prev,
         [id]: data.ok ? { status: "ok", toolCount: data.toolCount } : { status: "fail", error: data.error },

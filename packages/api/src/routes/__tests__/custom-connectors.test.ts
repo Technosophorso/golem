@@ -74,12 +74,13 @@ describe('[COMP:api/custom-connectors-route] add / delete', () => {
   })
 
   it('adds a custom connector', async () => {
-    store.upsert.mockResolvedValueOnce({ connectorId: 'uuid-1', name: 'My MCP' })
+    store.upsert.mockResolvedValueOnce({ id: 'instance-1', connectorId: 'uuid-1', name: 'My MCP' })
     const res = await request(app('u-1'))
       .post('/api/connectors/custom')
       .send({ name: 'My MCP', url: 'https://mcp.example/sse' })
     expect(res.status).toBe(200)
     expect(res.body.id).toBe('uuid-1')
+    expect(res.body.connectorInstanceId).toBe('instance-1')
     // A fresh custom row is written to the shared connector_instance table.
     expect(store.upsert).toHaveBeenCalledWith(
       'u-1',
