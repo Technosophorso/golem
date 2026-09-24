@@ -32,7 +32,7 @@ import {
   latestWorkflowProposalReceipt,
   prepareSlashCommand, resolveNativeSlashCommand,
   buildSlashCommandBlock, buildWorkflowSlashCommandBlock,
-  buildEmailDraftAnchorPrompt, formatActiveEmailDraftContext,
+  buildEmailDraftAnchorPrompt, formatActiveEmailDraftContext, formatAssistantQuestion,
 } from '@use-brian/core'
 import type { FilesApi, OutboundAttachment, RealtimeThreadTarget } from '@use-brian/core'
 import { resolveBrandContext } from '../brand/prompt-context.js'
@@ -54,7 +54,7 @@ import {
   CUSTOM_MODEL_IMAGE_FALLBACK_NOTICE,
   CUSTOM_MODEL_IMAGE_REJECTION,
 } from './_channel-error-text.js'
-import { decideImageTurnRoute } from '../custom-llm-runtime.js'
+import { decideImageTurnRoute, turnHasInlineImage } from '../custom-llm-runtime.js'
 import { resolveReplyText } from './_reply-context.js'
 import {
   attachUserVisibleContext,
@@ -147,7 +147,9 @@ export function deliverChannelResponse(
   question?: ChannelQuestion,
   notice?: string | null,
 ) {
-  const body = question?.question ?? text
+  // Some hooks ignore the structured third argument. Always include every option
+  // in text; capable adapters may additionally render buttons.
+  const body = question ? formatAssistantQuestion(question) : text
   return hooks.sendResponse(notice ? `${notice}\n\n${body}` : body, documents, question)
 }
 
@@ -1222,7 +1224,7 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
   // here is only ever the nothing-to-fall-back-to case.
   const imageRoute = decideImageTurnRoute({
     route: resolvedCustomLlm,
-    turnHasImage: userContentBlocks.some((block) => block.type === 'image'),
+    turnHasImage: turnHasInlineImage(userContentBlocks),
     explicitCustomSelection: false,
     builtInServable: !params.configuredProviders
       || (() => {

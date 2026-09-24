@@ -10,28 +10,16 @@
 # GA; see docs/plans/windows-desktop-rollout.md and
 # docs/architecture/features/app-desktop.md -> "Build, sign, ship (Windows)".
 #
-# Triggers: a push to main that touches apps/app-desktop (a CI signal that the
-# Windows build still works + a fresh artifact ready to grab), plus manual
-# workflow_dispatch. It only BUILDS and uploads an artifact — publishing to the
-# public download CTA stays the deliberate `publish-windows.sh --from-ci` step,
-# NEVER automatic (we don't ship unsigned, untested installers on every merge).
+# This is now a manual Windows-only fallback. The production
+# desktop-release.yml workflow builds the same unsigned beta from the tested
+# release SHA and publishes it atomically beside macOS. Use this workflow only
+# when an ad-hoc Windows artifact is needed without creating a full release.
 name: Desktop Windows beta
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    # Only when the desktop app (or this workflow) changes — a push that touches
-    # only api/web/core shouldn't spend a Windows runner. The negations skip
-    # changes that can't affect the binary: docs and tests (this job packages, it
-    # doesn't run tests). A source/config change still triggers.
-    paths:
-      - "apps/app-desktop/**"
-      - "!apps/app-desktop/**/*.md"
-      - "!apps/app-desktop/**/__tests__/**"
-      - ".github/workflows/desktop-windows-beta.yml"
 
-# Don't stack Windows builds: a newer qualifying push cancels an in-flight one.
+# Don't stack fallback builds: a newer manual invocation cancels an in-flight one.
 concurrency:
   group: desktop-windows-beta-${{ github.ref }}
   cancel-in-progress: true

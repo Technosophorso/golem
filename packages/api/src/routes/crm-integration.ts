@@ -27,6 +27,7 @@ import { listCrmOperationsAudit, listCrmEventDelivery } from '../crm-operations/
 import type { WorkspaceStore } from '../db/workspace-store.js'
 import { associationErrorResponse } from './association.js'
 import { associationMemberContext, crmAssociationRoutes } from './crm-association.js'
+import { sendWebsiteMedia, type WebsiteMediaDeps } from './association-media.js'
 import { SubmissionQuery, SendabilityQuery, EntitlementPlansQuery, EntitlementsQuery, EventsQuery, ParticipationQuery, SegmentListQuery } from './crm-operations.js'
 
 const UUID = z.string().uuid()
@@ -45,6 +46,8 @@ export function crmIntegrationRoutes(options: {
   imports?: CrmProductionImportService
   importSources?: CrmImportSources
   reads?: (principal: CrmIntegrationPrincipal) => DbCrmOperationsReadStore
+  /** Website media library reads (`association.read`); absent → 404. */
+  websiteMedia?: Pick<WebsiteMediaDeps, 'store' | 'resolver'>
   memberProfiles?: (principal: CrmIntegrationPrincipal) => {
     getMemberProfile(id: unknown): Promise<CrmIntegrationMemberProfile | null>
     updateMemberProfile(id: unknown, update: unknown): Promise<CrmIntegrationMemberProfile | null>
@@ -245,6 +248,14 @@ export function crmIntegrationRoutes(options: {
   router.get('/operations/contacts/:id/sendability', endpoint(async (req, res) => {
     const query = SendabilityQuery.parse(req.query)
     res.json(await reads(res).checkSendability(principal(res).workspaceId, UUID.parse(req.params.id), query.channel, query.purposeKey))
+  }))
+  // Website media: one staff-published image/PDF by id, for the website
+  // backend's image pipeline. Same grant as every other published website read.
+  router.get('/association/media/:id', endpoint(async (req, res) => {
+    const ctx = crmIntegrationContext(principal(res))
+    requireCrmIntegrationOperation(ctx.authority.integration!, 'association.read')
+    if (!options.websiteMedia) { res.status(404).json({ error: 'media_not_found' }); return }
+    await sendWebsiteMedia(res, options.websiteMedia, ctx.workspaceId, String(req.params.id))
   }))
   router.use('/association', crmAssociationRoutes({ service: options.association, context: async (_req, res) => {
     const ctx = crmIntegrationContext(principal(res))

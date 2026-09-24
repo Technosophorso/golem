@@ -13,6 +13,7 @@
  * [COMP:workflow/executor]
  */
 
+import { askQuestionSchema, formatAssistantQuestion } from '../tools/base/ask-question.js'
 import {
   INITIAL_BUDGET,
   type ConsultRequest,
@@ -40,7 +41,7 @@ import type {
 } from './types.js'
 import { evaluateBoolean, JsonLogicEvalError } from './condition.js'
 import { buildReachability, startStepIds, stepSuccessors } from './graph.js'
-import { interpolateString, interpolateValue, type InterpolationScope } from './interpolation.js'
+import { interpolateString, interpolateValue, interpolateBoundValue, type InterpolationScope } from './interpolation.js'
 import { reviewedClientReplyViolation } from './schemas.js'
 import type { ResearchDepthConfig } from '../engine/research-depth.js'
 import { sanitizeDeliveryText } from '@use-brian/shared'
@@ -194,6 +195,8 @@ export type DeliverToChannel = (params: {
   channelId: string
   channelIntegrationId?: string
   text: string
+  question?: import('../tools/base/ask-question.js').AssistantQuestion
+  questionResponse?: { toolName: string; arguments: Record<string, unknown>; answerField: string }
   /**
    * Platform message id to reply under (Slack thread_ts / Telegram
    * reply_to_message_id / Feishu message_id) — resolved by the executor from an earlier
@@ -1702,6 +1705,9 @@ async function dispatchAssistantCall(
   const response = await ctx.consultTransport.send(request)
   ctx.scopeAccumulator.note(response.scopeEvidence)
   const task = response.task
+  const question = step.question
+    ? askQuestionSchema.parse(interpolateBoundValue(step.question, ctx.scope))
+    : response.question ? askQuestionSchema.parse(response.question) : undefined
 
   switch (task.status.state) {
     case 'completed': {
@@ -1746,7 +1752,7 @@ async function dispatchAssistantCall(
         // turn's "Message body:" preamble) before it reaches the user channel.
         // The API-side deliverToChannel impl sanitizes again (idempotent
         // defense-in-depth across the multiple DeliverToChannel impls).
-        const deliveredText = sanitizeDeliveryText(text)
+        const deliveredText = question ? formatAssistantQuestion(question) : sanitizeDeliveryText(text)
         // Thread-reply anchor: an earlier deliver-step's platform message id,
         // recorded under the reserved `__deliveryMsg_<stepId>` var when it
         // delivered. Missing (branch routed around it, push failed) → fall
@@ -1780,6 +1786,11 @@ async function dispatchAssistantCall(
                   ? step.deliver.channelIntegrationId
                   : undefined),
               text: deliveredText,
+              question,
+              questionResponse: question && step.questionResponse ? {
+                ...step.questionResponse,
+                arguments: interpolateBoundValue(step.questionResponse.arguments, ctx.scope),
+              } : undefined,
               threadRef,
               replyToTrigger: triggerReplyTarget
                 ? {
@@ -1826,7 +1837,9 @@ async function dispatchAssistantCall(
       // If the response parses as JSON, hand the parsed object to subsequent
       // steps so branch conditions can reference structured fields.
       const parsed = tryParseJson(text)
-      return { kind: 'success', output: parsed ?? text, varsPatch, delivery }
+      return { kind: 'success', output: question
+        ? { kind: 'question', ...question }
+        : parsed ?? text, varsPatch, delivery }
     }
     case 'failed': {
       const errMsg =

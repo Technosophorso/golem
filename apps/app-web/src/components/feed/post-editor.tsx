@@ -13,7 +13,7 @@ import { FeedSources } from './feed-sources';
  * Versions (D17): the assistant's `proposeDrafts` alternatives are immutable
  * chips; the first keystroke forks one into the operator's own version, so an
  * edit never overwrites what the model wrote and a re-proposal never
- * overwrites the edit. `Use this version` commits whichever is shown.
+ * overwrites the edit. `Submit for approval` commits whichever is shown.
  *
  * [COMP:app-web/feed-post-editor]
  */
@@ -23,11 +23,9 @@ import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
-  Check,
   CloudOff,
   RotateCw,
   Copy,
-  ClipboardCheck,
   FileDown,
   Info,
   MoreHorizontal,
@@ -45,6 +43,7 @@ import {
 } from "lucide-react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { FeedEditorPanel } from "./editor-panel";
+import { FeedPostWorkflow } from "./post-workflow";
 import { FeedDocumentAnnotations } from "./document-annotations";
 import { FeedDetachedGenerationResults } from "./generation-placeholder";
 import { Tooltip } from "@/components/ui/tooltip";
@@ -997,7 +996,7 @@ function PostPane({
       <main ref={workspaceRef} className="@container/feed-editor relative min-w-0 bg-background lg:overflow-y-auto" data-feed-editor-workspace>
         <div className="mx-auto min-h-full max-w-5xl p-3 pb-24 sm:p-5 lg:pb-5">
           <div className="space-y-4">
-            <header className="flex flex-wrap items-center gap-2 border-b border-border/60 pb-3" data-feed-document-header>
+            <header className="sticky top-0 z-20 flex flex-wrap items-center gap-2 border-b border-border/60 bg-background py-3" data-feed-document-header>
               <div className="flex min-w-[min(100%,12rem)] flex-1 items-center gap-2">
                 <span className="inline-flex size-8 items-center justify-center rounded-xl border border-border/60 bg-muted/40">
                   <PlatformIcon platform={platform} className="size-4" />
@@ -1081,58 +1080,11 @@ function PostPane({
               </div>
               {structured ? <Tooltip label={tc.comments}><Button ref={commentsButtonRef} type="button" variant="outline" size="icon" className="size-11 md:size-9 gap-1" aria-label={tc.comments} aria-expanded={editorPanel === 'comments' || editorPanel === 'thread'} onClick={showComments}><MessageSquareText className="size-4" aria-hidden /><span className="text-[10px]">{collaboration.data?.threads.filter(thread => !thread.resolved).length || ''}</span></Button></Tooltip> : null}
               <div className="flex flex-wrap items-center justify-end gap-1.5">
-                {status === "drafting" ? (
-                  <Button
-                    size="sm"
-                    type="button"
-                    onClick={() => void commitVersion()}
-                    disabled={busy || remoteBlocked || !compositionValid}
-                    className="bg-foreground text-background !shadow-none [background-image:none] hover:bg-foreground/90 hover:!shadow-none"
-                  >
-                    {te.useThisVersion}
-                  </Button>
-                ) : status === "review" ? (
-                  <>
-                    {compositionDirty ? (
-                      <Button
-                        size="sm"
-                        type="button"
-                        onClick={() => void commitVersion()}
-                        disabled={busy || remoteBlocked || !compositionValid}
-                        className="bg-foreground text-background !shadow-none [background-image:none] hover:bg-foreground/90 hover:!shadow-none"
-                      >
-                        {te.saveChanges}
-                      </Button>
-                    ) : null}
-                    {!compositionDirty ? <Button
-                      size="sm"
-                      type="button"
-                      onClick={() => void act("approve")}
-                      disabled={busy || remoteBlocked || compositionDirty || missingSlots.length > 0}
-                      title={compositionDirty ? te.saveBeforeApprove : undefined}
-                      className="bg-foreground text-background !shadow-none [background-image:none] hover:bg-foreground/90 hover:!shadow-none"
-                    >
-                      <Check className="size-3.5" aria-hidden />
-                      {te.approve}
-                    </Button> : null}
-                  </>
-                ) : status === "ready" ? (
-                  <Button
-                    size="sm"
-                    type="button"
-                    onClick={() => void act("posted")}
-                    disabled={busy || remoteBlocked}
-                    className="bg-foreground text-background !shadow-none [background-image:none] hover:bg-foreground/90 hover:!shadow-none"
-                  >
-                    {te.markPosted}
-                  </Button>
-                ) : null}
                 <DropdownMenu>
                   <DropdownMenuTrigger render={<Button ref={actionsButtonRef} type="button" variant="ghost" size="icon" className="size-11 md:size-9" aria-label={tc.postActions} />}><MoreHorizontal className="size-4" aria-hidden /></DropdownMenuTrigger>
                   <DropdownMenuContent align="end" finalFocus={() => editorPanel ? false : actionsButtonRef.current}>
                     <DropdownMenuItem className="min-h-11 md:min-h-9" onClick={() => showPanel('details')}><Info aria-hidden />{tc.details}</DropdownMenuItem>
-                    {structured ? <><DropdownMenuItem className="min-h-11 md:min-h-9" onClick={() => showPanel('review')}><ClipboardCheck aria-hidden />{tc.review}</DropdownMenuItem>
-                    <DropdownMenuItem className="min-h-11 md:min-h-9" onClick={() => showPanel('learning')}>{tl.title}</DropdownMenuItem></> : null}
+                    {structured ? <><DropdownMenuItem className="min-h-11 md:min-h-9" onClick={() => showPanel('learning')}>{tl.title}</DropdownMenuItem></> : null}
                     <DropdownMenuSeparator />
                     <DropdownMenuItem className="min-h-11 md:min-h-9" disabled={!compositionText} onClick={() => void copyCaption()}><Copy aria-hidden />{copied ? te.copied : te.copyCaption}</DropdownMenuItem>
                     {structured ? <DropdownMenuItem className="min-h-11 md:min-h-9" disabled={busy || remoteBlocked} onClick={() => void exportArticle()}><FileDown aria-hidden />{tg.exportArticle}</DropdownMenuItem> : null}
@@ -1144,6 +1096,11 @@ function PostPane({
                 </DropdownMenu>
                 <Tooltip label={isLg && !chatCollapsed ? tc.hideChat : tc.showChat}><Button type="button" variant="ghost" size="icon" className="size-11 md:size-9" aria-label={isLg && !chatCollapsed ? tc.hideChat : tc.showChat} aria-expanded={isLg ? !chatCollapsed : refineOpen} onClick={() => { setEditorPanel(null); if (isLg) setChatCollapsed(value => !value); else setRefineOpen(true); }}>{isLg && !chatCollapsed ? <PanelRightClose className="size-4" aria-hidden /> : <PanelRightOpen className="size-4" aria-hidden />}</Button></Tooltip>
               </div>
+              <FeedPostWorkflow status={status} hasEdits={compositionDirty}
+                actionDisabled={Boolean(busy || remoteBlocked || !workspace.canDraft || ((status === 'drafting' || (status === 'review' && compositionDirty)) && !compositionValid) || (status === 'review' && !compositionDirty && missingSlots.length > 0))}
+                reviewOpen={editorPanel === 'review'}
+                onReview={structured ? anchor => showPanel('review', anchor) : undefined}
+                onCommit={() => void commitVersion()} onApprove={() => void act('approve')} onPosted={() => void act('posted')} />
             </header>
 
             {showSyncRecovery ? (

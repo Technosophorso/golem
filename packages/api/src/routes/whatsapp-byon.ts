@@ -369,6 +369,8 @@ export function whatsappByonRoutes(opts: WhatsappByonRoutesOptions): Router {
       target: 'workspace',
       gcsKey: key,
       uploadUrl,
+      // Azure Blob needs `x-ms-blob-type` on the PUT; the connector spreads these.
+      ...(resolved.gcs.signedWriteHeaders ? { headers: resolved.gcs.signedWriteHeaders } : {}),
       storageUri: buildStorageUri(resolved.bucket, channel.workspaceId, fileId, resolved.uriScheme),
     })
   })

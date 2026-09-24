@@ -530,6 +530,21 @@ describe('[COMP:api/inter-assistant-executor] createCalleeExecutor', () => {
     await expect(executor()(baseParams)).rejects.toMatchObject({ reason: 'empty_response' })
   })
 
+  it('returns an askQuestion-only turn as structured notification, not empty_response or narration', async () => {
+    const question = { question: 'Which action?', options: ['Approve', 'Decline'] }
+    yields([
+      { type: 'assistant_turn', response: { content: [
+        { type: 'text', text: 'Private reasoning must not ship' },
+        { type: 'tool_use', id: 'q', name: 'askQuestion', input: question },
+      ] }, toolResults: [] },
+      { type: 'question', ...question },
+      { type: 'turn_complete', response: { content: [] } },
+    ])
+    const onQuestion = vi.fn()
+    expect(await executor()({ ...baseParams, onQuestion })).toBe('Which action?\n1. Approve\n2. Decline')
+    expect(onQuestion).toHaveBeenCalledWith(question)
+  })
+
   it('throws a typed empty_response error when the callee produces no text (2026-07-07 send-step incident)', async () => {
     // A placeholder here made a produced-nothing consult indistinguishable
     // from success: the workflow step recorded `completed` and downstream

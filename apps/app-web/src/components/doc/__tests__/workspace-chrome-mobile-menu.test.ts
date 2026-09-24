@@ -26,4 +26,13 @@ describe("[COMP:app-web/doc-shell] mobile workspace menu", () => {
       /\b(?:h-9|w-9|bg-background\/80|shadow|ring-1|backdrop-blur)\b/,
     );
   });
+
+  it("uses an emerald dot for the healthy Online sync state", () => {
+    expect(source).toContain(
+      'hasSyncNotice ? "bg-amber-500" : "bg-emerald-500"',
+    );
+    expect(source).not.toContain(
+      'hasSyncNotice ? "bg-amber-500" : "bg-muted-foreground/50"',
+    );
+  });
 });

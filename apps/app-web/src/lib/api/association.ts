@@ -253,9 +253,11 @@ export type ProgrammeSection = ProgrammeSubsection & { subsections:ProgrammeSubs
 export type ProgrammeCopy = { name:string;tagline:string;kicker:string;summary:string;audienceBlurbs:Partial<Record<ProgrammeAudience,string>>;sections:ProgrammeSection[];
   facts:{value:string;label:string}[];steps:{title:string;items:{title:string;text:string}[]}|null;feeUnit:string;feeNotes:string[];
   eligibility:{label:string;value:string}[];contacts:{label:string;name?:string;email:string}[];links:{label:string;href:string}[];
-  cta:{heading:string;text:string;href:string;label:string;secondary?:{label:string;href:string}}|null };
+  cta:{heading:string;text:string;href:string;label:string;secondary?:{label:string;href:string}}|null;
+  /** Describes a media library cover in this language. */
+  coverAlt?:string };
 export type WebsiteProgramme = { slug:string;audiences:ProgrammeAudience[];order:number;sites:MembershipSite[];status:"live"|"coming-soon"|"retired";
-  fee:{currency:"HKD";amountMinor:number}|null;gallery:ProgrammeGallery|null;cover:string|null;href:string|null;
+  fee:{currency:"HKD";amountMinor:number}|null;gallery:ProgrammeGallery|null;cover:string|null;coverMediaId?:string|null;href:string|null;
   i18n:{en:ProgrammeCopy;"zh-Hant"?:ProgrammeCopy;"zh-Hans"?:ProgrammeCopy} };
 export type ProgrammeCatalogueDocument = { schemaVersion:1;audiences:Record<ProgrammeAudience,{gallery:ProgrammeGallery;order:string[]}>;programmes:WebsiteProgramme[] };
 export type ProgrammeCatalogueDraft = { version:number;document:ProgrammeCatalogueDocument|null;publishedRevision:number;
@@ -268,4 +270,52 @@ export function saveProgrammeCatalogueDraft(workspaceId:string,expectedVersion:n
 }
 export function publishProgrammeCatalogue(workspaceId:string,expectedVersion:number) {
   return request(`/api/crm/${encodeURIComponent(workspaceId)}/association/programme-catalogue/publish`,{expectedVersion});
+}
+
+/** Website media library: staff-uploaded images and PDFs the public sites render by id. */
+export type WebsiteMedia = { id: string; name: string; mime: string; sizeBytes: number; updatedAt: string };
+export const WEBSITE_MEDIA_ACCEPT = "image/jpeg,image/png,image/webp,image/gif,image/avif,application/pdf";
+export const WEBSITE_MEDIA_MAX_BYTES = 15 * 1024 * 1024;
+const mediaBase = (workspaceId: string) => `/api/crm/${encodeURIComponent(workspaceId)}/association/media`;
+export async function listWebsiteMedia(workspaceId: string): Promise<WebsiteMedia[]> {
+  return (await request<{ media: WebsiteMedia[] }>(mediaBase(workspaceId))).media;
+}
+export async function uploadWebsiteMedia(workspaceId: string, files: File[]): Promise<Array<{ name: string; media?: WebsiteMedia; error?: string }>> {
+  const form = new FormData();
+  for (const file of files) form.append("files", file, file.name);
+  const response = await authFetch(`${API_URL}${mediaBase(workspaceId)}`, { method: "POST", body: form });
+  const body = await response.json().catch(() => null);
+  if (!response.ok && !Array.isArray(body?.results)) throw new AssociationApiError(typeof body?.error === "string" ? body.error : "upload_failed", response.status);
+  return body.results;
+}
+export async function websiteMediaPreviewUrl(workspaceId: string, id: string): Promise<string> {
+  return (await request<{ url: string }>(`${mediaBase(workspaceId)}/${encodeURIComponent(id)}/url`)).url;
+}
+export async function deleteWebsiteMedia(workspaceId: string, id: string): Promise<void> {
+  const response = await authFetch(`${API_URL}${mediaBase(workspaceId)}/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new AssociationApiError(typeof body?.error === "string" ? body.error : "delete_failed", response.status);
+  }
+}
+
+/** Website content collections (people, partners, settings, news, home pages): draft → preview → publish. */
+export const SITE_CONTENT_COLLECTIONS = ["people", "partners", "settings", "news", "home-oasa", "home-sea"] as const;
+export type SiteContentCollection = (typeof SITE_CONTENT_COLLECTIONS)[number];
+export type SiteContentDocument = Record<string, unknown>;
+export type SiteContentDraft = {
+  collection: SiteContentCollection; version: number; document: SiteContentDocument | null; publishedRevision: number;
+  published: SiteContentDocument | null; observations: Partial<Record<MembershipSite, { revision: number; observedAt: string }>>;
+  readers: MembershipSite[]; issues: string[];
+};
+const contentBase = (workspaceId: string, collection: SiteContentCollection) =>
+  `/api/crm/${encodeURIComponent(workspaceId)}/association/site-content/${collection}`;
+export async function getSiteContentDraft(workspaceId: string, collection: SiteContentCollection): Promise<SiteContentDraft> {
+  return (await request<{ content: SiteContentDraft }>(`${contentBase(workspaceId, collection)}/draft`)).content;
+}
+export function saveSiteContentDraft(workspaceId: string, collection: SiteContentCollection, expectedVersion: number, document: SiteContentDocument) {
+  return request(`${contentBase(workspaceId, collection)}/draft`, { expectedVersion, document });
+}
+export function publishSiteContent(workspaceId: string, collection: SiteContentCollection, expectedVersion: number) {
+  return request(`${contentBase(workspaceId, collection)}/publish`, { expectedVersion });
 }

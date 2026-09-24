@@ -1,5 +1,6 @@
 import { createRoot } from 'react-dom/client';
 import { FeedCommentFixture } from './feed-comment-browser';
+import { FeedWorkflowFixture } from './feed-workflow-browser';
 import { I18nProvider } from '@/lib/i18n/client';
 import { en } from '@/lib/i18n/dictionaries/en';
 import { ja } from '@/lib/i18n/dictionaries/ja';
@@ -32,7 +33,7 @@ const recorder: DockRecorderApi = {
 Object.assign(window, { feedComposerFixture: { dict, requests } });
 createRoot(document.getElementById('root')!).render(
   <I18nProvider locale={locale === 'zh-cn' ? 'zh-CN' : locale} dict={dict}>
-    {params.has('comment') ? <FeedCommentFixture /> : <main data-fixture-rail style={{ width: Number(params.get('width') ?? 320), height: 700, maxWidth: '100vw' }}>
+    {params.has('workflow') ? <FeedWorkflowFixture /> : params.has('comment') ? <FeedCommentFixture /> : <main data-fixture-rail style={{ width: Number(params.get('width') ?? 320), height: 700, maxWidth: '100vw' }}>
       <TuningChatPanel docked ready sessionId="fictional-draft" workspaceId="fictional-workspace" assistantId="fictional-writer" assistantName="Draft writer" dockRecorder={recorder} />
     </main>}
   </I18nProvider>,

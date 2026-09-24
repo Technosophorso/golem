@@ -1,5 +1,6 @@
 /** Lease/checkpoint runner for Office generation jobs.
  * [COMP:api/office-generation] */
+import { validateOfficeInternalCandidateRendering } from './render-validation.js'
 import { randomUUID } from 'node:crypto'
 import { runOfficeGenerationPipeline, type OfficeGenerationEvent, type OfficeGenerationPipelineDeps } from '@use-brian/core'
 import type { OfficeGenerationJobRow } from '../db/office-generation.js'
@@ -46,8 +47,10 @@ const safeNarration: Partial<Record<OfficeGenerationEvent['code'], string>> = {
 export function createOfficeGenerationWorker(deps: OfficeGenerationWorkerDeps) {
   return {
     async runOnce(): Promise<'idle' | 'completed' | 'failed' | 'cancelled' | 'needs_input'> {
+      // One create lease must cover model planning plus the existing 60s
+      // converter timeout/queue. Checkpoints still fail closed on lease loss.
       const leaseToken = randomUUID()
-      const job = await deps.store.claim({ userId: deps.workerUserId, leaseToken, leaseMs: deps.leaseMs ?? 60_000 })
+      const job = await deps.store.claim({ userId: deps.workerUserId, leaseToken, leaseMs: deps.leaseMs ?? 10 * 60_000 })
       if (!job) return 'idle'
       let checkpointVersion = job.checkpointVersion
       const controls = {
@@ -63,7 +66,11 @@ export function createOfficeGenerationWorker(deps: OfficeGenerationWorkerDeps) {
           return (await deps.store.drainSteering({ userId: deps.workerUserId, jobId: job.id, checkpointVersion: checkpointVersion + 1 })).map((row) => row.instruction)
         },
       }
-      const pipelineDeps = { ...deps.buildPipelineDeps(job, controls), ...controls }
+      const configured = deps.buildPipelineDeps(job, controls)
+      const pipelineDeps: OfficeGenerationPipelineDeps = {
+        ...configured, ...controls,
+        renderValidation: configured.renderValidation ?? (async (snapshot, params) => (await validateOfficeInternalCandidateRendering({ snapshot, ...params })).receipt),
+      }
       const outcome = await runOfficeGenerationPipeline(job.brief, pipelineDeps)
       const status = outcome.status
       if (status === 'completed') await deps.store.finish({ userId: deps.workerUserId, jobId: job.id, leaseToken, status: 'completed', stage: 'completed' })

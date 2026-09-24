@@ -493,7 +493,9 @@ export function createSocketManager(options: SocketManagerOptions): SocketManage
     if (first.target !== 'archive') {
       if (!first.uploadUrl) throw new Error('media-upload-url returned no uploadUrl')
       const stream = (await downloadMediaMessage(msg, 'stream', {})) as unknown as import('node:stream').Readable
-      const headers: Record<string, string> = { 'Content-Type': mediaInfo.mimeType }
+      // `headers` carries what the storage backend mandates (Azure Blob's
+      // `x-ms-blob-type`); GCS/S3/local send none.
+      const headers: Record<string, string> = { 'Content-Type': mediaInfo.mimeType, ...(first.headers ?? {}) }
       if (mediaInfo.fileLength) headers['Content-Length'] = String(mediaInfo.fileLength)
       const put = await fetch(first.uploadUrl, {
         method: 'PUT',

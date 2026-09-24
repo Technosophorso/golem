@@ -851,7 +851,7 @@ export function WorkspaceChrome({
           hasSyncNotice ? "text-amber-700 dark:text-amber-300" : "text-muted-foreground",
         )}
       >
-        <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", hasSyncNotice ? "bg-amber-500" : "bg-muted-foreground/50")} />
+        <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", hasSyncNotice ? "bg-amber-500" : "bg-emerald-500")} />
         <span className="shrink-0 font-medium">{syncTitle}</span>
         {syncDescription ? <span className="sr-only min-w-0 opacity-80 md:not-sr-only md:truncate">{syncDescription}</span> : null}
       </div>

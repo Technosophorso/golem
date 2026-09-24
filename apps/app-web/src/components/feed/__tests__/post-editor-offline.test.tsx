@@ -94,6 +94,22 @@ describe('[COMP:app-web/feed-post-editor] automatic legacy upgrade', () => {
     });
   }
   const commands = () => vi.mocked(authFetch).mock.calls.filter(([url, init]) => String(url).endsWith('/commands') && init?.method === 'POST');
+  it('opens Review directly from the workflow without starting a model request or submitting the draft', async () => {
+    const post = await legacyPost(); goOnline(post); await render(post.session.id);
+    const workflow = container.querySelector('[data-feed-post-workflow]')!;
+    const review = [...workflow.querySelectorAll('button')].find(node => node.textContent === en.feedCollaboration.review)!;
+    expect(review).toBeTruthy();
+    expect(workflow.textContent).toContain(en.feedPage.postEditor.submitForApproval);
+    vi.mocked(authFetch).mockClear();
+    await act(async () => review.click());
+    expect(review.getAttribute('aria-expanded')).toBe('true');
+    const panel = document.querySelector('[data-feed-editor-panel]')!;
+    expect(panel.hasAttribute('hidden')).toBe(false);
+    expect(panel.textContent).toContain(en.feedReview.checks);
+    expect(vi.mocked(authFetch).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0);
+    await act(async () => panel.querySelector<HTMLButtonElement>(`[aria-label="${en.feedCollaboration.closePanel}"]`)!.click());
+    expect(review.getAttribute('aria-expanded')).toBe('false');
+  });
   it('keeps passive editor selection out of chat and pins only Ask Brian context', async () => {
     const viewProps = vi.spyOn(EditorView.prototype, 'setProps');
     try {
@@ -231,7 +247,7 @@ describe("[COMP:app-web/feed-offline] offline editor lifecycle", () => {
     await remount(); await render(post.session.id);
     expect(container.querySelector("textarea")?.value).toBe("Written during a flight");
     expect(container.textContent).toContain(en.feedPage.postEditor.savedLocally);
-    const commit = [...container.querySelectorAll("button")].find(b => b.textContent === en.feedPage.postEditor.useThisVersion)!;
+    const commit = [...container.querySelectorAll("button")].find(b => b.textContent === en.feedPage.postEditor.submitForApproval)!;
     expect(commit.disabled).toBe(true);
     expect(authFetch).not.toHaveBeenCalled();
   });

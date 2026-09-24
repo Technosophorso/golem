@@ -49,7 +49,7 @@ jobs:
           SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: node apps/app-desktop/scripts/release.mjs plan "$SOURCE_SHA"
 
-  build:
+  build_macos:
     needs: plan
     if: needs.plan.outputs.release == 'true'
     # Pin the same Apple Silicon distribution as the existing signed installer.
@@ -115,7 +115,7 @@ jobs:
         run: node apps/app-desktop/scripts/release.mjs prepare "$RELEASE_VERSION" "$SOURCE_SHA"
       - uses: actions/upload-artifact@v4
         with:
-          name: desktop-release-${{ needs.plan.outputs.sha }}
+          name: desktop-release-macos-${{ needs.plan.outputs.sha }}
           path: |
             apps/app-desktop/release/usebrian.dmg
             apps/app-desktop/release/usebrian.zip
@@ -126,8 +126,51 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  build_windows:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          persist-credentials: false
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install pinned dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Stamp the planned version into the Windows build
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+        run: node apps/app-desktop/scripts/release.mjs stamp "$env:RELEASE_VERSION" "$env:SOURCE_SHA"
+      - name: Build Windows installer (unsigned beta, x64)
+        run: pnpm --filter @use-brian/app-desktop package:win
+      - name: Verify Windows updater feed and record provenance
+        env:
+          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          SOURCE_SHA: ${{ needs.plan.outputs.sha }}
+        run: node apps/app-desktop/scripts/release.mjs prepare-windows "$env:RELEASE_VERSION" "$env:SOURCE_SHA"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-release-windows-${{ needs.plan.outputs.sha }}
+          path: |
+            apps/app-desktop/release/usebrian.exe
+            apps/app-desktop/release/usebrian.exe.blockmap
+            apps/app-desktop/release/latest.yml
+            apps/app-desktop/release/desktop-release-windows.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
   publish:
-    needs: [plan, build]
+    needs: [plan, build_macos, build_windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -141,10 +184,14 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      # Only this workflow's signed artifacts; never artifacts from upstream CI/PRs.
+      # Only this workflow's platform artifacts; never artifacts from upstream CI/PRs.
       - uses: actions/download-artifact@v4
         with:
-          name: desktop-release-${{ needs.plan.outputs.sha }}
+          name: desktop-release-macos-${{ needs.plan.outputs.sha }}
+          path: apps/app-desktop/release
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-release-windows-${{ needs.plan.outputs.sha }}
           path: apps/app-desktop/release
       - name: Publish verified draft atomically to the update feed
         env:

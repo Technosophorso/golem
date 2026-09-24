@@ -2,6 +2,7 @@
 import { FEED_IMAGE_CAPABILITY, feedImageCost } from '@use-brian/shared'
 import sharp from 'sharp'
 import { authorizeGoogleRequest, type GoogleTransport } from './google-transport.js'
+import { isDefinitelyUndispatchedGoogleRequest, retryGooglePreDispatch } from './google-auth.js'
 export type GeneratedImageReceipt = {
   image?: { data: string; mimeType: 'image/png' | 'image/jpeg' | 'image/webp' };
   error?: 'image_provider_rejected' | 'image_refused' | 'image_missing' | 'image_malformed' | 'image_tool_not_invoked' | 'image_tool_incomplete';
@@ -64,7 +65,13 @@ export function createGeminiImageProvider(transport: GoogleTransport | undefined
     const authorization = await authorizeGoogleRequest(transport)
     const headers = authorization.headers
     if (transport.kind === 'ai-studio' && !headers['x-goog-api-key']) throw new Error('image_generation_unavailable')
-    const response = await fetcher(transport.endpoint(input.model, 'generateContent'), { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal: input.signal, body: JSON.stringify({ contents: [{ role: 'user', parts: [...(input.sourceImage ? [{ inlineData: input.sourceImage }] : []), { text: input.prompt }] }], generationConfig: { candidateCount: 1, responseModalities: ['IMAGE'], maxOutputTokens: FEED_IMAGE_CAPABILITY.outputTokens, imageConfig: { imageSize: FEED_IMAGE_CAPABILITY.size, aspectRatio: input.aspectRatio ?? '1:1' }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } } }) })
+    const endpoint = transport.endpoint(input.model, 'generateContent')
+    const request: RequestInit = { method: 'POST', headers: { ...headers, 'Content-Type': 'application/json' }, signal: input.signal, body: JSON.stringify({ contents: [{ role: 'user', parts: [...(input.sourceImage ? [{ inlineData: input.sourceImage }] : []), { text: input.prompt }] }], generationConfig: { candidateCount: 1, responseModalities: ['IMAGE'], maxOutputTokens: FEED_IMAGE_CAPABILITY.outputTokens, imageConfig: { imageSize: FEED_IMAGE_CAPABILITY.size, aspectRatio: input.aspectRatio ?? '1:1' }, thinkingConfig: { thinkingLevel: 'MINIMAL', includeThoughts: false } } }) }
+    const response = await retryGooglePreDispatch(() => fetcher(endpoint, request), {
+      signal: input.signal,
+      shouldRetry: isDefinitelyUndispatchedGoogleRequest,
+      onRetry: details => console.warn('[gemini-image] connection failed before provider dispatch; retrying', details),
+    })
     if (!response.ok) return { error: 'image_provider_rejected', status: response.status, providerError: await parseGeminiProviderError(response), usage: { inputTokens: 0, outputTokens: 0, measured: false } }
     if (!response.body) return { error: 'image_malformed', usage: { inputTokens: 0, outputTokens: 0, measured: false } }
     const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let size = 0

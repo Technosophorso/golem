@@ -11,6 +11,8 @@ import { Button } from "@/components/ui/button";
 import { AssociationField as Field, AssociationChoice as Choice, AssociationToggle as Toggle, AssociationListState, useAssociationAction } from "./operator-controls";
 import { useAssociationModule } from "./module-controls";
 import { InlineNotice, PageHeader } from "./ui";
+import { MediaChoice } from "./site-content/document-editor";
+import { listWebsiteMedia } from "@/lib/api/association";
 
 const locales = ["en", "zh-Hant", "zh-Hans"] as const;
 const sites = ["oasa", "sea"] as const;
@@ -26,6 +28,7 @@ export function ProgrammePublishingPanel({ workspaceId }: { workspaceId: string 
   const module = useAssociationModule(workspaceId), manage = !!module.data?.canManage, enabled = module.data?.module.state === "enabled";
   const read = useCachedResource(manage ? associationPageCacheKey(workspaceId, "programme-catalogue") : null, () => getProgrammeCatalogueDraft(workspaceId));
   const action = useAssociationAction(workspaceId);
+  const media = useCachedResource(manage ? associationPageCacheKey(workspaceId, "website-media") : null, () => listWebsiteMedia(workspaceId));
   const [editing, setEditing] = useState<{ version: number; document: ProgrammeCatalogueDocument } | null>(null);
   const [locale, setLocale] = useState<MembershipLocale>("en"), [site, setSite] = useState<MembershipSite>("oasa");
   const [feeInput, setFeeInput] = useState<Record<string, string>>({});
@@ -70,7 +73,13 @@ export function ProgrammePublishingPanel({ workspaceId }: { workspaceId: string 
             {PROGRAMME_AUDIENCES.map(a => <Toggle key={a} label={`${c.audiences}: ${c[a]}`} checked={programme.audiences.includes(a)} onChange={v => setProgramme("audiences", v ? [...programme.audiences, a] : programme.audiences.filter(item => item !== a))}/>)}
             {sites.map(s => <Toggle key={s} label={`${c.sites}: ${s.toUpperCase()}`} checked={programme.sites.includes(s)} onChange={v => setProgramme("sites", v ? [...programme.sites, s] : programme.sites.filter(item => item !== s))}/>)}
             <Choice label={c.gallery} value={programme.gallery ?? "none"} values={["none", ...PROGRAMME_GALLERIES]} labels={{ none: c.noGallery }} onChange={v => setProgramme("gallery", v === "none" ? null : v as WebsiteProgramme["gallery"])}/>
-            <Field label={c.cover} value={programme.cover ?? ""} onChange={v => setProgramme("cover", v || null)}/>
+            <div className="space-y-2 md:col-span-2">
+              <MediaChoice label={c.coverLibrary} value={programme.coverMediaId ?? undefined} context={{ locale, media: media.data ?? [], workspaceId }} images
+                onChange={id => patch(d => { const p = d.programmes[selected]; p.coverMediaId = id ?? null; if (id) p.cover = null; })}/>
+              <p className="text-xs text-muted-foreground">{c.coverLibraryHelp}</p>
+            </div>
+            {!programme.coverMediaId && <Field label={c.cover} value={programme.cover ?? ""} onChange={v => setProgramme("cover", v || null)}/>}
+            {programme.coverMediaId && copy && <Field label={c.coverAlt} value={copy.coverAlt ?? ""} help={locale === "en" ? c.coverAltHelp : undefined} onChange={v => patchCopy(value => { value.coverAlt = v; })}/>}
             <Field label={c.href} value={programme.href ?? ""} onChange={v => setProgramme("href", v || null)}/>
             {!copy && <div className="space-y-2 md:col-span-2"><InlineNotice tone="neutral">{c.noTranslation}</InlineNotice><Button variant="outline" className="min-h-11" onClick={() => patch(d => { d.programmes[selected].i18n[locale] = { ...structuredClone(d.programmes[selected].i18n.en) }; })}>{c.addTranslation}</Button></div>}
             {copy && locale !== "en" && <Button variant="outline" className="min-h-11 md:col-span-2" onClick={() => patch(d => { delete d.programmes[selected].i18n[locale]; })}>{c.removeTranslation}</Button>}

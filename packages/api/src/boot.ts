@@ -456,6 +456,7 @@ import { getWorkspaceFileById } from './db/workspace-files.js'
 import { createGcsFilesClient, type GcsFilesClient } from './files/gcs-client.js'
 import { initLedgerRuntime } from './ledger/runtime.js'
 import { createLocalFilesClient, resolveLocalFilesBaseDir } from './files/local-files-client.js'
+import { azureBlobOptionsFromEnv, createAzureBlobFilesClient } from './files/azure-blob-client.js'
 import { localFilesTransferRoutes } from './routes/local-files-transfer.js'
 import { openRecordingsRoutes } from './routes/recordings.js'
 import { recordingLiveRoutes } from './routes/recording-live.js'
@@ -510,6 +511,7 @@ import {
 import { modelMenuRoutes } from './routes/model-menu.js'
 import { pageActionsRoutes } from './routes/page-actions.js'
 import { workflowWebhookRoutes } from './routes/workflow-webhooks.js'
+import { createChannelQuestionStore } from './workflow/channel-questions.js'
 import { createWorkflowChannelDelivery } from './workflow/channel-delivery.js'
 import { createWorkflowDependencyPreflight } from './workflow/dependency-preflight.js'
 import { createDeliveryTargetResolver } from './scheduling/delivery-target.js'
@@ -666,6 +668,8 @@ import { createAssociationWorkspaceModulesStore } from './association/workspace-
 import { createCrmIntegrationStore } from './db/crm-integration-store.js'
 import { crmIntegrationRoutes, crmIntegrationCredentialRoutes } from './routes/crm-integration.js'
 import { crmAssociationRoutes, associationMemberContext, workspaceModuleRoutes } from './routes/crm-association.js'
+import { websiteMediaMemberRoutes } from './routes/association-media.js'
+import { createWebsiteMediaStore } from './db/website-media-store.js'
 import { createStoreToolResolver } from './home-apps/store-tools-resolver.js'
 import { appsShopifyRoutes } from './routes/apps-shopify.js'
 import { agentAllowedToolsFor } from './brain-mcp/store-tools.js'
@@ -834,9 +838,18 @@ export interface OpenApiEnv {
   BRIAN_MESSAGE_STORE_ALLOW_REMOTE?: string
   BRIAN_MESSAGE_STORE_HMAC_SECRET?: string
   LLM_PROVIDER_KEY_ENCRYPTION_KEY?: string
-  // Blob storage. GCS wins when set; LOCAL_FILES_DIR enables durable
+  // Blob storage. GCS wins when set; AZURE_BLOB_CONTAINER selects an Azure Blob
+  // container (self-hosted on Azure); LOCAL_FILES_DIR enables durable
   // self-hosted local storage; otherwise non-Cloud-Run dev falls back to /tmp.
+  // GCS and Azure together is a misconfiguration and fails boot.
   GCS_FILES_BUCKET?: string
+  AZURE_BLOB_CONTAINER?: string
+  /** Shared-key auth for Azure Blob: a connection string, or account + key. */
+  AZURE_STORAGE_CONNECTION_STRING?: string
+  AZURE_STORAGE_ACCOUNT?: string
+  AZURE_STORAGE_ACCOUNT_KEY?: string
+  /** Blob endpoint override for Azurite or a sovereign cloud. */
+  AZURE_BLOB_ENDPOINT?: string
   LOCAL_FILES_DIR?: string
   /** Public HTTPS base used only for signed local-file transfer URLs. */
   LOCAL_FILES_PUBLIC_URL?: string
@@ -2085,6 +2098,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const communitySkillRegistry = loadSkillRegistry()
 
   const integrationStore = credKey ? createDbChannelIntegrationStore(credKey) : null
+  const channelQuestionStore = createChannelQuestionStore()
   syncNativeSlashCommands = integrationStore
     ? (userId: string, workspaceId: string) => syncWorkspaceNativeSlashCommands({
         userId,
@@ -2131,6 +2145,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const resolveWorkspaceCustomLlm = createWorkspaceCustomLlmResolver(customLlmEndpointStore, {
     networkPolicy: customLlmNetworkPolicy,
     managedProvider: provider,
+    documentAdaptation: { distill: documentDistill, cache: distillateCache },
   })
   const resolveBackgroundRuntime = async (workspaceId: string | null | undefined) =>
     workspaceId
@@ -2494,6 +2509,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       },
       resolveDeliveryTarget: createDeliveryTargetResolver(integrationStore ?? undefined),
       deliverToChannel: createWorkflowChannelDelivery({
+        questionStore: channelQuestionStore,
         integrationStore: integrationStore ?? undefined,
         defaultTelegramBotToken: env.TELEGRAM_BOT_TOKEN,
         waConnectorUrl: env.WA_CONNECTOR_URL,
@@ -3025,6 +3041,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const { createInProcessTransport } = await import('@use-brian/core')
   const consultTransport = createInProcessTransport({
     runConsult: async ({ request }) => {
+      let question: import('@use-brian/core').AssistantQuestion | undefined
       let decisionApplicationId: string | null = null
       let scopeEvidence: import('@use-brian/core').ScopeEvidence | undefined
       let liveGoalId: string | null = null
@@ -3075,12 +3092,14 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
           : undefined,
         onDecisionApplication: (id) => { decisionApplicationId = id },
         onScopeEvidence: (evidence) => { scopeEvidence = evidence },
+        onQuestion: (value) => { question = value },
         onActivity: liveGoalId
           ? (frame) => publishGoalActivity(liveGoalId!, frame)
           : undefined,
       })
       return {
         text,
+        question,
         scopeEvidence,
         ...(decisionApplicationId
           ? {
@@ -3257,6 +3276,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       })
     },
     deliverToChannel: createWorkflowChannelDelivery({
+      questionStore: channelQuestionStore,
       integrationStore: integrationStore ?? undefined,
       defaultTelegramBotToken: env.TELEGRAM_BOT_TOKEN,
       waConnectorUrl: env.WA_CONNECTOR_URL,
@@ -3627,6 +3647,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     resolvePrimary: resolvePrimaryAssistantForWorkspace,
     resolveDeliveryTarget: createDeliveryTargetResolver(integrationStore ?? undefined),
     deliverToChannel: createWorkflowChannelDelivery({
+      questionStore: channelQuestionStore,
       integrationStore: integrationStore ?? undefined,
       defaultTelegramBotToken: env.TELEGRAM_BOT_TOKEN,
       waConnectorUrl: env.WA_CONNECTOR_URL,
@@ -4061,7 +4082,14 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   // ── Workspace filesystem ──
   const configuredLocalFilesDir = env.LOCAL_FILES_DIR?.trim()
   const localFilesDir = resolveLocalFilesBaseDir(configuredLocalFilesDir)
-  const localFilesClient = !env.GCS_FILES_BUCKET && !(process.env.K_SERVICE && !configuredLocalFilesDir)
+  // Azure Blob is the self-hosted bucket option (throws on a half-configured
+  // deployment so boot fails closed rather than landing on the temp dir).
+  const azureBlobOptions = azureBlobOptionsFromEnv(env)
+  if (azureBlobOptions && env.GCS_FILES_BUCKET) {
+    throw new Error('[files] GCS_FILES_BUCKET and AZURE_BLOB_CONTAINER are both set — pick one app-default blob store')
+  }
+  const cloudBlobConfigured = Boolean(env.GCS_FILES_BUCKET) || azureBlobOptions !== null
+  const localFilesClient = !cloudBlobConfigured && !(process.env.K_SERVICE && !configuredLocalFilesDir)
     ? createLocalFilesClient({
         baseDir: localFilesDir,
         apiUrl: env.LOCAL_FILES_PUBLIC_URL?.trim() || env.API_URL,
@@ -4070,8 +4098,12 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     : null
   const filesBlobClient = env.GCS_FILES_BUCKET
     ? createGcsFilesClient({ bucket: env.GCS_FILES_BUCKET, projectId: process.env.GOOGLE_CLOUD_PROJECT })
-    : localFilesClient
-  if (filesBlobClient && !env.GCS_FILES_BUCKET) {
+    : azureBlobOptions
+      ? createAzureBlobFilesClient(azureBlobOptions)
+      : localFilesClient
+  if (azureBlobOptions) {
+    console.log(`[files] using Azure Blob container ${azureBlobOptions.container} for workspace files.`)
+  } else if (filesBlobClient && !env.GCS_FILES_BUCKET) {
     const mode = configuredLocalFilesDir ? 'configured self-hosted storage' : 'ephemeral dev fallback'
     console.warn(`[files] GCS_FILES_BUCKET unset — using local-disk file storage at ${localFilesDir} (${mode}).`)
   }
@@ -4101,8 +4133,8 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     // credential. See docs/plans/byo-google-storage.md.
     const defaultFilesResolver = createSingletonFilesClientResolver(
       filesBlobClient,
-      env.GCS_FILES_BUCKET ?? localFilesDir,
-      env.GCS_FILES_BUCKET ? undefined : 'file',
+      env.GCS_FILES_BUCKET ?? azureBlobOptions?.container ?? localFilesDir,
+      env.GCS_FILES_BUCKET ? undefined : azureBlobOptions ? 'az' : 'file',
     )
     const lookupStorageBinding = async (workspaceId: string): Promise<WorkspaceStorageBinding | null> => {
       // A binding resolves only while we hold the key. Disconnect wipes the key
@@ -5061,10 +5093,12 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     }),
     entityLinks: entityLinksStore,
   })
+  const websiteMediaStore = createWebsiteMediaStore()
   app.use('/api/crm/integration', crmIntegrationRoutes({
     deliveries: crmDeliveries,
     credentials: crmIntegrationStore, service: crmOperationsService, association: associationService,
     imports: crmProductionImports, importSources: crmImportSources,
+    ...(filesResolver ? { websiteMedia: { store: websiteMediaStore, resolver: filesResolver } } : {}),
   }))
 
   app.use('/api/brain/mcp', brainMcpRoutes({
@@ -6410,7 +6444,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     store: officeGenerationStore,
     workerUserId: userId,
     buildPipelineDeps(job) {
+      let fitPolicy: import('@use-brian/core').OfficeGenerationFitPolicy = { eligibleTargetIds: [], maxAttempts: 1 }
+      const onFitPolicy = (policy: import('@use-brian/core').OfficeGenerationFitPolicy) => { fitPolicy = policy }
       return {
+        fitRepairPolicy: () => fitPolicy,
         async resolveAuthority() {
           const projection = job.authorityProjection as { sensitivity?: unknown; visibilityUserIds?: unknown; compartments?: unknown; projectIds?: unknown; compartmentGrant?: unknown; projectGrant?: unknown; sourceHandles?: unknown }
           return {
@@ -6486,8 +6523,8 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
           const runtime = await resolveBackgroundRuntime(job.workspaceId)
           const generationProvider = runtime?.provider ?? provider
           const generationModel = runtime?.selector ?? BACKGROUND_MODEL
-          if (brief.family === 'document') return generateDocumentFromTemplate({ provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, template, brandVoice })
-          if (brief.family === 'presentation') return generatePresentationFromTemplate({ provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, evidence, claims, template, brandVoice })
+          if (brief.family === 'document') return generateDocumentFromTemplate({ onFitPolicy, provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, template, brandVoice })
+          if (brief.family === 'presentation') return generatePresentationFromTemplate({ onFitPolicy, provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, evidence, claims, template, brandVoice })
           return generateSpreadsheetFromTemplate({ provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, template, brandVoice })
         },
         async processMedia(snapshot) { return snapshot },
@@ -6532,7 +6569,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       const runtime = await resolveBackgroundRuntime(job.workspaceId)
       const role = (job.authorityProjection as { role?: unknown }).role === 'comment' ? 'comment' as const : 'edit' as const
       const assistantId = job.assistantId ?? APP_LEVEL_ASSISTANT_ID
-      return runOfficeEdit({
+      const template = snapshot.templateVersionId ? await readOfficeTemplateBundle(job.initiatedByUserId, job.workspaceId, snapshot.templateVersionId) : null
+      if (snapshot.templateVersionId && !template) throw new Error('Revision template lock policy is unavailable')
+      const lockedTargetIds = [...(template?.lockedObjectIds ?? []), ...(template?.fields.filter(field => field.locked).flatMap(field => field.targetIds) ?? [])]
+      const revision = await runOfficeEdit({
         artifactId: job.artifactId,
         assistantId,
         baseVersion: currentVersion,
@@ -6552,9 +6592,22 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
         baseVersion: currentVersion,
         assistantId,
         targetIds: nextTargetIds,
+        lockedTargetIds,
         instruction: nextInstruction,
         brandVoice,
+        // The command planner derives bounded repair eligibility from the
+        // selected scope (including explicit section/slide descendants).
+        async validateCandidate(candidate) {
+          const { validateOfficeInternalCandidateRendering } = await import('./office/render-validation.js')
+          const rendered = await validateOfficeInternalCandidateRendering({
+            snapshot: candidate,
+            fitBudget: { readabilityReference: nextSnapshot },
+            resolveResource: resourceId => readOfficeResource(job.initiatedByUserId, job.workspaceId, resourceId),
+          })
+          if (!rendered.receipt.ok) throw new Error(`Office revision rendering failed: ${rendered.receipt.issues.map(i => `${i.code}: ${i.message}`).join('; ')}`)
+        },
       }))
+      return { ...revision, affectedObjectIds: [...new Set([...revision.affectedObjectIds, ...revision.commands.flatMap(command => command.kind === 'appendSpreadsheetRecords' ? [command.tableId] : [])])] }
     },
     async commit({ job, snapshot, expectedVersion }) {
       return (await commitGeneratedOfficeSnapshot({ job, snapshot, expectedVersion, kind: 'revision' })).version
@@ -6815,6 +6868,21 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     emailDraftStore: crmEmailDraftStore,
     crmOperationsService,
   }))
+  if (filesApi && filesResolver) {
+    const mediaFilesApi = filesApi
+    app.use('/api/crm/:workspaceId/association/media', requireAuth(env.JWT_SECRET), websiteMediaMemberRoutes({
+      store: websiteMediaStore,
+      filesApi: mediaFilesApi,
+      resolver: filesResolver,
+      membership: async (userId, workspaceId) => {
+        const [role, member] = await Promise.all([
+          workspaceStore.getRole(userId, workspaceId),
+          getWorkspaceMembershipWithClearanceSystem(userId, workspaceId),
+        ])
+        return role && member ? { role, clearance: member.clearance } : null
+      },
+    }))
+  }
   app.use('/api/crm/:workspaceId/association', requireAuth(env.JWT_SECRET), crmAssociationRoutes({
     service: associationService, context: associationMemberContext(workspaceStore),
   }))
@@ -8524,6 +8592,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     // JWT guard. All gated on the integration store (CHANNEL_CREDENTIAL_KEY).
     if (integrationStore) {
       app.use('/webhook/telegram', telegramByoRoutes({
+        questionStore: channelQuestionStore,
         backgroundModel,
         provider, configuredProviders, resolveWorkspaceCustomLlm, publishSessionEvent, systemPrompt: LAYER_1_SYSTEM_PROMPT, tools: allTools, capabilityStore,
         memoryStore, usageStore, checkCreditBudget: ports.checkCreditBudget,

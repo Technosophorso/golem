@@ -1,7 +1,7 @@
 /** Targeted @Brian revision worker for committed Office documents.
  * [COMP:api/office-generation] */
 import { randomUUID } from 'node:crypto'
-import type { OfficeArtifactSnapshot, OfficeCommand } from '@use-brian/office-model'
+import { applyOfficeCommand, type OfficeArtifactSnapshot, type OfficeCommand } from '@use-brian/office-model'
 import type { OfficeGenerationJobRow } from '../db/office-generation.js'
 
 export type OfficeRevisionWorkerDeps = {
@@ -26,6 +26,13 @@ export function createOfficeRevisionWorker(deps: OfficeRevisionWorkerDeps) {
       const live = await deps.getSnapshot(userId, job.artifactId)
       if (!live || live.baseVersion < brief.expectedVersion) throw new Error('revision_version_conflict')
       const revision = await deps.revise({ snapshot: live.snapshot, targetIds: brief.targetIds, instruction: brief.instruction, currentVersion: live.baseVersion, versionDrifted: live.baseVersion !== brief.expectedVersion, job })
+      if (!revision.commands.length) throw new Error('Office revision has no commands')
+      let replayed = live.snapshot
+      for (const command of revision.commands) {
+        if (command.baseVersion !== live.baseVersion || command.artifactId !== job.artifactId) throw new Error('Office revision command envelope mismatch')
+        replayed = applyOfficeCommand(replayed, command)
+      }
+      if (revision.mode === 'direct' && JSON.stringify(replayed) !== JSON.stringify(revision.snapshot)) throw new Error('Office revision snapshot differs from canonical command replay')
       if (revision.mode === 'proposal') {
         await deps.propose({ job, baseVersion: live.baseVersion, commands: revision.commands, affectedObjectIds: revision.affectedObjectIds })
         await deps.appendEvent({ userId, jobId: job.id, workspaceId: job.workspaceId, code: 'office.job.completed', values: { proposal: true }, actorType: 'system', safeNarration: 'Revision proposed' })

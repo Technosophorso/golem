@@ -4,7 +4,7 @@ import { feedGenerationRequestSchema, feedGenerationEstimateRequestSchema, type 
 import { feedParagraph } from '@use-brian/doc-model'
 import { generationPrompt, parseFeedTextCandidates, type FeedGenerationContext } from '../generation.js'
 import { createFeedGenerationPort } from '../generation-port.js'
-import type { FeedEditorialRun } from '../../db/feed-editorial-runs-store.js'
+import { summarizeFeedRun, type FeedEditorialRun } from '../../db/feed-editorial-runs-store.js'
 const slot: FeedPlaceholderAttrs = { id: randomUUID(), kind: 'text', brief: 'Explain orchard irrigation.', briefRevision: 1, references: [] }
 const segmentId = randomUUID()
 const context = { slot, segmentId, request: { mutationId: randomUUID(), expectedRevision: 2, segmentId, slotId: slot.id, count: 2, model: 'standard', locale: 'en' }, content: { schemaVersion: 2, title: 'Fixture', privateBrief: 'Use concrete examples.', composition: { version: 1, segments: [{ id: segmentId, content: [feedParagraph('Opening.'), { type: 'generationPlaceholder', attrs: slot }] }] } }, sources: [], omissions: [] } as unknown as FeedGenerationContext
@@ -28,6 +28,12 @@ describe('[COMP:feed/draft-generation] estimate and candidate contract', () => {
   })
   it('scenario 8: refuses empty, malformed and over-count results without retrying a provider', () => {
     for (const text of ['not json', '{"candidates":[]}', '{"candidates":[{"markdown":"","rationale":""}]}', JSON.stringify({ candidates: [1, 2, 3].map(() => ({ markdown: 'Draft.', rationale: '' })) })]) expect(() => parseFeedTextCandidates(text, run)).toThrow()
+  })
+  it('scenario 8: projects an internally uncertain image iteration as failed', () => {
+    const imageSlot = { ...slot, kind: 'image' as const }
+    const imageRun = { ...run, kind: 'image_generation', status: 'unknown_outcome', attempts: 1, error: 'generation_transport_failed', createdAt: new Date(0), coverage: {}, summaryThreadId: null, model: 'fixture-image', context: { ...context, slot: imageSlot, estimate: { slot: imageSlot } } } as FeedEditorialRun
+    expect(summarizeFeedRun(imageRun)).toMatchObject({ kind: 'image_generation', status: 'failed', attempts: 1, error: 'generation_transport_failed' })
+    expect(summarizeFeedRun({ ...imageRun, kind: 'text_generation', context } as FeedEditorialRun).status).toBe('unknown_outcome')
   })
   it('scenario 8: excludes whole oversized sources and rejects an oversized required outline', () => {
     const bounded = generationPrompt({ ...context, sources: [{ id: 'oversized', title: 'Notes', body: 'x'.repeat(50_000), hash: 'hash' }] }, 40_000)

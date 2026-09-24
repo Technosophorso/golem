@@ -10,7 +10,7 @@ import { AssociationPrivacyPanel } from "./privacy-panel";
 import { AssociationMailboxPanel } from "./mailbox-panel";
 import { AssociationCredentialsPanel } from "./credentials-panel";
 import { AssociationSponsorships } from "./sponsorships";
-import { ProgrammePublishingPanel } from "./programme-publishing";
+import { WebsiteContentPanel } from "./website-content";
 import { AssociationListState,useAssociationAction,useAssociationPage } from "./operator-controls";
 import { EmptyState, InlineNotice, PageHeader, ResponsiveTable, Segmented, StatusPill, associationDate } from "./ui";
 
@@ -60,7 +60,7 @@ export function AssociationOperationsPanel({workspaceId,initialTab}:{workspaceId
     <PageHeader title={u.settings} description={u.settingsHelp}><Segmented label={u.goTo} value={current} onChange={setTab} options={available.map(id=>({value:id,label:labels[id]}))}/></PageHeader>
     {module.data&&!canManage&&current==="general"?<InlineNotice tone="neutral">{t.ownerOnly}</InlineNotice>:null}
     {current==="general"?<AssociationModuleControls workspaceId={workspaceId}/>:null}
-    {current==="website"?<ProgrammePublishingPanel workspaceId={workspaceId}/>:null}
+    {current==="website"?<WebsiteContentPanel workspaceId={workspaceId}/>:null}
     {current==="sponsorship"?<AssociationSponsorships workspaceId={workspaceId} canManage={canManage}/>:null}
     {current==="sync"?<PaymentSync workspaceId={workspaceId} canManage={canManage}/>:null}
     {current==="activity"?<ActivityLog workspaceId={workspaceId}/>:null}

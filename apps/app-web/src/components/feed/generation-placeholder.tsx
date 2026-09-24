@@ -22,6 +22,18 @@ import { fetchDocFileBlob } from '@/components/doc/doc-file-url';
 const inputClass = 'min-h-11 w-full rounded-md border bg-background p-2 text-base';
 export type FeedGenerationControls = { workspaceId: string; assistantId: string; sessionId: string; revision: number; offline: boolean; pending: boolean; readOnly: boolean; article: boolean; snapshot?: FeedCollaborationSnapshot | null; onCommand: (commands: FeedCommand[]) => Promise<boolean>; onRefresh: () => void };
 type FeedImageNode = Extract<FeedNode, { type: 'image' }>;
+function imagePreviewStorageKey(controls: FeedGenerationControls, slotId: string): string | null {
+  const owner = feedOwner();
+  return owner ? `feed:image-preview:v1:${owner}:${controls.workspaceId}:${controls.sessionId}:${slotId}` : null;
+}
+function readImagePreviewCandidate(key: string | null): string | null {
+  if (!key) return null;
+  try { return window.localStorage.getItem(key); } catch { return null; }
+}
+function writeImagePreviewCandidate(key: string | null, candidateId: string): void {
+  if (!key) return;
+  try { window.localStorage.setItem(key, candidateId); } catch { /* Best-effort view state. */ }
+}
 function candidateImage(candidate: FeedDraftSuggestion): FeedImageNode | null {
   for (const edit of candidate.edits) {
     if (edit.kind !== 'replaceBlock') continue;
@@ -52,14 +64,32 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
   const runs = c.snapshot?.runs?.filter(run => run.generation?.slotId === props.slot.id) ?? [];
   const active = runs.some(run => run.status === 'pending' || run.status === 'running');
   const candidates = c.snapshot?.suggestions.filter(s => s.sourceRunId && s.edits.some(edit => edit.kind === 'replaceBlock' && edit.blockId === props.slot.id)) ?? [];
-  const imageCandidates = props.slot.kind === 'image' ? candidates.filter(candidate => candidateImage(candidate) !== null).sort((left, right) => Number(['proposed', 'deferred'].includes(right.status) && candidateMatchesSlot(right, props.slot)) - Number(['proposed', 'deferred'].includes(left.status) && candidateMatchesSlot(left, props.slot))) : [];
+  // The API returns suggestions in immutable creation order. Keep that order so
+  // option 1 always means the first generation rather than the newest match.
+  const imageCandidates = props.slot.kind === 'image' ? candidates.filter(candidate => candidateImage(candidate) !== null) : [];
   const imageCandidateKey = imageCandidates.map(candidate => candidate.id).join(':');
-  const pendingImageCandidate = imageCandidates.find(candidate => ['proposed', 'deferred'].includes(candidate.status));
-  const pendingImage = pendingImageCandidate ? candidateImage(pendingImageCandidate) : props.slot.baseImageFileId ? { type: 'image' as const, attrs: { fileId: props.slot.baseImageFileId, alt: props.slot.altIntent ?? '' } } : null;
-  const currentInputs = JSON.stringify({ slot: props.slot, revision: c.revision, model, count, imageProvider, iteration, candidateId: imageCandidates[imageIndex]?.id });
+  const imageCandidatesLoaded = Boolean(c.snapshot);
+  const imagePreviewKey = imagePreviewStorageKey(c, props.slot.id);
+  const selectedImageIndex = imageCandidates[imageIndex] ? imageIndex : 0;
+  const selectedImageCandidate = imageCandidates[selectedImageIndex];
+  const pendingImage = selectedImageCandidate ? candidateImage(selectedImageCandidate) : props.slot.baseImageFileId ? { type: 'image' as const, attrs: { fileId: props.slot.baseImageFileId, alt: props.slot.altIntent ?? '' } } : null;
+  const currentInputs = JSON.stringify({ slot: props.slot, revision: c.revision, model, count, imageProvider, iteration, candidateId: selectedImageCandidate?.id });
   const latestInputs = useRef(currentInputs); latestInputs.current = currentInputs;
-  useEffect(() => { setImageIndex(0); }, [imageCandidateKey]);
+  useEffect(() => {
+    if (!imageCandidatesLoaded) return;
+    const stored = readImagePreviewCandidate(imagePreviewKey);
+    const storedIndex = stored ? imageCandidateKey.split(':').indexOf(stored) : -1;
+    setImageIndex(storedIndex >= 0 ? storedIndex : 0);
+    if (stored && storedIndex < 0 && imagePreviewKey) {
+      try { window.localStorage.removeItem(imagePreviewKey); } catch { /* Best-effort view state. */ }
+    }
+  }, [imageCandidateKey, imageCandidatesLoaded, imagePreviewKey]);
   const replace = (replacement: FeedNode[]) => props.onEdit([{ kind: 'replaceBlock', segmentId: props.segmentId, blockId: props.slot.id, preimage: node, replacement }]);
+  const selectImageIndex = (index: number) => {
+    const next = Math.max(0, Math.min(imageCandidates.length - 1, index)); const candidate = imageCandidates[next];
+    if (!candidate) return;
+    queuedIteration.current = null; clearEstimate(); setImageIndex(next); writeImagePreviewCandidate(imagePreviewKey, candidate.id);
+  };
   const update = (patch: Partial<FeedPlaceholderAttrs>) => { queuedIteration.current = null; clearEstimate(); replace([{ type: 'generationPlaceholder', attrs: { ...props.slot, ...patch, briefRevision: props.slot.briefRevision + 1 } }]); };
   async function request(suffix: string, body: unknown) {
     const res = await authFetch(`${publicRuntimeConfig().apiUrl ?? 'http://localhost:4000'}${feedCollaborationPath(c.assistantId, c.sessionId)}${suffix}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
@@ -81,7 +111,7 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
     void estimateGeneration();
   }, [props.slot, c.revision, generationBlocked, active]);
   function regenerateImage() {
-    const instruction = iteration.trim(); const image = imageCandidates[imageIndex] && candidateImage(imageCandidates[imageIndex]!);
+    const instruction = iteration.trim(); const image = selectedImageCandidate && candidateImage(selectedImageCandidate);
     if (!instruction || !image || generationBlocked || active) return;
     const slot = { ...props.slot, brief: [props.slot.brief.trim(), `${t.revisionPrefix}: ${instruction}`].filter(Boolean).join('\n\n'),
       baseImageFileId: image.attrs.fileId, briefRevision: props.slot.briefRevision + 1 };
@@ -143,7 +173,14 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
     </section> : null;
   return <Dialog.Root open={open} onOpenChange={setOpen}>
     <section data-feed-slot={props.slot.id} className="my-3 flex min-w-0 flex-wrap items-center gap-x-2 rounded-lg bg-muted/40 px-3 py-1" onPointerDown={props.onSelect} onFocusCapture={props.onSelect}>
-      {pendingImage ? <button type="button" aria-label={t.openDetails} onClick={() => setOpen(true)} className="order-first min-h-11 w-full pt-2" data-feed-pending-image><FeedGenerationImage workspaceId={c.workspaceId} fileId={pendingImage.attrs.fileId} alt={pendingImage.attrs.alt ?? ''} className="max-h-48 w-full rounded-lg object-contain" /></button> : null}
+      {pendingImage ? <div className="relative order-first min-h-11 w-full pt-2">
+        <button type="button" aria-label={t.openDetails} onClick={() => setOpen(true)} className="w-full" data-feed-pending-image><FeedGenerationImage workspaceId={c.workspaceId} fileId={pendingImage.attrs.fileId} alt={pendingImage.attrs.alt ?? ''} className="max-h-48 w-full rounded-lg object-contain" /></button>
+        {imageCandidates.length > 1 ? <>
+          <Button variant="secondary" size="icon" className="absolute left-2 top-1/2 size-11 -translate-y-1/2 rounded-full shadow-sm" aria-label={t.previousImage} disabled={selectedImageIndex === 0} onClick={() => selectImageIndex(selectedImageIndex - 1)}><ChevronLeft className="size-5" aria-hidden /></Button>
+          <Button variant="secondary" size="icon" className="absolute right-2 top-1/2 size-11 -translate-y-1/2 rounded-full shadow-sm" aria-label={t.nextImage} disabled={selectedImageIndex === imageCandidates.length - 1} onClick={() => selectImageIndex(selectedImageIndex + 1)}><ChevronRight className="size-5" aria-hidden /></Button>
+          <span className="pointer-events-none absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-background/85 px-2 py-1 text-xs text-muted-foreground shadow-sm" aria-live="polite">{format(t.imageOptionPosition, { current: selectedImageIndex + 1, total: imageCandidates.length })}</span>
+        </> : null}
+      </div> : null}
       <span className="flex shrink-0 items-center gap-2 text-sm font-medium text-muted-foreground"><Icon className="size-4" aria-hidden />{label}</span>
       <input aria-label={t.brief} title={props.slot.brief || t.briefHint} placeholder={t.briefHint} value={props.slot.brief} disabled={c.readOnly}
         className="order-last min-h-11 w-full min-w-0 border-0 bg-transparent text-base shadow-none outline-none focus-visible:shadow-none md:order-none md:w-auto md:flex-1"
@@ -156,7 +193,7 @@ export function GenerationPlaceholder(props: { slot: FeedPlaceholderAttrs; segme
       <Dialog.Backdrop data-feed-generation-backdrop onClick={() => setOpen(false)} className="fixed inset-0 z-[100] bg-background/80 backdrop-blur-sm transition-opacity duration-150 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0" />
       <Dialog.Popup className="fixed left-1/2 top-1/2 z-[101] max-h-[85dvh] w-[calc(100vw-2rem)] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-2xl border bg-background p-5 shadow-xl">
         <div className="mb-2 flex items-center justify-between gap-3"><Dialog.Title className="text-base font-semibold">{label}</Dialog.Title><Dialog.Close aria-label={t.closeDetails} render={<Button variant="ghost" size="icon" className="size-11 shrink-0" />}><X className="size-4" aria-hidden /></Dialog.Close></div>
-        {imageCandidates.length ? <FeedImageCandidateCarousel controls={c} runs={runs} candidates={imageCandidates} slot={props.slot} index={imageIndex} onIndexChange={index => { queuedIteration.current = null; clearEstimate(); setImageIndex(index); }} iteration={iteration} onIterationChange={value => { queuedIteration.current = null; clearEstimate(); setIteration(value); }} onPrepareIteration={regenerateImage} busy={generationBlocked || active} /> : null}
+        {imageCandidates.length ? <FeedImageCandidateCarousel controls={c} runs={runs} candidates={imageCandidates} slot={props.slot} index={selectedImageIndex} onIndexChange={selectImageIndex} iteration={iteration} onIterationChange={value => { queuedIteration.current = null; clearEstimate(); setIteration(value); }} onPrepareIteration={regenerateImage} busy={generationBlocked || active} /> : null}
         {imageCandidates.length ? <>{confirmation}{busy ? <p role="status" className="text-sm">{t.loading}</p> : null}{error ? <p role="alert" className="text-sm">{error}</p> : null}</> : null}
         <details key={imageCandidates.length ? "refinement" : "initial"} open={imageCandidates.length ? undefined : true}>
         {imageCandidates.length ? <summary className="min-h-11 cursor-pointer py-3 text-sm">{t.imageDetails}</summary> : null}

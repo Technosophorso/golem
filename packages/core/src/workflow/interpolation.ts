@@ -79,3 +79,22 @@ function resolvePath(scope: InterpolationScope, path: string): unknown {
   }
   return cursor
 }
+
+/** Response bindings retain the type of an exact placeholder (notably action versions).
+ * Mixed text keeps normal interpolation semantics. Authority fields never use this. */
+export function interpolateBoundValue<T>(value: T, scope: InterpolationScope): T {
+  if (typeof value === 'string') {
+    const exact = /^\{\{\s*([a-zA-Z][a-zA-Z0-9_.]*)\s*\}\}$/.exec(value)
+    if (exact) {
+      const resolved = resolvePath(scope, exact[1]!)
+      if (resolved === undefined || resolved === null) throw new Error('Question binding placeholder is missing')
+      return structuredClone(resolved) as T
+    }
+    return interpolateString(value, scope) as T
+  }
+  if (Array.isArray(value)) return value.map((v) => interpolateBoundValue(v, scope)) as T
+  if (value && typeof value === 'object') return Object.fromEntries(
+    Object.entries(value).map(([k, v]) => [k, interpolateBoundValue(v, scope)]),
+  ) as T
+  return value
+}

@@ -122,3 +122,14 @@ describe('[COMP:a2a/transport-in-process] send — result shaping', () => {
     expect(res.task.history).toBeUndefined()
   })
 })
+
+
+describe('[COMP:a2a/transport-in-process] question notifications', () => {
+  it('preserves structured questions without pretending to suspend the task', async () => {
+    const question = { question: 'Which?', options: ['One', 'Two'] }
+    const transport = createInProcessTransport(deps({ runConsult: async () => ({ text: 'Which?', question }) }))
+    const response = await transport.send(request())
+    expect(response.question).toEqual(question)
+    expect(response.task.status.state).toBe('completed')
+  })
+})

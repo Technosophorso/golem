@@ -1713,6 +1713,50 @@ describe('[COMP:workflow/executor] advanceWorkflowRun', () => {
     expect(lastConsultRequest!.chain.budget).toBeGreaterThan(0)
   })
 
+  it.each([undefined, ['Yes', 'No']])('completes a question notification, preserving options %j', async (options) => {
+    const stores = makeFakeStores()
+    const question = { question: 'Proceed?', options }
+    const normal = makeConsultTransport({ responseText: '' })
+    const deliverToChannel = vi.fn(async () => ({ status: 'delivered' as const, channelType: 'telegram' as const, channelId: '42' }))
+    const deps = makeDeps({ ...stores, consultTransport: {
+      async send(req) { return { ...await normal.send(req), question } },
+    }, deliverToChannel })
+    const { run } = await seedWorkflowAndRun(deps, {
+      startStepId: 'notify', steps: [{ id: 'notify', type: 'assistant_call',
+        target: { assistantId: 'primary' }, prompt: 'Ask a question',
+        deliver: { channelType: 'telegram', channelId: '42' },
+      }],
+    })
+    await advanceWorkflowRun(deps, run.id)
+    expect(deliverToChannel).toHaveBeenCalledWith(expect.objectContaining({ question,
+      text: options ? 'Proceed?\n1. Yes\n2. No' : 'Proceed?' }))
+    expect(stores.stepRuns[0].output).toMatchObject({ kind: 'question', ...question })
+    expect(stores.runs.get(run.id)?.status).toBe('completed')
+  })
+
+  it('freezes the authored response tool while preserving action/version types and full question context', async () => {
+    const stores = makeFakeStores()
+    const deliverToChannel = vi.fn(async () => ({ status: 'delivered' as const, channelType: 'telegram' as const, channelId: '42' }))
+    const deps = makeDeps({ ...stores, deliverToChannel })
+    const { run } = await seedWorkflowAndRun(deps, {
+      startStepId: 'notify', steps: [{ id: 'notify', type: 'assistant_call',
+        target: { assistantId: 'primary' }, prompt: 'Notify',
+        question: { question: '{{input.question}}', options: ['dev', 'prod'], allowCustom: true,
+          actionId: '{{input.action_id}}', version: '{{input.version}}', context: 'authored context' },
+        questionResponse: { toolName: 'answer_action', arguments: {
+          action_id: '{{input.action_id}}', version: '{{input.version}}',
+        }, answerField: 'answer' },
+        deliver: { channelType: 'telegram', channelId: '42' },
+      }],
+    }, 'event', { question: 'Which environment?', action_id: 'action-9', version: 3, toolName: 'submit_change' })
+    await advanceWorkflowRun(deps, run.id)
+    expect(deliverToChannel).toHaveBeenCalledWith(expect.objectContaining({
+      question: { question: 'Which environment?', options: ['dev', 'prod'], allowCustom: true,
+        actionId: 'action-9', version: 3, context: 'authored context' },
+      questionResponse: { toolName: 'answer_action', arguments: { action_id: 'action-9', version: 3 }, answerField: 'answer' },
+    }))
+  })
+
   it('interpolates input + vars into prompt and arguments', async () => {
     const stores = makeFakeStores()
     let toolInput: unknown = null

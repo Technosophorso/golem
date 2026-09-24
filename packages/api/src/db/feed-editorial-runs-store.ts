@@ -22,12 +22,18 @@ export async function readFeedRun(client: pg.PoolClient, sessionId: string, runI
   if (!row) throw new FeedCollaborationError(404, 'run_not_found')
   return row
 }
+async function lockFeedRun(client: pg.PoolClient, sessionId: string, runId: string): Promise<FeedEditorialRun> {
+  const row = (await client.query<FeedEditorialRun>(`SELECT ${COLUMNS} FROM feed_editorial_runs WHERE session_id=$1 AND id=$2 FOR UPDATE`, [sessionId, runId])).rows[0]
+  if (!row) throw new FeedCollaborationError(404, 'run_not_found')
+  return row
+}
 export async function getFeedRun(actor: FeedActor, runId: string) { return withFeedTransaction(actor, client => readFeedRun(client, actor.sessionId, runId), false) }
 export async function listFeedRuns(actor: FeedActor) {
   return withFeedTransaction(actor, async client => (await client.query<FeedEditorialRun>(`SELECT ${COLUMNS} FROM feed_editorial_runs WHERE session_id=$1 ORDER BY created_at DESC LIMIT 30`, [actor.sessionId])).rows, false)
 }
 export function summarizeFeedRun(run: FeedEditorialRun): FeedEditorialRunSummary {
-  return { id: run.id, kind: run.kind, revision: run.revision, status: run.status, attempts: run.attempts, error: run.error, createdAt: run.createdAt.toISOString(), coverage: run.coverage, summaryThreadId: run.summaryThreadId, model: run.model, ...(['text_generation', 'image_generation'].includes(run.kind) ? { generation: { slotId: (run.context as { slot: { id: string } }).slot.id, segmentId: (run.context as { segmentId: string }).segmentId, briefRevision: (run.context as { slot: { briefRevision: number } }).slot.briefRevision, estimate: (run.context as { estimate: import('@use-brian/shared').FeedGenerationEstimate }).estimate } } : {}), ...(run.kind === 'review' ? { month: (run.context as FeedReviewContext).month, goalTitle: (run.context as FeedReviewContext).dimensions.post_goal.sources[0]?.title } : {}) }
+  const status = run.kind === 'image_generation' && run.status === 'unknown_outcome' ? 'failed' : run.status
+  return { id: run.id, kind: run.kind, revision: run.revision, status, attempts: run.attempts, error: run.error, createdAt: run.createdAt.toISOString(), coverage: run.coverage, summaryThreadId: run.summaryThreadId, model: run.model, ...(['text_generation', 'image_generation'].includes(run.kind) ? { generation: { slotId: (run.context as { slot: { id: string } }).slot.id, segmentId: (run.context as { segmentId: string }).segmentId, briefRevision: (run.context as { slot: { briefRevision: number } }).slot.briefRevision, estimate: (run.context as { estimate: import('@use-brian/shared').FeedGenerationEstimate }).estimate } } : {}), ...(run.kind === 'review' ? { month: (run.context as FeedReviewContext).month, goalTitle: (run.context as FeedReviewContext).dimensions.post_goal.sources[0]?.title } : {}) }
 }
 export async function enqueueFeedRun(actor: FeedActor, input: {
   requestId: string; revision: number; kind: FeedEditorialKind; request: unknown; context: unknown; model: string;
@@ -81,10 +87,28 @@ export async function finishFeedRun(run: FeedEditorialRun, coverage: Partial<Rec
   const changed = await client.query(`UPDATE feed_editorial_runs SET status='succeeded',coverage=$3,summary_thread_id=$4,lease_id=NULL,lease_until=NULL,last_error=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running' AND dispatched_part IS NULL`, [run.id, run.leaseId, JSON.stringify(coverage), summaryThreadId])
   if (changed.rowCount !== 1) throw new FeedCollaborationError(409, 'run_no_longer_active')
 }
-export async function failFeedRun(run: FeedEditorialRun, error: string) {
+function supersedeFeedDispatch(run: FeedEditorialRun, error: string) {
+  const result = structuredClone(run.result); const part = run.dispatchedPart
+  if (!part) return { result, part, dispatchId: null }
+  const dispatches = result.dispatches && typeof result.dispatches === 'object' && !Array.isArray(result.dispatches) ? result.dispatches as Record<string, unknown> : {}
+  const dispatchId = typeof dispatches[part] === 'string' ? dispatches[part] as string : null
+  const discarded = Array.isArray(result.discardedDispatches) ? result.discardedDispatches : []
+  discarded.push({ part, dispatchId, attempt: run.attempts, error })
+  delete dispatches[part]
+  result.dispatches = dispatches; result.discardedDispatches = discarded
+  return { result, part, dispatchId }
+}
+export async function failFeedRun(run: FeedEditorialRun, error: string, options?: { providerRequest?: 'not_dispatched' }) {
+  const boundedError = error.slice(0, 200)
+  if (options?.providerRequest === 'not_dispatched') {
+    const { result, part, dispatchId } = supersedeFeedDispatch(run, boundedError)
+    const changed = await query(`UPDATE feed_editorial_runs SET status=CASE WHEN attempts<$5 THEN 'pending' ELSE 'failed' END,last_error=$3,lease_id=NULL,lease_until=NULL,dispatched_part=NULL,result=$4,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running' AND (($6::text IS NULL AND dispatched_part IS NULL) OR (dispatched_part=$6 AND result->'dispatches'->>$6=$7))`, [run.id, run.leaseId, boundedError, JSON.stringify(result), FEED_EDITORIAL_LIMITS.attempts, part, dispatchId])
+    if (changed.rowCount === 1) { run.result = result; run.dispatchedPart = null }
+    return
+  }
   // Recovery only repeats work whose provider outcome is known. A saved part
   // can still be applied after a restart; an unanswered dispatch cannot resend.
-  await query(`UPDATE feed_editorial_runs SET status=CASE WHEN dispatched_part IS NOT NULL THEN 'unknown_outcome' ELSE 'failed' END,last_error=$3,lease_id=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running'`, [run.id, run.leaseId, error.slice(0, 200)])
+  await query(`UPDATE feed_editorial_runs SET status=CASE WHEN dispatched_part IS NOT NULL THEN 'unknown_outcome' ELSE 'failed' END,last_error=$3,lease_id=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND lease_id=$2 AND status='running'`, [run.id, run.leaseId, boundedError])
 }
 export async function cancelFeedRun(actor: FeedActor, runId: string) {
   return withFeedTransaction(actor, async client => {
@@ -95,10 +119,19 @@ export async function cancelFeedRun(actor: FeedActor, runId: string) {
 }
 export async function retryFeedRun(actor: FeedActor, runId: string) {
   return withFeedTransaction(actor, async client => {
-    const run = await readFeedRun(client, actor.sessionId, runId)
+    const run = await lockFeedRun(client, actor.sessionId, runId)
     if (run.status === 'succeeded') return run
-    if (run.dispatchedPart || run.status === 'unknown_outcome') throw new FeedCollaborationError(409, 'fresh_explicit_attempt_required')
-    if (run.attempts >= FEED_EDITORIAL_LIMITS.attempts || !['failed', 'cancelled'].includes(run.status)) throw new FeedCollaborationError(409, 'run_not_retryable')
+    const incompleteImage = run.kind === 'image_generation' && run.status === 'unknown_outcome' && run.dispatchedPart === 'generation' && !run.result.parts.generation
+    if ((run.dispatchedPart || run.status === 'unknown_outcome') && !incompleteImage) throw new FeedCollaborationError(409, 'fresh_explicit_attempt_required')
+    if (run.attempts >= FEED_EDITORIAL_LIMITS.attempts || (!incompleteImage && !['failed', 'cancelled'].includes(run.status))) throw new FeedCollaborationError(409, 'run_not_retryable')
+    if (incompleteImage) {
+      // The author explicitly supersedes one image attempt. Keep its dispatch
+      // token for audit, then clear the active CAS fields so a late old receipt
+      // cannot attach to the new attempt.
+      const { result } = supersedeFeedDispatch(run, run.error ?? 'provider_outcome_unknown')
+      await client.query('UPDATE feed_editorial_runs SET result=$2,dispatched_part=NULL WHERE id=$1', [run.id, JSON.stringify(result)])
+      run.result = result; run.dispatchedPart = null
+    }
     if (run.kind === 'image_generation') {
       const generation = run.result.parts.generation as { imageReceipt?: { image?: unknown; error?: unknown } } | undefined
       if (generation?.imageReceipt && (generation.imageReceipt.error || !generation.imageReceipt.image)) {

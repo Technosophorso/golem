@@ -80,7 +80,7 @@ export type QueryEvent =
    */
   | { type: 'thinking_delta'; text: string }
   /** Successful terminal clarification, after misuse stripping and suspend handling. */
-  | { type: 'question'; question: string; options?: string[] }
+  | ({ type: 'question' } & import('../tools/base/ask-question.js').AssistantQuestion)
   | { type: 'tool_start'; id: string; name: string }
   | { type: 'tool_input'; id: string; name: string; input: Record<string, unknown> }
   /**

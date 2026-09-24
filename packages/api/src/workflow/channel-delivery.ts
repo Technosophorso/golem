@@ -25,7 +25,8 @@
  * [COMP:workflow/channel-delivery]
  */
 
-import type { DeliverToChannel, DeliveryOutcome } from '@use-brian/core'
+import { createChannelQuestionStore, workflowQuestionActions, type ChannelQuestionStore } from './channel-questions.js'
+import { formatAssistantQuestion, type DeliverToChannel, type DeliveryOutcome } from '@use-brian/core'
 import { sanitizeDeliveryText } from '@use-brian/shared'
 import {
   createSlackAdapter,
@@ -47,6 +48,7 @@ import { createFeishuApi } from '../feishu/client.js'
 import type { FeishuCredentials } from '../db/channel-integrations.js'
 
 export type WorkflowChannelDeliveryOptions = {
+  questionStore?: ChannelQuestionStore
   /** BYO Telegram + Slack credentials. */
   integrationStore?: ChannelIntegrationStore
   /** Shared official Telegram bot — fallback when an assistant has no BYO row. */
@@ -99,6 +101,8 @@ export function createWorkflowChannelDelivery(
     channelId,
     channelIntegrationId,
     text,
+    question,
+    questionResponse,
     threadRef,
     replyToTrigger,
   }): Promise<DeliveryOutcome> => {
@@ -107,7 +111,9 @@ export function createWorkflowChannelDelivery(
     // echo a "Message body:" planning preamble and a duplicated body (see
     // sanitizeDeliveryText). Idempotent: the core executor already sanitized
     // for the workflow path; this defends every DeliverToChannel caller.
-    const deliverable = sanitizeDeliveryText(text)
+    // Buttons are an optional adapter enhancement, never the only representation.
+    // Keep every option in the portable fallback, including on non-interactive channels.
+    const deliverable = question ? formatAssistantQuestion(question) : sanitizeDeliveryText(text)
     if (!deliverable) return { status: 'skipped', channelType, reason: 'empty_text' }
 
     // Web is not a delivery target — drop it (see the file header). The web UI
@@ -202,7 +208,7 @@ export function createWorkflowChannelDelivery(
     })
 
     if (channelType === 'telegram') {
-      const tokens: string[] = []
+      const tokens: Array<{ token: string; integrationId?: string }> = []
       if (options.integrationStore) {
         const integ = channelIntegrationId
           ? await options.integrationStore.getCredentialsForAssistantIntegrationSystem(
@@ -214,22 +220,32 @@ export function createWorkflowChannelDelivery(
             )
           : await options.integrationStore.getCredentialsForAssistantSystem(assistantId, 'telegram')
         const byoToken = integ && (integ.credentials as { bot_token?: string }).bot_token
-        if (byoToken) tokens.push(byoToken)
+        if (byoToken) tokens.push({ token: byoToken, integrationId: integ.id })
       }
-      if (!channelIntegrationId && options.defaultTelegramBotToken && !tokens.includes(options.defaultTelegramBotToken)) {
-        tokens.push(options.defaultTelegramBotToken)
+      if (!channelIntegrationId && options.defaultTelegramBotToken && (tokens.length === 0 || !question)) {
+        tokens.push({ token: options.defaultTelegramBotToken })
       }
       if (tokens.length === 0) return { status: 'skipped', channelType, reason: 'no_integration' }
       // `threadRef` (an earlier delivery's message id) posts this one as a
       // reply; the returned message id lets a later `deliver.thread` step
       // reply under THIS message. See workflow.md → deliver `thread`.
-      for (const [index, token] of tokens.entries()) {
+      for (const [index, { token, integrationId }] of tokens.entries()) {
         try {
-          const tgMessageId = await createTelegramAdapter({ token }).sendMessage(
+          if (questionResponse && !integrationId) return { status: 'skipped', channelType, reason: 'no_integration' }
+          const store = options.questionStore ?? createChannelQuestionStore()
+          const questionToken = question && integrationId ? await store.create({
+            integrationId, workspaceId, assistantId, userId, channelId, question, response: questionResponse,
+          }) : undefined
+          const tgMessageId = await createTelegramAdapter({ token, strictTopic: !!questionToken }).sendMessage(
             channelId,
-            { text: deliverable, format: 'markdown' },
+            { text: deliverable + (questionToken && questionResponse && question?.allowCustom !== false
+                ? '\nReply to this message to type another answer.' : '')
+                + (questionToken && !questionResponse ? '\nNo response action is configured. Replies will not run an action.' : '')
+                + (questionToken ? `\nQuestion reference: wq:${questionToken}` : ''), format: 'markdown',
+              actions: questionToken && question && questionResponse ? workflowQuestionActions(questionToken, question) : undefined },
             threadRef ? { threadTs: threadRef } : undefined,
           )
+          if (questionToken && tgMessageId) await store.attach(questionToken, tgMessageId)
           return { status: 'delivered', channelType, channelId, messageId: tgMessageId || undefined }
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)

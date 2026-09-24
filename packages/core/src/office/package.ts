@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto'
 import JSZip from 'jszip'
+import { DOMParser } from 'linkedom'
+type XmlElement = { parentElement?: XmlElement; localName: string; namespaceURI?: string; attributes: ArrayLike<{ name: string }>; getAttribute(name: string): string | null }
+type XmlDocument = { querySelectorAll(selector: string): ArrayLike<XmlElement> }
+import { SpreadsheetTableSchema, validateSpreadsheetTable, type SpreadsheetTable } from '@use-brian/office-model'
 import {
   assertOfficeArtifactSnapshot,
   type OfficeArtifactSnapshot,
@@ -31,7 +35,6 @@ const ACTIVE_PART_PATTERNS = [
 
 const UNSUPPORTED_SPREADSHEET_PARTS: Array<{ pattern: RegExp; capabilityId: string; message: string }> = [
   { pattern: /(^|\/)xl\/charts\//i, capabilityId: 'spreadsheetChart', message: 'Spreadsheet charts are not yet preserved; remove them before import' },
-  { pattern: /(^|\/)xl\/tables\//i, capabilityId: 'spreadsheetTable', message: 'Spreadsheet tables are not yet preserved; convert them to ordinary ranges before import' },
   { pattern: /(^|\/)xl\/(?:threadedComments|persons)\//i, capabilityId: 'spreadsheetNote', message: 'Threaded spreadsheet comments are not yet preserved; remove them before import' },
   { pattern: /(^|\/)xl\/comments[^/]*\.xml$/i, capabilityId: 'spreadsheetNote', message: 'Spreadsheet notes are not yet preserved; remove them before import' },
   { pattern: /(^|\/)xl\/(?:slicers|slicerCaches|ctrlProps)\//i, capabilityId: 'spreadsheetFilter', message: 'Spreadsheet slicers and controls are not yet preserved; remove them before import' },
@@ -96,9 +99,53 @@ function relationshipAttributes(tag: string): Record<string, string> {
   )
 }
 
+/** Fail closed: only an unfiltered, header-only, built-in-style simple table is admitted. */
+export function parseSimpleSpreadsheetTableXml(xml: string, id: string): SpreadsheetTable {
+  const doc = new DOMParser().parseFromString(xml, 'text/xml') as unknown as XmlDocument
+  const allowed: Record<string, string[]> = {
+    table: ['id', 'name', 'displayName', 'ref', 'headerRowCount', 'totalsRowCount', 'totalsRowShown', 'mc:Ignorable'],
+    autoFilter: ['ref'], filterColumn: ['colId', 'hiddenButton'], tableColumns: ['count'], tableColumn: ['id', 'name', 'totalsRowLabel', 'totalsRowFunction'],
+    tableStyleInfo: ['name', 'showFirstColumn', 'showLastColumn', 'showRowStripes', 'showColumnStripes'],
+  }
+  for (const node of Array.from(doc.querySelectorAll('*'))) {
+    const prefix = node.localName.includes(':') ? node.localName.split(':')[0] : ''
+    let ancestor: XmlElement | undefined = node
+    let namespace: string | null = null
+    while (ancestor && namespace === null) { namespace = ancestor.getAttribute(prefix ? `xmlns:${prefix}` : 'xmlns'); ancestor = ancestor.parentElement }
+    if (namespace !== 'http://schemas.openxmlformats.org/spreadsheetml/2006/main') throw new Error('Unsupported table namespace')
+    const name = node.localName.replace(/^.*:/, '')
+    if (!allowed[name]) throw new Error(`Unsupported table element ${name}`)
+    const expectedParent: Record<string, string> = { autoFilter: 'table', tableColumns: 'table', tableColumn: 'tableColumns', tableStyleInfo: 'table', filterColumn: 'autoFilter' }
+    if (expectedParent[name] && node.parentElement?.localName.replace(/^.*:/, '') !== expectedParent[name]) throw new Error('Invalid table XML hierarchy')
+    for (const attr of Array.from(node.attributes)) if (!(attr.name === 'xmlns' || attr.name.startsWith('xmlns:')) && !allowed[name].includes(attr.name)) throw new Error(`Unsupported table attribute ${attr.name}`)
+  }
+  const nodes = Array.from(doc.querySelectorAll('*'))
+  const named = (name: string) => nodes.filter(n => n.localName.replace(/^.*:/, '') === name)
+  const root = named('table')[0], style = named('tableStyleInfo')[0]
+  if (!root || !style || named('table').length !== 1 || named('tableStyleInfo').length !== 1 || named('autoFilter').length > 1 || named('tableColumns').length !== 1) throw new Error('Invalid simple table')
+  if ((root.getAttribute('headerRowCount') ?? '1') !== '1' || (root.getAttribute('totalsRowCount') ?? '0') !== '0') throw new Error('Table totals or missing headers unsupported')
+  if (!['0', '1', 'true', 'false'].includes(root.getAttribute('totalsRowShown') ?? '0')) throw new Error('Invalid totals metadata')
+  const filters = named('filterColumn')
+  if (new Set(filters.map(f => f.getAttribute('colId'))).size !== filters.length || filters.some(f => !/^(0|[1-9][0-9]*)$/.test(f.getAttribute('colId') ?? '') || Number(f.getAttribute('colId')) >= named('tableColumn').length || !['0','1','true','false'].includes(f.getAttribute('hiddenButton') ?? '0'))) throw new Error('Invalid table filter column')
+  if (!/^[1-9][0-9]*$/.test(root.getAttribute('id') ?? '')) throw new Error('Invalid native table identity')
+  const ref = root.getAttribute('ref')!
+  if (named('autoFilter')[0] && named('autoFilter')[0].getAttribute('ref') !== ref) throw new Error('Unsafe table filter reference')
+  const boolean = (name: string) => { const v = style.getAttribute(name) ?? '0'; if (!['0', '1', 'true', 'false'].includes(v)) throw new Error('Invalid table style flag'); return v === '1' || v === 'true' }
+  if (root.getAttribute('name') !== root.getAttribute('displayName')) throw new Error('Distinct table display names unsupported')
+  const table = SpreadsheetTableSchema.parse({ id, name: root.getAttribute('name'), ref, totalsRowShown: ['1', 'true'].includes(root.getAttribute('totalsRowShown') ?? '0'), autoFilter: named('autoFilter').length === 1,
+    columns: named('tableColumn').map((c, i) => ({ id: Number(c.getAttribute('id')), name: c.getAttribute('name'), totalsRowLabel: c.getAttribute('totalsRowLabel') ?? undefined, totalsRowFunction: c.getAttribute('totalsRowFunction') ?? undefined, filterHidden: filters.some(f => Number(f.getAttribute('colId')) === i) ? ['1', 'true'].includes(filters.find(f => Number(f.getAttribute('colId')) === i)!.getAttribute('hiddenButton') ?? '0') : undefined })),
+    style: { name: style.getAttribute('name'), showFirstColumn: boolean('showFirstColumn'), showLastColumn: boolean('showLastColumn'), showRowStripes: boolean('showRowStripes'), showColumnStripes: boolean('showColumnStripes') } })
+  if (Number(named('tableColumns')[0]?.getAttribute('count')) !== table.columns.length) throw new Error('Invalid table column count')
+  validateSpreadsheetTable(table)
+  return table
+}
+
 function unsupportedSpreadsheetXml(path: string, xml: string): Array<{ capabilityId: string; message: string }> {
   const rejected: Array<{ capabilityId: string; message: string }> = []
   const add = (capabilityId: string, message: string) => rejected.push({ capabilityId, message })
+  if (/^xl\/tables\/.*\.xml$/i.test(path)) {
+    try { parseSimpleSpreadsheetTableXml(xml, '00000000-0000-4000-8000-000000000001') } catch (cause) { add('spreadsheetTable', String(cause)) }
+  }
   if (/^xl\/workbook\.xml$/i.test(path)) {
     if (/<(?:\w+:)?workbookProtection\b/i.test(xml)) add('spreadsheetProtection', 'Workbook protection is not yet preserved; remove it before import')
     for (const match of xml.matchAll(/<(?:\w+:)?definedName\b([^>]*)>/gi)) {

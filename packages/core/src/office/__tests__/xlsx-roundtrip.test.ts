@@ -129,3 +129,60 @@ describe('[COMP:office/spreadsheet-pdf] Spreadsheet PDF preflight', () => {
     expect(result.receipt.issues).toContainEqual(expect.objectContaining({ severity: 'error', code: 'invoice_required_field', address: 'G6' }))
   })
 })
+
+describe('[COMP:office/spreadsheet-tables] [COMP:office/xlsx-engine] simple Excel tables', () => {
+  it('imports actual table XML and exports table/filter expansion without a canonical shortcut', async () => {
+    const workbook = new ExcelJS.Workbook()
+    const sheet = workbook.addWorksheet('Records')
+    sheet.views = [{ state: 'normal' }]
+    sheet.addTable({ name: 'Records', ref: 'A1', headerRow: true, totalsRow: false, style: { theme: 'TableStyleMedium2', showRowStripes: true }, columns: [{ name: 'Amount' }, { name: 'Total' }], rows: [[2, { formula: 'A2*2', result: 4 }]] })
+    const context = { artifactId: id(301), workspaceId: id(2), templateVersionId: null, locale: 'en-US', defaultLanguage: 'en-US', title: 'Table' }
+    // Native part names are relationship targets, not worksheet numeric IDs.
+    const input = await JSZip.loadAsync(await workbook.xlsx.writeBuffer())
+    input.file('xl/tables/table1.xml', (await input.file('xl/tables/table1.xml')!.async('string')).replace('name="TableStyleMedium2"', 'name=""'))
+    input.file('xl/worksheets/sheet7.xml', await input.file('xl/worksheets/sheet1.xml')!.async('string'))
+    input.file('xl/worksheets/_rels/sheet7.xml.rels', await input.file('xl/worksheets/_rels/sheet1.xml.rels')!.async('string'))
+    input.remove('xl/worksheets/sheet1.xml'); input.remove('xl/worksheets/_rels/sheet1.xml.rels')
+    for (const path of ['xl/_rels/workbook.xml.rels', '[Content_Types].xml']) input.file(path, (await input.file(path)!.async('string')).replaceAll('sheet1.xml', 'sheet7.xml'))
+    const imported = await importOfficeSpreadsheet(await input.generateAsync({ type: 'uint8array' }), context)
+    if (!imported.ok || imported.snapshot?.family !== 'spreadsheet') throw Error(JSON.stringify(imported.diagnostics))
+    expect(imported.snapshot.worksheets[0].tables![0]).toMatchObject({ name: 'Records', ref: 'A1:B2', autoFilter: true })
+    const { applyOfficeCommand } = await import('@use-brian/office-model')
+    let snapshot = imported.snapshot
+    for (const n of [401, 501]) {
+      const next = applyOfficeCommand(snapshot, { commandId: id(n), artifactId: snapshot.artifactId, baseVersion: 1, actor: { type: 'user', id: id(2) }, origin: 'manual', kind: 'appendSpreadsheetRecords', sheetId: snapshot.worksheets[0].id, tableId: snapshot.worksheets[0].tables![0].id, records: [{ '1': { valueType: 'number', value: 3 } }] })
+      if (next.family !== 'spreadsheet') throw Error()
+      snapshot = next
+    }
+    const exported = await exportOfficeSpreadsheet(snapshot)
+    const zip = await JSZip.loadAsync(exported.bytes)
+    const xml = await zip.file('xl/tables/table1.xml')!.async('string')
+    expect(xml).toContain('ref="A1:B4"')
+    expect(xml).toContain('<autoFilter ref="A1:B4">')
+    zip.remove('customXml/brian-office.json')
+    const reopened = await importOfficeSpreadsheet(await zip.generateAsync({ type: 'uint8array' }), context)
+    if (!reopened.ok || reopened.snapshot?.family !== 'spreadsheet') throw Error(JSON.stringify(reopened.diagnostics))
+    expect(reopened.snapshot.worksheets[0].tables![0].ref).toBe('A1:B4')
+    expect(reopened.snapshot.worksheets[0].cells.find(c => c.address === 'B4')).toMatchObject({ formula: 'A4*2', calculatedValue: 6 })
+    for (const unsupported of [xml.replace('totalsRowShown="1"', 'totalsRowCount="1"'), xml.replace('<tableStyleInfo', '<sortState ref="A1:B4"/><tableStyleInfo'), xml.replace('name="Amount"', 'name="Amount" totalsRowFunction="sum"')]) {
+      zip.file('xl/tables/table1.xml', unsupported)
+      const bad = await importOfficeSpreadsheet(await zip.generateAsync({ type: 'uint8array' }), context)
+      expect(bad.ok).toBe(false)
+      expect(bad.diagnostics.some(d => d.capabilityId === 'spreadsheetTable')).toBe(true)
+    }
+  })
+})
+
+it('rejects unsupported table attributes, foreign namespaces, invalid styles and reserved names', async () => {
+  const { parseSimpleSpreadsheetTableXml } = await import('../package.js')
+  const xml = '<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="1" name="Records" displayName="Records" ref="A1:B2"><tableColumns count="2"><tableColumn id="1" name="Amount"/><tableColumn id="2" name="Total"/></tableColumns><tableStyleInfo name=""/></table>'
+  expect(parseSimpleSpreadsheetTableXml(xml, id(900)).name).toBe('Records')
+  for (const bad of [
+    xml.replace('id="1" name="Records"', 'id="1" name="Records" insertRow="1"'),
+    xml.replace('name="Amount"', 'name="Amount" dataDxfId="0"'),
+    xml.replace('<tableColumns', '<tableColumns xmlns="urn:foreign"'),
+    xml.replace('<tableStyleInfo name=""', '<tableStyleInfo name="TableStyleMedium2"'),
+    xml.replaceAll('Records', 'A1'),
+    xml.replace('<tableColumns', '<tableColumns xmlnsBogus="ignored"'),
+  ]) expect(() => parseSimpleSpreadsheetTableXml(bad, id(900))).toThrow()
+})

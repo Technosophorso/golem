@@ -63,6 +63,20 @@ describe('[COMP:providers/google-auth] Vertex token sources', () => {
     expect(await source()).toBe('t2')
   })
 
+  it('retries transient token-mint connectivity before any provider dispatch', async () => {
+    vi.useFakeTimers()
+    try {
+      const failure = new TypeError('fetch failed', { cause: Object.assign(new Error('socket reset'), { code: 'ECONNRESET' }) })
+      const inner = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue({ token: 'recovered', expiresInMs: 3600_000 })
+      const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const pending = cachedTokenSource(inner)()
+      await vi.runAllTimersAsync()
+      await expect(pending).resolves.toBe('recovered')
+      expect(inner).toHaveBeenCalledTimes(2)
+      expect(warning).toHaveBeenCalledWith('[google-auth] transient token mint failure; retrying before provider dispatch', expect.objectContaining({ attempt: 1, maxAttempts: 3, causeCodes: ['ECONNRESET'] }))
+    } finally { vi.useRealTimers() }
+  })
+
   it('surfaces an actionable error when the metadata server is absent', async () => {
     const fetchMock = vi.fn(async () => new Response('no creds', { status: 404 }))
     await expect(metadataTokenSource(fetchMock as unknown as typeof fetch)()).rejects.toThrow(/VERTEX_SERVICE_ACCOUNT_JSON/)

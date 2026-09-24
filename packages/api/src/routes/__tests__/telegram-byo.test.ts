@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import request from 'supertest'
 import { createTestApp } from './helpers.js'
 import { TelegramApiError } from '@use-brian/channels'
@@ -22,6 +22,11 @@ import { CUSTOM_MODEL_IMAGE_REJECTION } from '../_channel-error-text.js'
  *     topic-qualified channel id, which is what makes the Telegram API call
  *     include `message_thread_id` on the outbound reply.
  */
+
+vi.mock('../../workflow/channel-questions.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../workflow/channel-questions.js')>(),
+  createChannelQuestionStore: () => ({ find: async () => [], isQuestionMessage: async () => false }),
+}))
 
 // ── Mocks ───────────────────────────────────────────────────────
 
@@ -143,6 +148,15 @@ const pipelineCalls: Array<{
   userContentBlocks?: Array<{ type: string; mimeType?: string }>
 }> = []
 let pipelineError: Error | undefined
+let deliverChannelResponse: typeof import('../channel-pipeline.js')['deliverChannelResponse']
+
+beforeAll(async () => {
+  // Load before any webhook starts: importing inside the fire-and-forget
+  // handler can outlive a test and deliver into the next test's shared state.
+  const pipeline = await vi.importActual<typeof import('../channel-pipeline.js')>('../channel-pipeline.js')
+  deliverChannelResponse = pipeline.deliverChannelResponse
+})
+
 vi.mock('../channel-pipeline.js', () => ({
   processChannelMessage: vi.fn(async (params: {
     channelId: string
@@ -171,7 +185,7 @@ vi.mock('../channel-pipeline.js', () => ({
     if (pipelineError) {
       await params.hooks.sendError?.(pipelineError)
     } else {
-      await params.hooks.sendResponse(pipelineQuestion?.question ?? 'ok', pipelineDocuments, pipelineQuestion)
+      await deliverChannelResponse(params.hooks, 'ok', pipelineDocuments, pipelineQuestion)
     }
   }),
 }))
@@ -2432,6 +2446,7 @@ describe('[COMP:api/telegram-byo-route] question buttons', () => {
     await settle()
     const actions = adapterSendCalls.at(-1)?.actions
     expect(actions?.map((a) => a.label)).toEqual(['A', '/connect'])
+    expect(adapterSendCalls.at(-1)?.text).toBe('Which?\n1. A\n2. /connect')
     pipelineQuestion = undefined
     return actions!
   }
@@ -2517,4 +2532,62 @@ describe('[COMP:api/telegram-byo-route] question buttons', () => {
     expect(pipelineCalls).toHaveLength(1)
   })
 
+})
+
+const workflowReplyTools = new Map<string, import('@use-brian/core').Tool>()
+vi.mock('../../workflow/mcp-bridge.js', () => ({ buildWorkflowToolRegistry: vi.fn(async () => workflowReplyTools) }))
+vi.mock('../../context-scope/resolve-turn-scope.js', () => ({ resolveTurnScopeSystem: vi.fn(async () => ({
+  access: { clearance: 'internal' }, effectiveCompartments: [], effectiveProjectIds: [], writeCompartments: [], writeProjectIds: [],
+})) }))
+
+describe('[COMP:api/telegram-byo-route] durable workflow reply interception', () => {
+  it.each(['click', 'typed', 'ask'] as const)('routes %s without entering the chat pipeline or calling submit_change', async (kind) => {
+    const { findAssistantById } = await import('../../db/users.js')
+    const { buildTool } = await import('@use-brian/core')
+    const { z } = await import('zod')
+    const execute = vi.fn(async () => ({ data: 'private backend result' }))
+    const submit = vi.fn()
+    workflowReplyTools.clear()
+    workflowReplyTools.set('answer_action', buildTool({ name: 'answer_action', description: '',
+      inputSchema: z.object({ action_id: z.string(), version: z.number(), answer: z.string() }),
+      isConcurrencySafe: false, isReadOnly: false, requiresConfirmation: kind === 'ask', execute }))
+    workflowReplyTools.set('submit_change', buildTool({ name: 'submit_change', description: '', inputSchema: z.object({}), execute: submit }))
+    vi.mocked(findAssistantById).mockResolvedValueOnce({ id: 'assistant_1', name: 'Test', ownerUserId: 'owner_1',
+      workspaceId: 'ws_1', kind: 'standard', clearance: 'internal', compartments: null, defaultModelAlias: 'standard' } as never)
+    teamRoleResponse = 'member'
+    const binding = { token: 'a'.repeat(24), integrationId: 'int_1', workspaceId: 'ws_1', assistantId: 'assistant_1',
+      userId: 'owner_1', channelId: '-100:topic:7', messageId: '42', question: { question: 'Which?', options: ['dev', 'prod'], allowCustom: true,
+        actionId: 'external-action', version: 3, context: 'Authored context' },
+      response: { toolName: 'answer_action', arguments: { action_id: 'external-action', version: 3 }, answerField: 'answer' } }
+    const store = { create: vi.fn(), attach: vi.fn(), find: vi.fn(async () => [binding]),
+      consume: vi.fn(async () => true), isQuestionMessage: vi.fn(async () => true) }
+    const app = createTestApp('/webhook/telegram-byo', telegramByoRoutes({
+      provider: {} as never, systemPrompt: '', tools: new Map(), memoryStore: {} as never,
+      integrationStore: makeIntegrationStore() as never, questionStore: store,
+      linkedAccountStore: { findByProvider: vi.fn(async () => ({ userId: 'owner_1', assistantId: 'assistant_1' })) } as never,
+      channelUserStore: {} as never, connectorStore: {} as never, mcpSettingsStore: {} as never,
+      capabilityStore: {} as never, apiUrl: 'http://test',
+    }))
+    const chat = { id: -100, type: 'supergroup', is_forum: true }
+    const from = { id: 42, first_name: 'Casey', username: 'casey' }
+    await postUpdate(app, kind === 'click' ? {
+      update_id: 5001, callback_query: { id: 'workflow-click', from, data: `wq:${binding.token}:0`,
+        message: { message_id: 42, chat, message_thread_id: 7 } },
+    } : {
+      update_id: 5002, message: { message_id: 43, from, chat, message_thread_id: 7, text: 'test', date: 12345,
+        reply_to_message: { message_id: 42, from: { id: 1, is_bot: true, username: 'testbot' }, text: 'Which?' } },
+    })
+    await flushMicrotasks(); await flushMicrotasks()
+    expect(pipelineCalls).toHaveLength(0)
+    expect(submit).not.toHaveBeenCalled()
+    expect(store.find).toHaveBeenCalledWith(expect.objectContaining({ channelId: '-100:topic:7', userId: 'owner_1', workspaceId: 'ws_1' }), expect.any(Object))
+    if (kind === 'ask') {
+      expect(execute).not.toHaveBeenCalled()
+      expect(store.consume).not.toHaveBeenCalled()
+      expect(adapterSendCalls.at(-1)?.text).toContain('question remains open')
+    } else {
+      expect(execute).toHaveBeenCalledWith({ action_id: 'external-action', version: 3, answer: kind === 'click' ? 'dev' : 'test' }, expect.objectContaining({ channelId: '-100:topic:7' }))
+      expect(adapterSendCalls.at(-1)?.text).toBe('Your answer was sent.')
+    }
+  })
 })

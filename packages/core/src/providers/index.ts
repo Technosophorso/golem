@@ -22,7 +22,7 @@ export {
 export type { RoutingProviderOptions } from './routing.js'
 export { aiStudioTransport, credentialPoolAiStudioTransport, vertexTransport, AI_STUDIO_BASE_URL } from './google-transport.js'
 export type { GoogleTransport, VertexTransportOptions } from './google-transport.js'
-export { resolveVertexTokenSource, metadataTokenSource, serviceAccountTokenSource, cachedTokenSource } from './google-auth.js'
+export { resolveVertexTokenSource, metadataTokenSource, serviceAccountTokenSource, cachedTokenSource, GoogleRequestNotDispatchedError } from './google-auth.js'
 export type { TokenSource } from './google-auth.js'
 export { composeWrappers, defaultWrappers, wrapProvider, wrapIdleTimeout, wrapLog, wrapSanitizeToolNames, wrapRepairToolCallArgs, wrapTextLoopPrevention, wrapContextBudget } from './wrappers.js'
 export type { StreamWrapper } from './wrappers.js'

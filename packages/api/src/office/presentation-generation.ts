@@ -10,6 +10,7 @@ import {
   type LLMProvider,
   type Message,
   type OfficeClaimPlanEntry,
+  type OfficeGenerationFitPolicy,
   type OfficeEvidencePacket,
 } from '@use-brian/core'
 import {
@@ -67,6 +68,8 @@ type MaterializedPresentation = {
   snapshot: PresentationSnapshot
   fieldByIdentity: Map<string, OfficeTemplateField>
   readabilityExemptIds: string[]
+  eligibleTargetIds?: string[]
+  lockedTargetIds?: string[]
 }
 
 function responseText(response: { content: Array<{ type: string; text?: string }> }): string {
@@ -291,12 +294,26 @@ function materializePresentation(params: {
   const sourceSlides = new Map(params.template.snapshot.slides.map((slide) => [slide.id, slide]))
   const fieldByIdentity = new Map<string, OfficeTemplateField>()
   const readabilityExemptIds = new Set<string>()
+  const eligibleTargetIds: string[] = []
+  const lockedTargetIds: string[] = []
+  const lockedIdsByMaster = new Map<string, Set<string>>()
+  const sourceLocks = new Set([...params.template.lockedObjectIds, ...params.template.fields.filter(field => field.locked).flatMap(field => field.targetIds), ...params.template.snapshot.masters.flatMap(master => master.lockedObjectIds)])
 
   const slides = plan.slides.map((plannedSlide) => {
     const recipe = recipes.get(plannedSlide.recipeId)!
     const sourceSlide = sourceSlides.get(recipe.slideId)!
+    const firstLock = lockedTargetIds.length
     const identities = collectIdentityMap(sourceSlide)
     const slide = remapIdentities(sourceSlide, identities) as PresentationSnapshot['slides'][number]
+    for (const id of sourceLocks) if (identities.has(id)) lockedTargetIds.push(identities.get(id)!)
+    for (const object of sourceSlide.objects) {
+      if (object.locked || sourceLocks.has(sourceSlide.id) || sourceLocks.has(object.id)) {
+        for (const id of collectIds(object)) lockedTargetIds.push(identities.get(id)!)
+      }
+    }
+    const masterLocks = lockedIdsByMaster.get(sourceSlide.masterId) ?? new Set<string>()
+    for (const id of lockedTargetIds.slice(firstLock)) masterLocks.add(id)
+    lockedIdsByMaster.set(sourceSlide.masterId, masterLocks)
     for (const sourceId of collectReadabilityExemptIds(sourceSlide)) {
       const generatedId = identities.get(sourceId)
       if (generatedId) readabilityExemptIds.add(generatedId)
@@ -312,7 +329,12 @@ function materializePresentation(params: {
     }
     slide.objects = slide.objects.map((object) => {
       const replacement = replacements.get(object.id)
+      if (replacement && [...collectIds(object)].some(id => lockedTargetIds.includes(id))) throw new Error(`Presentation field ${replacement.field.label} is locked`)
       const next = replacement ? withObjectText(object, replacement.text) : object
+      if (replacement && textOfObject(object) !== textOfObject(next)) {
+        eligibleTargetIds.push(next.id)
+        for (const id of collectIds(next)) readabilityExemptIds.delete(id)
+      }
       if (replacement) for (const id of collectIds(next)) fieldByIdentity.set(id, replacement.field)
       return next
     })
@@ -331,8 +353,11 @@ function materializePresentation(params: {
     resources: params.template.resources,
     accessibility: { ...source.accessibility, title: plan.title },
     slides,
+    // Persist remapped locks, not just repair metadata: future slide-scoped
+    // revisions must honor inherited locks after source IDs have been replaced.
+    masters: source.masters.map(master => ({ ...master, lockedObjectIds: [...(lockedIdsByMaster.get(master.id) ?? [])] })),
   }) as PresentationSnapshot
-  return { snapshot, fieldByIdentity, readabilityExemptIds: [...readabilityExemptIds] }
+  return { snapshot, fieldByIdentity, readabilityExemptIds: [...readabilityExemptIds], eligibleTargetIds, lockedTargetIds }
 }
 
 export function materializeOfficeTemplateBundleForGeneration(input: unknown, identity: {
@@ -383,6 +408,8 @@ function withBrandVoice(systemPrompt: string, brandVoice?: string | null): strin
 }
 
 export async function generatePresentationFromTemplate(params: {
+  /** Production delegates the remaining bounded fit budget to the pipeline. */
+  onFitPolicy?: (policy: OfficeGenerationFitPolicy) => void
   /** Brand voice fragment (`buildBrandVoiceFragment`). Absent → no brand instruction. */
   brandVoice?: string | null
   provider: LLMProvider
@@ -432,6 +459,7 @@ export async function generatePresentationFromTemplate(params: {
       plan = validatePlan(template, rawPlan)
     } catch (cause) {
       if (cause instanceof PresentationFieldLengthError) {
+        if (params.onFitPolicy) throw new OfficeGenerationFailure('presentation_fit_failed', cause.message)
         rejectedPlan = cause.plan
         rejectionKind = 'fit'
         diagnostics = [{
@@ -453,6 +481,10 @@ export async function generatePresentationFromTemplate(params: {
       continue
     }
     const materialized = materializePresentation({ ...params, template }, plan)
+    if (params.onFitPolicy) {
+      params.onFitPolicy({ eligibleTargetIds: materialized.eligibleTargetIds ?? [], lockedTargetIds: materialized.lockedTargetIds, maxAttempts: MAX_FIT_ATTEMPTS - attempt + 1, budget: { readabilityExemptObjectIds: materialized.readabilityExemptIds } })
+      return materialized.snapshot
+    }
     diagnostics = fitDiagnostics(materialized)
     if (diagnostics.length === 0) return materialized.snapshot
     rejectedPlan = plan

@@ -254,18 +254,24 @@ type ChunkedUploadStart = {
     sizeBytes: number;
     url: string;
   }>;
+  /** Extra headers every part PUT must carry (Azure Blob: `x-ms-blob-type`). */
+  uploadHeaders?: Record<string, string>;
 };
 
 const waitForRetry = (ms: number) =>
   new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-async function putChunkWithRetry(url: string, bytes: Blob): Promise<void> {
+async function putChunkWithRetry(
+  url: string,
+  bytes: Blob,
+  extraHeaders: Record<string, string> = {},
+): Promise<void> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       const response = await fetch(url, {
         method: "PUT",
-        headers: { "Content-Type": "application/octet-stream" },
+        headers: { "Content-Type": "application/octet-stream", ...extraHeaders },
         body: bytes,
       });
       if (!response.ok) throw new Error(`Part upload failed (HTTP ${response.status})`);
@@ -312,7 +318,7 @@ async function storeFileChunked(
           cursor += 1;
           const slice = file.slice(part.offset, part.offset + part.sizeBytes);
           if (slice.size !== part.sizeBytes) throw new Error("Upload part size changed");
-          await putChunkWithRetry(part.url, slice);
+          await putChunkWithRetry(part.url, slice, start.uploadHeaders ?? {});
           uploadedBytes += part.sizeBytes;
           options.onProgress?.(file, uploadedBytes, file.size);
         }

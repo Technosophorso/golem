@@ -41,6 +41,80 @@ const METADATA_TOKEN_URL =
   'http://metadata.google.internal/computeMetadata/v1/instance/service-account/token'
 const OAUTH_TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
+const PRE_DISPATCH_RETRY_DELAYS_MS = [250, 1_000] as const
+const TRANSIENT_NETWORK_CODES = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EAI_AGAIN',
+  'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'UND_ERR_SOCKET',
+])
+const DEFINITELY_UNDISPATCHED_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'ENETUNREACH', 'EHOSTUNREACH',
+  'UND_ERR_CONNECT_TIMEOUT',
+])
+
+export class GoogleRequestNotDispatchedError extends Error {
+  readonly causeCodes: string[]
+  constructor(cause: unknown) {
+    super('google_request_not_dispatched', { cause })
+    this.name = 'GoogleRequestNotDispatchedError'
+    this.causeCodes = googleNetworkErrorCodes(cause)
+  }
+}
+
+function googleNetworkErrorCodes(error: unknown): string[] {
+  const pending: unknown[] = [error]; const seen = new Set<object>(); const codes: string[] = []
+  for (let inspected = 0; pending.length && inspected < 8; inspected++) {
+    const current = pending.shift()
+    if (!current || typeof current !== 'object' || seen.has(current)) continue
+    seen.add(current)
+    const detail = current as { code?: unknown; cause?: unknown; errors?: unknown }
+    if (typeof detail.code === 'string' && !codes.includes(detail.code)) codes.push(detail.code)
+    if (detail.cause) pending.push(detail.cause)
+    if (current instanceof AggregateError) pending.push(...current.errors.slice(0, 4))
+  }
+  return codes
+}
+
+const isTransientNetworkFailure = (error: unknown) => {
+  const codes = googleNetworkErrorCodes(error)
+  return codes.length > 0 && codes.every(code => TRANSIENT_NETWORK_CODES.has(code))
+}
+
+export function isDefinitelyUndispatchedGoogleRequest(error: unknown): boolean {
+  const codes = googleNetworkErrorCodes(error)
+  return codes.length > 0
+    && codes.every(code => code === 'ETIMEDOUT' || DEFINITELY_UNDISPATCHED_CODES.has(code))
+    && codes.some(code => DEFINITELY_UNDISPATCHED_CODES.has(code))
+}
+
+async function waitForPreDispatchRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw signal.reason ?? new DOMException('Aborted', 'AbortError')
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => { signal?.removeEventListener('abort', abort); resolve() }, delayMs)
+    const abort = () => { clearTimeout(timer); reject(signal?.reason ?? new DOMException('Aborted', 'AbortError')) }
+    signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+export async function retryGooglePreDispatch<T>(
+  operation: () => Promise<T>,
+  options: {
+    signal?: AbortSignal;
+    shouldRetry?: (error: unknown) => boolean;
+    onRetry?: (details: { attempt: number; maxAttempts: number; delayMs: number; causeCodes: string[] }) => void;
+  } = {},
+): Promise<T> {
+  const shouldRetry = options.shouldRetry ?? isTransientNetworkFailure
+  for (let attempt = 0; ; attempt++) {
+    try { return await operation() } catch (error) {
+      if (!shouldRetry(error)) throw error
+      const delayMs = PRE_DISPATCH_RETRY_DELAYS_MS[attempt]
+      if (delayMs === undefined) throw new GoogleRequestNotDispatchedError(error)
+      options.onRetry?.({ attempt: attempt + 1, maxAttempts: PRE_DISPATCH_RETRY_DELAYS_MS.length + 1, delayMs, causeCodes: googleNetworkErrorCodes(error) })
+      await waitForPreDispatchRetry(delayMs, options.signal)
+    }
+  }
+}
 
 /**
  * Wrap a token source with expiry-aware caching, collapsing concurrent
@@ -63,7 +137,9 @@ export function cachedTokenSource(
 
     inflight = (async () => {
       try {
-        const result = await inner()
+        const result = await retryGooglePreDispatch(inner, {
+          onRetry: details => console.warn('[google-auth] transient token mint failure; retrying before provider dispatch', details),
+        })
         token = result.token
         expiresAt = Date.now() + Math.max(0, result.expiresInMs - EXPIRY_SKEW_MS)
         return result.token
