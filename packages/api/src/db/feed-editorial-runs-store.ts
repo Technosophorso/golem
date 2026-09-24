@@ -22,12 +22,18 @@ export async function readFeedRun(client: pg.PoolClient, sessionId: string, runI
   if (!row) throw new FeedCollaborationError(404, 'run_not_found')
   return row
 }
+async function lockFeedRun(client: pg.PoolClient, sessionId: string, runId: string): Promise<FeedEditorialRun> {
+  const row = (await client.query<FeedEditorialRun>(`SELECT ${COLUMNS} FROM feed_editorial_runs WHERE session_id=$1 AND id=$2 FOR UPDATE`, [sessionId, runId])).rows[0]
+  if (!row) throw new FeedCollaborationError(404, 'run_not_found')
+  return row
+}
 export async function getFeedRun(actor: FeedActor, runId: string) { return withFeedTransaction(actor, client => readFeedRun(client, actor.sessionId, runId), false) }
 export async function listFeedRuns(actor: FeedActor) {
   return withFeedTransaction(actor, async client => (await client.query<FeedEditorialRun>(`SELECT ${COLUMNS} FROM feed_editorial_runs WHERE session_id=$1 ORDER BY created_at DESC LIMIT 30`, [actor.sessionId])).rows, false)
 }
 export function summarizeFeedRun(run: FeedEditorialRun): FeedEditorialRunSummary {
-  return { id: run.id, kind: run.kind, revision: run.revision, status: run.status, attempts: run.attempts, error: run.error, createdAt: run.createdAt.toISOString(), coverage: run.coverage, summaryThreadId: run.summaryThreadId, model: run.model, ...(['text_generation', 'image_generation'].includes(run.kind) ? { generation: { slotId: (run.context as { slot: { id: string } }).slot.id, segmentId: (run.context as { segmentId: string }).segmentId, briefRevision: (run.context as { slot: { briefRevision: number } }).slot.briefRevision, estimate: (run.context as { estimate: import('@use-brian/shared').FeedGenerationEstimate }).estimate } } : {}), ...(run.kind === 'review' ? { month: (run.context as FeedReviewContext).month, goalTitle: (run.context as FeedReviewContext).dimensions.post_goal.sources[0]?.title } : {}) }
+  const status = run.kind === 'image_generation' && run.status === 'unknown_outcome' ? 'failed' : run.status
+  return { id: run.id, kind: run.kind, revision: run.revision, status, attempts: run.attempts, error: run.error, createdAt: run.createdAt.toISOString(), coverage: run.coverage, summaryThreadId: run.summaryThreadId, model: run.model, ...(['text_generation', 'image_generation'].includes(run.kind) ? { generation: { slotId: (run.context as { slot: { id: string } }).slot.id, segmentId: (run.context as { segmentId: string }).segmentId, briefRevision: (run.context as { slot: { briefRevision: number } }).slot.briefRevision, estimate: (run.context as { estimate: import('@use-brian/shared').FeedGenerationEstimate }).estimate } } : {}), ...(run.kind === 'review' ? { month: (run.context as FeedReviewContext).month, goalTitle: (run.context as FeedReviewContext).dimensions.post_goal.sources[0]?.title } : {}) }
 }
 export async function enqueueFeedRun(actor: FeedActor, input: {
   requestId: string; revision: number; kind: FeedEditorialKind; request: unknown; context: unknown; model: string;
@@ -95,10 +101,24 @@ export async function cancelFeedRun(actor: FeedActor, runId: string) {
 }
 export async function retryFeedRun(actor: FeedActor, runId: string) {
   return withFeedTransaction(actor, async client => {
-    const run = await readFeedRun(client, actor.sessionId, runId)
+    const run = await lockFeedRun(client, actor.sessionId, runId)
     if (run.status === 'succeeded') return run
-    if (run.dispatchedPart || run.status === 'unknown_outcome') throw new FeedCollaborationError(409, 'fresh_explicit_attempt_required')
-    if (run.attempts >= FEED_EDITORIAL_LIMITS.attempts || !['failed', 'cancelled'].includes(run.status)) throw new FeedCollaborationError(409, 'run_not_retryable')
+    const incompleteImage = run.kind === 'image_generation' && run.status === 'unknown_outcome' && run.dispatchedPart === 'generation' && !run.result.parts.generation
+    if ((run.dispatchedPart || run.status === 'unknown_outcome') && !incompleteImage) throw new FeedCollaborationError(409, 'fresh_explicit_attempt_required')
+    if (run.attempts >= FEED_EDITORIAL_LIMITS.attempts || (!incompleteImage && !['failed', 'cancelled'].includes(run.status))) throw new FeedCollaborationError(409, 'run_not_retryable')
+    if (incompleteImage) {
+      // The author explicitly supersedes one image attempt. Keep its dispatch
+      // token for audit, then clear the active CAS fields so a late old receipt
+      // cannot attach to the new attempt.
+      const result = structuredClone(run.result)
+      const dispatches = result.dispatches && typeof result.dispatches === 'object' && !Array.isArray(result.dispatches) ? result.dispatches as Record<string, unknown> : {}
+      const discarded = Array.isArray(result.discardedDispatches) ? result.discardedDispatches : []
+      discarded.push({ part: 'generation', dispatchId: typeof dispatches.generation === 'string' ? dispatches.generation : null, attempt: run.attempts, error: run.error ?? 'provider_outcome_unknown' })
+      delete dispatches.generation
+      result.dispatches = dispatches; result.discardedDispatches = discarded
+      await client.query('UPDATE feed_editorial_runs SET result=$2,dispatched_part=NULL WHERE id=$1', [run.id, JSON.stringify(result)])
+      run.result = result; run.dispatchedPart = null
+    }
     if (run.kind === 'image_generation') {
       const generation = run.result.parts.generation as { imageReceipt?: { image?: unknown; error?: unknown } } | undefined
       if (generation?.imageReceipt && (generation.imageReceipt.error || !generation.imageReceipt.image)) {

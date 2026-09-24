@@ -43,7 +43,7 @@ function replace(content: StructuredFeedContent, block: number, text: string): F
 
 import { loadFeedReviewContext } from '../review-context.js'
 import { createFeedReviewHandler, requestFeedReview } from '../review.js'
-import { claimFeedRun, getFeedRun, retryFeedRun, failFeedRun, cancelFeedRun } from '../../db/feed-editorial-runs-store.js'
+import { claimFeedRun, getFeedRun, retryFeedRun, failFeedRun, cancelFeedRun, markFeedDispatch, saveFeedPart, summarizeFeedRun } from '../../db/feed-editorial-runs-store.js'
 import { createMemory } from '../../db/memories.js'
 import { FEED_REVIEW_DIMENSIONS } from '@use-brian/shared'
 import { readReviewedFeedCollaboration } from '../collaboration-service.js'
@@ -483,6 +483,22 @@ describe('[COMP:feed/draft-generation] real database generation lifecycle', () =
     await failFeedRun(failing!, 'provider_timeout')
     await expect(retryFeedRun(f.actor, next.id)).rejects.toMatchObject({ code: 'fresh_explicit_attempt_required' })
     expect(f.call).toHaveBeenCalledTimes(2)
+  })
+  it('scenario 8: presents an unanswered image dispatch as failed and lets explicit Retry supersede it', async () => {
+    const f = await generationFixture()
+    await f.command([{ kind: 'edit', edits: [{ kind: 'replaceBlock', segmentId: f.segmentId, blockId: f.slotId, preimage: { type: 'generationPlaceholder', attrs: f.slot }, replacement: [{ type: 'generationPlaceholder', attrs: { ...f.slot, kind: 'image', briefRevision: 1 } }] }] }])
+    const estimate = await f.service.estimate(f.actor, { ...f.request, mutationId: randomUUID(), expectedRevision: 4, count: 1, imageProvider: 'gemini' })
+    const queued = await f.service.dispatch(f.actor, { mutationId: randomUUID(), estimateId: estimate.id, confirmed: true })
+    const active = (await claimFeedRun(['image_generation']))!; await markFeedDispatch(active, 'generation', estimate)
+    await failFeedRun(active, 'generation_transport_failed')
+    const uncertain = await getFeedRun(f.actor, queued.id)
+    expect(uncertain).toMatchObject({ status: 'unknown_outcome', dispatchedPart: 'generation', attempts: 1 })
+    expect(summarizeFeedRun(uncertain)).toMatchObject({ status: 'failed', attempts: 1 })
+    const retried = await retryFeedRun(f.actor, queued.id)
+    expect(retried).toMatchObject({ status: 'pending', dispatchedPart: null, attempts: 1 })
+    expect(retried.result.discardedDispatches).toEqual([expect.objectContaining({ part: 'generation', attempt: 1, error: 'generation_transport_failed', dispatchId: expect.any(String) })])
+    expect((retried.result.dispatches as Record<string, unknown>).generation).toBeUndefined()
+    await expect(saveFeedPart(active, 'generation', { imageReceipt: { image: { fileId: randomUUID() } } })).rejects.toMatchObject({ code: 'run_no_longer_active' })
   })
   it('scenarios 7 and 8: refuses changed estimates/configuration and revoked queued actors before any model call', async () => {
     const f = await generationFixture(); const estimate = await f.service.estimate(f.actor, f.request)
