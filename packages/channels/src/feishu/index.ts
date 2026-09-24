@@ -10,6 +10,7 @@ export type {
   FeishuNormalizedMessage,
   FeishuResourceDescriptor,
   FeishuResourceType,
+  FeishuRestoreChannel,
   FeishuSendInput,
   FeishuSendOptions,
 } from './types.js'

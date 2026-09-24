@@ -10,7 +10,9 @@ import type {
   FeishuBrand,
   FeishuCardAction,
   FeishuNormalizedMessage,
+  FeishuRestoreChannel,
 } from '@use-brian/channels'
+import { z } from 'zod'
 
 const DOMAIN: Readonly<Record<FeishuBrand, string>> = {
   feishu: 'https://open.feishu.cn',
@@ -99,14 +101,14 @@ type Managed = {
   unsubscribe: () => void
 }
 
-type RestoredChannel = {
-  channelId: string
-  credentials: {
-    app_id: string
-    app_secret: string
-    brand: FeishuBrand
-  }
-}
+const restoredChannelsSchema: z.ZodType<FeishuRestoreChannel[]> = z.array(z.object({
+  channelId: z.string().min(1),
+  credentials: z.object({
+    app_id: z.string().min(1),
+    app_secret: z.string().min(1),
+    brand: z.enum(['feishu', 'lark']),
+  }),
+}))
 
 function normalizedMessage(message: FeishuNormalizedMessage & { raw?: unknown }): FeishuNormalizedMessage {
   return {
@@ -322,21 +324,35 @@ export function createFeishuConnectorManager(options: FeishuConnectorManagerOpti
     }
   }
 
-  async function restoreAll(): Promise<void> {
-    const response = await apiCall('/internal/feishu/channels') as { channels?: RestoredChannel[] }
-    for (const item of response.channels ?? []) {
+  async function restoreAll(): Promise<{ requested: number; connected: number; failed: number }> {
+    const response = restoredChannelsSchema.safeParse(
+      await apiCall('/internal/feishu/channels'),
+    )
+    if (!response.success) {
+      throw Object.assign(
+        new Error('brian-api /internal/feishu/channels returned an invalid payload'),
+        { code: 'invalid_restore_payload' },
+      )
+    }
+
+    let connected = 0
+    let failed = 0
+    for (const item of response.data) {
       try {
         await connect(item.channelId, {
           appId: item.credentials.app_id,
           appSecret: item.credentials.app_secret,
           brand: item.credentials.brand,
         })
+        connected += 1
       } catch (error) {
+        failed += 1
         console.error(
           `[feishu-connector] restore failed for channel ${item.channelId}: ${errorCode(error)}`,
         )
       }
     }
+    return { requested: response.data.length, connected, failed }
   }
 
   async function disconnectAll(): Promise<void> {

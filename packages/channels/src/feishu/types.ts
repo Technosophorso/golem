@@ -1,5 +1,15 @@
 export type FeishuBrand = 'feishu' | 'lark'
 
+/** Authenticated API response item used to restore connector sockets on boot. */
+export type FeishuRestoreChannel = {
+  channelId: string
+  credentials: {
+    app_id: string
+    app_secret: string
+    brand: FeishuBrand
+  }
+}
+
 export type FeishuResourceType = 'image' | 'file' | 'audio' | 'video' | 'sticker'
 
 export type FeishuResourceDescriptor = {
