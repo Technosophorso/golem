@@ -296,3 +296,24 @@ export async function deleteWebsiteMedia(workspaceId: string, id: string): Promi
     throw new AssociationApiError(typeof body?.error === "string" ? body.error : "delete_failed", response.status);
   }
 }
+
+/** Website content collections (people, partners, settings, news, home pages): draft → preview → publish. */
+export const SITE_CONTENT_COLLECTIONS = ["people", "partners", "settings", "news", "home-oasa", "home-sea"] as const;
+export type SiteContentCollection = (typeof SITE_CONTENT_COLLECTIONS)[number];
+export type SiteContentDocument = Record<string, unknown>;
+export type SiteContentDraft = {
+  collection: SiteContentCollection; version: number; document: SiteContentDocument | null; publishedRevision: number;
+  published: SiteContentDocument | null; observations: Partial<Record<MembershipSite, { revision: number; observedAt: string }>>;
+  readers: MembershipSite[]; issues: string[];
+};
+const contentBase = (workspaceId: string, collection: SiteContentCollection) =>
+  `/api/crm/${encodeURIComponent(workspaceId)}/association/site-content/${collection}`;
+export async function getSiteContentDraft(workspaceId: string, collection: SiteContentCollection): Promise<SiteContentDraft> {
+  return (await request<{ content: SiteContentDraft }>(`${contentBase(workspaceId, collection)}/draft`)).content;
+}
+export function saveSiteContentDraft(workspaceId: string, collection: SiteContentCollection, expectedVersion: number, document: SiteContentDocument) {
+  return request(`${contentBase(workspaceId, collection)}/draft`, { expectedVersion, document });
+}
+export function publishSiteContent(workspaceId: string, collection: SiteContentCollection, expectedVersion: number) {
+  return request(`${contentBase(workspaceId, collection)}/publish`, { expectedVersion });
+}
