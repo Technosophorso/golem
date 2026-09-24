@@ -107,7 +107,15 @@ save();
     const sha512 = createHash('sha512').update(zip).digest('base64');
     writeFileSync(join(output, 'latest-mac.yml'), JSON.stringify({ version: '0.0.13', path: 'usebrian.zip', sha512,
       files: [{ url: 'usebrian.zip', sha512, size: zip.length }, { url: 'usebrian.dmg', sha512: 'before-signing', size: 1 }] }));
-    return run('prepare', '0.0.13', sha);
+    const macPrepared = run('prepare', '0.0.13', sha);
+    if (macPrepared.status !== 0) return macPrepared;
+    writeFileSync(join(output, 'usebrian.exe'), 'fictional Windows installer bytes');
+    writeFileSync(join(output, 'usebrian.exe.blockmap'), 'fictional Windows blockmap');
+    const exe = readFileSync(join(output, 'usebrian.exe'));
+    const exeSha512 = createHash('sha512').update(exe).digest('base64');
+    writeFileSync(join(output, 'latest.yml'), JSON.stringify({ version: '0.0.13', path: 'usebrian.exe', sha512: exeSha512,
+      files: [{ url: 'usebrian.exe', sha512: exeSha512, size: exe.length }] }));
+    return run('prepare-windows', '0.0.13', sha);
   };
   return { root, app, output, env, run, readState, patchState, prepare };
 }
@@ -154,6 +162,16 @@ describe('[COMP:app-desktop/release] automated delivery', () => {
     expect(f.run('verify', '0.0.13', sha).stderr).toContain('changed after verification');
   });
 
+  it('stamps one planned version and rejects a tampered Windows installer', () => {
+    const f = fixture();
+    expect(f.run('stamp', '0.0.13', sha).status).toBe(0);
+    expect(JSON.parse(readFileSync(join(f.app, 'package.json'), 'utf8')).version).toBe('0.0.13');
+    expect(f.prepare().status).toBe(0);
+    writeFileSync(join(f.output, 'usebrian.exe'), 'tampered');
+    expect(f.run('prepare-windows', '0.0.13', sha).stderr).toContain('Windows updater checksum');
+    expect(f.run('verify', '0.0.13', sha).stderr).toContain('changed after verification');
+  });
+
   // Four CLI runs launch many real Node subprocesses; allow for shared CI CPU.
   it('keeps failed uploads hidden and publishes only after stored digests match', () => {
     const f = fixture({ failUpload: true });
@@ -193,13 +211,19 @@ describe('[COMP:app-desktop/release] automated delivery', () => {
 
   it('builds workspace exports after installation and before desktop tests', () => {
     const workflow = yaml.load(readFileSync(join(sourceRoot, '.github/workflows/desktop-release.yml'), 'utf8'));
-    const commands = workflow.jobs.build.steps.map((step: { run?: string }) => step.run);
+    const commands = workflow.jobs.build_macos.steps.map((step: { run?: string }) => step.run);
     const install = commands.indexOf('pnpm install --frozen-lockfile');
     const dependencies = commands.indexOf('pnpm --filter "@use-brian/app-desktop^..." run build');
     const tests = commands.indexOf('pnpm --filter @use-brian/app-desktop test');
     expect(install).toBeGreaterThanOrEqual(0);
     expect(dependencies).toBeGreaterThan(install);
     expect(tests).toBeGreaterThan(dependencies);
+    const windowsCommands = workflow.jobs.build_windows.steps.map((step: { run?: string }) => step.run);
+    expect(windowsCommands.findIndex((command: string) => command?.includes(' stamp '))).toBeGreaterThan(
+      windowsCommands.indexOf('pnpm install --frozen-lockfile'));
+    expect(windowsCommands.indexOf('pnpm --filter @use-brian/app-desktop package:win')).toBeGreaterThanOrEqual(0);
+    expect(windowsCommands.findIndex((command: string) => command?.includes('prepare-windows'))).toBeGreaterThan(
+      windowsCommands.indexOf('pnpm --filter @use-brian/app-desktop package:win'));
   });
 
   it('keeps workflow credentials and artifacts behind the production CI gate', () => {
@@ -208,15 +232,22 @@ describe('[COMP:app-desktop/release] automated delivery', () => {
     expect(workflow.jobs.plan.if).toContain("head_repository.full_name == github.repository");
     expect(workflow.jobs.plan.if).toContain("workflow_run.event == 'push'");
     expect(workflow.concurrency['cancel-in-progress']).toBe(false);
-    expect(workflow.jobs.build.environment).toBe('desktop-release');
-    expect(workflow.jobs.build.permissions.contents).toBe('read');
+    expect(workflow.jobs.build_macos.environment).toBe('desktop-release');
+    expect(workflow.jobs.build_macos.permissions.contents).toBe('read');
+    expect(workflow.jobs.build_windows.permissions.contents).toBe('read');
     expect(workflow.jobs.publish.permissions.contents).toBe('write');
-    expect(workflow.jobs.publish.needs).toEqual(['plan', 'build']);
+    expect(workflow.jobs.publish.needs).toEqual(['plan', 'build_macos', 'build_windows']);
+    expect(JSON.stringify(workflow.jobs.build_windows)).not.toContain('secrets.');
     expect(JSON.stringify(workflow.jobs.publish)).not.toContain('secrets.');
     expect(JSON.stringify(workflow)).not.toContain('pull_request_target');
-    const download = workflow.jobs.publish.steps.find((s: any) => s.uses?.startsWith('actions/download-artifact'));
-    expect(download.with['run-id']).toBeUndefined();
-    expect(workflow.jobs.build.steps.some((s: any) => s.run?.includes('--arm64'))).toBe(true);
+    const downloads = workflow.jobs.publish.steps.filter((s: any) => s.uses?.startsWith('actions/download-artifact'));
+    expect(downloads).toHaveLength(2);
+    expect(downloads.every((download: any) => download.with['run-id'] === undefined)).toBe(true);
+    expect(downloads.map((download: any) => download.with.name)).toEqual([
+      'desktop-release-macos-${{ needs.plan.outputs.sha }}',
+      'desktop-release-windows-${{ needs.plan.outputs.sha }}',
+    ]);
+    expect(workflow.jobs.build_macos.steps.some((s: any) => s.run?.includes('--arm64'))).toBe(true);
   });
 
   it.each([false, true])('sets only five secrets and enables last (failed secret: %s)', (fail) => {

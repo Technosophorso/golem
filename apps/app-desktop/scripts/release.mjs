@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Spec: docs/architecture/features/app-desktop.md -> Automatic macOS releases.
+// Spec: docs/architecture/features/app-desktop.md -> Automatic desktop releases.
 // No signing credentials or release token are needed for planning/verification.
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -10,8 +10,10 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const repository = 'use-brian/use-brian';
 const releaseDir = resolve(root, 'apps/app-desktop/release');
-const artifactNames = ['usebrian.dmg', 'usebrian.zip', 'usebrian.zip.blockmap', 'latest-mac.yml'];
+const macArtifactNames = ['usebrian.dmg', 'usebrian.zip', 'usebrian.zip.blockmap', 'latest-mac.yml'];
+const windowsArtifactNames = ['usebrian.exe', 'usebrian.exe.blockmap', 'latest.yml'];
 const provenanceName = 'desktop-release.json';
+const windowsProvenanceName = 'desktop-release-windows.json';
 const run = (command, args) => execFileSync(command, args, {
   cwd: root, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
   stdio: ['ignore', 'pipe', 'pipe'],
@@ -110,6 +112,16 @@ function plan(sha) {
   outputPlan({ release: true, sha, version });
 }
 
+function stamp(version, sha) {
+  versionParts(version);
+  checkSha(sha);
+  const packagePath = resolve(root, 'apps/app-desktop/package.json');
+  const pkg = jsonFile(packagePath);
+  pkg.version = version;
+  writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + '\n');
+  console.log(`Stamped desktop version ${version} for ${sha}`);
+}
+
 function artifact(name) {
   const path = resolve(releaseDir, name);
   const size = statSync(path).size;
@@ -119,7 +131,14 @@ function artifact(name) {
     sha512: createHash('sha512').update(bytes).digest('base64') };
 }
 
-async function prepare(version, sha) {
+function writeProvenance(name, version, sha, platform, arch, names) {
+  const assets = names.map(artifact).map(({ sha512: _sha512, ...entry }) => entry);
+  writeFileSync(resolve(releaseDir, name), JSON.stringify({
+    schema: 1, version, sha, platform, arch, assets,
+  }, null, 2) + '\n');
+}
+
+async function prepareMac(version, sha) {
   versionParts(version);
   checkSha(sha);
   requireThat(jsonFile(resolve(root, 'apps/app-desktop/package.json')).version === version,
@@ -139,28 +158,52 @@ async function prepare(version, sha) {
   // Signing/stapling the DMG changes its bytes after electron-builder writes YAML.
   Object.assign(feed.files.find((f) => f.url === dmg.name), { sha512: dmg.sha512, size: dmg.size });
   writeFileSync(feedPath, dump(feed));
-  const assets = artifactNames.map(artifact).map(({ sha512: _sha512, ...entry }) => entry);
-  writeFileSync(resolve(releaseDir, provenanceName), JSON.stringify({
-    schema: 1, version, sha, platform: 'darwin', arch: 'arm64', assets,
-  }, null, 2) + '\n');
-  console.log(`Verified ${version} update artifacts for ${sha}`);
+  writeProvenance(provenanceName, version, sha, 'darwin', 'arm64', macArtifactNames);
+  console.log(`Verified macOS ${version} update artifacts for ${sha}`);
 }
 
-function verifyArtifacts(version, sha) {
+async function prepareWindows(version, sha) {
   versionParts(version);
-  const manifest = jsonFile(resolve(releaseDir, provenanceName));
+  checkSha(sha);
+  requireThat(jsonFile(resolve(root, 'apps/app-desktop/package.json')).version === version,
+    'The source package version must be set before building');
+  const { load } = await import('js-yaml');
+  const feed = load(readFileSync(resolve(releaseDir, 'latest.yml'), 'utf8'));
+  requireThat(feed?.version === version && Array.isArray(feed.files),
+    'Windows updater feed has the wrong version or shape');
+  requireThat(feed.files.length === 1 && feed.files[0].url === 'usebrian.exe',
+    'Windows updater feed must contain exactly the NSIS installer');
+  const exe = artifact('usebrian.exe');
+  requireThat(feed.files[0].sha512 === exe.sha512 && feed.files[0].size === exe.size &&
+    feed.path === exe.name && feed.sha512 === exe.sha512,
+  'Windows updater checksum or size does not match the built installer');
+  writeProvenance(windowsProvenanceName, version, sha, 'win32', 'x64', windowsArtifactNames);
+  console.log(`Verified Windows ${version} update artifacts for ${sha}`);
+}
+
+function verifyPlatformArtifacts(manifestName, version, sha, platform, arch, names) {
+  const manifest = jsonFile(resolve(releaseDir, manifestName));
   requireThat(manifest.schema === 1 && manifest.version === version && manifest.sha === sha &&
-    manifest.platform === 'darwin' && manifest.arch === 'arm64', 'Release provenance does not match the planned build');
-  requireThat(Array.isArray(manifest.assets) && manifest.assets.length === artifactNames.length &&
-    artifactNames.every((name) => manifest.assets.filter((a) => a.name === name).length === 1),
-  'Release provenance must name exactly the required assets');
-  const assets = artifactNames.map(artifact);
+    manifest.platform === platform && manifest.arch === arch,
+  `${platform} release provenance does not match the planned build`);
+  requireThat(Array.isArray(manifest.assets) && manifest.assets.length === names.length &&
+    names.every((name) => manifest.assets.filter((a) => a.name === name).length === 1),
+  `${platform} release provenance must name exactly the required assets`);
+  const assets = names.map(artifact);
   for (const actual of assets) {
     const expected = manifest.assets.find((a) => a.name === actual.name);
     requireThat(actual.size === expected.size && actual.sha256 === expected.sha256,
       `Release artifact changed after verification: ${actual.name}`);
   }
-  return [...assets, artifact(provenanceName)];
+  return [...assets, artifact(manifestName)];
+}
+
+function verifyArtifacts(version, sha) {
+  versionParts(version);
+  return [
+    ...verifyPlatformArtifacts(provenanceName, version, sha, 'darwin', 'arm64', macArtifactNames),
+    ...verifyPlatformArtifacts(windowsProvenanceName, version, sha, 'win32', 'x64', windowsArtifactNames),
+  ];
 }
 
 function verifyUploaded(release, assets) {
@@ -230,10 +273,12 @@ function publish(version, sha) {
 try {
   const [command, value, sha] = process.argv.slice(2);
   if (command === 'plan') plan(value);
-  else if (command === 'prepare') await prepare(value, sha);
+  else if (command === 'stamp') stamp(value, sha);
+  else if (command === 'prepare') await prepareMac(value, sha);
+  else if (command === 'prepare-windows') await prepareWindows(value, sha);
   else if (command === 'verify') verifyArtifacts(value, sha);
   else if (command === 'publish') publish(value, sha);
-  else throw new Error('Usage: release.mjs plan SHA | prepare VERSION SHA | verify VERSION SHA | publish VERSION SHA');
+  else throw new Error('Usage: release.mjs plan SHA | stamp VERSION SHA | prepare VERSION SHA | prepare-windows VERSION SHA | verify VERSION SHA | publish VERSION SHA');
 } catch (error) {
   // Do not dump child-process buffers: external programs can echo credentials.
   console.error(error?.status !== undefined ? 'Release command failed; no further publication attempted.' : error.message);
