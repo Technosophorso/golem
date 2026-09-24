@@ -612,6 +612,7 @@ export const en = {
         "title": "Title",
         "value": "Value",
         "ymp": "Young Marco Polo applications",
+        "locales": "Listed in",
         "alt": "Image description",
       },
     },

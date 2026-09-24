@@ -610,6 +610,7 @@ export const zhCN: Dictionary = {
         "title": "标题",
         "value": "数值",
         "ymp": "Young Marco Polo 申请",
+        "locales": "显示语言",
         "alt": "图片描述",
       },
     },

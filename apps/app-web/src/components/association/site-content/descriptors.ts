@@ -6,7 +6,8 @@ import type { SiteContentCollection, SiteContentDocument } from "@/lib/api/assoc
 type FieldLabel = string; // key into associationPage.content.fields
 export type Field =
   | { kind: "text"; key: string; label: FieldLabel; optional?: boolean; multiline?: boolean; type?: "email" | "date" | "url" }
-  | { kind: "localized"; key: string; label: FieldLabel; optional?: boolean; multiline?: boolean }
+  | { kind: "localized"; key: string; label: FieldLabel; optional?: boolean; multiline?: boolean; anyLanguage?: boolean }
+  | { kind: "locales"; key: string; label: FieldLabel }
   | { kind: "number"; key: string; label: FieldLabel; min?: number; max?: number }
   | { kind: "boolean"; key: string; label: FieldLabel }
   | { kind: "select"; key: string; label: FieldLabel; values: readonly string[] }
@@ -60,9 +61,9 @@ export const COLLECTION_FIELDS: Record<SiteContentCollection, Field[]> = {
     { kind: "object", key: "oasa", label: "oasa", optional: true, fields: siteSettings },
     { kind: "object", key: "sea", label: "sea", optional: true, fields: siteSettings },
   ] }],
-  news: [{ kind: "list", key: "items", label: "items", itemTitle: item => `${item.date ?? ""} · ${en(item.title)}`, blank: () => ({ id: "", sites: ["oasa"], kind: "newsletter", date: "", title: L() }), item: [
+  news: [{ kind: "list", key: "items", label: "items", itemTitle: item => `${item.date ?? ""} · ${en(item.title)}`, blank: () => ({ id: "", sites: ["oasa"], kind: "newsletter", date: "", locales: ["en", "zh-Hant", "zh-Hans"], title: L() }), item: [
     { kind: "text", key: "id", label: "id" }, { kind: "sites", key: "sites", label: "sites" }, { kind: "select", key: "kind", label: "kind", values: ["newsletter", "press", "article", "publication"] },
-    { kind: "text", key: "date", label: "date", type: "date" }, { kind: "localized", key: "title", label: "title" }, { kind: "localized", key: "summary", label: "summary", optional: true, multiline: true },
+    { kind: "text", key: "date", label: "date", type: "date" }, { kind: "locales", key: "locales", label: "locales" }, { kind: "localized", key: "title", label: "title", anyLanguage: true }, { kind: "localized", key: "summary", label: "summary", optional: true, multiline: true, anyLanguage: true },
     { kind: "text", key: "href", label: "href", optional: true }, { kind: "media", key: "fileId", label: "fileId", optional: true }, { kind: "image", key: "image", label: "image", optional: true },
   ] }],
   "home-oasa": [
@@ -138,6 +139,7 @@ export function blankFor(field: Field): unknown {
     case "boolean": return false;
     case "select": return field.values[0];
     case "sites": return ["oasa"];
+    case "locales": return ["en", "zh-Hant", "zh-Hans"];
     default: return "";
   }
 }
