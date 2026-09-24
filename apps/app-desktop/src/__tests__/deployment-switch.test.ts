@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DeploymentAccounts, deploymentAccountKey, type AccountTarget } from "../deployment-accounts.js";
+import { createHash } from "node:crypto";
+import { DeploymentAccounts, deploymentAccountKey, deploymentKey, type AccountTarget } from "../deployment-accounts.js";
 import { serializePersistedTarget } from "../target-store.js";
 import type { StoredTokens } from "../desktop-token-store.js";
 
-const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), handlers: new Map<string, Function>(), windows: [] as any[], app: null as any, partitions: new Map<string, any>(), refresh: vi.fn(), request: vi.fn() }));
+const state = vi.hoisted(() => ({ files: new Map<string, Buffer>(), handlers: new Map<string, Function>(), windows: [] as any[], app: null as any, partitions: new Map<string, any>(), makeSession: null as null | (() => any), refresh: vi.fn(), request: vi.fn() }));
 vi.mock("electron-updater", () => ({ default: { autoUpdater: {} } }));
 vi.mock("../desktop-auth.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../desktop-auth.js")>(), refreshSession: state.refresh }));
 vi.mock("node:fs", async (importOriginal) => ({
@@ -47,6 +48,7 @@ vi.mock("electron", async () => {
         ? { status: "ok" } : { apiUrl: "http://localhost:4000", edition: "oss" }), { status: 200 })),
     });
   };
+  state.makeSession = makeSession;
   class Window extends EventEmitter {
     destroyed = false; preventClose = false; options: any; bounds = { x: 30, y: 40, width: 1000, height: 700 }; webContents: any;
     constructor(options: any) {
@@ -77,6 +79,12 @@ vi.mock("electron", async () => {
 const local: AccountTarget = { kind: "local", appUrl: "http://localhost:3003", apiUrl: "http://localhost:4000", auth: "pkce" };
 const cloud: AccountTarget = { kind: "cloud", appUrl: "https://app.usebrian.ai", apiUrl: "https://api.usebrian.ai", auth: "pkce" };
 const tokens = (name: string): StoredTokens => ({ accessToken: `${name}-access`, refreshToken: `${name}-refresh`, accessTokenExpiresAt: Date.now() + 3600_000, user: { id: "same-user", name, email: "person@example.com" } });
+function targetJar(target: AccountTarget) {
+  const hash = createHash("sha256").update(deploymentKey(target)).digest("hex");
+  const partition = `persist:deployment-${hash}`;
+  if (!state.partitions.has(partition)) state.partitions.set(partition, state.makeSession!());
+  return state.partitions.get(partition);
+}
 let store: DeploymentAccounts;
 async function setup(auth: AccountTarget["auth"] = "pkce", bundled = true) {
   state.app?.removeAllListeners();
@@ -144,6 +152,39 @@ describe("[COMP:app-desktop/main] deployment switching", () => {
     expect(await state.handlers.get("Use Brian:select-cloud")!(sender())).toEqual({ ok: false });
     expect(state.windows[0].destroyed).toBe(false);
     expect(JSON.parse(state.files.get("/tmp/desktop-switch-test/target.json")!.toString()).kind).toBe("local");
+  });
+  it("removes one inactive connection and prunes the identity from its target cookie partition", async () => {
+    const stale: AccountTarget = { kind: "local", appUrl: "https://brain.example.com", apiUrl: "https://brain.example.com", auth: "local-session" };
+    const staleTokens = { ...tokens("stale"), user: { id: "stale-user", name: "Stale", email: "stale@example.com" } };
+    store.put(stale, staleTokens);
+    const jar = targetJar(stale);
+    for (const [name, value] of Object.entries({
+      access_token: "stale-access",
+      refresh_token: "stale-refresh",
+      user: JSON.stringify(staleTokens.user),
+      accounts_store: JSON.stringify({ "stale-user": "stale-refresh" }),
+      accounts_dir: JSON.stringify([staleTokens.user]),
+    })) await jar.cookies.set({ url: stale.appUrl, name, value });
+
+    const key = deploymentAccountKey({ target: stale, tokens: staleTokens });
+    expect(await state.handlers.get("Use Brian:remove-account")!(sender(), key)).toEqual({ ok: true });
+    expect(store.find(key)).toBeNull();
+    expect(store.current(local)?.refreshToken).toBe("local-refresh");
+    const cookies = await jar.cookies.get({ url: stale.appUrl });
+    expect(cookies.filter((cookie: any) => ["access_token", "refresh_token", "user"].includes(cookie.name))).toHaveLength(0);
+    expect(JSON.parse(cookies.find((cookie: any) => cookie.name === "accounts_store").value)).toEqual({});
+    expect(JSON.parse(cookies.find((cookie: any) => cookie.name === "accounts_dir").value)).toEqual([]);
+  });
+  it("refuses to remove the active connection", async () => {
+    const key = deploymentAccountKey({ target: local, tokens: tokens("local") });
+    expect(await state.handlers.get("Use Brian:remove-account")!(sender(), key)).toEqual({ ok: false, error: "active" });
+    expect(store.find(key)).not.toBeNull();
+  });
+  it("rejects account removal from an untrusted renderer", async () => {
+    const key = deploymentAccountKey({ target: cloud, tokens: tokens("cloud") });
+    const untrusted = { sender: { id: 999 }, senderFrame: {} };
+    expect(await state.handlers.get("Use Brian:remove-account")!(untrusted, key)).toEqual({ ok: false, error: "remove" });
+    expect(store.find(key)).not.toBeNull();
   });
 });
 

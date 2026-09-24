@@ -1473,6 +1473,12 @@ export const en = {
     deploymentSource: "Account from {url}",
     useOwnDeployment: "Use own deployment",
     openCloudAccount: "Open cloud account",
+    removeConnection: "Remove connection",
+    removeConnectionAria: "Remove connection to {url}",
+    removeConnectionTitle: "Remove this connection?",
+    removeConnectionDescription: "This removes the saved sign-in for {url} from this device. It does not delete anything on the server.",
+    removeConnectionConfirm: "Remove connection",
+    removeConnectionError: "Couldn't remove this connection. Please try again.",
 
     loading: "Loading workspaces…",
     loadError: "Couldn't load workspaces.",

@@ -1458,6 +1458,12 @@ export const zh: Dictionary = {
     deploymentSource: "來自 {url} 的帳戶",
     useOwnDeployment: "使用自己的部署",
     openCloudAccount: "開啟雲端帳戶",
+    removeConnection: "移除連線",
+    removeConnectionAria: "移除與 {url} 的連線",
+    removeConnectionTitle: "要移除此連線嗎？",
+    removeConnectionDescription: "這會從此裝置移除 {url} 的已儲存登入資訊，不會刪除伺服器上的任何資料。",
+    removeConnectionConfirm: "移除連線",
+    removeConnectionError: "無法移除此連線，請再試一次。",
 
     loading: "正在載入工作空間…",
     loadError: "無法載入工作空間",
