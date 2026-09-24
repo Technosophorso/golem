@@ -322,6 +322,11 @@ export function createAzureBlobFilesClient(
           cb(err)
         },
       })
+      // An upload can reject before it starts consuming `pass`. Destroying
+      // the sink then destroys `pass` with the same error, which still needs
+      // a listener even when no SDK reader has attached yet. Forward internal
+      // stream errors through the public writable, where pipeline handles them.
+      pass.on('error', (err: Error) => sink.destroy(err))
       upload.catch((err: unknown) => sink.destroy(asError(err)))
       return sink
     },

@@ -152,6 +152,33 @@ describe('[COMP:files/azure-client] createAzureBlobFilesClient', () => {
     await expect(pipeline(Readable.from([Buffer.from('x')]), dest)).rejects.toThrow(/boom/)
   })
 
+  it('rejects the pipeline when container creation fails before a reader attaches', async () => {
+    const failure = new Error('container unavailable')
+    const c = createAzureBlobFilesClient(opts, {
+      createContainer: async () => { throw failure },
+    })
+    const dest = c.writeStream('ws1/bad', { mime: 'video/mp4' })
+    await expect(pipeline(Readable.from([Buffer.from('x')]), dest)).rejects.toBe(failure)
+  })
+
+  it('handles source failure before the upload starts consuming the internal stream', async () => {
+    let finishUpload!: () => void
+    const upload = new Promise<void>((resolve) => { finishUpload = resolve })
+    const container = Object.assign(fakeContainer(), { uploadStream: async () => upload })
+    const { c } = client(container)
+    const failure = new Error('source unavailable')
+    const source = Readable.from((async function* () {
+      yield Buffer.from('x')
+      throw failure
+    })())
+    const dest = c.writeStream('ws1/bad', { mime: 'video/mp4' })
+    try {
+      await expect(pipeline(source, dest)).rejects.toBe(failure)
+    } finally {
+      finishUpload()
+    }
+  })
+
   it('builds the container once across operations', async () => {
     let builds = 0
     const container = fakeContainer()
