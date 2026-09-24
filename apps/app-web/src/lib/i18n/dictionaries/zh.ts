@@ -9641,6 +9641,8 @@ export const zh: Dictionary = {
         requireMentionHintFeishu: "關閉後，助理會回覆飛書或 Lark 傳送的每一則群組訊息。私訊一律會收到回覆。",
         requireMentionHintCustom: "關閉時，助理會回覆橋接送來的所有群組訊息。私訊一律會回覆。",
         requireMentionHintTelegram: "開啟: 提及、回覆和 /ask。關閉: 所有已傳送的群組訊息。",
+        assistantConnectorTools: "允許助理連接器工具",
+        assistantConnectorToolsHint: "允許此飛書或 Lark 管道接納的使用者使用已為路由助理啟用的連接器工具。工作空間記憶與原生資料仍需成員資格。",
         ackLabel: "確認回應表情",
         ackHintSlack: "bot 開始處理時加到訊息上的表情符號。留空則停用。",
         ackHintTelegram: "Brian 處理時顯示。",

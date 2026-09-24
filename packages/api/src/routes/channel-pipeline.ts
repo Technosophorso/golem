@@ -401,6 +401,13 @@ export type ChannelPipelineParams = {
    * private-context, or long-term-persistence boundaries.
    */
   externalGuestConnectorTools?: boolean
+  /**
+   * Connector-only authority for this channel turn. `sender` preserves the
+   * ordinary member-scoped behavior; `assistant` resolves Team/Project
+   * exposure from the routed assistant while keeping every non-connector
+   * data path sender-scoped; `disabled` removes connector tools for the turn.
+   */
+  connectorAuthority?: 'sender' | 'assistant' | 'disabled'
   checkCreditBudget?: CreditBudgetGate
 
   // ── Channel context ──
@@ -409,9 +416,9 @@ export type ChannelPipelineParams = {
   channelId: string
   /**
    * Conversation id used for session-scoped storage/state when narrower than
-   * the provider destination. Threaded Slack passes
-   * `<channelId>:thread:<threadTs>` while delivery keeps the bare channel id.
-   * Defaults to `channelId` for every other channel.
+   * the provider destination. Threaded Slack and Feishu pass
+   * `<channelId>:thread:<threadRoot>` while delivery keeps the bare channel id.
+   * Defaults to `channelId` for channels without thread-scoped sessions.
    */
   sessionChannelId?: string
   /**
@@ -817,7 +824,7 @@ type ConnectorTurnScopeResolver = (
  */
 export async function resolveConnectorTurnScopeForChannelTurn(
   input: {
-    externalGuestConnectorTools: boolean
+    useAssistantConnectorAuthority: boolean
     dataTurnScope: ResolvedTurnScope
     userId: string
     assistant: ResolveTurnScopeInput['assistant']
@@ -826,7 +833,7 @@ export async function resolveConnectorTurnScopeForChannelTurn(
   },
   resolveScope: ConnectorTurnScopeResolver = resolveTurnScopeSystem,
 ): Promise<ResolvedTurnScope> {
-  if (!input.externalGuestConnectorTools) return input.dataTurnScope
+  if (!input.useAssistantConnectorAuthority) return input.dataTurnScope
   return resolveScope({
     userId: input.userId,
     assistant: input.assistant,
@@ -848,6 +855,7 @@ export function buildNonMemberSenderBlock(args: {
   channelType: string
   senderEmail: string | null
   senderName: string | null
+  assistantConnectorTools?: boolean
 }): string {
   const who = args.senderEmail
     ? `${args.senderName ? `${args.senderName} <${args.senderEmail}>` : args.senderEmail}`
@@ -858,9 +866,12 @@ export function buildNonMemberSenderBlock(args: {
   return (
     '# Sender is not a workspace member\n\n' +
     `You are answering ${who}, who is NOT a member of this assistant's workspace. ` +
-    'Every workspace-scoped read (workflows, tasks, pages, brain, contacts, deals, connectors) will come back empty or "not found" for them. ' +
+    'Every workspace-native read (workflows, tasks, pages, brain, contacts, deals) will come back empty or "not found" for them. ' +
     'That is an access boundary, not a missing record: do NOT report "no workflows", "no tasks", "not found" or "not visible in this workspace" as fact, do not ask them to open a different workspace, and do not retry lookups. ' +
-    `If they ask about workspace data or ask you to act on it, tell them plainly: ${identity} ` +
+    (args.assistantConnectorTools
+      ? 'Connector tools explicitly enabled for this assistant ARE available in this channel. Use those tools normally, and do not say account linking or workspace membership is required to use them. '
+      : 'Do not infer connector availability from workspace membership; use only the connector tools actually present in this turn. ') +
+    `If they ask about workspace-native data or ask you to act on it, tell them plainly: ${identity} ` +
     'Give both remedies: (1) a workspace admin invites that email to the workspace, or (2) they link this ' +
     `${args.channelType} account to the Use Brian account they normally use, from Settings -> Account -> Connected accounts, then re-send the message. ` +
     'Everything they say in this chat is still answerable from what they provide here.'
@@ -997,10 +1008,11 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
   const publishSessionEvent = params.publishSessionEvent ?? noopPublishSessionEvent
   const sessionChannelId = params.sessionChannelId ?? channelId
   const externalGuestConnectorTools = externalGuest && params.externalGuestConnectorTools === true
-  const connectorToolsAllowed = connectorToolsAllowedForChannelTurn(
-    externalGuest,
-    params.externalGuestConnectorTools,
-  )
+  const connectorAuthority = params.connectorAuthority ?? 'sender'
+  const connectorToolsAllowed = connectorAuthority !== 'disabled'
+    && connectorToolsAllowedForChannelTurn(externalGuest, params.externalGuestConnectorTools)
+  const useAssistantConnectorAuthority = connectorAuthority === 'assistant'
+    || externalGuestConnectorTools
   const taskAuthority = params.realtimeThreadTarget
     ? {
         kind: 'realtime_thread_target' as const,
@@ -1757,6 +1769,7 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
           channelType,
           senderEmail: channelUser?.email ?? null,
           senderName: channelUser?.name ?? null,
+          assistantConnectorTools: connectorToolsAllowed && useAssistantConnectorAuthority,
         }),
       )
     }
@@ -1879,7 +1892,7 @@ export async function processChannelMessage(params: ChannelPipelineParams): Prom
       // routed assistant, so resolve that surface independently and never
       // reuse it outside this injection call.
       const turnScope = await resolveConnectorTurnScopeForChannelTurn({
-        externalGuestConnectorTools,
+        useAssistantConnectorAuthority,
         dataTurnScope,
         userId,
         assistant: {

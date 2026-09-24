@@ -181,11 +181,23 @@ export function isMultiParticipantSession(s: SessionShape): boolean {
   )
 }
 
-/** Storage-only delimiter for a Slack thread-qualified session channel id. */
-export const SLACK_THREAD_SESSION_DELIMITER = ':thread:'
+/** Storage-only delimiter for a thread-qualified session channel id. */
+const THREAD_SESSION_DELIMITER = ':thread:'
+/** Storage delimiter retained for Slack callers that need to decode a root. */
+export const SLACK_THREAD_SESSION_DELIMITER = THREAD_SESSION_DELIMITER
+
+/** Encode a provider delivery channel plus a stable thread root for storage. */
+export function buildThreadSessionChannelId(
+  channelId: string,
+  threadRoot?: string | null,
+): string {
+  return threadRoot
+    ? `${channelId}${THREAD_SESSION_DELIMITER}${threadRoot}`
+    : channelId
+}
 
 /**
- * Turn a provider Slack channel + root `thread_ts` into the conversation id
+ * Turn a Slack channel + root `thread_ts` into the conversation id
  * stored on `sessions.channel_id`. A missing root preserves the legacy
  * channel-level session used when the integration does not reply in threads.
  *
@@ -196,9 +208,7 @@ export function buildSlackSessionChannelId(
   channelId: string,
   threadTs?: string | null,
 ): string {
-  return threadTs
-    ? `${channelId}${SLACK_THREAD_SESSION_DELIMITER}${threadTs}`
-    : channelId
+  return buildThreadSessionChannelId(channelId, threadTs)
 }
 
 /** Convert a stored session conversation id back to a provider destination. */
@@ -206,8 +216,8 @@ export function providerChannelIdFromSession(
   channelType: string,
   sessionChannelId: string,
 ): string {
-  if (channelType !== 'slack') return sessionChannelId
-  const delimiterIndex = sessionChannelId.indexOf(SLACK_THREAD_SESSION_DELIMITER)
+  if (channelType !== 'slack' && channelType !== 'feishu') return sessionChannelId
+  const delimiterIndex = sessionChannelId.indexOf(THREAD_SESSION_DELIMITER)
   return delimiterIndex === -1
     ? sessionChannelId
     : sessionChannelId.slice(0, delimiterIndex)

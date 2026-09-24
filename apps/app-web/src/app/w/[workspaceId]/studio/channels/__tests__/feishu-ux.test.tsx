@@ -8,7 +8,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "@/lib/i18n/client";
 import { en } from "@/lib/i18n/dictionaries/en";
-import type { Channel } from "@/lib/api/channels";
+import { updateChannelConfig, type Channel } from "@/lib/api/channels";
 import {
   AddChannelForm,
   ChannelConfigSection,
@@ -139,7 +139,6 @@ describe("[COMP:app-web/studio-channels] Feishu/Lark UX", () => {
       updatedAt: "2026-08-24T00:00:00.000Z",
       integrationId: "integration_1",
       config: {
-        replyInThread: true,
         requireMention: true,
         ackReaction: "👀",
         userAccessMode: "allowlist",
@@ -160,10 +159,29 @@ describe("[COMP:app-web/studio-channels] Feishu/Lark UX", () => {
     });
 
     expect(host.textContent).toContain("Reply in thread");
+    expect(host.textContent).toContain("Allow assistant connector tools");
     expect(host.textContent).toContain("Require @mention");
     expect(host.textContent).toContain("Acknowledgment reaction");
     expect(host.textContent).toContain("Allowed users");
     expect(host.textContent).toContain("ou_example");
     expect(host.querySelector('input[placeholder="ou_..."]')).not.toBeNull();
+    const replyInThreadToggle = [...host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Reply in thread"))
+      ?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    const assistantConnectorToggle = [...host.querySelectorAll("label")]
+      .find((label) => label.textContent?.includes("Allow assistant connector tools"))
+      ?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(replyInThreadToggle?.checked).toBe(true);
+    expect(assistantConnectorToggle?.checked).toBe(true);
+
+    await act(async () => {
+      assistantConnectorToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+    expect(updateChannelConfig).toHaveBeenCalledWith(
+      "workspace_1",
+      "channel_1",
+      { allowAssistantConnectorTools: false },
+    );
   });
 });

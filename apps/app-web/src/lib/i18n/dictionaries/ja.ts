@@ -9711,6 +9711,8 @@ export const ja: Dictionary = {
         requireMentionHintFeishu: "オフにすると、Feishu または Lark から届くすべてのグループメッセージに返信します。ダイレクトメッセージには常に返信します。",
         requireMentionHintCustom: "オフにすると、ブリッジが届けるすべてのグループメッセージにアシスタントが返信します。ダイレクトメッセージには常に返信します。",
         requireMentionHintTelegram: "オン: メンション、返信、/ask。オフ: 配信されたすべてのグループメッセージ。",
+        assistantConnectorTools: "アシスタントのコネクターツールを許可",
+        assistantConnectorToolsHint: "この Feishu または Lark チャンネルで許可されたユーザーが、ルーティング先アシスタントで有効なコネクターツールを使えるようにします。ワークスペースのメモリとネイティブデータには引き続きメンバー資格が必要です。",
         ackLabel: "受信リアクション",
         ackHintSlack: "ボットが処理を開始したときにメッセージへ追加される絵文字。空にすると無効化されます。",
         ackHintTelegram: "Brian の処理中に表示します。",

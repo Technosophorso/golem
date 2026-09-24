@@ -20,6 +20,7 @@ describe('[COMP:api/channel-pipeline/non-member-sender] non-member sender block'
     expect(block).toContain('do NOT report "no workflows"')
     expect(block).toContain('invites that email to the workspace')
     expect(block).toContain('Settings -> Account -> Connected accounts')
+    expect(block).not.toContain('connectors) will come back empty')
     expect(block).not.toContain('—')
   })
 
@@ -28,5 +29,16 @@ describe('[COMP:api/channel-pipeline/non-member-sender] non-member sender block'
     expect(block).toContain('this sender')
     expect(block).toContain('could not be matched to a member of this workspace')
     expect(block).not.toContain('resolves to the Use Brian account')
+  })
+
+  it('states that assistant-authorized connector tools do not require account linking', () => {
+    const block = buildNonMemberSenderBlock({
+      channelType: 'feishu',
+      senderEmail: null,
+      senderName: 'Guest',
+      assistantConnectorTools: true,
+    })
+    expect(block).toContain('Connector tools explicitly enabled for this assistant ARE available')
+    expect(block).toContain('do not say account linking or workspace membership is required')
   })
 })

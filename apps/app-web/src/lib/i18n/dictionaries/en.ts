@@ -9958,6 +9958,8 @@ export const en = {
         requireMentionHintFeishu: "When off, the assistant replies to every group message delivered by Feishu or Lark. Direct messages are always answered.",
         requireMentionHintCustom: "When off, the assistant replies to every group message the bridge delivers. Direct messages are always answered.",
         requireMentionHintTelegram: "On: mentions, replies, and /ask. Off: every delivered group message.",
+        assistantConnectorTools: "Allow assistant connector tools",
+        assistantConnectorToolsHint: "Let people admitted by this Feishu or Lark channel use connector tools enabled for the routed assistant. Workspace memory and native data still require membership.",
         ackLabel: "Acknowledgment reaction",
         ackHintSlack: "Emoji added to the message when the bot starts working. Leave empty to disable.",
         ackHintTelegram: "Shown while Brian works.",

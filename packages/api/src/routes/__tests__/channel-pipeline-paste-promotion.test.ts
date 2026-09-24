@@ -234,7 +234,7 @@ describe('[COMP:api/telegram-byo-route] External guest connector access', () => 
 
     const resolved = await resolveConnectorTurnScopeForChannelTurn({
       ...scopeInput,
-      externalGuestConnectorTools: false,
+      useAssistantConnectorAuthority: false,
     }, resolveScope)
 
     expect(resolved).toBe(dataTurnScope)
@@ -246,7 +246,7 @@ describe('[COMP:api/telegram-byo-route] External guest connector access', () => 
 
     const resolved = await resolveConnectorTurnScopeForChannelTurn({
       ...scopeInput,
-      externalGuestConnectorTools: true,
+      useAssistantConnectorAuthority: true,
     }, resolveScope)
 
     expect(resolved).toBe(assistantTurnScope)

@@ -58,7 +58,7 @@ vi.mock('../../ingest/feishu-connector-instance.js', () => ({
 vi.mock('../../db/chat-lock.js', () => ({ withChatLock: (_key: string, fn: () => unknown) => fn() }))
 vi.mock('../channel-pipeline.js', () => ({ processChannelMessage: mocks.processChannelMessage }))
 
-import { feishuRoutes, type FeishuRouteOptions } from '../feishu.js'
+import { feishuRoutes, resolveFeishuThreadScope, type FeishuRouteOptions } from '../feishu.js'
 
 const CHANNEL_ROW_ID = '11111111-1111-4111-8111-111111111111'
 const ASSISTANT_ID = '22222222-2222-4222-8222-222222222222'
@@ -82,6 +82,34 @@ function normalizedMessage(over: Record<string, unknown> = {}) {
     ...over,
   }
 }
+
+describe('[COMP:api/feishu-route] thread session identity', () => {
+  it('opens a distinct session for each top-level message when replies start threads', () => {
+    expect(resolveFeishuThreadScope(normalizedMessage({ messageId: 'om_first' }), true))
+      .toEqual({ sessionChannelId: 'oc_chat:thread:om_first', threadRoot: 'om_first' })
+    expect(resolveFeishuThreadScope(normalizedMessage({ messageId: 'om_second' }), true))
+      .toEqual({ sessionChannelId: 'oc_chat:thread:om_second', threadRoot: 'om_second' })
+  })
+
+  it('resumes a nested reply on its om_ root and never uses the omt_ topic first', () => {
+    expect(resolveFeishuThreadScope(normalizedMessage({
+      messageId: 'om_current',
+      threadId: 'omt_topic',
+      rootId: 'om_root',
+      replyToMessageId: 'om_parent',
+    }), true)).toEqual({
+      sessionChannelId: 'oc_chat:thread:om_root',
+      threadRoot: 'om_root',
+    })
+  })
+
+  it('keeps existing topics isolated but preserves a bare top-level session when thread replies are disabled', () => {
+    expect(resolveFeishuThreadScope(normalizedMessage({ threadId: 'omt_topic' }), false))
+      .toEqual({ sessionChannelId: 'oc_chat:thread:omt_topic', threadRoot: 'omt_topic' })
+    expect(resolveFeishuThreadScope(normalizedMessage(), false))
+      .toEqual({ sessionChannelId: 'oc_chat', threadRoot: undefined })
+  })
+})
 
 function setup(over: {
   config?: Record<string, unknown>
@@ -438,9 +466,30 @@ describe('[COMP:api/feishu-route] bridge route', () => {
     expect(mocks.processChannelMessage).toHaveBeenCalledWith(expect.objectContaining({
       channelType: 'feishu',
       channelId: 'oc_chat',
+      sessionChannelId: 'oc_chat:thread:om_root',
+      connectorAuthority: 'assistant',
       incomingChannelMessageId: 'om_1',
       replyToMessageId: null,
       modelAlias: 'pro',
+    }))
+  })
+
+  it('can disable assistant connector authority explicitly in channel config', async () => {
+    const { app } = setup({
+      config: { requireMention: true, allowAssistantConnectorTools: false },
+    })
+    await request(app)
+      .post('/internal/feishu/inbound')
+      .set('X-Connector-Secret', 'shared-secret')
+      .send({
+        channelId: CHANNEL_ROW_ID,
+        message: normalizedMessage({ chatType: 'group', mentionedBot: true }),
+      })
+      .expect(202)
+
+    await vi.waitFor(() => expect(mocks.processChannelMessage).toHaveBeenCalledOnce())
+    expect(mocks.processChannelMessage).toHaveBeenCalledWith(expect.objectContaining({
+      connectorAuthority: 'disabled',
     }))
   })
 

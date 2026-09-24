@@ -779,6 +779,7 @@ describe('[COMP:api/channels-route] channel config', () => {
         requireMention: false,
         allowGuestConnectorTools: true,
         allowTrustedGuestFullAccess: true,
+        allowAssistantConnectorTools: false,
       })
     expect(res.status).toBe(200)
     // Existing config survives; both Telegram guest fields are accepted.
@@ -790,6 +791,7 @@ describe('[COMP:api/channels-route] channel config', () => {
         requireMention: false,
         allowGuestConnectorTools: true,
         allowTrustedGuestFullAccess: true,
+        allowAssistantConnectorTools: false,
       },
     })
     expect(res.body.channel.config).toEqual({
@@ -1548,6 +1550,34 @@ describe('[COMP:api/channel-destinations-route] GET channel-destinations', () =>
     expect(res.body.destinations).toEqual([
       expect.objectContaining({ channelType: 'slack', channelId: 'C123', title: 'Newer thread' }),
       expect.objectContaining({ channelType: 'slack', channelId: 'C456' }),
+    ])
+  })
+
+  it('normalizes Feishu thread sessions to one base-chat destination', async () => {
+    mockRows([
+      destRow({
+        channelType: 'feishu',
+        channelId: 'oc_project123:thread:om_older',
+        title: 'Older thread',
+        lastActiveAt: new Date('2026-08-20T01:00:00Z'),
+      }),
+      destRow({
+        channelType: 'feishu',
+        channelId: 'oc_project123:thread:om_newer',
+        title: 'Newer thread',
+        lastActiveAt: new Date('2026-08-20T02:00:00Z'),
+      }),
+    ])
+
+    const res = await request(buildApp()).get('/api/workspaces/ws-1/channel-destinations')
+
+    expect(res.status).toBe(200)
+    expect(res.body.destinations).toEqual([
+      expect.objectContaining({
+        channelType: 'feishu',
+        channelId: 'oc_project123',
+        title: 'Newer thread',
+      }),
     ])
   })
 

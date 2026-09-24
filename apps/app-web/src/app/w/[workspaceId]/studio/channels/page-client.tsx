@@ -1950,9 +1950,19 @@ export function ChannelConfigSection({
         <ConfigToggle
           label={cfg.replyInThread}
           hint={cfg.replyInThreadHint}
-          checked={config.replyInThread ?? false}
+          checked={config.replyInThread ?? isFeishu}
           disabled={saving}
           onChange={(v) => void save({ replyInThread: v })}
+        />
+      )}
+
+      {isFeishu && (
+        <ConfigToggle
+          label={cfg.assistantConnectorTools}
+          hint={cfg.assistantConnectorToolsHint}
+          checked={config.allowAssistantConnectorTools ?? true}
+          disabled={saving}
+          onChange={(v) => void save({ allowAssistantConnectorTools: v })}
         />
       )}
 
