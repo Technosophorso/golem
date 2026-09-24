@@ -96,7 +96,7 @@ export function programmePublicationIssues(document: ProgrammeCatalogueDocument)
       if (copy) issues.push(...copyIssues(programme, locale, copy, slugs))
     }
     if (programme.cover && programme.gallery && !programme.cover.startsWith(`/media/gallery/${programme.gallery}/`)) issues.push(`${programme.slug}: cover photo must belong to the chosen gallery`)
-    if (programme.cover && !programme.gallery) issues.push(`${programme.slug}: choose the gallery the cover photo belongs to`)
+    // A single cover photo without a photo set is valid: the programme page then shows the cover and no photo strip.
     if (programme.href && /^\/programmes\/[a-z0-9-]+\/?$/.test(programme.href)) issues.push(`${programme.slug}: a programme cannot redirect to another programme page`)
   }
   return [...new Set(issues)]

@@ -54,3 +54,16 @@ describe('[COMP:crm/programme-catalogue] publication contract', () => {
     expect(tools.saveProgrammeCatalogueDraft.isReadOnly).toBe(false)
   })
 })
+
+describe('[COMP:crm/programme-catalogue] cover photos', () => {
+  it('accepts a cover photo without a photo set, and rejects one from a different set', async () => {
+    const { ProgrammeCatalogueDocumentSchema, programmePublicationIssues } = await import('../programme-catalogue.js')
+    const en = { name: 'Synthetic', tagline: 'T', kicker: 'K', summary: 'S', sections: [{ id: 'about', heading: 'About', paragraphs: ['Text'] }] }
+    const doc = (programme: Record<string, unknown>) => ProgrammeCatalogueDocumentSchema.parse({ schemaVersion: 1,
+      audiences: { corporates: { gallery: 'spacebiz-dialogues', order: [] }, schools: { gallery: 'space-exchange-tour', order: [] }, students: { gallery: 'young-marco-polo', order: [] } },
+      programmes: [{ slug: 'synthetic', audiences: ['schools'], order: 0, i18n: { en }, ...programme }] })
+    expect(programmePublicationIssues(doc({ cover: '/media/gallery/annual-conference/annual-conference-06.jpg' }))).toEqual([])
+    expect(programmePublicationIssues(doc({ gallery: 'internship', cover: '/media/gallery/annual-conference/annual-conference-06.jpg' })))
+      .toEqual(['synthetic: cover photo must belong to the chosen gallery'])
+  })
+})
