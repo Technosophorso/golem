@@ -115,6 +115,26 @@ describe('[COMP:api/office-generation] production create render gate', () => {
     expect(snapshot.worksheets[1].cells[0].value).toBe('Unselected content')
   })
 
+  it('retains the pre-revision readability baseline through native rendering', async () => {
+    const snapshot = documentSnapshot()
+    const paragraph = snapshot.sections[0].nodes.find(node => node.kind === 'paragraph')!
+    if (paragraph.kind !== 'paragraph') throw Error('fixture')
+    snapshot.sections[0].nodes.push({ ...structuredClone(paragraph), id: id(960), runs: [{ ...structuredClone(paragraph.runs[0]), id: id(961), text: 'Unchanged fine print', style: { ...paragraph.runs[0].style, fontSizePt: 7 } }] })
+    converter.mockReset().mockResolvedValue(minimalPdf())
+    const runs = paragraph.runs.map(run => ({ ...run, text: 'Revised content' }))
+    const commands = await generateAssistantOfficeCommands({
+      provider: provider({ commands: [{ kind: 'updateText', targetId: paragraph.id, runs }] }) as never,
+      model: 'test', snapshot, baseVersion: 1, assistantId: id(950), targetIds: [paragraph.id], instruction: 'Revise content, retain the admitted typography',
+      validateCandidate: async candidate => {
+        const rendered = await validateOfficeInternalCandidateRendering({ snapshot: candidate, fitBudget: { readabilityReference: snapshot } })
+        expect(rendered.receipt, JSON.stringify(rendered.receipt)).toMatchObject({ ok: true })
+        if (!rendered.receipt.ok) throw Error('Render gate failed')
+      },
+    })
+    expect(commands).toHaveLength(1)
+    expect(converter).toHaveBeenCalledOnce()
+  })
+
   it('internal XLSX validation supports multiple visible sheets without rewriting print scope', async () => {
     const snapshot = completeSpreadsheetSnapshot()
     const other = structuredClone(snapshot.worksheets[0])

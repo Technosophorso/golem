@@ -6593,6 +6593,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
           const { validateOfficeInternalCandidateRendering } = await import('./office/render-validation.js')
           const rendered = await validateOfficeInternalCandidateRendering({
             snapshot: candidate,
+            fitBudget: { readabilityReference: nextSnapshot },
             resolveResource: resourceId => readOfficeResource(job.initiatedByUserId, job.workspaceId, resourceId),
           })
           if (!rendered.receipt.ok) throw new Error(`Office revision rendering failed: ${rendered.receipt.issues.map(i => `${i.code}: ${i.message}`).join('; ')}`)
