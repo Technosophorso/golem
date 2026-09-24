@@ -84,10 +84,17 @@ export const SettingsDocumentSchema = z.object({
 
 // ── news ───────────────────────────────────────────────────────────────────
 export const NEWS_KINDS = ['newsletter', 'press', 'article', 'publication'] as const
+// A news item may exist only in Chinese, so English is not structurally required
+// here; publication requires text for every language the item is listed in.
+const newsTitle = z.object({ en: short.default(''), 'zh-Hant': short.optional(), 'zh-Hans': short.optional() }).strict()
+const newsText = z.object({ en: text.default(''), 'zh-Hant': text.optional(), 'zh-Hans': text.optional() }).strict()
 export const NewsDocumentSchema = z.object({
   schemaVersion: z.literal(1),
   items: z.array(z.object({
-    id, sites, kind: z.enum(NEWS_KINDS), date, title: LocalizedShortSchema, summary: LocalizedTextSchema.optional(),
+    id, sites, kind: z.enum(NEWS_KINDS), date,
+    /** Which site languages list the item. Chinese-language coverage is often listed on the Chinese pages only. */
+    locales: z.array(z.enum(SITE_CONTENT_LOCALES)).min(1).max(3).default([...SITE_CONTENT_LOCALES]),
+    title: newsTitle, summary: newsText.optional(),
     href: href.optional(), fileId: z.string().uuid().optional(), image: SiteImageSchema.optional(),
   }).strict()).max(1000),
 }).strict()
@@ -183,7 +190,9 @@ export function siteContentPublicationIssues(collection: SiteContentCollection, 
       const doc = document as SiteContentDocuments['news']
       for (const key of duplicates(doc.items.map(item => item.id))) issues.push(`News item ${key} is listed twice`)
       for (const item of doc.items) {
-        if (blank(item.title)) issues.push(`News item ${item.id} needs an English title`)
+        for (const locale of item.locales) {
+          if (!item.title[locale]?.trim() && !item.title.en.trim()) issues.push(`News item ${item.id} needs a title for ${locale}`)
+        }
         if (item.href && item.fileId) issues.push(`News item ${item.id}: choose a link or a file, not both`)
       }
       break

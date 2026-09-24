@@ -599,6 +599,7 @@ export const ja: Dictionary = {
         "title": "タイトル",
         "value": "値",
         "ymp": "Young Marco Polo 申込",
+        "locales": "表示する言語",
         "alt": "画像の説明",
       },
     },

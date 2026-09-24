@@ -26,7 +26,7 @@ function withKey(object: Value, key: string, next: unknown): Value {
   return copy;
 }
 
-function LocalizedInput({ label, value, onChange, context, optional, multiline }: { label: string; value: unknown; onChange: (next: unknown) => void; context: EditorContext; optional?: boolean; multiline?: boolean }) {
+function LocalizedInput({ label, value, onChange, context, optional, multiline, anyLanguage }: { label: string; value: unknown; onChange: (next: unknown) => void; context: EditorContext; optional?: boolean; multiline?: boolean; anyLanguage?: boolean }) {
   const { c } = useLabels();
   const english = localizedText(value, "en");
   const current = localizedText(value, context.locale);
@@ -39,7 +39,7 @@ function LocalizedInput({ label, value, onChange, context, optional, multiline }
   }
   return <Input label={label} value={current} onChange={change} multiline={multiline} disabled={context.disabled}
     placeholder={context.locale !== "en" ? english : undefined}
-    help={fallback && english ? c.englishShown : context.locale === "en" && !optional && !english ? c.englishRequired : undefined}/>;
+    help={fallback && english ? c.englishShown : context.locale === "en" && !optional && !anyLanguage && !english ? c.englishRequired : undefined}/>;
 }
 
 function MediaThumb({ workspaceId, id, mime }: { workspaceId: string; id: string; mime?: string }) {
@@ -120,7 +120,15 @@ function FieldInput({ field, value, onChange, context }: { field: Field; value: 
       return <Input label={name} type={field.type === "email" ? "email" : field.type === "date" ? "date" : "text"} value={typeof value === "string" ? value : ""} multiline={field.multiline} disabled={context.disabled}
         onChange={text => onChange(field.optional && !text ? undefined : text)}/>;
     case "localized":
-      return <LocalizedInput label={name} value={value} onChange={onChange} context={context} optional={field.optional} multiline={field.multiline}/>;
+      return <LocalizedInput label={name} value={value} onChange={onChange} context={context} optional={field.optional} multiline={field.multiline} anyLanguage={field.anyLanguage}/>;
+    case "locales": {
+      const listed = Array.isArray(value) ? (value as string[]) : ["en", "zh-Hant", "zh-Hans"];
+      const names: Record<string, string> = { en: "English", "zh-Hant": "繁體中文", "zh-Hans": "简体中文" };
+      return <fieldset className="flex flex-wrap items-center gap-4"><legend className="text-sm">{name}</legend>
+        {(["en", "zh-Hant", "zh-Hans"] as const).map(locale => <Toggle key={locale} label={names[locale]} checked={listed.includes(locale)} disabled={context.disabled || (listed.length === 1 && listed.includes(locale))}
+          onChange={on => onChange(on ? [...new Set([...listed, locale])] : listed.filter(item => item !== locale))}/>)}
+      </fieldset>;
+    }
     case "number":
       return <Input label={name} type="number" min={field.min} max={field.max} value={typeof value === "number" ? String(value) : ""} disabled={context.disabled}
         onChange={text => onChange(text === "" ? field.min ?? 0 : Number(text))}/>;
@@ -181,7 +189,7 @@ export function DocumentOutline({ fields, value, locale }: { fields: Field[]; va
         return <p><span className="text-muted-foreground">{name}:</span> {text}{locale !== "en" && !localizedText(raw, locale) ? <span className="text-xs text-muted-foreground"> ({c.englishShown})</span> : null}</p>;
       }
       case "image": return isObject(raw) ? <p><span className="text-muted-foreground">{name}:</span> {raw.mediaId ? c.library : String(raw.src ?? "")}</p> : null;
-      case "sites": return <p><span className="text-muted-foreground">{name}:</span> {(raw as string[]).map(site => site.toUpperCase()).join(" · ")}</p>;
+      case "sites": case "locales": return <p><span className="text-muted-foreground">{name}:</span> {(raw as string[]).map(site => site.toUpperCase()).join(" · ")}</p>;
       case "boolean": return <p><span className="text-muted-foreground">{name}:</span> {raw ? "✓" : "—"}</p>;
       case "localizedList": return <div><p className="text-muted-foreground">{name}:</p>{(raw as unknown[]).map((item, i) => <p key={i} className="pl-3">{localizedText(item, locale) || localizedText(item, "en")}</p>)}</div>;
       case "list": return <div><p className="font-medium">{name} ({(raw as unknown[]).length})</p><ol className="list-inside list-decimal space-y-1 pl-3">{(raw as Value[]).map((item, i) => <li key={i}>{field.itemTitle(item)}</li>)}</ol></div>;

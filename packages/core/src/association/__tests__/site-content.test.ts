@@ -26,8 +26,14 @@ describe('[COMP:crm/site-content] schemas', () => {
     expect(parseSiteContent('partners', partner({ src: '/media/a.png', alt: L('A') }, { href: 'https://acme.test' })).partners[0].active).toBe(true)
   })
 
-  it('requires English on every localized field', () => {
-    expect(() => parseSiteContent('news', { schemaVersion: 1, items: [{ id: 'q4', sites: ['oasa'], kind: 'newsletter', date: '2021-10-28', title: { 'zh-Hant': '通訊' } }] })).toThrow()
+  it('requires English on every localized field except news, which may be listed in Chinese only', () => {
+    expect(() => parseSiteContent('partners', { schemaVersion: 1, partners: [{ id: 'a', name: 'A', logo: { src: '/media/a.png', alt: { 'zh-Hant': '標誌' } }, sites: ['sea'], order: 0 }] })).toThrow()
+    const news = parseSiteContent('news', { schemaVersion: 1, items: [
+      { id: 'hkcd', sites: ['sea'], kind: 'article', date: '2026-08-25', locales: ['zh-Hant', 'zh-Hans'], title: { 'zh-Hant': '「智用」AI工具', 'zh-Hans': '「智用」AI工具' } },
+      { id: 'q4', sites: ['oasa'], kind: 'newsletter', date: '2021-10-28', title: { en: 'Q4 Newsletter' } },
+      { id: 'bad', sites: ['sea'], kind: 'article', date: '2026-08-25', locales: ['en'], title: { 'zh-Hant': '只有中文' } }] })
+    expect(news.items[1].locales).toEqual(['en', 'zh-Hant', 'zh-Hans'])
+    expect(siteContentPublicationIssues('news', news)).toEqual(['News item bad needs a title for en'])
   })
 })
 

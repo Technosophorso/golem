@@ -599,6 +599,7 @@ export const zh: Dictionary = {
         "title": "標題",
         "value": "數值",
         "ymp": "Young Marco Polo 申請",
+        "locales": "顯示語言",
         "alt": "圖片描述",
       },
     },
