@@ -10,6 +10,10 @@ export type AssistantQuestion = z.infer<typeof askQuestionSchema>
 
 export const askQuestionSchema = z.object({
   question: z.string().trim().min(1).describe('The question to ask the user'),
+  allowCustom: z.boolean().optional().describe('Whether a typed answer outside the options is allowed; defaults to true'),
+  actionId: z.string().min(1).max(256).optional(),
+  version: z.union([z.string().max(256), z.number().int()]).optional(),
+  context: z.string().max(8000).optional().describe('Authored context for this question, not execution authority'),
   options: z.array(z.string().trim().min(1).max(80)).min(2).max(8)
     .refine((labels) => new Set(labels).size === labels.length, 'Options must be distinct')
     .optional().describe('Optional single-choice suggestions; the user can also type an answer'),

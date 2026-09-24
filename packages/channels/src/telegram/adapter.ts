@@ -240,6 +240,8 @@ export type ChatSeenEvent = {
 }
 
 export type TelegramAdapterOptions = {
+  /** Correlated questions must not silently move out of a deleted topic. */
+  strictTopic?: boolean
   token: string
   botUsername?: string
   config?: TelegramAdapterConfig
@@ -736,7 +738,7 @@ export function createTelegramAdapter(options: TelegramAdapterOptions): ChannelA
     try {
       return await api.sendMessage(chatId, text, opts)
     } catch (err) {
-      if (opts.messageThreadId != null && isTelegramThreadNotFoundError(err)) {
+      if (!options.strictTopic && opts.messageThreadId != null && isTelegramThreadNotFoundError(err)) {
         console.warn(
           `[telegram] sendMessage to chat ${chatId} failed because topic ${opts.messageThreadId} no longer exists; retrying without message_thread_id`,
         )

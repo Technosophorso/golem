@@ -1228,3 +1228,14 @@ it('accepts recent approval delivery', () => {
   }
   expect(WorkflowDefinitionSchema.parse(definition).steps[0]).toMatchObject({ approval: { deliveryChannel: 'recent' } })
 })
+
+
+describe('[COMP:workflow/schemas] authored question response authority', () => {
+  it.each(['toolName', 'answerField'] as const)('rejects webhook interpolation in %s', (field) => {
+    const result = WorkflowDefinitionSchema.safeParse({ startStepId: 'q', steps: [{
+      id: 'q', type: 'assistant_call', target: { assistantId: 'primary' }, prompt: 'Notify',
+      questionResponse: { toolName: 'answer_action', arguments: {}, answerField: 'answer', [field]: '{{input.toolName}}' },
+    }] })
+    expect(result.success).toBe(false)
+  })
+})

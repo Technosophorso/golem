@@ -511,6 +511,7 @@ import {
 import { modelMenuRoutes } from './routes/model-menu.js'
 import { pageActionsRoutes } from './routes/page-actions.js'
 import { workflowWebhookRoutes } from './routes/workflow-webhooks.js'
+import { createChannelQuestionStore } from './workflow/channel-questions.js'
 import { createWorkflowChannelDelivery } from './workflow/channel-delivery.js'
 import { createWorkflowDependencyPreflight } from './workflow/dependency-preflight.js'
 import { createDeliveryTargetResolver } from './scheduling/delivery-target.js'
@@ -2097,6 +2098,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
   const communitySkillRegistry = loadSkillRegistry()
 
   const integrationStore = credKey ? createDbChannelIntegrationStore(credKey) : null
+  const channelQuestionStore = createChannelQuestionStore()
   syncNativeSlashCommands = integrationStore
     ? (userId: string, workspaceId: string) => syncWorkspaceNativeSlashCommands({
         userId,
@@ -2507,6 +2509,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       },
       resolveDeliveryTarget: createDeliveryTargetResolver(integrationStore ?? undefined),
       deliverToChannel: createWorkflowChannelDelivery({
+        questionStore: channelQuestionStore,
         integrationStore: integrationStore ?? undefined,
         defaultTelegramBotToken: env.TELEGRAM_BOT_TOKEN,
         waConnectorUrl: env.WA_CONNECTOR_URL,
@@ -3273,6 +3276,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       })
     },
     deliverToChannel: createWorkflowChannelDelivery({
+      questionStore: channelQuestionStore,
       integrationStore: integrationStore ?? undefined,
       defaultTelegramBotToken: env.TELEGRAM_BOT_TOKEN,
       waConnectorUrl: env.WA_CONNECTOR_URL,
@@ -3643,6 +3647,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     resolvePrimary: resolvePrimaryAssistantForWorkspace,
     resolveDeliveryTarget: createDeliveryTargetResolver(integrationStore ?? undefined),
     deliverToChannel: createWorkflowChannelDelivery({
+      questionStore: channelQuestionStore,
       integrationStore: integrationStore ?? undefined,
       defaultTelegramBotToken: env.TELEGRAM_BOT_TOKEN,
       waConnectorUrl: env.WA_CONNECTOR_URL,
@@ -8587,6 +8592,7 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     // JWT guard. All gated on the integration store (CHANNEL_CREDENTIAL_KEY).
     if (integrationStore) {
       app.use('/webhook/telegram', telegramByoRoutes({
+        questionStore: channelQuestionStore,
         backgroundModel,
         provider, configuredProviders, resolveWorkspaceCustomLlm, publishSessionEvent, systemPrompt: LAYER_1_SYSTEM_PROMPT, tools: allTools, capabilityStore,
         memoryStore, usageStore, checkCreditBudget: ports.checkCreditBudget,

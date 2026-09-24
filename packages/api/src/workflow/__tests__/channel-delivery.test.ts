@@ -464,3 +464,44 @@ describe('[COMP:workflow/channel-delivery] question fallback', () => {
     expect(sendMessage.mock.calls.at(-1)?.[1].text).toBe('per-person update')
   })
 })
+
+describe('[COMP:workflow/channel-delivery] durable question buttons', () => {
+  it('binds the actual BYO integration and topic, persists original context, attaches the returned message id', async () => {
+    const { createChannelQuestionStore } = await import('../channel-questions.js')
+    const store = createChannelQuestionStore()
+    const create = vi.spyOn(store, 'create').mockResolvedValue('a'.repeat(24))
+    const attach = vi.spyOn(store, 'attach').mockResolvedValue()
+    vi.mocked(integrationStore.getCredentialsForAssistantSystem).mockResolvedValueOnce({ id: 'byo-integration', credentials: { bot_token: 'byo' } } as never)
+    sendMessage.mockResolvedValueOnce('123')
+    const question = { question: 'Which?', options: ['dev', 'prod'], actionId: 'job-7', version: 5, allowCustom: true, context: 'Authored context' }
+    const response = { toolName: 'answer_action', arguments: { action_id: 'job-7', version: 5 }, answerField: 'answer' }
+    await createWorkflowChannelDelivery({ integrationStore, questionStore: store, defaultTelegramBotToken: 'official' })({
+      ...baseParams(), channelType: 'telegram', channelId: '-100:topic:7', question, questionResponse: response,
+    })
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ integrationId: 'byo-integration', channelId: '-100:topic:7', question, response }))
+    expect(createTelegramAdapter).toHaveBeenLastCalledWith({ token: 'byo', strictTopic: true })
+    expect(sendMessage).toHaveBeenLastCalledWith('-100:topic:7', expect.objectContaining({
+      actions: [{ id: '0', label: 'dev', data: `wq:${'a'.repeat(24)}:0` }, { id: '1', label: 'prod', data: `wq:${'a'.repeat(24)}:1` }],
+    }), undefined)
+    expect(attach).toHaveBeenCalledWith('a'.repeat(24), '123')
+  })
+  it('does not advertise answer buttons or typing when no response action is configured', async () => {
+    vi.mocked(integrationStore.getCredentialsForAssistantSystem).mockResolvedValueOnce({ id: 'byo', credentials: { bot_token: 'byo' } } as never)
+    sendMessage.mockResolvedValueOnce('123')
+    await createWorkflowChannelDelivery({ integrationStore })({ ...baseParams(), channelType: 'telegram',
+      question: { question: 'Which?', options: ['dev', 'prod'] } })
+    expect(sendMessage.mock.calls.at(-1)?.[1].actions).toBeUndefined()
+    expect(sendMessage.mock.calls.at(-1)?.[1].text).toContain('No response action is configured')
+    expect(sendMessage.mock.calls.at(-1)?.[1].text).not.toContain('type another answer')
+  })
+
+  it('never retries a correlated BYO question through the official bot', async () => {
+    vi.mocked(integrationStore.getCredentialsForAssistantSystem).mockResolvedValueOnce({ id: 'byo-integration', credentials: { bot_token: 'byo' } } as never)
+    sendMessage.mockRejectedValueOnce(new Error('Telegram API sendMessage: chat not found'))
+    const start = createTelegramAdapter.mock.calls.length
+    await expect(createWorkflowChannelDelivery({ integrationStore, defaultTelegramBotToken: 'official' })({
+      ...baseParams(), channelType: 'telegram', question: { question: 'Which?' },
+    })).rejects.toThrow('chat not found')
+    expect(vi.mocked(mockedCreateTelegramAdapter).mock.calls.slice(start).map(([opts]) => opts.token)).toEqual(['byo'])
+  })
+})
