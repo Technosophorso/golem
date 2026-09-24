@@ -5,12 +5,23 @@ import {
   type OfficeArtifactSnapshot,
   type OfficeTemplateBundle,
 } from '@use-brian/office-model'
-import { fitOfficeArtifact } from '@use-brian/office-renderer'
+import { createHash } from 'node:crypto'
+import { repairOfficeArtifactFit, type OfficeFitRepairOptions } from '@use-brian/office-renderer'
+export { repairOfficeArtifactFit } from '@use-brian/office-renderer'
 import { exportOfficeDocument, reparseOfficeDocument } from '../docx/index.js'
 import { exportOfficePresentation, reparseOfficePresentation } from '../pptx/index.js'
 import { exportOfficeSpreadsheet, reparseOfficeSpreadsheet } from '../xlsx/index.js'
 import { officeSemanticHash, type OfficeResourceResolver } from '../package.js'
 import { OfficeGenerationBriefSchema, OfficeGenerationFailure, type OfficeAuthorityProjection, type OfficeClaimPlanEntry, type OfficeEvidencePacket, type OfficeGenerationBrief, type OfficeGenerationEvent, type OfficeGenerationOutcome, type OfficeGenerationStage } from './contracts.js'
+
+export type OfficeGenerationFitPolicy = OfficeFitRepairOptions
+export type OfficeGenerationRenderReceipt = {
+  ok: boolean
+  candidateHash: string
+  exportHash?: string
+  issues: Array<{ code: string; message: string; objectId?: string }>
+}
+const candidateHash = (value: string | Uint8Array) => createHash('sha256').update(value).digest('hex')
 
 export type OfficeGenerationCheckpoint = {
   stage: OfficeGenerationStage
@@ -19,6 +30,8 @@ export type OfficeGenerationCheckpoint = {
   snapshot?: OfficeArtifactSnapshot
   evidence?: OfficeEvidencePacket
   claims?: OfficeClaimPlanEntry[]
+  fitRepair?: { attempts: number; changes: unknown[]; diagnostics: unknown[] }
+  renderValidation?: OfficeGenerationRenderReceipt
 }
 
 export type OfficeGenerationPipelineDeps = {
@@ -29,12 +42,16 @@ export type OfficeGenerationPipelineDeps = {
   planClaims(brief: OfficeGenerationBrief, evidence: OfficeEvidencePacket, template: OfficeTemplateBundle): Promise<OfficeClaimPlanEntry[]>
   construct(brief: OfficeGenerationBrief, evidence: OfficeEvidencePacket, claims: OfficeClaimPlanEntry[], template: OfficeTemplateBundle): Promise<OfficeArtifactSnapshot>
   processMedia(snapshot: OfficeArtifactSnapshot, authority: OfficeAuthorityProjection): Promise<OfficeArtifactSnapshot>
+  /** Constructor-provided actual changed IDs, with remapped template locks. */
+  fitRepairPolicy?(snapshot: OfficeArtifactSnapshot): OfficeGenerationFitPolicy
+  /** Absence fails closed; API worker supplies the real converter by default. */
+  renderValidation?(snapshot: OfficeArtifactSnapshot, params: { exportBytes: Uint8Array; resolveResource: OfficeResourceResolver; fitBudget: OfficeFitRepairOptions['budget'] }): Promise<OfficeGenerationRenderReceipt>
   resolveResource: OfficeResourceResolver
   checkpoint(value: OfficeGenerationCheckpoint): Promise<void>
   emit(event: OfficeGenerationEvent): Promise<void>
   cancelled(): Promise<boolean>
   drainSteering(stage: OfficeGenerationStage): Promise<string[]>
-  commit(snapshot: OfficeArtifactSnapshot, params: { authority: OfficeAuthorityProjection; templateVersionId: string; summary: string }): Promise<{ artifactId: string; version: number }>
+  commit(snapshot: OfficeArtifactSnapshot, params: { authority: OfficeAuthorityProjection; templateVersionId: string; summary: string; exportBytes: Uint8Array; renderValidation: OfficeGenerationRenderReceipt }): Promise<{ artifactId: string; version: number }>
 }
 
 function referenceUrls(additionalContext: string | undefined): string[] {
@@ -43,14 +60,22 @@ function referenceUrls(additionalContext: string | undefined): string[] {
   return [...new Set(urls.map((url) => url.replace(/[.,;:!?]+$/, '')))].slice(0, 2)
 }
 
-function admittedReadabilityExemptObjectIds(template: OfficeTemplateBundle): string[] {
+function admittedReadabilityExemptObjectIds(template: OfficeTemplateBundle, snapshot: OfficeArtifactSnapshot): string[] {
+  const current = new Map<string, string>()
+  const index = (value: unknown): void => {
+    if (!value || typeof value !== 'object') return
+    const object = value as Record<string, unknown>
+    if (typeof object.id === 'string') current.set(object.id, JSON.stringify(object))
+    for (const child of Object.values(object)) index(child)
+  }
+  index(snapshot)
   const ids = new Set<string>()
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return
     if (!Array.isArray(value)) {
       const object = value as Record<string, unknown>
       const style = object.style as Record<string, unknown> | undefined
-      if (typeof object.id === 'string' && style && typeof style.fontSizePt === 'number' && style.fontSizePt < 8) ids.add(object.id)
+      if (typeof object.id === 'string' && style && typeof style.fontSizePt === 'number' && style.fontSizePt < 8 && current.get(object.id) === JSON.stringify(object)) ids.add(object.id)
     }
     for (const child of Object.values(value)) visit(child)
   }
@@ -136,21 +161,34 @@ export async function runOfficeGenerationPipeline(input: unknown, deps: OfficeGe
 
     snapshot = assertOfficeArtifactSnapshot(await deps.processMedia(snapshot, inheritedAuthority))
     if (!await stage(deps, { stage: 'media', version: 6, templateVersionId: template.id, snapshot, evidence, claims }, 'office.job.media_processed', {})) return { status: 'cancelled' }
-    const fit = fitOfficeArtifact(snapshot, {
-      readabilityExemptObjectIds: admittedReadabilityExemptObjectIds(template),
-    })
-    if (!fit.ok) return { status: 'failed', code: 'fit_failed', message: fit.issues.map((issue) => `${issue.objectId}: ${issue.message}`).join('; ') }
-    if (!await stage(deps, { stage: 'fit_render', version: 7, templateVersionId: template.id, snapshot, evidence, claims }, 'office.job.fit_validated', { pages: fit.result.pages.length })) return { status: 'cancelled' }
+    const policy = deps.fitRepairPolicy?.(snapshot) ?? { eligibleTargetIds: [], maxAttempts: 1 }
+    const fitBudget = { ...policy.budget, minimumFontSizePt: Math.max(8, policy.minimumFontSizePt ?? 8, policy.budget?.minimumFontSizePt ?? 8), readabilityExemptObjectIds: policy.budget?.readabilityExemptObjectIds ?? admittedReadabilityExemptObjectIds(template, snapshot) }
+    const repair = repairOfficeArtifactFit(snapshot, { ...policy, budget: fitBudget })
+    snapshot = assertOfficeArtifactSnapshot(repair.candidate)
+    const fit = repair.fit
+    const fitRepair = { attempts: fit.attempts, changes: repair.changes, diagnostics: repair.diagnostics }
+    if (!fit.ok) {
+      await deps.checkpoint({ stage: 'fit_render', version: 7, templateVersionId: template.id, snapshot, evidence, claims, fitRepair })
+      return { status: 'failed', code: 'fit_failed', message: fit.issues.map((issue) => `${issue.objectId}: ${issue.message}`).join('; ') }
+    }
+    if (!await stage(deps, { stage: 'fit_render', version: 7, templateVersionId: template.id, snapshot, evidence, claims, fitRepair }, 'office.job.fit_validated', { pages: fit.result.pages.length, attempts: fit.attempts })) return { status: 'cancelled' }
     const candidate = preflightOfficeCandidate(snapshot)
     if (!candidate.ok) return { status: 'failed', code: 'candidate_invalid', message: candidate.diagnostics.map((diagnostic) => `${diagnostic.path}: ${diagnostic.message}`).join('; ') }
     if (!await stage(deps, { stage: 'validate', version: 8, templateVersionId: template.id, snapshot, evidence, claims }, 'office.job.candidate_validated', {})) return { status: 'cancelled' }
 
     const exported = snapshot.family === 'document' ? await exportOfficeDocument(snapshot, deps.resolveResource) : snapshot.family === 'presentation' ? await exportOfficePresentation(snapshot, deps.resolveResource) : await exportOfficeSpreadsheet(snapshot, deps.resolveResource)
+    if (!deps.renderValidation) return { status: 'failed', code: 'render_validation_unavailable', message: 'Rendered validation is required before generation can be committed.' }
+    const renderValidation = await deps.renderValidation(structuredClone(snapshot), { exportBytes: new Uint8Array(exported.bytes), resolveResource: deps.resolveResource, fitBudget })
+    const bound = renderValidation.candidateHash === candidateHash(JSON.stringify(snapshot)) && renderValidation.exportHash === candidateHash(exported.bytes)
+    if (!renderValidation.ok || renderValidation.issues.length || !bound) {
+      await deps.checkpoint({ stage: 'export_reparse', version: 9, templateVersionId: template.id, snapshot, evidence, claims, fitRepair, renderValidation })
+      return { status: 'failed', code: 'render_validation_failed', message: bound ? renderValidation.issues.map(issue => `${issue.objectId ?? issue.code}: ${issue.message}`).join('; ') : 'Rendered validation receipt does not match the candidate/export bytes.' }
+    }
     const reopened = snapshot.family === 'document' ? await reparseOfficeDocument(exported.bytes) : snapshot.family === 'presentation' ? await reparseOfficePresentation(exported.bytes) : await reparseOfficeSpreadsheet(exported.bytes)
     if (reopened.semanticHash !== officeSemanticHash(snapshot) || reopened.layoutSerialization !== fit.result.serialization) return { status: 'failed', code: 'export_reparse_mismatch', message: 'The generated Office file did not reopen to the validated semantic/layout identity.' }
-    if (!await stage(deps, { stage: 'export_reparse', version: 9, templateVersionId: template.id, snapshot, evidence, claims }, 'office.job.export_reopened', { bytes: exported.bytes.byteLength })) return { status: 'cancelled' }
-    const committed = await deps.commit(snapshot, { authority: inheritedAuthority, templateVersionId: template.id, summary: brief.outcome })
-    await deps.checkpoint({ stage: 'completed', version: 10, templateVersionId: template.id, snapshot, evidence, claims })
+    if (!await stage(deps, { stage: 'export_reparse', version: 9, templateVersionId: template.id, snapshot, evidence, claims, fitRepair, renderValidation }, 'office.job.export_reopened', { bytes: exported.bytes.byteLength })) return { status: 'cancelled' }
+    const committed = await deps.commit(snapshot, { authority: inheritedAuthority, templateVersionId: template.id, summary: brief.outcome, exportBytes: exported.bytes, renderValidation })
+    await deps.checkpoint({ stage: 'completed', version: 10, templateVersionId: template.id, snapshot, evidence, claims, fitRepair, renderValidation })
     await deps.emit({ stage: 'completed', code: 'office.job.completed', params: { artifactId: committed.artifactId, version: committed.version } })
     return { status: 'completed', artifactId: committed.artifactId, version: committed.version, exportBytes: exported.bytes, semanticHash: exported.semanticHash }
   } catch (cause) {

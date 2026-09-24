@@ -88,6 +88,7 @@ function targetOutline(snapshot: OfficeArtifactSnapshot, offset = 0): Pick<Offic
   } else {
     for (const [sheetIndex, sheet] of snapshot.worksheets.entries()) {
       add({ id: sheet.id, kind: 'worksheet', label: `${sheetIndex + 1}. ${sheet.name}` })
+      for (const table of sheet.tables ?? []) add({ id: table.id, kind: 'spreadsheetTable', label: `${table.name} ${table.ref}; columns ${table.columns.map(c => `${c.id}:${c.name}`).join(', ')}`.slice(0, 240), parentId: sheet.id })
       for (const cell of sheet.cells) add({ id: cell.id, kind: cell.formula ? 'formulaCell' : 'cell', label: `${sheet.name}!${cell.address}: ${cell.formula ? `=${cell.formula}` : String(cell.value ?? '')}`.slice(0, 240), parentId: sheet.id, locked: cell.locked })
       for (const image of sheet.images) add({ id: image.id, kind: 'worksheetImage', label: image.altText || 'Decorative worksheet image', parentId: sheet.id })
     }

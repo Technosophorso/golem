@@ -41,7 +41,7 @@ export function addressesInRange(range: string): string[] {
   const [leftRaw, rightRaw = leftRaw] = range.split(':')
   const left = parseCellAddress(leftRaw)
   const right = parseCellAddress(rightRaw)
-  if (!left || !right) return []
+  if (!left || !right || Math.max(left.column, right.column) > 16384 || Math.max(left.row, right.row) > 1048576 || (Math.abs(left.row - right.row) + 1) * (Math.abs(left.column - right.column) + 1) > 250000) return []
   const result: string[] = []
   for (let row = Math.min(left.row, right.row); row <= Math.max(left.row, right.row); row += 1) {
     for (let column = Math.min(left.column, right.column); column <= Math.max(left.column, right.column); column += 1) result.push(`${columnIndexToName(column)}${row}`)
@@ -49,7 +49,7 @@ export function addressesInRange(range: string): string[] {
   return result
 }
 
-function tokenize(source: string): Token[] {
+function tokenize(source: string, reference?: (raw: string, start: number) => void): Token[] {
   const tokens: Token[] = []
   let index = 0
   while (index < source.length) {
@@ -58,24 +58,27 @@ function tokenize(source: string): Token[] {
     if (whitespace) { index += whitespace[0].length; continue }
     const quotedRef = /^(?:'((?:[^']|'')+)'|([A-Za-z_][A-Za-z0-9_. ]*))!\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,6})/.exec(rest)
     if (quotedRef) {
+      reference?.(quotedRef[0], index)
       const sheet = (quotedRef[1] ?? quotedRef[2]).replaceAll("''", "'")
       tokens.push({ kind: 'ref', value: `${sheet}!${quotedRef[3].toUpperCase()}${quotedRef[4]}` })
       index += quotedRef[0].length
       continue
     }
     const ref = /^\$?([A-Za-z]{1,3})\$?([1-9][0-9]{0,6})/.exec(rest)
-    if (ref) { tokens.push({ kind: 'ref', value: `${ref[1].toUpperCase()}${ref[2]}` }); index += ref[0].length; continue }
+    if (ref) { reference?.(ref[0], index); tokens.push({ kind: 'ref', value: `${ref[1].toUpperCase()}${ref[2]}` }); index += ref[0].length; continue }
     const number = /^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)/.exec(rest)
     if (number) { tokens.push({ kind: 'number', value: number[0] }); index += number[0].length; continue }
     if (rest[0] === '"') {
       let text = ''
+      let closed = false
       index += 1
       while (index < source.length) {
         if (source[index] === '"' && source[index + 1] === '"') { text += '"'; index += 2; continue }
-        if (source[index] === '"') { index += 1; break }
+        if (source[index] === '"') { index += 1; closed = true; break }
         text += source[index]
         index += 1
       }
+      if (!closed) throw new FormulaFailure('#VALUE!', 'Unterminated formula string')
       tokens.push({ kind: 'string', value: text })
       continue
     }
@@ -323,6 +326,7 @@ export function recalculateSpreadsheet(snapshot: SpreadsheetSnapshot): { snapsho
         return target?.formula ? evaluate(targetSheet, target) : literalValue(target)
       })
       const result = scalar(parser.parse())
+      if (typeof result === 'number' && !Number.isFinite(result)) throw new FormulaFailure('#NUM!', 'Non-finite calculation result')
       if (isError(result)) throw new FormulaFailure(result, `Formula returned ${result}`)
       cell.calculatedValue = result
       delete cell.error
@@ -381,4 +385,22 @@ export function spreadsheetCellDisplayValue(cell: SpreadsheetCell): string {
     }
   }
   return String(value)
+}
+
+/** Copy references using the calculator's lexer, never rewriting strings or sheet names. */
+export function translateSpreadsheetFormula(formula: string, rowDelta: number): string {
+  if (formula.length > 32000 || !Number.isSafeInteger(rowDelta)) throw new Error('Unsafe formula')
+  const edits: { start: number; raw: string; value: string }[] = []
+  tokenize(formula, (raw, start) => {
+    const match = /^(.*!|)(\$?[A-Za-z]{1,3})(\$?)([1-9][0-9]*)$/.exec(raw)!
+    if (/[\[\]:]/.test(match[1])) throw new Error('Unsupported formula reference')
+    const address = parseCellAddress(`${match[2]}${match[4]}`)!
+    const row = address.row + (match[3] ? 0 : rowDelta)
+    if (address.column > 16384 || row < 1 || row > 1048576) throw new Error('Translated formula exceeds worksheet bounds')
+    edits.push({ start, raw, value: `${match[1]}${match[2]}${match[3]}${row}` })
+  }).forEach(token => {
+    if (token.kind === 'identifier' && !['SUM', 'SUMPRODUCT', 'COUNT', 'ROUND', 'IF', 'OR', 'ROW', 'TRUE', 'FALSE'].includes(token.value)) throw new Error('Unsupported formula name')
+  })
+  for (const edit of edits.reverse()) formula = formula.slice(0, edit.start) + edit.value + formula.slice(edit.start + edit.raw.length)
+  return formula
 }

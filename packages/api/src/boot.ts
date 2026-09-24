@@ -6436,7 +6436,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
     store: officeGenerationStore,
     workerUserId: userId,
     buildPipelineDeps(job) {
+      let fitPolicy: import('@use-brian/core').OfficeGenerationFitPolicy = { eligibleTargetIds: [], maxAttempts: 1 }
+      const onFitPolicy = (policy: import('@use-brian/core').OfficeGenerationFitPolicy) => { fitPolicy = policy }
       return {
+        fitRepairPolicy: () => fitPolicy,
         async resolveAuthority() {
           const projection = job.authorityProjection as { sensitivity?: unknown; visibilityUserIds?: unknown; compartments?: unknown; projectIds?: unknown; compartmentGrant?: unknown; projectGrant?: unknown; sourceHandles?: unknown }
           return {
@@ -6512,8 +6515,8 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
           const runtime = await resolveBackgroundRuntime(job.workspaceId)
           const generationProvider = runtime?.provider ?? provider
           const generationModel = runtime?.selector ?? BACKGROUND_MODEL
-          if (brief.family === 'document') return generateDocumentFromTemplate({ provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, template, brandVoice })
-          if (brief.family === 'presentation') return generatePresentationFromTemplate({ provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, evidence, claims, template, brandVoice })
+          if (brief.family === 'document') return generateDocumentFromTemplate({ onFitPolicy, provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, template, brandVoice })
+          if (brief.family === 'presentation') return generatePresentationFromTemplate({ onFitPolicy, provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, evidence, claims, template, brandVoice })
           return generateSpreadsheetFromTemplate({ provider: generationProvider, model: generationModel, artifactId: job.artifactId, workspaceId: job.workspaceId, templateVersionId: template.id, outcome: brief.outcome, audience: brief.audience, additionalContext: brief.additionalContext, template, brandVoice })
         },
         async processMedia(snapshot) { return snapshot },
@@ -6558,7 +6561,10 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
       const runtime = await resolveBackgroundRuntime(job.workspaceId)
       const role = (job.authorityProjection as { role?: unknown }).role === 'comment' ? 'comment' as const : 'edit' as const
       const assistantId = job.assistantId ?? APP_LEVEL_ASSISTANT_ID
-      return runOfficeEdit({
+      const template = snapshot.templateVersionId ? await readOfficeTemplateBundle(job.initiatedByUserId, job.workspaceId, snapshot.templateVersionId) : null
+      if (snapshot.templateVersionId && !template) throw new Error('Revision template lock policy is unavailable')
+      const lockedTargetIds = [...(template?.lockedObjectIds ?? []), ...(template?.fields.filter(field => field.locked).flatMap(field => field.targetIds) ?? [])]
+      const revision = await runOfficeEdit({
         artifactId: job.artifactId,
         assistantId,
         baseVersion: currentVersion,
@@ -6578,9 +6584,22 @@ export async function bootOpenApi(opts: BootOpenApiOptions): Promise<BootResult>
         baseVersion: currentVersion,
         assistantId,
         targetIds: nextTargetIds,
+        lockedTargetIds,
         instruction: nextInstruction,
         brandVoice,
+        // The command planner derives bounded repair eligibility from the
+        // selected scope (including explicit section/slide descendants).
+        async validateCandidate(candidate) {
+          const { validateOfficeInternalCandidateRendering } = await import('./office/render-validation.js')
+          const rendered = await validateOfficeInternalCandidateRendering({
+            snapshot: candidate,
+            fitBudget: { readabilityReference: nextSnapshot },
+            resolveResource: resourceId => readOfficeResource(job.initiatedByUserId, job.workspaceId, resourceId),
+          })
+          if (!rendered.receipt.ok) throw new Error(`Office revision rendering failed: ${rendered.receipt.issues.map(i => `${i.code}: ${i.message}`).join('; ')}`)
+        },
       }))
+      return { ...revision, affectedObjectIds: [...new Set([...revision.affectedObjectIds, ...revision.commands.flatMap(command => command.kind === 'appendSpreadsheetRecords' ? [command.tableId] : [])])] }
     },
     async commit({ job, snapshot, expectedVersion }) {
       return (await commitGeneratedOfficeSnapshot({ job, snapshot, expectedVersion, kind: 'revision' })).version

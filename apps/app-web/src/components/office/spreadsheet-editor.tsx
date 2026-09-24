@@ -4,6 +4,8 @@
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { ArrowLeft, ArrowRight, Copy, FileSpreadsheet, LockKeyhole, Pencil, Plus, Sparkles, Trash2 } from "lucide-react";
 import {
+  applyOfficeCommand,
+  tableBounds,
   columnIndexToName,
   parseCellAddress,
   spreadsheetCellDisplayValue,
@@ -15,6 +17,8 @@ import {
 } from "@use-brian/office-model";
 import { addWorksheetCommand, deleteCommand, deleteWorksheetCommand, renameWorksheetCommand, reorderWorksheetCommand, setSpreadsheetCellCommand, setSpreadsheetDimensionCommand, updateSpreadsheetImageCommand } from "@/lib/office/editor-commands";
 import { getOfficeResourceObjectUrl } from "@/lib/office/api";
+import { APP_LEVEL_ASSISTANT_ID } from "@use-brian/shared";
+import { Button } from "@/components/ui/button";
 import { confirmDialog } from "@/components/ui/confirm-dialog";
 import { useT } from "@/lib/i18n/client";
 import { cn } from "@/lib/utils";
@@ -38,6 +42,7 @@ export function SpreadsheetEditor({ snapshot, baseVersion, role, suggestMode, on
   const [sheetId, setSheetId] = useState(snapshot.worksheets.some((sheet) => sheet.id === snapshot.activeSheetId && sheet.visibility === "visible") ? snapshot.activeSheetId : firstVisible.id);
   const [selection, setSelection] = useState<SpreadsheetSelection>({ anchor: "A1", focus: "A1" });
   const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [editError, setEditError] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState<string | null>(null);
@@ -49,21 +54,47 @@ export function SpreadsheetEditor({ snapshot, baseVersion, role, suggestMode, on
   const selectedCell = cellMap.get(selectedAddress);
   const selectedImage = selectedImageId ? sheet.images.find((image) => image.id === selectedImageId) : undefined;
 
+  const selectedTable = sheet.tables?.find((table) => table.id === selectedTableId);
+
   useEffect(() => {
     const cell = cellMap.get(selectedAddress);
     setDraft(cell?.formula ? `=${cell.formula}` : cell?.value === null || cell?.value === undefined ? "" : String(cell.value));
     setEditError(null);
+    if (selectedTable) {
+      onSelectTargets?.([selectedTable.id]);
+      return;
+    }
     if (selectedImage) {
       onSelectTargets?.([selectedImage.id]);
       return;
     }
     const targetIds = spreadsheetSelectionAddresses(selection).map((address) => cellMap.get(address)?.id).filter((id): id is string => Boolean(id));
     onSelectTargets?.(targetIds.length > 0 ? targetIds : [sheet.id]);
-  }, [cellMap, onSelectTargets, selectedAddress, selectedImage, selection, sheet.id]);
+  }, [cellMap, onSelectTargets, selectedAddress, selectedImage, selectedTable, selection, sheet.id]);
 
   function selectAddress(address: string, extend = false) {
+    setSelectedTableId(null);
     setSelectedImageId(null);
     setSelection((current) => ({ anchor: extend ? current.anchor : address, focus: address }));
+  }
+
+  function appendBlankRecord() {
+    if (!canChange || !selectedTable) return;
+    try {
+      const bounds = tableBounds(selectedTable.ref);
+      const records = [Object.fromEntries(selectedTable.columns.flatMap((column, index) => {
+        const prototype = cellMap.get(`${columnIndexToName(bounds.left + index)}${bounds.bottom}`);
+        return prototype?.formula ? [] : [[String(column.id), { valueType: "blank" as const, value: null }]];
+      }))];
+      const command: OfficeCommand = { kind: "appendSpreadsheetRecords", commandId: crypto.randomUUID(), artifactId: snapshot.artifactId, baseVersion, actor: { type: "user", id: APP_LEVEL_ASSISTANT_ID }, origin: "manual", sheetId: sheet.id, tableId: selectedTable.id, records };
+      // Use canonical validation, including recalculation, before the shell's
+      // fire-and-forget callback. Unsafe appends use the existing cell alert.
+      applyOfficeCommand(snapshot, command);
+      setEditError(null);
+      onCommand(command);
+    } catch {
+      setEditError(t.appendTableRowFailed);
+    }
   }
 
   function commandCell(address: string, input: string): boolean {
@@ -180,7 +211,7 @@ export function SpreadsheetEditor({ snapshot, baseVersion, role, suggestMode, on
         <input
           ref={formulaInputRef}
           value={draft}
-          disabled={!canChange || Boolean(selectedCell?.locked) || Boolean(selectedImage)}
+          disabled={!canChange || Boolean(selectedCell?.locked) || Boolean(selectedImage) || Boolean(selectedTable)}
           onChange={(event) => setDraft(event.target.value)}
           onBlur={() => { if (skipFormulaBlurCommit.current) skipFormulaBlurCommit.current = false; else commit(); }}
           onKeyDown={(event) => {
@@ -193,14 +224,19 @@ export function SpreadsheetEditor({ snapshot, baseVersion, role, suggestMode, on
         {selectedCell?.locked ? <span className="inline-flex items-center gap-1 text-xs text-muted-foreground"><LockKeyhole className="size-3.5" aria-hidden />{t.lockedCell}</span> : null}
         {suggestMode ? <span className="rounded-full bg-amber-100 px-2 py-1 text-xs text-amber-900">{t.suggesting}</span> : null}
       </div>
+      {sheet.tables?.length ? <section aria-label={t.spreadsheetTables} className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
+        {sheet.tables.map((table) => <Button key={table.id} variant={selectedTable?.id === table.id ? "secondary" : "outline"} aria-pressed={selectedTable?.id === table.id} data-spreadsheet-table={table.id} className="max-w-full whitespace-normal break-all" onClick={() => { setSelectedImageId(null); setSelectedTableId(table.id); const [anchor, focus] = table.ref.split(":"); setSelection({ anchor, focus }); }}>{table.name} ({table.ref})</Button>)}
+        <Button variant="outline" disabled={!canChange || !selectedTable} onClick={appendBlankRecord}>{t.appendTableRow}</Button>
+        {selectedTable ? <p className="w-full text-xs text-muted-foreground">{t.appendTableRowHelp}</p> : null}
+      </section> : null}
       {editError ? <p role="alert" className="border-b bg-destructive/5 px-3 py-1.5 text-xs text-destructive">{editError}</p> : null}
       {selectedImage ? <SpreadsheetImageInspector image={selectedImage} canChange={canChange} canRequestBrian={canChange && Boolean(onEditImageWithBrian)} onApply={(next) => onCommand(updateSpreadsheetImageCommand({ artifactId: snapshot.artifactId, baseVersion, sheetId: sheet.id, imageId: selectedImage.id, ...next }))} onDelete={async () => { const confirmed = await confirmDialog({ title: t.deleteWorksheetImage, description: t.deleteWorksheetImageDescription, confirmLabel: t.deleteWorksheetImage, cancelLabel: t.cancelWorksheetAction, variant: "destructive" }); if (confirmed) { onCommand(deleteCommand(snapshot.artifactId, baseVersion, selectedImage.id)); setSelectedImageId(null); } }} onEditWithBrian={(instruction) => onEditImageWithBrian?.(selectedImage.id, instruction)} /> : null}
       {worksheetContentExceedsEditorBounds(sheet) ? <p role="status" className="border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-950">{t.spreadsheetRangeLimited}</p> : null}
-      <WorksheetGrid artifactId={snapshot.artifactId} sheet={sheet} selection={selection} selectedImageId={selectedImage?.id ?? null} canChange={canChange} onSelect={selectAddress} onSelectImage={setSelectedImageId} onMove={moveSelection} onBeginEdit={beginEdit} onClear={clearSelection} onCopy={(event) => copySelection(event, false)} onCut={(event) => copySelection(event, true)} onPaste={pasteSelection} onResizeDimension={(axis, index, size) => onCommand(setSpreadsheetDimensionCommand({ artifactId: snapshot.artifactId, baseVersion, sheetId: sheet.id, axis, index, size }))} />
+      <WorksheetGrid artifactId={snapshot.artifactId} sheet={sheet} selection={selection} selectedImageId={selectedImage?.id ?? null} canChange={canChange} onSelect={selectAddress} onSelectImage={(id) => { setSelectedTableId(null); setSelectedImageId(id); }} onMove={moveSelection} onBeginEdit={beginEdit} onClear={clearSelection} onCopy={(event) => copySelection(event, false)} onCut={(event) => copySelection(event, true)} onPaste={pasteSelection} onResizeDimension={(axis, index, size) => onCommand(setSpreadsheetDimensionCommand({ artifactId: snapshot.artifactId, baseVersion, sheetId: sheet.id, axis, index, size }))} />
       {renameDraft !== null ? <div className="flex items-center gap-2 border-t bg-muted/20 px-2 py-1.5"><input autoFocus maxLength={31} value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveRename(); if (event.key === "Escape") setRenameDraft(null); }} aria-label={t.worksheetName} className="h-10 min-w-0 flex-1 rounded border bg-background px-2 text-[16px] md:h-8 md:text-xs" /><button type="button" onClick={saveRename} className="h-8 rounded bg-action px-3 text-xs font-medium text-action-foreground">{t.saveWorksheetName}</button><button type="button" onClick={() => setRenameDraft(null)} className="h-8 rounded border px-3 text-xs">{t.cancelWorksheetAction}</button></div> : null}
       <div className="flex min-h-12 items-end gap-0.5 overflow-x-auto border-t bg-muted/30 px-2 pt-1 sm:min-h-10" role="tablist" aria-label={t.worksheetTabs}>
         {snapshot.worksheets.filter((item) => item.visibility === "visible").map((item) => (
-          <button key={item.id} type="button" role="tab" aria-selected={item.id === sheet.id} onClick={() => { setSheetId(item.id); setSelectedImageId(null); setSelection({ anchor: "A1", focus: "A1" }); }} className={cn("h-11 shrink-0 rounded-t-md border border-b-0 px-4 text-xs sm:h-9", item.id === sheet.id ? "bg-background font-medium text-foreground" : "bg-muted text-muted-foreground hover:text-foreground")}>{item.name}</button>
+          <button key={item.id} type="button" role="tab" aria-selected={item.id === sheet.id} onClick={() => { setSheetId(item.id); setSelectedTableId(null); setSelectedImageId(null); setSelection({ anchor: "A1", focus: "A1" }); }} className={cn("h-11 shrink-0 rounded-t-md border border-b-0 px-4 text-xs sm:h-9", item.id === sheet.id ? "bg-background font-medium text-foreground" : "bg-muted text-muted-foreground hover:text-foreground")}>{item.name}</button>
         ))}
         <div className="sticky right-0 ml-auto flex h-11 items-center gap-0.5 bg-muted/95 pl-2 sm:h-9">
           <button type="button" disabled={!canChange} onClick={addBlankWorksheet} aria-label={t.addWorksheet} title={t.addWorksheet} className="flex size-11 items-center justify-center rounded hover:bg-background disabled:opacity-30 sm:size-7"><Plus className="size-3.5" /></button>
@@ -616,7 +652,7 @@ function worksheetBounds(sheet: SpreadsheetWorksheet): { rows: number; columns: 
 function worksheetExtent(sheet: SpreadsheetWorksheet): { rows: number; columns: number } {
   let rows = 30;
   let columns = 12;
-  const rangeAddresses = [...sheet.validations.map((validation) => validation.range), ...sheet.conditionalFormats.map((format) => format.range), ...(sheet.print.printArea ? [sheet.print.printArea] : [])].flatMap((range) => range.split(":"));
+  const rangeAddresses = [...(sheet.tables ?? []).map((table) => table.ref), ...sheet.validations.map((validation) => validation.range), ...sheet.conditionalFormats.map((format) => format.range), ...(sheet.print.printArea ? [sheet.print.printArea] : [])].flatMap((range) => range.split(":"));
   for (const address of [...sheet.cells.map((cell) => cell.address), ...sheet.merges.flatMap((merge) => merge.split(":")), ...rangeAddresses]) {
     const parsed = parseCellAddress(address);
     if (!parsed) continue;

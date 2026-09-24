@@ -8,3 +8,5 @@ export * from './text.js'
 export * from './document-editor-codec.js'
 export * from './presentation-editing.js'
 export * from './numbering.js'
+
+export * from './spreadsheet-tables.js'

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 import { OfficeGenerationFailure } from '../generation/contracts.js'
 import { runOfficeGenerationPipeline, type OfficeGenerationPipelineDeps } from '../generation/pipeline.js'
@@ -20,6 +21,7 @@ function deps() {
     construct: vi.fn(async () => documentSnapshot()),
     processMedia: vi.fn(async (snapshot) => snapshot),
     resolveResource: async () => null,
+    renderValidation: vi.fn(async (snapshot, { exportBytes }) => ({ ok: true, candidateHash: createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'), exportHash: createHash('sha256').update(exportBytes).digest('hex'), issues: [] })),
     checkpoint: vi.fn(async (checkpoint) => { checkpoints.push(checkpoint.stage) }),
     emit: vi.fn(async (event) => { events.push(event.code) }),
     cancelled: vi.fn(async () => false),
@@ -38,6 +40,56 @@ describe('[COMP:office/generation] Office generation pipeline', () => {
     expect(test.events).toContain('office.job.context_grounded')
     expect(test.events.at(-1)).toBe('office.job.completed')
     expect(test.checkpoints).toEqual(['queued', 'template', 'grounding', 'claim_plan', 'construct', 'media', 'fit_render', 'validate', 'export_reparse', 'completed'])
+  })
+
+  it.each(['absent', 'failed', 'stale', 'throws'] as const)('never commits when rendered validation is %s', async mode => {
+    const test = deps()
+    if (mode === 'absent') delete test.value.renderValidation
+    else test.value.renderValidation = vi.fn(async () => {
+      if (mode === 'throws') throw new Error('converter_unavailable')
+      return { ok: mode === 'stale', candidateHash: 'stale', exportHash: 'stale', issues: mode === 'stale' ? [] : [{ code: 'invalid_pdf', message: 'Unreadable PDF' }] }
+    })
+    const result = await runOfficeGenerationPipeline(brief(), test.value)
+    expect(result.status).toBe('failed')
+    expect(test.value.commit).not.toHaveBeenCalled()
+    expect(test.checkpoints).not.toContain('completed')
+  })
+
+  it('passes exactly the rendered/reparsed bytes and receipt to commit', async () => {
+    const test = deps()
+    const result = await runOfficeGenerationPipeline(brief(), test.value)
+    expect(result.status).toBe('completed')
+    const rendered = vi.mocked(test.value.renderValidation!).mock.calls[0][1].exportBytes
+    const committed = vi.mocked(test.value.commit).mock.calls[0][1]
+    expect(new Uint8Array(committed.exportBytes)).toEqual(rendered)
+    expect(committed.renderValidation.exportHash).toBe(createHash('sha256').update(rendered).digest('hex'))
+    expect(test.value.checkpoint).toHaveBeenLastCalledWith(expect.objectContaining({ renderValidation: expect.objectContaining({ ok: true }), fitRepair: expect.objectContaining({ attempts: 1 }) }))
+  })
+
+  it('repairs only the explicit changed PPTX target before the render gate', async () => {
+    const test = deps()
+    const template = templateBundle('presentation')
+    if (template.snapshot.family !== 'presentation') throw new Error('fixture')
+    const snapshot = structuredClone(template.snapshot)
+    const object = snapshot.slides[0].objects.find(object => object.kind === 'text')!
+    if (object.kind !== 'text') throw new Error('fixture')
+    object.runs.forEach(run => { run.style.fontSizePt = 12; run.text = 'Facts' })
+    object.geometry.heightPt = 13
+    snapshot.slides[0].objects = [object]
+    snapshot.slides[0].readingOrder = [object.id]
+    test.value.selectTemplate = vi.fn(async () => ({ template: { ...template, status: 'admitted' as const } }))
+    test.value.construct = vi.fn(async () => snapshot)
+    test.value.fitRepairPolicy = () => ({ eligibleTargetIds: [object.id], maxAttempts: 3 })
+    const result = await runOfficeGenerationPipeline(brief({ family: 'presentation' }), test.value)
+    expect(result, JSON.stringify(result)).toMatchObject({ status: 'completed' })
+    const rendered = vi.mocked(test.value.renderValidation!).mock.calls[0][0]
+    expect(JSON.stringify(rendered)).toContain('"fontSizePt":11')
+    expect(object.runs[0].style.fontSizePt).toBe(12)
+    expect(test.value.checkpoint).toHaveBeenCalledWith(expect.objectContaining({ fitRepair: expect.objectContaining({ attempts: 2, changes: [expect.objectContaining({ targetId: object.id, fromPt: 12, toPt: 11 })] }) }))
+    test.value.fitRepairPolicy = () => ({ eligibleTargetIds: [object.id], lockedTargetIds: [object.id] })
+    vi.mocked(test.value.commit).mockClear()
+    expect(await runOfficeGenerationPipeline(brief({ family: 'presentation' }), test.value)).toMatchObject({ status: 'failed', code: 'fit_failed' })
+    expect(test.value.commit).not.toHaveBeenCalled()
   })
 
   it('continues without additional context after the template has been selected', async () => {
@@ -72,6 +124,13 @@ describe('[COMP:office/generation] Office generation pipeline', () => {
 
     const admittedResult = await runOfficeGenerationPipeline(brief(), test.value)
     expect(admittedResult, JSON.stringify(admittedResult)).toMatchObject({ status: 'completed' })
+
+    const refilled = structuredClone(admittedSnapshot)
+    const refilledNode = refilled.sections[0].nodes[0]
+    if (!('runs' in refilledNode)) throw new Error('fixture')
+    refilledNode.runs[0].text = 'New generated facts at the same ID'
+    test.value.construct = vi.fn(async () => refilled)
+    await expect(runOfficeGenerationPipeline(brief(), test.value)).resolves.toMatchObject({ status: 'failed', code: 'fit_failed' })
 
     const changed = structuredClone(admittedSnapshot)
     const changedRun = changed.sections[0].nodes[0]

@@ -6,12 +6,14 @@ import {
   OfficeSensitivitySchema,
   OfficeUuidSchema,
   type PresentationObject,
+  type OfficeArtifactSnapshot,
+  type OfficeRichTextRun,
 } from './model.js'
 
 export const OfficeTemplateFieldSchema = z
   .object({
     id: OfficeUuidSchema,
-    name: z.string().regex(/^[a-z][a-z0-9_.-]{1,127}$/),
+    name: z.string().regex(/^(?:[a-z][a-z0-9_.-]{1,127}|[A-Z][A-Z0-9_]{0,127})$/),
     label: z.string().min(1).max(200),
     type: z.enum(['plainText', 'richText', 'image', 'date', 'number', 'bulletList', 'table', 'chartData', 'video']),
     required: z.boolean(),
@@ -100,7 +102,7 @@ export const OfficeTemplateBundleSchema = z
     whenToUse: z.array(z.string().min(1).max(1_000)).min(1),
     whenNotToUse: z.array(z.string().min(1).max(1_000)).min(1),
     exampleRequests: z.array(z.string().min(1).max(1_000)).min(1),
-    fields: z.array(OfficeTemplateFieldSchema).max(10_000),
+    fields: z.array(OfficeTemplateFieldSchema).max(10_000).default([]),
     slideRecipes: z.array(OfficeTemplateSlideRecipeSchema).max(10_000).default([]),
     snapshot: OfficeArtifactSnapshotSchema,
     resources: z.array(OfficeResourceRefSchema).max(20_000),
@@ -162,3 +164,94 @@ export type OfficeTemplateSlideRole = z.infer<typeof OfficeTemplateSlideRoleSche
 export type OfficeTemplateSlideRecipe = z.infer<typeof OfficeTemplateSlideRecipeSchema>
 export type OfficeTemplateRoutingDraft = z.infer<typeof OfficeTemplateRoutingDraftSchema>
 export type OfficeTemplateBundle = z.infer<typeof OfficeTemplateBundleSchema>
+
+/** Literal placeholder inventory. Never crosses rich-text container boundaries. */
+export function officeTemplateTokenTargets(snapshot: OfficeArtifactSnapshot): Map<string, string[]> {
+  const targets = new Map<string, string[]>()
+  const collect = (id: string, text: string) => {
+    for (const match of text.matchAll(/\{\{([A-Z][A-Z0-9_]*)\}\}/g)) {
+      const name = match[1]!
+      const ids = targets.get(name) ?? []
+      if (!ids.includes(id)) ids.push(id)
+      targets.set(name, ids)
+    }
+  }
+  if (snapshot.family === 'document') {
+    for (const section of snapshot.sections) {
+      collect(section.id, section.header.map((run) => run.text).join(''))
+      collect(section.id, section.footer.map((run) => run.text).join(''))
+      for (const node of section.nodes) {
+        if (node.kind === 'paragraph' || node.kind === 'heading') collect(node.id, node.runs.map((run) => run.text).join(''))
+        if (node.kind === 'list') for (const item of node.items) collect(item.id, item.runs.map((run) => run.text).join(''))
+        if (node.kind === 'table') for (const row of node.rows) for (const cell of row.cells) collect(cell.id, cell.runs.map((run) => run.text).join(''))
+      }
+    }
+  } else if (snapshot.family === 'spreadsheet') {
+    for (const sheet of snapshot.worksheets) for (const cell of sheet.cells) {
+      if (!cell.formula && cell.valueType === 'string' && typeof cell.value === 'string') collect(cell.id, cell.value)
+    }
+  }
+  return targets
+}
+
+/** Shared admission/runtime binding contract; empty metadata is legacy only. */
+export function officeTemplateTokenDiagnostics(snapshot: OfficeArtifactSnapshot, fields: readonly OfficeTemplateField[]): string[] {
+  const targets = officeTemplateTokenTargets(snapshot)
+  const errors: string[] = []
+  if (!targets.size) errors.push('Template contains no fillable fields')
+  for (const name of officeTemplateLockedTokenNames(snapshot, fields)) errors.push(`Field ${name} targets locked content; locked token replacement is not supported`)
+  const names = new Set<string>()
+  const ids = new Set<string>()
+  for (const field of fields) {
+    if (names.has(field.name) || ids.has(field.id)) errors.push(`Duplicate field ${field.name}`)
+    names.add(field.name)
+    ids.add(field.id)
+    const expected = targets.get(field.name)
+    if (!expected || expected.length !== field.targetIds.length || new Set(field.targetIds).size !== field.targetIds.length || expected.some((id) => !field.targetIds.includes(id))) errors.push(`Field ${field.name} must target exactly its token containers`)
+    if (!['plainText', 'number', 'date'].includes(field.type)) errors.push(`Field ${field.name} has unsupported type ${field.type}`)
+    if (field.repeating) errors.push(`Field ${field.name} cannot repeat`)
+    if (!field.label.trim() || !field.aiInstruction.trim()) errors.push(`Field ${field.name} requires a nonblank label and instruction`)
+  }
+  for (const name of targets.keys()) if (!names.has(name)) errors.push(`Missing configuration for ${name}`)
+  return errors
+}
+
+/** Fail closed: tokens cannot override field, cell, or inherited container locks. */
+export function officeTemplateLockedTokenNames(snapshot: OfficeArtifactSnapshot, fields: readonly OfficeTemplateField[] = [], lockedObjectIds: readonly string[] = []): string[] {
+  const locks = new Set(lockedObjectIds)
+  const names = new Set<string>()
+  const collect = (text: string) => {
+    for (const match of text.matchAll(/\{\{([A-Z][A-Z0-9_]*)\}\}/g)) names.add(match[1]!)
+  }
+  const inspectRuns = (runs: readonly OfficeRichTextRun[], inherited: boolean) => {
+    const text = runs.map((run) => run.text).join('')
+    if (inherited) return collect(text)
+    let offset = 0
+    const spans = runs.map((run) => {
+      const start = offset
+      offset += run.text.length
+      return { start, end: offset, locked: locks.has(run.id) }
+    })
+    for (const match of text.matchAll(/\{\{([A-Z][A-Z0-9_]*)\}\}/g)) {
+      const start = match.index!
+      if (spans.some((span) => span.locked && span.start < start + match[0].length && span.end > start)) names.add(match[1]!)
+    }
+  }
+  if (snapshot.family === 'document') for (const section of snapshot.sections) {
+    const sectionLocked = locks.has(section.id)
+    inspectRuns(section.header, sectionLocked)
+    inspectRuns(section.footer, sectionLocked)
+    for (const node of section.nodes) {
+      const nodeLocked = sectionLocked || locks.has(node.id)
+      if (node.kind === 'paragraph' || node.kind === 'heading') inspectRuns(node.runs, nodeLocked)
+      if (node.kind === 'list') for (const item of node.items) inspectRuns(item.runs, nodeLocked || locks.has(item.id))
+      if (node.kind === 'table') for (const row of node.rows) for (const cell of row.cells) inspectRuns(cell.runs, nodeLocked || locks.has(row.id) || locks.has(cell.id))
+    }
+  }
+  if (snapshot.family === 'spreadsheet') for (const sheet of snapshot.worksheets) for (const cell of sheet.cells) {
+    if (!cell.formula && cell.valueType === 'string' && typeof cell.value === 'string' && (cell.locked || locks.has(sheet.id) || locks.has(cell.id))) collect(cell.value)
+  }
+  const targets = officeTemplateTokenTargets(snapshot)
+  for (const field of fields) if (field.locked && targets.has(field.name)) names.add(field.name)
+  return [...names]
+}

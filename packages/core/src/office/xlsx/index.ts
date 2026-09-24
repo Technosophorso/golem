@@ -2,6 +2,10 @@
 import { createHash } from 'node:crypto'
 import ExcelJS from 'exceljs'
 import JSZip from 'jszip'
+import { DOMParser } from 'linkedom'
+type XmlElement = { localName: string; attributes: ArrayLike<{ name: string }>; getAttribute(name: string): string | null }
+type XmlDocument = { querySelectorAll(selector: string): ArrayLike<XmlElement> }
+import { posix } from 'node:path'
 import {
   OFFICE_CAPABILITY_VERSION,
   OFFICE_SCHEMA_VERSION,
@@ -11,6 +15,7 @@ import {
   recalculateSpreadsheet,
   type OfficePreflightDiagnostic,
   type OfficeResourceRef,
+  validateSpreadsheetTable,
   type SpreadsheetCell,
   type SpreadsheetCellStyle,
   type SpreadsheetFormulaError,
@@ -24,6 +29,7 @@ import {
   preflightOfficePackage,
   readCanonicalOfficePart,
   stableOfficeUuid,
+  parseSimpleSpreadsheetTableXml,
   type ExtractedOfficeResource,
   type OfficeImportContext,
   type OfficeImportResult,
@@ -395,7 +401,33 @@ async function buildWorkbook(snapshot: SpreadsheetSnapshot, resolveResource: Off
       printArea: sheet.print.printArea,
     }
   }
-  return Buffer.from(await workbook.xlsx.writeBuffer())
+  const zip = await JSZip.loadAsync(await workbook.xlsx.writeBuffer())
+  const escape = (s: string) => s.replaceAll('&', '&amp;').replaceAll('"', '&quot;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+  let tableIndex = 0
+  const names = new Set<string>()
+  for (const [sheetIndex, sheet] of calculated.worksheets.entries()) {
+    const parts: string[] = []
+    const relPath = `xl/worksheets/_rels/sheet${sheetIndex + 1}.xml.rels`
+    let rels = await zip.file(relPath)?.async('string') ?? '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>'
+    for (const table of sheet.tables ?? []) {
+      validateSpreadsheetTable(table)
+      if (names.has(table.name.toLowerCase())) throw new Error('Duplicate table name')
+      names.add(table.name.toLowerCase())
+      const n = ++tableIndex, rid = `brianTable${n}`
+      const style = Object.entries(table.style).map(([k,v]) => `${k}="${escape(typeof v === 'boolean' ? v ? '1' : '0' : v)}"`).join(' ')
+      zip.file(`xl/tables/table${n}.xml`, `<?xml version="1.0" encoding="UTF-8"?><table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${n}" name="${escape(table.name)}" displayName="${escape(table.name)}" ref="${table.ref}" totalsRowShown="${table.totalsRowShown ? 1 : 0}">${table.autoFilter ? `<autoFilter ref="${table.ref}">${table.columns.map((c, i) => c.filterHidden === undefined ? '' : `<filterColumn colId="${i}" hiddenButton="${c.filterHidden ? 1 : 0}"/>`).join('')}</autoFilter>` : ''}<tableColumns count="${table.columns.length}">${table.columns.map(c => `<tableColumn id="${c.id}" name="${escape(c.name)}"${c.totalsRowLabel !== undefined ? ` totalsRowLabel="${escape(c.totalsRowLabel)}"` : ''}${c.totalsRowFunction ? ' totalsRowFunction="none"' : ''}/>`).join('')}</tableColumns><tableStyleInfo ${style}/></table>`)
+      rels = rels.replace('</Relationships>', `<Relationship Id="${rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${n}.xml"/></Relationships>`)
+      parts.push(`<tablePart r:id="${rid}"/>`)
+      const types = await zip.file('[Content_Types].xml')!.async('string')
+      zip.file('[Content_Types].xml', types.replace('</Types>', `<Override PartName="/xl/tables/table${n}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/></Types>`))
+    }
+    if (parts.length) {
+      zip.file(relPath, rels)
+      const path = `xl/worksheets/sheet${sheetIndex + 1}.xml`
+      zip.file(path, (await zip.file(path)!.async('string')).replace('</worksheet>', `<tableParts count="${parts.length}">${parts.join('')}</tableParts></worksheet>`))
+    }
+  }
+  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
 }
 
 export async function exportOfficeSpreadsheet(snapshot: SpreadsheetSnapshot, resolveResource: OfficeResourceResolver = async () => null): Promise<{ bytes: Uint8Array; mime: typeof XLSX_MIME; semanticHash: string }> {
@@ -416,6 +448,37 @@ export async function importOfficeSpreadsheet(bytes: Uint8Array, context: Office
     const workbook = new ExcelJS.Workbook()
     await workbook.xlsx.load(await excelJsCompatiblePackage(bytes) as unknown as Parameters<typeof workbook.xlsx.load>[0])
     const normalized = await normalizeWorkbook(workbook, context)
+    // Resolve actual worksheet table relationships, not ExcelJS's lossy table model.
+    const consumed = new Set<string>()
+    const parser = new DOMParser()
+    const elements = (xml: string, name: string) => Array.from((parser.parseFromString(xml, 'text/xml') as unknown as XmlDocument).querySelectorAll('*')).filter(n => n.localName.replace(/^.*:/, '') === name)
+    const workbookSheets = elements(await packageResult.zip.file('xl/workbook.xml')!.async('string'), 'sheet')
+    const workbookRels = elements(await packageResult.zip.file('xl/_rels/workbook.xml.rels')!.async('string'), 'Relationship')
+    for (const sheet of normalized.snapshot.worksheets) {
+      const source = workbookSheets.find(s => s.getAttribute('name') === sheet.name)
+      const relationship = workbookRels.find(r => r.getAttribute('Id') === source?.getAttribute('r:id'))
+      const target = relationship?.getAttribute('Target')
+      if (!target || !relationship?.getAttribute('Type')?.endsWith('/worksheet')) throw new Error('Invalid worksheet relationship')
+      const sheetPath = target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join('xl', target))
+      const xml = await packageResult.zip.file(sheetPath)?.async('string')
+      if (!xml) throw new Error('Unsupported worksheet part mapping')
+      const relXml = await packageResult.zip.file(posix.join(posix.dirname(sheetPath), '_rels', `${posix.basename(sheetPath)}.rels`))?.async('string')
+      const rels = relXml ? Array.from((parser.parseFromString(relXml, 'text/xml') as unknown as XmlDocument).querySelectorAll('Relationship')) : []
+      const parts = Array.from((parser.parseFromString(xml, 'text/xml') as unknown as XmlDocument).querySelectorAll('tablePart'))
+      for (const part of parts) {
+        const rel = rels.find(r => r.getAttribute('Id') === part.getAttribute('r:id'))
+        if (!rel || !rel.getAttribute('Type')?.endsWith('/table')) throw new Error('Invalid table relationship')
+        const target = rel.getAttribute('Target')!
+        const path = target.startsWith('/') ? target.slice(1) : posix.normalize(posix.join(posix.dirname(sheetPath), target))
+        if (!/^xl\/tables\/[^/]+\.xml$/.test(path) || consumed.has(path)) throw new Error('Unsafe table relationship')
+        const tableXml = await packageResult.zip.file(path)?.async('string')
+        if (!tableXml) throw new Error('Missing table part')
+        ;(sheet.tables ??= []).push(parseSimpleSpreadsheetTableXml(tableXml, stableOfficeUuid(`${sheet.id}:table:${path}`)))
+        consumed.add(path)
+      }
+    }
+    for (const path of Object.keys(packageResult.zip.files)) if (/^xl\/tables\/.*\.xml$/.test(path) && !consumed.has(path)) throw new Error('Unconsumed table part')
+    normalized.snapshot = SpreadsheetSnapshotSchema.parse(normalized.snapshot)
     const diagnostics: OfficePreflightDiagnostic[] = [...packageResult.diagnostics, ...preflightOfficeCandidate(normalized.snapshot).diagnostics]
     return { ok: diagnostics.every((diagnostic) => diagnostic.severity !== 'error'), snapshot: normalized.snapshot, resources: normalized.resources, diagnostics }
   } catch (cause) {

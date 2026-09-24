@@ -506,10 +506,23 @@ export const SpreadsheetPrintSettingsSchema = z.object({
 }).strict()
 export type SpreadsheetPrintSettings = z.infer<typeof SpreadsheetPrintSettingsSchema>
 
+/** Supported simple Excel tables: one header, no totals, ordinary A1 formulas. */
+export const SpreadsheetTableSchema = z.object({
+  id: OfficeUuidSchema,
+  name: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,254}$/).refine(name => !/^(?:[RC]|R[0-9]+C[0-9]+|[A-Z]{1,3}[1-9][0-9]*)$/i.test(name), 'Table name must not be a cell reference'),
+  ref: z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/),
+  autoFilter: z.boolean(),
+  totalsRowShown: z.boolean().optional(),
+  columns: z.array(z.object({ id: z.number().int().positive(), name: z.string().min(1).max(255), filterHidden: z.boolean().optional(), totalsRowLabel: z.string().max(255).optional(), totalsRowFunction: z.literal('none').optional() }).strict()).min(1).max(16384),
+  style: z.object({ name: z.string().max(0, 'Named Excel table styles are not projected in the editor; use an explicitly unstyled table'), showFirstColumn: z.boolean(), showLastColumn: z.boolean(), showRowStripes: z.boolean(), showColumnStripes: z.boolean() }).strict(),
+}).strict()
+export type SpreadsheetTable = z.infer<typeof SpreadsheetTableSchema>
+
 export const SpreadsheetWorksheetSchema = z.object({
   id: OfficeUuidSchema,
   name: z.string().min(1).max(31),
   visibility: z.enum(['visible', 'hidden', 'veryHidden']).default('visible'),
+  tables: z.array(SpreadsheetTableSchema).max(1000).optional(),
   cells: z.array(SpreadsheetCellSchema).max(250_000),
   merges: z.array(z.string().regex(/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/)).max(50_000),
   rowDimensions: z.array(z.object({ index: z.number().int().min(1).max(1_048_576), heightPt: z.number().positive().max(4_096), hidden: z.boolean().default(false) }).strict()).max(100_000),
@@ -555,7 +568,23 @@ export const SpreadsheetSnapshotSchema = ArtifactCommonSchema.extend({
   const sheetIds = new Set(snapshot.worksheets.map((sheet) => sheet.id))
   if (!sheetIds.has(snapshot.activeSheetId)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['activeSheetId'], message: 'Active sheet must belong to the workbook' })
   const names = new Set<string>()
+  const tableNames = new Set<string>(), tableIds = new Set<string>()
   for (const [index, sheet] of snapshot.worksheets.entries()) {
+    for (const table of sheet.tables ?? []) {
+      const issue = (message: string) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['worksheets', index, 'tables'], message })
+      if (tableNames.has(table.name.toLowerCase()) || tableIds.has(table.id)) issue('Duplicate table identity or name')
+      tableNames.add(table.name.toLowerCase()); tableIds.add(table.id)
+      if (!/^[A-Z]{1,3}[1-9][0-9]{0,6}:[A-Z]{1,3}[1-9][0-9]{0,6}$/.test(table.ref)) continue
+      const bounds = table.ref.split(':').map(a => { const m = /^([A-Z]+)([0-9]+)$/.exec(a)!; return { row: Number(m[2]), col: [...m[1]].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) } })
+      if (bounds[0].row > bounds[1].row || bounds[1].row > 1048576 || bounds[0].col > bounds[1].col || bounds[1].col > 16384 || bounds[1].col - bounds[0].col + 1 !== table.columns.length) issue('Unsafe table reference or column count')
+      const intersects = (ref: string) => {
+        const other = ref.split(':').map(a => { const m = /^([A-Z]+)([0-9]+)$/.exec(a)!; return { row: Number(m[2]), col: [...m[1]].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0) } })
+        return bounds[0].col <= other[1].col && bounds[1].col >= other[0].col && bounds[0].row <= other[1].row && bounds[1].row >= other[0].row
+      }
+      if (sheet.merges.some(intersects) || sheet.tables?.some(other => other !== table && intersects(other.ref))) issue('Overlapping table or merged table region')
+      if (new Set(table.columns.map(c => c.id)).size !== table.columns.length || new Set(table.columns.map(c => c.name.toLowerCase())).size !== table.columns.length) issue('Duplicate table column identity or name')
+    }
+
     const normalized = sheet.name.toLocaleLowerCase()
     if (names.has(normalized)) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['worksheets', index, 'name'], message: 'Worksheet names must be unique' })
     names.add(normalized)

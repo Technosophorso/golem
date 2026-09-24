@@ -4,16 +4,28 @@ import { act } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { officeCapabilityManifest } from "@use-brian/office-model";
+import { appendOfficeCommand, createOfficeUndoManager, snapshotToYDoc, yDocToSnapshot, officeCapabilityManifest, type SpreadsheetSnapshot, type OfficeCommand } from "@use-brian/office-model";
 import { I18nProvider } from "@/lib/i18n/client";
 import { en } from "@/lib/i18n/dictionaries/en";
 import type { Dictionary } from "@/lib/i18n/dictionaries";
 import { SpreadsheetEditor, autofitSpreadsheetDimension, gridAxisOffset, moveSpreadsheetAddress, parseSpreadsheetClipboard, shiftSpreadsheetFormula, spreadsheetDimensionModelSize, spreadsheetSelectionAddresses, spreadsheetSelectionLabel, spreadsheetSelectionTsv, worksheetContentExceedsEditorBounds } from "../spreadsheet-editor";
 import { spreadsheetFixture } from "./editor-fixtures";
 
-const coveredCapabilities = ["worksheet", "cellValue", "cellFormula", "cellStyle", "mergedCell", "rowColumnDimensions", "freezePane", "dataValidation", "conditionalFormatting", "worksheetImage", "spreadsheetPrintSetup", "spreadsheetPdf"].sort();
+const coveredCapabilities = ["spreadsheetTable", "worksheet", "cellValue", "cellFormula", "cellStyle", "mergedCell", "rowColumnDimensions", "freezePane", "dataValidation", "conditionalFormatting", "worksheetImage", "spreadsheetPrintSetup", "spreadsheetPdf"].sort();
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const setInputValue = (input: HTMLInputElement, value: string) => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); };
+
+// Explicit native, unstyled table fixture, not a capability-count placeholder.
+function tableFixture(): SpreadsheetSnapshot {
+  const snapshot = spreadsheetFixture();
+  const sheet = snapshot.worksheets[0];
+  sheet.merges = [];
+  sheet.cells = sheet.cells.map((cell) => ({ ...cell, locked: false, style: { fill: "#FF0000" } }));
+  // SUM accepts blank input rows while exercising relative formula copying.
+  sheet.cells[2].formula = "SUM(A2)";
+  sheet.tables = [{ id: "00000000-0000-4000-8000-000000000103", name: "Records", ref: "A1:B2", autoFilter: true, columns: [{ id: 1, name: "Amount" }, { id: 2, name: "Total" }], style: { name: "", showFirstColumn: false, showLastColumn: false, showRowStripes: false, showColumnStripes: false } }];
+  return snapshot;
+}
 
 describe("[COMP:app-web/office-spreadsheet-editor] Spreadsheet editor", () => {
   it("renders native worksheet geometry, styling, formulas, merges, and sheet tabs", () => {
@@ -46,6 +58,67 @@ describe("[COMP:app-web/office-spreadsheet-editor] Spreadsheet editor", () => {
   it("keeps an explicit editor fixture for every editable Spreadsheet capability", () => {
     const expected = officeCapabilityManifest.capabilities.filter((capability) => capability.disposition === "editable" && capability.family === "spreadsheet").map((capability) => capability.id).sort();
     expect(coveredCapabilities).toEqual(expected);
+  });
+
+  it("renders/selects a native table and emits an undoable canonical blank append, then edits inputs", () => {
+    const source = tableFixture();
+    const doc = snapshotToYDoc(source);
+    const history = createOfficeUndoManager(doc);
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const onSelectTargets = vi.fn();
+    const onCommand = vi.fn((command: OfficeCommand) => appendOfficeCommand(doc, command));
+    const render = (snapshot = yDocToSnapshot(doc) as SpreadsheetSnapshot, role: "edit" | "view" = "edit") => act(() => root.render(<I18nProvider locale="en" dict={en as unknown as Dictionary}><SpreadsheetEditor snapshot={snapshot} baseVersion={1} role={role} suggestMode={false} onCommand={onCommand} onSelectTargets={onSelectTargets} /></I18nProvider>));
+    const append = () => Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === en.office.appendTableRow)!;
+    render();
+    expect(append().disabled).toBe(true);
+    const table = host.querySelector<HTMLButtonElement>("[data-spreadsheet-table]")!;
+    expect(table.textContent).toBe("Records (A1:B2)");
+    act(() => table.click());
+    expect(onSelectTargets).toHaveBeenLastCalledWith([source.worksheets[0].tables![0].id]);
+    expect(table.getAttribute("aria-pressed")).toBe("true");
+    act(() => append().click());
+    expect(onCommand).toHaveBeenCalledTimes(1);
+    expect(onCommand).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "appendSpreadsheetRecords", sheetId: source.worksheets[0].id, tableId: source.worksheets[0].tables![0].id, records: [{ "1": { valueType: "blank", value: null } }] }));
+    const appended = yDocToSnapshot(doc) as SpreadsheetSnapshot;
+    expect(appended.worksheets[0].cells.find((cell) => cell.address === "A3")).toMatchObject({ valueType: "blank", value: null, style: { fill: "#FF0000" }, numberFormat: "#,##0.00" });
+    expect(appended.worksheets[0].cells.find((cell) => cell.address === "B3")).toMatchObject({ formula: "SUM(A3)", calculatedValue: 0, style: { fill: "#FF0000" } });
+    render();
+    expect(table.textContent).toBe("Records (A1:B3)");
+    act(() => history.undo());
+    render();
+    expect(table.textContent).toBe("Records (A1:B2)");
+    expect((yDocToSnapshot(doc) as SpreadsheetSnapshot).worksheets[0].cells.some((cell) => cell.address === "A3")).toBe(false);
+    act(() => history.redo());
+    render();
+    act(() => host.querySelector<HTMLButtonElement>('[data-cell-address="A3"]')!.click());
+    const formula = host.querySelector<HTMLInputElement>('[aria-label="Cell value or formula"]')!;
+    act(() => setInputValue(formula, "7"));
+    act(() => formula.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(onCommand).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "setSpreadsheetCell", address: "A3", value: 7 }));
+    render(undefined, "view");
+    act(() => table.click());
+    expect(append().disabled).toBe(true);
+    act(() => root.unmount());
+    history.destroy(); doc.destroy(); host.remove();
+  }, 15_000);
+
+  it.each(["locked", "no prototype", "collision", "formula"])("shows the owned error alert for unsafe append: %s", (reason) => {
+    const snapshot = tableFixture(), sheet = snapshot.worksheets[0];
+    if (reason === "locked") sheet.cells[1].locked = true;
+    if (reason === "no prototype") sheet.tables![0].ref = "A1:B1";
+    if (reason === "collision") sheet.cells.push({ ...sheet.cells[1], id: "00000000-0000-4000-8000-000000000104", address: "A3" });
+    if (reason === "formula") sheet.cells[2].formula = "1/0";
+    const before = structuredClone(snapshot);
+    const host = document.createElement("div"), root = createRoot(host), onCommand = vi.fn();
+    act(() => root.render(<I18nProvider locale="en" dict={en as unknown as Dictionary}><SpreadsheetEditor snapshot={snapshot} baseVersion={1} role="edit" suggestMode={false} onCommand={onCommand} /></I18nProvider>));
+    act(() => host.querySelector<HTMLButtonElement>("[data-spreadsheet-table]")!.click());
+    act(() => Array.from(host.querySelectorAll<HTMLButtonElement>("button")).find((button) => button.textContent === en.office.appendTableRow)!.click());
+    expect(host.querySelector('[role="alert"]')?.textContent).toBe(en.office.appendTableRowFailed);
+    expect(onCommand).not.toHaveBeenCalled();
+    expect(snapshot).toEqual(before);
+    act(() => root.unmount());
   });
 
   it("interpolates fractional image anchors within worksheet rows and columns", () => {

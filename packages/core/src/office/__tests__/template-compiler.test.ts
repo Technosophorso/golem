@@ -1,13 +1,25 @@
 import { describe, expect, it } from 'vitest'
 import { canEnableOfficeCreation, compileOfficeTemplate } from '../templates/compiler.js'
+import { OfficeTemplateBundleSchema } from '@use-brian/office-model'
+import { inferOfficeTemplateRouting } from '../templates/routing.js'
 import { id, templateBundle } from './fixtures.js'
+
+function configuredDocumentBundle() {
+  const draft = templateBundle('document')
+  if (draft.snapshot.family !== 'document') throw new Error('Expected document fixture')
+  const paragraph = draft.snapshot.sections[0]!.nodes.find((node) => node.id === id(9))!
+  if (paragraph.kind !== 'paragraph') throw new Error('Expected paragraph fixture')
+  paragraph.runs[0]!.text = 'Summary: {{SUMMARY}}'
+  draft.fields = inferOfficeTemplateRouting(draft.snapshot).fields
+  return draft
+}
 
 describe('[COMP:office/template-compiler] Office template compiler', () => {
   it('admits all three authoring paths only after export/reopen validation', async () => {
     expect(canEnableOfficeCreation('document')).toBe(true)
     expect(canEnableOfficeCreation('presentation')).toBe(true)
     for (const authoringPath of ['upload', 'scratch', 'promote_version'] as const) {
-      const compiled = await compileOfficeTemplate({ authoringPath, draft: templateBundle(authoringPath === 'upload' ? 'presentation' : 'document'), resources: [] })
+      const compiled = await compileOfficeTemplate({ authoringPath, draft: authoringPath === 'upload' ? templateBundle('presentation') : configuredDocumentBundle(), resources: [] })
       expect(compiled.receipt).toMatchObject({ ok: true, authoringPath, capabilityVersion: 1 })
       expect(compiled.bundle?.status).toBe('admitted')
       expect(compiled.receipt.semanticHash).toMatch(/^[a-f0-9]{64}$/)
@@ -16,7 +28,7 @@ describe('[COMP:office/template-compiler] Office template compiler', () => {
   })
 
   it('returns actionable diagnostics and leaves an invalid draft unadmitted', async () => {
-    const draft = templateBundle()
+    const draft = configuredDocumentBundle()
     draft.fields[0].targetIds = [id(999)]
     const compiled = await compileOfficeTemplate({ authoringPath: 'scratch', draft, resources: [] })
     expect(compiled.bundle).toBeUndefined()
@@ -39,4 +51,26 @@ describe('[COMP:office/template-compiler] Office template compiler', () => {
     expect(scratched.receipt.ok).toBe(false)
     expect(scratched.receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'layout.readability' }))
   })
+  it('requires a token contract for new admission while keeping legacy bundles readable', async () => {
+    const draft = configuredDocumentBundle()
+    draft.fields = []
+    const compiled = await compileOfficeTemplate({ authoringPath: 'scratch', draft, resources: [] })
+    expect(compiled.receipt.ok).toBe(false)
+    expect(compiled.receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'template.routing_invalid', message: expect.stringContaining('Missing configuration') }))
+    const legacy = { ...draft, status: 'admitted' }
+    expect(OfficeTemplateBundleSchema.safeParse(legacy).success).toBe(true)
+    expect(OfficeTemplateBundleSchema.safeParse({ ...legacy, fields: undefined }).success).toBe(true)
+  })
+
+  it('rejects explicit token locks without treating value limits as container limits', async () => {
+    const draft = configuredDocumentBundle()
+    draft.fields[0]!.maxLength = 3
+    const valid = await compileOfficeTemplate({ authoringPath: 'scratch', draft, resources: [] })
+    expect(valid.receipt.ok, JSON.stringify(valid.receipt.diagnostics)).toBe(true)
+    draft.lockedObjectIds = draft.fields[0]!.targetIds
+    const locked = await compileOfficeTemplate({ authoringPath: 'scratch', draft, resources: [] })
+    expect(locked.receipt.ok).toBe(false)
+    expect(locked.receipt.diagnostics).toContainEqual(expect.objectContaining({ code: 'template.locked_token' }))
+  })
+
 })

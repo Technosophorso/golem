@@ -25,6 +25,8 @@ const api = vi.hoisted(() => ({
   listOfficeArtifacts: vi.fn<() => Promise<unknown>>(),
   getOfficeArtifact: vi.fn<() => Promise<unknown>>(),
   getOfficeSnapshot: vi.fn<() => Promise<unknown>>(),
+  getOfficeTemplateRouting: vi.fn(),
+  saveOfficeTemplateRouting: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ back: vi.fn(), forward: vi.fn(), push: vi.fn(), prefetch: vi.fn(), replace: navigation.replace }),
@@ -38,6 +40,8 @@ vi.mock("@/lib/office/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/office/api")>();
   return {
     ...actual,
+    getOfficeTemplateRouting: api.getOfficeTemplateRouting,
+    saveOfficeTemplateRouting: api.saveOfficeTemplateRouting,
     listOfficeTemplates: api.listOfficeTemplates,
     transitionOfficeTemplateLifecycle: api.transitionOfficeTemplateLifecycle,
     listOfficeArtifacts: (...args: unknown[]) => api.listOfficeArtifacts(...(args as [])),
@@ -70,10 +74,12 @@ vi.mock("@/lib/office/offline", () => ({
 import { OfficeTemplateLibrary } from "../template-library";
 import { OfficeHome } from "../office-home";
 import { OfficeEditorShell } from "../office-editor-shell";
-import { invalidateSurfaceCache, loadSurfaceCache, markSurfaceCacheStale, readSurfaceCache, resetSurfaceCache } from "@/lib/surface-cache";
+import { invalidateSurfaceCache, mutateSurfaceCache, loadSurfaceCache, markSurfaceCacheStale, readSurfaceCache, resetSurfaceCache } from "@/lib/surface-cache";
 import { invalidateOfficeList, officeTemplateListCacheKey, officeArtifactCacheKey, officeListCacheKey, officeSnapshotCacheKey } from "@/lib/surface-prefetch";
 import { officeArtifactFromListCache, useOfficeCacheRevalidation } from "@/lib/office/surface-cache";
-import type { OfficeArtifact } from "@/lib/office/api";
+import type { OfficeArtifact, OfficeLiveSnapshot } from "@/lib/office/api";
+import type { OfficeTemplateRoutingDraft } from "@use-brian/office-model";
+import { documentFixture, spreadsheetFixture } from "./editor-fixtures";
 
 const WORKSPACE = "11111111-1111-4111-8111-111111111111";
 const ARTIFACT = "22222222-2222-4222-8222-222222222222";
@@ -97,6 +103,8 @@ beforeEach(() => {
   api.listOfficeArtifacts.mockReset();
   api.getOfficeArtifact.mockReset();
   api.getOfficeSnapshot.mockReset();
+  api.getOfficeTemplateRouting.mockReset();
+  api.saveOfficeTemplateRouting.mockReset();
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -203,6 +211,59 @@ describe("[COMP:app-web/office-surface-cache] Office editor shell", () => {
     api.getOfficeSnapshot.mockImplementation(pending);
     render(<OfficeEditorShell workspaceId={WORKSPACE} artifactId={ARTIFACT} />);
     expect(container.querySelector('[data-testid="recorder"]')?.className).toContain("max-sm:bottom-20");
+  });
+});
+
+describe("[COMP:app-web/office-template-routing] live editor integration", () => {
+  it.each([documentFixture, spreadsheetFixture])("keeps the real field editor alive while collapsed and gates publish on saved live bindings", async (fixture) => {
+    const snapshot = fixture();
+    if (snapshot.family === "document") snapshot.sections[0]!.header[0]!.text = "{{NAME}}";
+    else snapshot.worksheets[0]!.cells[0]!.value = "{{NAME}}";
+    let persisted: OfficeTemplateRoutingDraft = { source: "upload", fields: [], slideRecipes: [] };
+    api.getOfficeTemplateRouting.mockImplementation(async () => structuredClone(persisted));
+    api.saveOfficeTemplateRouting.mockImplementation(async (_id: string, value: OfficeTemplateRoutingDraft) => { persisted = structuredClone(value); return persisted; });
+    navigation.search = "templateId=template-1";
+    await loadSurfaceCache(officeArtifactCacheKey(ARTIFACT), async () => ({ ...ROW, family: snapshot.family, mode: "template" }));
+    await loadSurfaceCache(officeSnapshotCacheKey(ARTIFACT), async () => ({ snapshot, seq: 0, baseVersion: 1 }));
+    api.getOfficeArtifact.mockImplementation(pending);
+    api.getOfficeSnapshot.mockImplementation(pending);
+    render(<OfficeEditorShell workspaceId={WORKSPACE} artifactId={ARTIFACT} />);
+    await act(async () => { await settle(); });
+    expect(container.querySelector('[data-template-routing="ready"]')).not.toBeNull();
+    const publish = () => [...container.querySelectorAll("button")].find((node) => node.textContent === en.office.templateAdmit || node.textContent === en.office.routingSaveBeforePublish)!;
+    const fieldInput = () => container.querySelector('[data-template-routing-field] input') as HTMLInputElement;
+    expect(publish().disabled).toBe(true);
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(fieldInput(), "Reviewed label");
+      fieldInput().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => (container.querySelector(`[aria-label="${en.office.collapseAssistantPanel}"]`) as HTMLButtonElement).click());
+    expect(container.querySelector('[data-office-panel="collapsed"]')).not.toBeNull();
+    expect(fieldInput().value).toBe("Reviewed label");
+    expect(api.getOfficeTemplateRouting).toHaveBeenCalledTimes(1);
+    await act(async () => (container.querySelector(`[aria-label="${en.office.expandAssistantPanel}"]`) as HTMLButtonElement).click());
+    expect(fieldInput().value).toBe("Reviewed label");
+    const save = () => [...container.querySelectorAll("button")].find((node) => node.textContent === en.office.routingSave)!;
+    await act(async () => save().click());
+    expect(persisted.fields[0]!.label).toBe("Reviewed label");
+    expect(publish().disabled).toBe(false);
+    await act(async () => (container.querySelector(`[aria-label="${en.office.collapseAssistantPanel}"]`) as HTMLButtonElement).click());
+    const changed = structuredClone(snapshot);
+    if (changed.family === "document") changed.sections[0]!.header[0]!.text = "{{RENAMED}}";
+    else changed.worksheets[0]!.cells[0]!.value = "{{RENAMED}}";
+    await act(async () => mutateSurfaceCache<OfficeLiveSnapshot>(officeSnapshotCacheKey(ARTIFACT), (previous) => ({ ...previous, snapshot: changed })));
+    expect(publish().disabled).toBe(true);
+    await act(async () => (container.querySelector(`[aria-label="${en.office.expandAssistantPanel}"]`) as HTMLButtonElement).click());
+    expect(container.textContent).toContain("{{RENAMED}}");
+    await act(async () => save().click());
+    expect(persisted.fields.map((field) => field.name)).toEqual(["RENAMED"]);
+    expect(publish().disabled).toBe(false);
+    // A route remount reloads what was saved, not the old inferred defaults.
+    act(() => root.render(null));
+    render(<OfficeEditorShell workspaceId={WORKSPACE} artifactId={ARTIFACT} />);
+    await act(async () => { await settle(); });
+    expect(publish().disabled).toBe(false);
+    expect(api.getOfficeTemplateRouting).toHaveBeenCalledTimes(2);
   });
 });
 

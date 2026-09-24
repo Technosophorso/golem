@@ -1,3 +1,4 @@
+import { templateFieldGuidance, validateTemplateFieldValues } from './template-fields.js'
 /** Model-backed spreadsheet construction and targeted revision.
  * [COMP:api/office-generation] */
 import { z } from 'zod'
@@ -73,7 +74,7 @@ function spreadsheetPlaceholders(snapshot: SpreadsheetSnapshot): string[] {
   const placeholders = new Set<string>()
   for (const sheet of snapshot.worksheets) {
     for (const cell of sheet.cells) {
-      if (typeof cell.value !== 'string') continue
+      if (cell.formula || cell.valueType !== 'string' || typeof cell.value !== 'string') continue
       for (const key of placeholdersInText(cell.value)) placeholders.add(key)
     }
   }
@@ -92,7 +93,7 @@ function spreadsheetTemplateContext(snapshot: SpreadsheetSnapshot): unknown[] {
       rows.set(row, cells)
     }
     for (const cell of sheet.cells) {
-      if (typeof cell.value !== 'string') continue
+      if (cell.formula || cell.valueType !== 'string' || typeof cell.value !== 'string') continue
       const placeholders = placeholdersInText(cell.value)
       if (placeholders.length === 0) continue
       const row = /[1-9][0-9]*$/.exec(cell.address)?.[0]
@@ -147,7 +148,7 @@ function replaceSpreadsheetPlaceholders(params: {
   next.accessibility.title = params.title
   for (const sheet of next.worksheets) {
     for (const cell of sheet.cells) {
-      if (typeof cell.value !== 'string') continue
+      if (cell.formula || cell.valueType !== 'string' || typeof cell.value !== 'string') continue
       const placeholders = placeholdersInText(cell.value)
       if (placeholders.length === 0) continue
       const exact = /^\{\{([A-Z][A-Z0-9_]*)\}\}$/.exec(cell.value.trim())
@@ -222,16 +223,18 @@ export async function generateSpreadsheetFromTemplate(params: {
   if (params.template.family !== 'spreadsheet' || params.template.snapshot.family !== 'spreadsheet') throw new Error('Spreadsheet generation requires a spreadsheet template')
   const placeholders = spreadsheetPlaceholders(params.template.snapshot)
   if (placeholders.length === 0) throw new Error('Spreadsheet template contains no fillable fields')
+  const guidance = templateFieldGuidance(params.template)
   const additionalContext = params.additionalContext?.trim() ? `\n\nAdditional context:\n${params.additionalContext.trim()}` : ''
   const response = await collectStream(params.provider.stream({
     model: params.model,
-    systemPrompt: withBrandVoice(GENERATION_SYSTEM_PROMPT, params.brandVoice),
+    systemPrompt: withBrandVoice(`${GENERATION_SYSTEM_PROMPT}\nField configuration:\n${guidance}`, params.brandVoice),
     messages: [{ role: 'user', content: `Outcome:\n${params.outcome}\n\nAudience:\n${params.audience}${additionalContext}\n\nTemplate guidance:\n${params.template.description}\n\nAllowed placeholders:\n${JSON.stringify(placeholders)}\n\nTemplate cell context:\n${JSON.stringify(spreadsheetTemplateContext(params.template.snapshot))}` }] as Message[],
     maxTokens: 8_000,
     temperature: 0.2,
   }))
   const content = SpreadsheetContentSchema.parse(parseJsonObject(responseText(response)))
   assertExactValues(placeholders, content.values)
+  validateTemplateFieldValues(params.template, content.values)
   const source = structuredClone(params.template.snapshot)
   const snapshot = replaceSpreadsheetPlaceholders({
     snapshot: {
