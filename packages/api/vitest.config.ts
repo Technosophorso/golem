@@ -21,5 +21,9 @@ export default defineConfig({
   },
   test: {
     exclude: [...configDefaults.exclude, '**/*.integration.test.ts'],
+    // API route tests open many short-lived Supertest servers. CI shards this
+    // large suite across runners, so one worker per shard avoids intra-runner
+    // socket/RPC contention without putting the whole suite on one serial path.
+    maxWorkers: process.env.CI === 'true' ? 1 : undefined,
   },
 })
