@@ -25,6 +25,8 @@ export const ProgrammeCopySchema = z.object({
   contacts: z.array(z.object({ label: text, name: text.optional(), email: z.string().trim().email().max(320) }).strict()).max(10).default([]),
   links: z.array(ProgrammeLinkSchema).max(30).default([]),
   cta: z.object({ heading: text, text: text.default(''), href, label: text, secondary: ProgrammeLinkSchema.optional() }).strict().nullable().default(null),
+  /** Describes a website media library cover for this language (gallery photos carry their own). */
+  coverAlt: z.string().trim().max(300).default(''),
 }).strict()
 export const WebsiteProgrammeSchema = z.object({
   slug: key, audiences: z.array(ProgrammeAudienceSchema).min(1).max(3), order: z.number().int().min(0).max(10000),
@@ -33,6 +35,8 @@ export const WebsiteProgrammeSchema = z.object({
   fee: z.object({ currency: z.literal('HKD'), amountMinor: z.number().int().min(0).max(100_000_000) }).strict().nullable().default(null),
   gallery: ProgrammeGallerySchema.nullable().default(null),
   cover: z.string().regex(/^\/media\/gallery\/[a-z0-9-]+\/[a-z0-9-]+\.jpg$/).nullable().default(null),
+  /** A website media library image as the cover, as an alternative to a shipped gallery photo. */
+  coverMediaId: z.string().uuid().nullable().default(null),
   href: href.nullable().default(null),
   i18n: z.object({ en: ProgrammeCopySchema, 'zh-Hant': ProgrammeCopySchema.optional(), 'zh-Hans': ProgrammeCopySchema.optional() }).strict(),
 }).strict()
@@ -97,6 +101,8 @@ export function programmePublicationIssues(document: ProgrammeCatalogueDocument)
     }
     if (programme.cover && programme.gallery && !programme.cover.startsWith(`/media/gallery/${programme.gallery}/`)) issues.push(`${programme.slug}: cover photo must belong to the chosen gallery`)
     // A single cover photo without a photo set is valid: the programme page then shows the cover and no photo strip.
+    if (programme.cover && programme.coverMediaId) issues.push(`${programme.slug}: choose either a library image or a gallery photo as the cover, not both`)
+    if (programme.coverMediaId && !programme.i18n.en.coverAlt.trim()) issues.push(`${programme.slug}: describe the cover image in English`)
     if (programme.href && /^\/programmes\/[a-z0-9-]+\/?$/.test(programme.href)) issues.push(`${programme.slug}: a programme cannot redirect to another programme page`)
   }
   return [...new Set(issues)]

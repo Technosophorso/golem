@@ -54,7 +54,7 @@ function MediaThumb({ workspaceId, id, mime }: { workspaceId: string; id: string
   return url ? <img src={url} alt="" className="h-16 w-24 rounded-md bg-muted object-cover"/> : <div className="h-16 w-24 rounded-md bg-muted"/>;
 }
 
-function MediaChoice({ label, value, onChange, context, images }: { label: string; value: string | undefined; onChange: (id: string | undefined) => void; context: EditorContext; images: boolean }) {
+export function MediaChoice({ label, value, onChange, context, images }: { label: string; value: string | undefined; onChange: (id: string | undefined) => void; context: EditorContext; images: boolean }) {
   const { c } = useLabels();
   const options = context.media.filter(item => images ? item.mime.startsWith("image/") : true);
   const chosen = options.find(item => item.id === value);
