@@ -131,6 +131,10 @@ export interface DesktopBridge {
   /** Saved identities across deployments; credentials stay in the shell. */
   listAccounts?: () => Promise<{ accounts: DesktopAccount[]; canSwitch: boolean; localAppUrl?: string }>;
   selectAccount?: (key: string) => Promise<{ ok: true } | { ok: false; error: "switch" | "reauth" }>;
+  /** Remove one inactive saved connection from secure storage and its target cookie partition. */
+  removeAccount?: (key: string) => Promise<
+    { ok: true } | { ok: false; error: "active" | "busy" | "missing" | "remove" }
+  >;
   selectCloud?: () => Promise<{ ok: boolean }>;
   chooseDeployment?: () => void;
   /** Open the shared self-hosted account dialog from a native menu request. */

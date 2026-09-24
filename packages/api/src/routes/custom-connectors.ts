@@ -182,7 +182,10 @@ export function customConnectorRoutes({ connectorStore }: CustomConnectorRouteOp
       if (typeof auth.authHeaderName === 'string') {
         await connectorStore.setConfig(userId, connectorId, { authHeaderName: auth.authHeaderName })
       }
-      res.json({ id: row.connectorId, connector: row })
+      // Auto-expose is instance-scoped: the provider id identifies the custom
+      // MCP, while grants key on the connector_instance UUID. Return both so
+      // the in-page connect flow never has to guess after a successful probe.
+      res.json({ id: row.connectorId, connectorInstanceId: row.id, connector: row })
     } catch (err) {
       console.error('[connectors] add custom failed:', err)
       res.status(500).json({ error: 'Failed to add connector' })

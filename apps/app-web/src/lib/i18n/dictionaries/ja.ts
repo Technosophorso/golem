@@ -1457,6 +1457,12 @@ export const ja: Dictionary = {
     deploymentSource: "{url} のアカウント",
     useOwnDeployment: "自分のデプロイ環境を使う",
     openCloudAccount: "クラウドアカウントを開く",
+    removeConnection: "接続を削除",
+    removeConnectionAria: "{url} への接続を削除",
+    removeConnectionTitle: "この接続を削除しますか？",
+    removeConnectionDescription: "このデバイスから {url} の保存済みサインインを削除します。サーバー上のデータは削除されません。",
+    removeConnectionConfirm: "接続を削除",
+    removeConnectionError: "接続を削除できませんでした。もう一度お試しください。",
 
     loading: "ワークスペースを読み込み中…",
     loadError: "ワークスペースを読み込めませんでした。",

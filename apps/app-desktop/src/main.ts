@@ -53,7 +53,7 @@ import {
 // main process. Default-import the module object and destructure instead.
 import electronUpdater from "electron-updater";
 
-import { DeploymentAccounts, TargetOperations, deploymentKey, deploymentAccountKey, type AccountTarget } from "./deployment-accounts.js";
+import { DeploymentAccounts, TargetOperations, deploymentKey, deploymentAccountKey, type AccountTarget, type SavedDeploymentAccount } from "./deployment-accounts.js";
 import { bundledDefaultForRuntime, resolveConfig } from "./config.js";
 import {
   AWAKE_BRIAN_FILE_NAME,
@@ -273,6 +273,7 @@ const targetOperations = new TargetOperations();
 let changingTarget = false;
 let selectingAccount = false;
 let connectingDeployment = false;
+let removingAccount = false;
 const accountDialogRenderers = new Set<number>();
 function accountTarget(): AccountTarget {
   return { kind: cfg.target, appUrl: cfg.appUrl, apiUrl: cfg.apiUrl, auth: cfg.targetAuth, publicConfig: cfg.publicConfig };
@@ -1741,7 +1742,7 @@ async function activateTarget(
 }
 
 function useCloud(installSession?: () => Promise<void>): Promise<boolean> {
-  if (selectingAccount || connectingDeployment) return Promise.resolve(false);
+  if (selectingAccount || connectingDeployment || removingAccount) return Promise.resolve(false);
   return activateTarget("cloud", rememberedLocalAppUrl(), rememberedLocalApiUrl(), rememberedLocalAuth(), installSession, rememberedLocalPublicConfig());
 }
 
@@ -1894,7 +1895,7 @@ function showLocalDown(
  * remembered for the way back).
  */
 function chooseOwnDeployment(): void {
-  if (changingTarget || selectingAccount || connectingDeployment) return;
+  if (changingTarget || selectingAccount || connectingDeployment || removingAccount) return;
   const win = ensureWindow();
   if (isAppPage(win) && accountDialogRenderers.has(win.webContents.id)) {
     win.webContents.send("Use Brian:choose-deployment", rememberedLocalAppUrl());
@@ -2296,9 +2297,66 @@ async function listDeploymentAccounts() {
   });
 }
 
+type RemoveDeploymentAccountResult =
+  | { ok: true }
+  | { ok: false; error: "active" | "busy" | "missing" | "remove" };
+
+/**
+ * Remove the saved identity from its own persistent cookie partition as well as
+ * safeStorage. Without this, thin-mode account import (or a later owner mint)
+ * can recreate a connection the user explicitly removed.
+ */
+async function pruneRemovedAccountCookies(saved: SavedDeploymentAccount): Promise<void> {
+  const accountId = saved.tokens.user?.id;
+  if (!accountId) return;
+  const jar = targetSession(saved.target);
+  const read = async (name: string) => (await jar.cookies.get({ url: saved.target.appUrl, name }))[0]?.value ?? null;
+  const store = parseAccountStore(await read("accounts_store"));
+  const dir = parseAccountDir(await read("accounts_dir"));
+  const pruned = pruneAccount(store, dir, accountId);
+  for (const spec of buildAccountStoreCookies(saved.target.appUrl, pruned.store, pruned.dir)) {
+    await jar.cookies.set(spec);
+  }
+
+  const active = parseUserCookieValue(await read("user"));
+  if (active?.id !== accountId) return;
+  for (const cookie of await jar.cookies.get({ url: saved.target.appUrl })) {
+    if (!AUTH_COOKIE_NAMES.includes(cookie.name as typeof AUTH_COOKIE_NAMES[number])) continue;
+    await jar.cookies.remove(new URL(cookie.path ?? "/", saved.target.appUrl).href, cookie.name);
+  }
+}
+
+/** Remove one inactive saved deployment/account pairing; never the open renderer. */
+async function removeDeploymentAccount(key: string): Promise<RemoveDeploymentAccountResult> {
+  if (cfg.envTargetOverride || changingTarget || selectingAccount || connectingDeployment || removingAccount || recorderOverlay) {
+    return { ok: false, error: "busy" };
+  }
+  removingAccount = true;
+  try {
+    if (!(await targetOperations.idle())) return { ok: false, error: "busy" };
+    const saved = deploymentAccounts.find(key);
+    if (!saved) return { ok: false, error: "missing" };
+    const current = deploymentAccounts.current(accountTarget());
+    if (current && deploymentAccountKey({ target: accountTarget(), tokens: current }) === key) {
+      return { ok: false, error: "active" };
+    }
+    if (deploymentKey(saved.target) === deploymentKey(accountTarget()) && !cfg.bundled) {
+      const active = parseUserCookieValue(await readJarCookie("user"));
+      if (active?.id && active.id === saved.tokens.user?.id) return { ok: false, error: "active" };
+    }
+    await pruneRemovedAccountCookies(saved);
+    return deploymentAccounts.remove(key) ? { ok: true } : { ok: false, error: "remove" };
+  } catch (error) {
+    console.warn("Could not remove saved deployment account:", error);
+    return { ok: false, error: "remove" };
+  } finally {
+    removingAccount = false;
+  }
+}
+
 /** Refresh at the saved destination before committing a switch. */
 async function selectDeploymentAccount(key: string, initialRoute?: string, linkRequestId?: string): Promise<SwitchResult> {
-  if (changingTarget || selectingAccount || connectingDeployment || recorderOverlay) return { ok: false, error: "switch" };
+  if (changingTarget || selectingAccount || connectingDeployment || removingAccount || recorderOverlay) return { ok: false, error: "switch" };
   selectingAccount = true;
   try {
     // Let a rotation already in progress persist before reading saved credentials.
@@ -3095,6 +3153,7 @@ async function stashCurrentAccount(next: DesktopSession): Promise<boolean> {
  * `apps/web/src/app/api/auth/switch-account-and-return/route.ts`.
  */
 async function switchAccount(accountId: string): Promise<SwitchResult> {
+  if (removingAccount) return { ok: false, error: "switch" };
   // Bundled mode authenticates with a single Bearer token, not the cookie store.
   if (cfg.bundled) {
     const row = deploymentAccounts.rows(accountTarget()).find((account) => {
@@ -3152,6 +3211,7 @@ async function switchAccount(accountId: string): Promise<SwitchResult> {
 }
 
 async function signOut(): Promise<void> {
+  if (removingAccount) return;
   return targetOperations.run(async () => {
     const pendingLink = linkNavigation.state();
     if (pendingLink) linkNavigation.cancel(pendingLink.requestId);
@@ -3336,7 +3396,7 @@ function trustedTokenSender(event: IpcMainInvokeEvent): boolean {
 }
 
 async function refreshBundledTokens(event: IpcMainInvokeEvent): Promise<RendererRefreshResult> {
-  if (changingTarget || selectingAccount || !trustedTokenSender(event)) return { kind: "transient" };
+  if (changingTarget || selectingAccount || removingAccount || !trustedTokenSender(event)) return { kind: "transient" };
   const expectedConfig = cfg;
   const valid = () => cfg === expectedConfig && trustedTokenSender(event);
   if (!bundledRefreshInFlight) {
@@ -3375,6 +3435,7 @@ async function refreshBundledTokens(event: IpcMainInvokeEvent): Promise<Renderer
  * (transient error — session kept for a later retry).
  */
 function refreshSessionInPlace(): Promise<RefreshOutcome> {
+  if (removingAccount) return Promise.resolve("failed");
   return targetOperations.run(async () => {
     if (sessionRefreshInFlight) return sessionRefreshInFlight;
     const run = (async (): Promise<RefreshOutcome> => {
@@ -4130,7 +4191,7 @@ if (!gotLock) {
   // selected account window in this running app. `use-cloud` switches back,
   // keeping the local address remembered for the return trip.
   ipcMain.handle("Use Brian:run-local", async (event, rawUrl: unknown) => {
-    if (!isCurrentAccountSender(event.sender.id) || event.senderFrame !== event.sender.mainFrame || changingTarget || selectingAccount || connectingDeployment || recorderOverlay) return { ok: false, error: "switch" };
+    if (!isCurrentAccountSender(event.sender.id) || event.senderFrame !== event.sender.mainFrame || changingTarget || selectingAccount || connectingDeployment || removingAccount || recorderOverlay) return { ok: false, error: "switch" };
     connectingDeployment = true;
     const originalConfig = cfg;
     const originalUrl = event.sender.getURL();
@@ -4260,6 +4321,10 @@ if (!gotLock) {
   ipcMain.handle("Use Brian:list-accounts", (event) => isCurrentAccountSender(event.sender.id) ? listDeploymentAccounts() : { accounts: [], canSwitch: false });
   ipcMain.handle("Use Brian:select-account", (event, key: unknown) =>
     isCurrentAccountSender(event.sender.id) && typeof key === "string" ? selectDeploymentAccount(key) : { ok: false, error: "switch" });
+  ipcMain.handle("Use Brian:remove-account", (event, key: unknown) =>
+    isCurrentAccountSender(event.sender.id) && event.senderFrame === event.sender.mainFrame && typeof key === "string"
+      ? removeDeploymentAccount(key)
+      : { ok: false, error: "remove" });
   ipcMain.handle("Use Brian:select-cloud", async (event) => {
     const ok = isCurrentAccountSender(event.sender.id) && await useCloud();
     const pendingLink = linkNavigation.state();

@@ -1467,6 +1467,12 @@ export const zhCN: Dictionary = {
     deploymentSource: "来自 {url} 的账户",
     useOwnDeployment: "使用自己的部署",
     openCloudAccount: "打开云端账户",
+    removeConnection: "移除连接",
+    removeConnectionAria: "移除与 {url} 的连接",
+    removeConnectionTitle: "要移除此连接吗？",
+    removeConnectionDescription: "这会从此设备移除 {url} 的已保存登录信息，不会删除服务器上的任何数据。",
+    removeConnectionConfirm: "移除连接",
+    removeConnectionError: "无法移除此连接，请再试一次。",
 
     loading: "正在加载工作空间…",
     loadError: "无法加载工作空间",

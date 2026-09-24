@@ -143,6 +143,7 @@ const bridge = {
   addAccount: () => ipcRenderer.send("Use Brian:add-account"),
   listAccounts: () => ipcRenderer.invoke("Use Brian:list-accounts"),
   selectAccount: (key) => ipcRenderer.invoke("Use Brian:select-account", key),
+  removeAccount: (key) => ipcRenderer.invoke("Use Brian:remove-account", key),
   selectCloud: () => ipcRenderer.invoke("Use Brian:select-cloud"),
   chooseDeployment: () => ipcRenderer.send("Use Brian:choose-deployment"),
   onChooseDeployment: (callback) => {

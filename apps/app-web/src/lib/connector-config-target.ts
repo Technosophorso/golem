@@ -36,6 +36,22 @@ export type ConfigTargetRow = {
   source?: "granted" | "team_native";
 };
 
+/**
+ * Whether this row has a workspace exposure whose Team/Project context can be
+ * read and edited. The context API deliberately treats an ungranted personal
+ * connector as invisible, so callers must not mount its editor until the
+ * connector_grant has landed.
+ */
+export function connectorHasWorkspaceContext(
+  row: ConfigTargetRow,
+  exposedGrants: Readonly<Record<string, string>>,
+): boolean {
+  const instanceId = row.connectorInstanceId;
+  if (!instanceId) return false;
+  if (row.source === "team_native" || row.source === "granted") return true;
+  return Boolean(exposedGrants[instanceId]);
+}
+
 export function configTarget(row: ConfigTargetRow): ConfigTarget {
   return row.readonly && row.source === "team_native" && row.connectorInstanceId
     ? { key: row.connectorInstanceId, path: `instances/${row.connectorInstanceId}` }

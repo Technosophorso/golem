@@ -16,6 +16,7 @@ import {
   parseFeishuResourceRef,
   type FeishuCardAction,
   type FeishuNormalizedMessage,
+  type FeishuRestoreChannel,
   type IncomingMessage,
 } from '@use-brian/channels'
 import {
@@ -369,13 +370,14 @@ export function feishuRoutes(options: FeishuRouteOptions): Router {
   router.get('/channels', async (_req, res) => {
     try {
       const rows = await options.integrationStore.listActiveWithCredentialsSystem('feishu')
-      res.json(rows.map((row) => {
+      const channels: FeishuRestoreChannel[] = rows.map((row) => {
         const credentials = row.credentials as FeishuCredentials
         return {
           channelId: row.channelId,
           credentials,
         }
-      }))
+      })
+      res.json(channels)
     } catch (error) {
       console.error('[feishu] restore list failed:', error)
       res.status(500).json({ error: 'internal_error' })

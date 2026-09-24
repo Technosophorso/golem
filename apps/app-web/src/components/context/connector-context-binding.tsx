@@ -47,8 +47,11 @@ export function ConnectorContextBinding({
         setProjectId(context.contextProjectId);
         setError(null);
       })
-      .catch((cause) => {
-        if (!cancelled) setError(cause instanceof Error ? cause.message : t.loadFailed);
+      .catch(() => {
+        // API error codes are diagnostics, not product copy. The parent keeps
+        // unexposed connectors out of this component; any remaining failure is
+        // rendered through the localized context error.
+        if (!cancelled) setError(t.loadFailed);
       })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -64,8 +67,8 @@ export function ConnectorContextBinding({
         contextProjectId: projectId,
       });
       setSaved(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : t.updateFailed);
+    } catch {
+      setError(t.updateFailed);
     } finally {
       setSaving(false);
     }

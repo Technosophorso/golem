@@ -69,7 +69,10 @@ app.get('/status/:channelId', (req, res) => {
 const server = app.listen(env.PORT, async () => {
   console.log(`feishu-connector listening on port ${env.PORT}`)
   try {
-    await manager.restoreAll()
+    const restored = await manager.restoreAll()
+    console.log(
+      `[feishu-connector] restore complete: requested=${restored.requested} connected=${restored.connected} failed=${restored.failed}`,
+    )
   } catch (error) {
     console.error(
       '[feishu-connector] restore failed:',

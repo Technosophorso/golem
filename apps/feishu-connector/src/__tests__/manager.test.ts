@@ -21,7 +21,7 @@ function harness() {
   const fetchImpl = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
     const path = String(url)
     if (path.endsWith('/internal/feishu/channels')) {
-      return new Response(JSON.stringify({ channels: [] }), {
+      return new Response(JSON.stringify([]), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
       })
@@ -165,22 +165,69 @@ describe('[COMP:app/feishu-connector] connection manager', () => {
     expect(h.manager.getStatus('channel_1')).toBeNull()
   })
 
-  it('restores every active channel returned by the API', async () => {
+  it('restores every active channel from the API top-level array', async () => {
     const h = harness()
-    const response = {
-      channels: [{
-        channelId: 'channel_restore',
-        credentials: { app_id: 'cli', app_secret: 'secret', brand: 'lark' },
-      }],
-    }
+    const response = [{
+      channelId: 'channel_restore',
+      credentials: { app_id: 'cli', app_secret: 'secret', brand: 'lark' },
+    }]
     vi.mocked(h.fetchImpl).mockResolvedValueOnce(new Response(JSON.stringify(response), {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
     }))
-    await h.manager.restoreAll()
+    await expect(h.manager.restoreAll()).resolves.toEqual({
+      requested: 1,
+      connected: 1,
+      failed: 0,
+    })
     expect(h.manager.getStatus('channel_restore')).toMatchObject({
       status: 'connected',
       brand: 'lark',
     })
+  })
+
+  it('rejects an invalid restore payload instead of silently restoring zero channels', async () => {
+    const h = harness()
+    vi.mocked(h.fetchImpl).mockResolvedValueOnce(new Response(JSON.stringify({ channels: [] }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+
+    await expect(h.manager.restoreAll()).rejects.toMatchObject({
+      code: 'invalid_restore_payload',
+    })
+    expect(h.factory).not.toHaveBeenCalled()
+  })
+
+  it('continues restoring other channels and reports a per-channel failure', async () => {
+    const h = harness()
+    h.channel.connect
+      .mockRejectedValueOnce(Object.assign(new Error('provider rejected connection'), { code: 'auth_failed' }))
+      .mockResolvedValueOnce(undefined)
+    vi.mocked(h.fetchImpl).mockResolvedValueOnce(new Response(JSON.stringify([
+      {
+        channelId: 'channel_bad',
+        credentials: { app_id: 'cli_bad', app_secret: 'secret', brand: 'feishu' },
+      },
+      {
+        channelId: 'channel_good',
+        credentials: { app_id: 'cli_good', app_secret: 'secret', brand: 'feishu' },
+      },
+    ]), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await expect(h.manager.restoreAll()).resolves.toEqual({
+      requested: 2,
+      connected: 1,
+      failed: 1,
+    })
+    expect(h.manager.getStatus('channel_good')).toMatchObject({ status: 'connected' })
+    expect(errorLog).toHaveBeenCalledWith(
+      '[feishu-connector] restore failed for channel channel_bad: auth_failed',
+    )
+    errorLog.mockRestore()
   })
 })
