@@ -80,6 +80,36 @@ jobs:
       - name: Unit tests
         run: pnpm --filter @use-brian/api exec vitest run --shard=${{ matrix.shard }}
 
+  app-web-tests:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.head_ref != 'develop' ||
+      github.event.pull_request.head.repo.full_name != github.repository
+    name: Unit tests (app-web ${{ matrix.shard }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ["1/4", "2/4", "3/4", "4/4"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build test dependencies
+        run: pnpm exec turbo run build --filter="app-web^..."
+
+      - name: Unit tests
+        run: pnpm --filter app-web exec vitest run --shard=${{ matrix.shard }}
+
   heavyweight-tests:
     if: >-
       github.event_name != 'pull_request' ||
@@ -92,7 +122,6 @@ jobs:
       matrix:
         package:
           - "@use-brian/core"
-          - "app-web"
           - "@use-brian/app-desktop"
     steps:
       - uses: actions/checkout@v4
@@ -149,20 +178,22 @@ jobs:
       (github.event_name != 'pull_request' ||
       github.head_ref != 'develop' ||
       github.event.pull_request.head.repo.full_name != github.repository)
-    needs: [build-typecheck, api-tests, heavyweight-tests, remaining-tests]
+    needs: [build-typecheck, api-tests, app-web-tests, heavyweight-tests, remaining-tests]
     runs-on: ubuntu-latest
     steps:
       - name: Require every CI lane
         env:
           BUILD_TYPECHECK_RESULT: ${{ needs.build-typecheck.result }}
           API_TESTS_RESULT: ${{ needs.api-tests.result }}
+          APP_WEB_TESTS_RESULT: ${{ needs.app-web-tests.result }}
           HEAVYWEIGHT_TESTS_RESULT: ${{ needs.heavyweight-tests.result }}
           REMAINING_TESTS_RESULT: ${{ needs.remaining-tests.result }}
         run: |
           if [[ "$BUILD_TYPECHECK_RESULT" != "success" ||
                 "$API_TESTS_RESULT" != "success" ||
+                "$APP_WEB_TESTS_RESULT" != "success" ||
                 "$HEAVYWEIGHT_TESTS_RESULT" != "success" ||
                 "$REMAINING_TESTS_RESULT" != "success" ]]; then
-            echo "CI lane failure: build=$BUILD_TYPECHECK_RESULT api=$API_TESTS_RESULT heavy=$HEAVYWEIGHT_TESTS_RESULT remaining=$REMAINING_TESTS_RESULT"
+            echo "CI lane failure: build=$BUILD_TYPECHECK_RESULT api=$API_TESTS_RESULT app_web=$APP_WEB_TESTS_RESULT heavy=$HEAVYWEIGHT_TESTS_RESULT remaining=$REMAINING_TESTS_RESULT"
             exit 1
           fi

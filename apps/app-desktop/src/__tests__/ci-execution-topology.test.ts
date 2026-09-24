@@ -14,6 +14,7 @@ describe('[COMP:ci/execution-topology] bounded CI test execution', () => {
     const executionJobs = [
       workflow.jobs['build-typecheck'],
       workflow.jobs['api-tests'],
+      workflow.jobs['app-web-tests'],
       workflow.jobs['heavyweight-tests'],
       workflow.jobs['remaining-tests'],
     ];
@@ -24,7 +25,6 @@ describe('[COMP:ci/execution-topology] bounded CI test execution', () => {
     }
     expect(workflow.jobs['heavyweight-tests'].strategy.matrix.package).toEqual([
       '@use-brian/core',
-      'app-web',
       '@use-brian/app-desktop',
     ]);
     expect(workflow.jobs['api-tests'].strategy.matrix.shard).toEqual([
@@ -37,6 +37,16 @@ describe('[COMP:ci/execution-topology] bounded CI test execution', () => {
       (step: { name?: string }) => step.name === 'Unit tests',
     ).run;
     expect(apiCommand).toContain('vitest run --shard=${{ matrix.shard }}');
+    expect(workflow.jobs['app-web-tests'].strategy.matrix.shard).toEqual([
+      '1/4',
+      '2/4',
+      '3/4',
+      '4/4',
+    ]);
+    const appWebCommand = workflow.jobs['app-web-tests'].steps.find(
+      (step: { name?: string }) => step.name === 'Unit tests',
+    ).run;
+    expect(appWebCommand).toContain('vitest run --shard=${{ matrix.shard }}');
     const heavyCommand = workflow.jobs['heavyweight-tests'].steps.find(
       (step: { name?: string }) => step.name === 'Unit tests',
     ).run;
@@ -53,6 +63,7 @@ describe('[COMP:ci/execution-topology] bounded CI test execution', () => {
     expect(workflow.jobs['build-test'].needs).toEqual([
       'build-typecheck',
       'api-tests',
+      'app-web-tests',
       'heavyweight-tests',
       'remaining-tests',
     ]);
