@@ -666,7 +666,7 @@ export function feishuRoutes(options: FeishuRouteOptions): Router {
             await adapter.sendMessage(
               incoming.channelId,
               { text: `Linked to "${assistantName}". Your past Feishu/Lark conversations are now connected to your account.` },
-              { threadTs: incoming.replyToMessageId ?? incoming.messageId },
+              incoming.messageId ? { threadTs: incoming.messageId } : undefined,
             ).catch((error) => console.error('[feishu] link confirmation send failed:', error))
             return
           } catch (error) {
@@ -942,7 +942,11 @@ export function feishuRoutes(options: FeishuRouteOptions): Router {
       messageId: incoming.messageId,
     }))
 
-    const replyTarget = incoming.replyToMessageId ?? incoming.messageId
+    // The reply endpoint requires an om_ message id. Feishu's threadId is an
+    // omt_ topic id, while rootId/replyToMessageId describe ancestry; none is
+    // a valid substitute for the current inbound messageId. replyInThread is
+    // carried by the adapter so replies still land in the existing topic.
+    const replyTarget = incoming.messageId
     let statusMessageId: string | undefined
     let lastStatusUpdate = 0
     const timeline: Array<{ id: string; name: string; description?: string; done: boolean }> = []

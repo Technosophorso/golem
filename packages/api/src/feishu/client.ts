@@ -60,6 +60,158 @@ export type FeishuChannelFactory = (options: {
 
 const defaultFactory: FeishuChannelFactory = (options) => createLarkChannel(options) as SdkChannel
 
+type UnknownRecord = Record<string, unknown>
+
+export type FeishuApiErrorDetails = {
+  name: 'FeishuApiError'
+  message: string
+  operation: string
+  endpoint: string
+  providerCode?: number | string
+  httpStatus?: number
+  logId?: string
+}
+
+function asRecord(value: unknown): UnknownRecord | undefined {
+  return value !== null && typeof value === 'object'
+    ? value as UnknownRecord
+    : undefined
+}
+
+function errorChain(error: unknown): UnknownRecord[] {
+  const chain: UnknownRecord[] = []
+  let current = asRecord(error)
+  const seen = new Set<UnknownRecord>()
+  while (current && chain.length < 4 && !seen.has(current)) {
+    seen.add(current)
+    chain.push(current)
+    current = asRecord(current.cause)
+  }
+  return chain
+}
+
+function safeErrorMessage(value: unknown): string {
+  const source = typeof value === 'string' && value.trim()
+    ? value.trim()
+    : 'Feishu API request failed'
+  return source
+    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, '$1 [REDACTED]')
+    .replace(
+      /\b(authorization|cookie|app[_-]?secret|access[_-]?token|refresh[_-]?token)\b\s*[:=]\s*["']?[^\s,"'}]+/gi,
+      '$1=[REDACTED]',
+    )
+    .replace(
+      /([?&](?:access_token|tenant_access_token|app_secret)=)[^&#\s]+/gi,
+      '$1[REDACTED]',
+    )
+    .replace(/[\r\n\t]+/g, ' ')
+    .slice(0, 500)
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function detailsFromSdkError(
+  error: unknown,
+  operation: string,
+  endpoint: string,
+): FeishuApiErrorDetails {
+  const chain = errorChain(error)
+  let providerCode: number | string | undefined
+  let classifiedCode: string | undefined
+  let httpStatus: number | undefined
+  let logId: string | undefined
+  let providerMessage: string | undefined
+  let fallbackMessage: string | undefined
+
+  for (const item of chain) {
+    const response = asRecord(item.response)
+    const data = asRecord(response?.data) ?? asRecord(item.data)
+    const nested = asRecord(data?.error)
+    const headers = asRecord(response?.headers)
+
+    providerCode ??= numberValue(data?.code)
+      ?? stringValue(data?.code)
+    classifiedCode ??= typeof item.code === 'string' && !/^E[A-Z]+$/.test(item.code)
+      ? item.code
+      : undefined
+    httpStatus ??= numberValue(response?.status) ?? numberValue(item.status)
+    logId ??= stringValue(data?.log_id)
+      ?? stringValue(nested?.log_id)
+      ?? stringValue(headers?.['x-tt-logid'])
+      ?? stringValue(headers?.['x-tt-log-id'])
+    providerMessage ??= stringValue(data?.msg)
+      ?? stringValue(data?.message)
+    fallbackMessage ??= stringValue(item.message)
+  }
+
+  providerCode ??= classifiedCode
+
+  return {
+    name: 'FeishuApiError',
+    message: safeErrorMessage(providerMessage ?? fallbackMessage),
+    operation,
+    endpoint,
+    ...(providerCode !== undefined ? { providerCode } : {}),
+    ...(httpStatus !== undefined ? { httpStatus } : {}),
+    ...(logId !== undefined ? { logId: safeErrorMessage(logId) } : {}),
+  }
+}
+
+/**
+ * Credential-free replacement for SDK/Axios errors. The original error is
+ * deliberately not retained as `cause`: it can carry Authorization headers,
+ * app tokens, and the complete request config.
+ */
+export class FeishuApiError extends Error {
+  readonly operation: string
+  readonly endpoint: string
+  readonly providerCode?: number | string
+  readonly httpStatus?: number
+  readonly logId?: string
+
+  constructor(error: unknown, operation: string, endpoint: string) {
+    const details = detailsFromSdkError(error, operation, endpoint)
+    super(details.message)
+    this.name = details.name
+    this.operation = details.operation
+    this.endpoint = details.endpoint
+    this.providerCode = details.providerCode
+    this.httpStatus = details.httpStatus
+    this.logId = details.logId
+  }
+
+  toJSON(): FeishuApiErrorDetails {
+    return {
+      name: 'FeishuApiError',
+      message: this.message,
+      operation: this.operation,
+      endpoint: this.endpoint,
+      ...(this.providerCode !== undefined ? { providerCode: this.providerCode } : {}),
+      ...(this.httpStatus !== undefined ? { httpStatus: this.httpStatus } : {}),
+      ...(this.logId !== undefined ? { logId: this.logId } : {}),
+    }
+  }
+}
+
+async function callFeishuSdk<T>(
+  operation: string,
+  endpoint: string,
+  call: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await call()
+  } catch (error) {
+    if (error instanceof FeishuApiError) throw error
+    throw new FeishuApiError(error, operation, endpoint)
+  }
+}
+
 function makeChannel(
   credentials: FeishuAppCredentialsInput,
   factory: FeishuChannelFactory,
@@ -83,28 +235,60 @@ export function createFeishuApi(
   const channel = makeChannel(credentials, factory)
   return {
     send(to, input, opts) {
-      return channel.send(to, input, opts)
+      const endpoint = opts?.replyTo
+        ? '/open-apis/im/v1/messages/:message_id/reply'
+        : '/open-apis/im/v1/messages'
+      return callFeishuSdk('send', endpoint, () => channel.send(to, input, opts))
     },
     editMessage(messageId, text) {
-      return channel.editMessage(messageId, text)
+      return callFeishuSdk(
+        'edit_message',
+        '/open-apis/im/v1/messages/:message_id',
+        () => channel.editMessage(messageId, text),
+      )
     },
     updateCard(messageId, card) {
-      return channel.updateCard(messageId, card)
+      return callFeishuSdk(
+        'update_card',
+        '/open-apis/im/v1/messages/:message_id',
+        () => channel.updateCard(messageId, card),
+      )
     },
     recallMessage(messageId) {
-      return channel.recallMessage(messageId)
+      return callFeishuSdk(
+        'recall_message',
+        '/open-apis/im/v1/messages/:message_id',
+        () => channel.recallMessage(messageId),
+      )
     },
     addReaction(messageId, emojiType) {
-      return channel.addReaction(messageId, emojiType)
+      return callFeishuSdk(
+        'add_reaction',
+        '/open-apis/im/v1/messages/:message_id/reactions',
+        () => channel.addReaction(messageId, emojiType),
+      )
     },
     removeReactionByEmoji(messageId, emojiType) {
-      return channel.removeReactionByEmoji(messageId, emojiType)
+      return callFeishuSdk(
+        'remove_reaction',
+        '/open-apis/im/v1/messages/:message_id/reactions',
+        () => channel.removeReactionByEmoji(messageId, emojiType),
+      )
     },
     async getMessageChatId(messageId) {
-      return (await channel.fetchMessage(messageId))?.chatId ?? null
+      const result = await callFeishuSdk(
+        'fetch_message',
+        '/open-apis/im/v1/messages/:message_id',
+        () => channel.fetchMessage(messageId),
+      )
+      return result?.chatId ?? null
     },
     async downloadResource(messageId, fileKey, type) {
-      const result = await channel.downloadResourceWithMeta(messageId, fileKey, type)
+      const result = await callFeishuSdk(
+        'download_resource',
+        '/open-apis/im/v1/messages/:message_id/resources/:file_key',
+        () => channel.downloadResourceWithMeta(messageId, fileKey, type),
+      )
       return { data: new Uint8Array(result.buffer), contentType: result.contentType }
     },
   }
@@ -121,10 +305,14 @@ export async function validateFeishuCredentials(
   factory: FeishuChannelFactory = defaultFactory,
 ): Promise<FeishuCredentialInfo> {
   const channel = makeChannel(credentials, factory)
-  const response = await channel.rawClient.request({
-    url: '/open-apis/bot/v3/info',
-    method: 'GET',
-  }) as { code?: number; msg?: string; bot?: { open_id?: string; app_name?: string } }
+  const response = await callFeishuSdk(
+    'validate_credentials',
+    '/open-apis/bot/v3/info',
+    () => channel.rawClient.request({
+      url: '/open-apis/bot/v3/info',
+      method: 'GET',
+    }),
+  ) as { code?: number; msg?: string; bot?: { open_id?: string; app_name?: string } }
 
   if (response.code != null && response.code !== 0) {
     throw new Error(`Feishu bot info failed (${response.code}): ${response.msg ?? 'unknown error'}`)

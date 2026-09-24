@@ -439,9 +439,67 @@ describe('[COMP:api/feishu-route] bridge route', () => {
       channelType: 'feishu',
       channelId: 'oc_chat',
       incomingChannelMessageId: 'om_1',
-      replyToMessageId: 'om_root',
+      replyToMessageId: null,
       modelAlias: 'pro',
     }))
+  })
+
+  it('targets every nested-thread delivery at the current message id', async () => {
+    mocks.processChannelMessage.mockImplementation(async (params: {
+      hooks: {
+        onProcessingStart(): Promise<void>
+        sendResponse(text: string): Promise<unknown>
+        sendError(error: Error): Promise<void>
+      }
+    }) => {
+      await params.hooks.onProcessingStart()
+      await params.hooks.sendResponse('first final response')
+      await params.hooks.sendResponse('second final response')
+      await params.hooks.onProcessingStart()
+      await params.hooks.sendError(new Error('provider failed'))
+    })
+    const { app } = setup({
+      config: { requireMention: true, replyInThread: true },
+    })
+
+    await request(app)
+      .post('/internal/feishu/inbound')
+      .set('X-Connector-Secret', 'shared-secret')
+      .send({
+        channelId: CHANNEL_ROW_ID,
+        message: normalizedMessage({
+          messageId: 'om_current',
+          threadId: 'omt_topic',
+          rootId: 'om_root',
+          replyToMessageId: 'om_parent',
+          chatType: 'group',
+          mentionedBot: true,
+        }),
+      })
+      .expect(202)
+
+    await vi.waitFor(() => expect(mocks.api.send).toHaveBeenCalledTimes(4))
+    expect(mocks.api.editMessage).toHaveBeenCalledWith(
+      'om_status',
+      'first final response',
+    )
+    expect(mocks.api.recallMessage).toHaveBeenCalledWith('om_status')
+    for (const call of mocks.api.send.mock.calls) {
+      expect(call[2]).toEqual({
+        replyTo: 'om_current',
+        replyInThread: true,
+        resolveMentionsInText: true,
+      })
+    }
+    expect(mocks.api.send.mock.calls.map((call) => call[1])).toEqual([
+      { text: 'Thinking...' },
+      { markdown: 'second final response' },
+      { text: 'Thinking...' },
+      { text: 'Something went wrong. Please try again.' },
+    ])
+    expect(JSON.stringify(mocks.api.send.mock.calls)).not.toContain('omt_topic')
+    expect(JSON.stringify(mocks.api.send.mock.calls)).not.toContain('om_root')
+    expect(JSON.stringify(mocks.api.send.mock.calls)).not.toContain('om_parent')
   })
 
   it('adds the configured acknowledgment reaction before processing', async () => {
