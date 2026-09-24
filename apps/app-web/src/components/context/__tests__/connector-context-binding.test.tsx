@@ -39,7 +39,7 @@ async function renderBinding(): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -52,7 +52,7 @@ beforeEach(() => {
 afterEach(async () => {
   await act(async () => root.unmount());
   host.remove();
-  globalThis.IS_REACT_ACT_ENVIRONMENT = false;
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
 });
 
 describe("[COMP:app-web/context-scope] connector context binding", () => {
