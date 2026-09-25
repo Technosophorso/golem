@@ -4,7 +4,7 @@
 
 # Use Brian
 
-### Brain, agent, workflows, and docs.
+### Brain, agent, workflows, and docs for private Companies
 
 **You make the calls. It does the rest.**
 
@@ -21,8 +21,7 @@
 Every other AI meets you for the first time, every time. You re-explain your
 whole company every morning, like the guy in Memento.
 
-Use Brian is an open-source, self-hosted AI company brain for solo founders,
-indie hackers, and small teams. It runs on your machine, learns how your work
+This stack is an open-source, self-hosted AI company brain for private companies who can not use public AI models due to privacy and security reasons. It runs on your machine, learns how your work
 actually happens, and then does the work: drafts the reply, runs the workflow,
 files the doc, updates the record. You stay on the decisions. It handles the
 rest.
