@@ -2,7 +2,7 @@
 
 <img src="assets/mascot.png" alt="Use Brian" width="132" />
 
-# Use Brian
+# Use Golem
 
 ### Brain, agent, workflows, and docs for private Companies
 
